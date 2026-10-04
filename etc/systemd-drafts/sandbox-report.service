@@ -1,0 +1,7 @@
+[Unit]
+Description=Sandbox daily report (read-only, rotates proxy logs)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/sandbox
+ExecStart=/bin/sh -c '%h/sandbox/bin/report daily --date $(date -u +%%F)'

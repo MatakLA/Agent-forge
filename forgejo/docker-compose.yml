@@ -1,0 +1,35 @@
+# Forgejo, pinned to the current stable release (v16.0.5).
+# Rootless image: runs as uid/gid 1000, embeds its own SSH server.
+# https://forgejo.org/docs/latest/admin/installation/docker/
+networks:
+  forgejo:
+    external: false
+  workers_internal:
+    external: true
+    name: workers_internal
+
+volumes:
+  forgejo-data:
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    container_name: forgejo
+    user: "1000:1000"
+    restart: unless-stopped
+    networks:
+      - forgejo
+      - workers_internal
+    environment:
+      - FORGEJO__server__DOMAIN=localhost
+      - FORGEJO__server__ROOT_URL=http://localhost:3000/
+      - FORGEJO__server__SSH_DOMAIN=localhost
+      - FORGEJO__server__SSH_PORT=2222
+      - FORGEJO__server__START_SSH_SERVER=true
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:2222:2222"

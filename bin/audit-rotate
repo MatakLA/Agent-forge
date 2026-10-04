@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Usage: bin/audit-rotate [--force]
+The ONLY way audit logs may shrink (rule of V7: proxy log, ledger, runs/ALERT are never truncated or deleted by hand). Moves lines of
+PREVIOUS UTC days from runs/ledger.jsonl and runs/ALERT into runs/archive/<name>.<YYYY-MM> (append-only files); today's lines stay.
+Nothing is deleted: archived + active line counts are verified to equal the original. Runs only when a file is > 256 KB (or --force)
+and no run is in progress. The proxy log is rotated by `bin/egress-report --rotate` (squid, 14 generations)."""
+import json, os, re, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+force = "--force" in sys.argv
+with sbx.lock():
+    if any(sbx.is_running(d) for d in sbx.run_dirs()):
+        print("a run is in progress; not rotating"); sys.exit(3)
+    arch = os.path.join(sbx.RUNS, "archive"); os.makedirs(arch, exist_ok=True)
+    moved_total = 0
+    for name, dater in (("ledger.jsonl", lambda l: json.loads(l)["date"]), ("ALERT", lambda l: l[:10])):
+        p = os.path.join(sbx.RUNS, name)
+        if not os.path.exists(p) or (os.path.getsize(p) < 256 * 1024 and not force):
+            continue
+        lines = open(p).read().splitlines()
+        keep, move = [], {}
+        for l in lines:
+            try:
+                d = dater(l)
+            except Exception:
+                keep.append(l); continue
+            if d >= sbx.today():
+                keep.append(l)
+            else:
+                move.setdefault(d[:7], []).append(l)
+        n = sum(len(v) for v in move.values())
+        if not n:
+            continue
+        for month, ls in move.items():
+            with open(os.path.join(arch, f"{name}.{month}"), "a") as f:
+                f.write("\n".join(ls) + "\n")
+        tmp = p + ".tmp"
+        open(tmp, "w").write("".join(l + "\n" for l in keep)); os.replace(tmp, p)
+        assert len(keep) + n == len(lines)
+        moved_total += n
+        sbx.audit_highwater_reset(name)
+        print(f"{name}: archived {n} line(s) of earlier days to runs/archive/, {len(keep)} kept")
+    if moved_total:
+        sbx.alert(f"audit-rotate: archived {moved_total} line(s) to runs/archive/ (nothing deleted)")
+    else:
+        print("nothing to rotate")

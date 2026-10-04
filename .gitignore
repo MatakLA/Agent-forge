@@ -1,0 +1,37 @@
+# Secrets and credentials
+*.key
+*.token
+*.keyring
+secrets/
+.secrets/
+.env
+.env.*
+!.env.example
+
+# Temporary and runtime states
+runs/
+runs/**
+audit/
+audit/**
+*.sid
+*.log
+ALERT
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# Docker and container data
+volumes/
+data/
+
+# OS and Editor artifacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

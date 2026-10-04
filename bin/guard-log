@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Usage: bin/guard-log summary [SELECT] [--json]    counts by decision / permission mode / tool (+ the notable ask/deny records)
+       bin/guard-log notable [SELECT] [--json]      only the ask/deny records (what the guard blocked or escalated)
+       bin/guard-log mode [--json]                  permission mode of the most recent record
+       bin/guard-log selftest                       built-in tests on synthetic data (no python3 one-liners needed)
+SELECT (default: today, UTC):  --day YYYY-MM-DD | --since ISO [--until ISO]     and optionally  --mode default|auto|dontAsk|...
+ISO = 2026-09-26T17:08:00Z or a plain date. Source: runs/audit/orchestrator-actions.jsonl (written by the PreToolUse guard hook).
+IMPORTANT LIMIT: the guard hook only sees PreToolUse events. It does NOT see the prompts of Claude Code's built-in permission system
+(e.g. `cd` + relative path, `git` after `cd`, `sed`, `python3 -c`, anything not covered by an allow rule). "No ask/deny in this log" therefore never
+means "no prompts" - prompts are only known from what the owner reports. Expected mode: "default" (manual) for the interactive profile, "dontAsk"
+for unattended runs; any other mode is reported as unexpected. Exit code of `mode`: 0 expected, 1 unexpected, 3 no recent record (older than 24 h / no log)."""
+import json, os, sys, tempfile, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+from datetime import datetime, timezone
+
+EXPECTED = ("default", "dontAsk")
+LOG = os.path.join(sbx.RUNS, "audit", "orchestrator-actions.jsonl")
+
+
+def records(log=None):
+    out = []
+    try:
+        for l in open(log or LOG):
+            try:
+                out.append(json.loads(l))
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def ts(r):
+    try:
+        return datetime.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        return 0
+
+
+def parse_iso(s):
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            pass
+    raise SystemExit(f"bad time value: {s} (use 2026-09-26T17:08:00Z or 2026-09-26)")
+
+
+def select(recs, day=None, since=None, until=None, mode=None):
+    out = []
+    for r in recs:
+        if since is not None or until is not None:
+            t = ts(r)
+            if (since is not None and t < since) or (until is not None and t > until):
+                continue
+        elif not r.get("ts", "").startswith(day or sbx.today()):
+            continue
+        if mode and r.get("mode") != mode:
+            continue
+        out.append(r)
+    return out
+
+
+def latest_mode(recs, now=None):
+    last = recs[-1] if recs else None
+    if not last or (now or time.time()) - ts(last) > 86400:
+        return dict(mode=None, recent=False), 3
+    ok = last.get("mode") in EXPECTED
+    return dict(mode=last.get("mode"), at=last["ts"], expected=ok), (0 if ok else 1)
+
+
+def summarize(sel):
+    by_dec, by_mode, by_tool = {}, {}, {}
+    for r in sel:
+        by_dec[r.get("decision")] = by_dec.get(r.get("decision"), 0) + 1
+        by_mode[r.get("mode")] = by_mode.get(r.get("mode"), 0) + 1
+        by_tool[r.get("tool")] = by_tool.get(r.get("tool"), 0) + 1
+    notable = [dict(ts=r["ts"], tool=r["tool"], decision=r["decision"], mode=r.get("mode"), subject=r.get("subject", "")[:140], reason=r.get("reason", ""))
+               for r in sel if r.get("decision") in ("deny", "ask")]
+    return dict(calls=len(sel), by_decision=by_dec, by_mode=by_mode, by_tool=by_tool,
+                unexpected_modes={m: n for m, n in by_mode.items() if m not in EXPECTED}, notable=notable)
+
+
+def selftest():
+    bad = 0
+    d = tempfile.mkdtemp(prefix="guardlog-")
+    p = os.path.join(d, "log.jsonl")
+    now = time.time()
+    f = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    R = lambda t, tool, dec, mode, subj="x", reason="": dict(ts=f(t), tool=tool, decision=dec, reason=reason, subject=subj, mode=mode, session="t")
+    base = 1790000000  # fixed instant for window tests: 2026-09-21
+    recs = [R(base, "Bash", "pass", "auto"), R(base + 60, "Edit", "ask", "auto", "/a/v7/settings.json", "guard-critical file"), R(base + 120, "Bash", "pass", "default"),
+            R(base + 180, "Bash", "deny", "default", "git push", "git push is not allowed"), R(base + 240, "Write", "ask", "default", "/a/bin/dispatch", "guard-critical file"),
+            R(base + 86400 * 2, "Bash", "pass", "default")]
+    open(p, "w").write("".join(json.dumps(x) + "\n" for x in recs))
+    got = records(p)
+    day1 = f(base)[:10]
+
+    def check(name, ok):
+        nonlocal bad
+        bad += not ok
+        print(("ok   " if ok else "FAIL ") + name)
+    check("reads all records", len(got) == 6)
+    check("select by day", len(select(got, day=day1)) == 5 and len(select(got, day=f(base + 86400 * 2)[:10])) == 1)
+    check("select by window --since/--until (inclusive)", len(select(got, since=base + 100, until=base + 250)) == 3)
+    check("select by --since only", len(select(got, since=base + 200)) == 2)
+    check("select by mode", len(select(got, day=day1, mode="default")) == 3 and len(select(got, day=day1, mode="auto")) == 2)
+    s = summarize(select(got, day=day1))
+    check("summary counts by decision", s["by_decision"] == {"pass": 2, "ask": 2, "deny": 1})
+    check("summary counts by mode", s["by_mode"] == {"auto": 2, "default": 3})
+    check("summary flags unexpected modes", s["unexpected_modes"] == {"auto": 2})
+    check("notable lists only ask/deny", [n["decision"] for n in s["notable"]] == ["ask", "deny", "ask"])
+    sm = summarize(select(got, day=day1, mode="default"))
+    check("notable with mode filter", [n["decision"] for n in sm["notable"]] == ["deny", "ask"] and sm["unexpected_modes"] == {})
+    m, code = latest_mode([R(now, "Bash", "pass", "default")])
+    check("mode default is expected (exit 0)", m["expected"] and code == 0)
+    m, code = latest_mode([R(now, "Bash", "pass", "dontAsk")])
+    check("mode dontAsk is expected (exit 0)", m["expected"] and code == 0)
+    m, code = latest_mode([R(now, "Bash", "pass", "auto")])
+    check("mode auto is unexpected (exit 1)", not m["expected"] and code == 1)
+    m, code = latest_mode([R(now - 90000, "Bash", "pass", "default")])
+    check("stale record is not current (exit 3)", m["mode"] is None and code == 3)
+    m, code = latest_mode([])
+    check("no log (exit 3)", m["mode"] is None and code == 3)
+    check("missing log file reads as empty", records(os.path.join(d, "nope.jsonl")) == [])
+    check("parse_iso date and datetime", parse_iso("2026-09-26") == parse_iso("2026-09-26T00:00:00Z"))
+    print("guard-log selftest: " + ("ALL OK" if not bad else f"{bad} FAILED"))
+    return 1 if bad else 0
+
+
+a = sys.argv[1:]
+js = "--json" in a
+if not a or a[0] not in ("summary", "notable", "mode", "selftest"):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+if a[0] == "selftest":
+    sys.exit(selftest())
+opt = lambda name: a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else None
+recs = records()
+if a[0] == "mode":
+    m, code = latest_mode(recs)
+    if code == 3:
+        print(json.dumps(m) if js else "no guard record in the last 24 h")
+    else:
+        print(json.dumps(m) if js else f"last guard record {m['at']}: permission mode '{m['mode']}' " + ("(expected)" if m["expected"] else "- UNEXPECTED (expected: default / dontAsk)"))
+    sys.exit(code)
+since, until = opt("--since"), opt("--until")
+sel = select(recs, day=opt("--day"), since=parse_iso(since) if since else None, until=parse_iso(until) if until else None, mode=opt("--mode"))
+label = (f"{since or '...'} .. {until or 'now'}" if since or until else (opt("--day") or sbx.today())) + (f" mode={opt('--mode')}" if opt("--mode") else "")
+res = summarize(sel)
+res["day"] = opt("--day") or sbx.today()
+res["selection"] = label
+if a[0] == "notable":
+    if js:
+        print(json.dumps(dict(selection=label, count=len(res["notable"]), records=res["notable"]), indent=1))
+    else:
+        print(f"guard ask/deny records {label}: {len(res['notable'])}")
+        for n in res["notable"]:
+            print(f"  {n['decision'].upper():4} {n['ts']} {n['tool']} [{n['mode']}] {n['subject']} - {n['reason']}")
+    sys.exit(0)
+if js:
+    print(json.dumps(res, indent=1))
+else:
+    print(f"guard log {label}: {res['calls']} calls; decisions {res['by_decision']}; permission modes {res['by_mode']}; tools {res['by_tool']}")
+    if res["unexpected_modes"]:
+        print(f"UNEXPECTED permission mode(s): {res['unexpected_modes']}")
+    for n in res["notable"]:
+        print(f"  {n['decision'].upper():4} {n['ts']} {n['tool']} [{n['mode']}] {n['subject']} - {n['reason']}")
