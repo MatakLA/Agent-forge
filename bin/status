@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Usage: bin/status [--no-quota] [--json]
+Overview of the sandbox: kill switch and budgets, egress proxy, Forgejo, VM resources, alerts, and per worker the last run and quota.
+Exit code: 0 all fine, 1 warnings (kill switch ON, container down, orphaned run, low disk, plain-HTTP attempts), 2 problems (egress alarm or proxy problem)."""
+import glob, json, os, re, shutil, subprocess, sys, time, urllib.request
+from datetime import datetime, timezone
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress
+
+args = sys.argv[1:]
+if "-h" in args or "--help" in args:
+    print(__doc__); sys.exit(0)
+NOQ, AS_JSON = "--no-quota" in args, "--json" in args
+lim = sbx.load_limits()
+sh = egress.sh
+problems, warnings = [], []
+
+# --- kill switch, budgets
+ks = sbx.killswitch_active()
+led = [e for e in sbx.read_ledger() if e.get("date") == sbx.today() and not e.get("test")]
+running = [d for d in sbx.run_dirs() if sbx.is_running(d)]
+used = sum(e.get("tokens", 0) for e in led) + sum(sbx.stream_tokens(d + "/stream.jsonl") for d in running if not sbx.meta(d).get("test"))
+if ks:
+    warnings.append("kill switch is ON: " + str(ks.get("reason")))
+
+# --- egress
+health = egress.proxy_health()
+res = egress.analyze(since=time.time() - 86400)
+al = egress.alarms(res, health)
+for lvl, code, msg in al:
+    (problems if lvl == "HIGH" else warnings).append(f"egress {code}: {msg}")
+
+# --- audit log integrity (rule of V7: logs shrink only through rotation)
+for pr in sbx.audit_integrity():
+    problems.append(pr)
+
+# --- permission mode of the orchestrator session (guard log): default = manual, dontAsk = unattended; anything else is unexpected
+gm = subprocess.run([os.path.join(sbx.ROOT, "bin", "guard-log"), "mode", "--json"], capture_output=True, text=True)
+try:
+    guard_mode = json.loads(gm.stdout)
+except Exception:
+    guard_mode = dict(mode=None, recent=False)
+if guard_mode.get("mode") and not guard_mode.get("expected"):
+    warnings.append(f"orchestrator session permission mode is '{guard_mode['mode']}' (expected default or dontAsk; last guard record {guard_mode.get('at')})")
+
+# --- forgejo, VM
+fj = sh("docker", "inspect", "-f", "{{.State.Status}}", "forgejo").stdout.strip() or "missing"
+try:
+    fj_http = urllib.request.urlopen("http://127.0.0.1:3000/api/healthz", timeout=5).status
+except Exception as e:
+    fj_http = getattr(e, "code", None) or "unreachable"
+if fj != "running" or fj_http != 200:
+    problems.append(f"forgejo: container {fj}, http {fj_http}")
+du = shutil.disk_usage("/")
+mem = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo") if ":" in l}
+disk_pct = 100 * du.used / du.total
+if disk_pct > 85:
+    warnings.append(f"disk {disk_pct:.0f}% used")
+load = os.getloadavg()[0]
+
+# --- alerts (last 24h)
+recent = []
+for l in sbx.read(os.path.join(sbx.RUNS, "ALERT")).splitlines():
+    try:
+        if time.time() - datetime.strptime(l.split()[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() < 86400:
+            recent.append(l)
+    except Exception:
+        pass
+
+# --- orphaned runs (supervisor died, never finished)
+orphans = [os.path.basename(d) for d in sbx.run_dirs() if not os.path.exists(d + "/finished") and not sbx.is_running(d) and os.path.exists(d + "/pid")]
+for o in orphans:
+    warnings.append(f"orphaned run (supervisor died, no result): {o}")
+
+# --- workers
+workers = []
+names = sorted(n for n in sh("docker", "ps", "-a", "--format", "{{.Names}}").stdout.split() if re.fullmatch(r"worker-\d+", n))
+for w in names:
+    info = dict(name=w, container=sh("docker", "inspect", "-f", "{{.State.Status}}", w).stdout.strip(),
+                restarts=int(sh("docker", "inspect", "-f", "{{.RestartCount}}", w).stdout.strip() or 0))
+    if info["container"] != "running":
+        warnings.append(f"{w} container is {info['container']}")
+    runs = sorted(glob.glob(f"{sbx.RUNS}/*-{w}"))
+    info["state"] = "idle (no runs yet)"
+    if runs:
+        run = runs[-1]
+        m, fin = sbx.meta(run), os.path.exists(run + "/finished")
+        rc = sbx.read(run + "/exitcode") or None
+        events = []
+        try:
+            for l in open(run + "/stream.jsonl"):
+                try: events.append(json.loads(l))
+                except Exception: pass
+        except FileNotFoundError:
+            pass
+        result = next((e["result"] for e in events if e.get("event") == "result"), None)
+        if not fin and sbx.is_running(run): state = "RUNNING"
+        elif not fin: state = "FAILED (run wrapper died without finishing)"
+        elif m.get("reason") == "ok" or (not m.get("reason") and rc == "0" and result and result.get("status") == "SUCCESS"): state = "FINISHED (ok)"
+        else: state = f"FAILED ({m.get('reason') or 'exit ' + str(rc)})"
+        steps = [e["step_update"] for e in events if e.get("event") == "step_update" and e["step_update"].get("state") == "DONE"]
+        tools = [s.get("tool_name") for s in steps if s.get("step_type") == "tool"]
+        a = sbx.read(run + "/started"); b = sbx.read(run + "/finished")
+        try:
+            t0 = datetime.strptime(a, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            t1 = datetime.strptime(b, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) if b else datetime.now(timezone.utc)
+            dur = int((t1 - t0).total_seconds())
+        except Exception:
+            dur = None
+        last = []
+        for s in steps:
+            if s.get("step_type") == "agent_response" and s.get("text_delta"):
+                last = s["text_delta"].strip().splitlines()[-3:]
+        err = sbx.read(run + "/stderr.log").splitlines()[-2:]
+        info.update(state=state, run=os.path.basename(run), task=os.path.basename(sbx.read(run + "/task")), duration_s=dur, steps=len(steps),
+                    tool_calls=len(tools), last_tools=[t for t in tools[-3:] if t], tokens=sbx.stream_tokens(run + "/stream.jsonl"),
+                    reason=m.get("reason"), last_lines=last + ["stderr: " + x for x in err])
+        if state.startswith("FAILED"):
+            warnings.append(f"{w}: last run {info['run']} {state}")
+    info["quota"] = None
+    if not NOQ and info["container"] == "running" and not info["state"].startswith("RUNNING"):
+        try:
+            rows = sbx.read_quota(w)
+            ok, msg = sbx.quota_verdict(rows, lim)
+            info["quota"] = dict(ok=ok, message=msg, rows=rows)
+            if not ok:
+                warnings.append(f"{w}: {msg}")
+        except Exception as e:
+            info["quota"] = dict(ok=False, message=f"unavailable: {e}", rows=[])
+    workers.append(info)
+
+code = 2 if problems else (1 if warnings else 0)
+if AS_JSON:
+    print(json.dumps(dict(time=sbx.now(), exit_code=code, problems=problems, warnings=warnings,
+                          killswitch=ks, today=dict(runs=len(led), max_runs=lim["MAX_RUNS_PER_DAY"], tokens=used, budget=lim["DAILY_TOKEN_BUDGET"], running=len(running)),
+                          proxy=health, egress_alarms=[dict(level=l, code=c, message=m) for l, c, m in al],
+                          forgejo=dict(container=fj, http=fj_http), orchestrator_mode=guard_mode,
+                          vm=dict(disk_used_pct=round(disk_pct, 1), mem_available_mb=mem["MemAvailable"] // 1024, mem_total_mb=mem["MemTotal"] // 1024, load1=load),
+                          alerts_24h=recent, orphaned_runs=orphans, workers=workers), indent=1, default=str))
+    sys.exit(code)
+
+print(f"== sandbox status {sbx.now()}   overall: " + ("OK" if code == 0 else "WARNINGS" if code == 1 else "PROBLEMS"))
+print("KILL SWITCH: " + (f"ON since {ks.get('at')} - {ks.get('reason')}" if ks else "off"))
+print(f"today (UTC): {len(led)}/{lim['MAX_RUNS_PER_DAY']} runs, {used}/{lim['DAILY_TOKEN_BUDGET']} tokens ({max(0, lim['DAILY_TOKEN_BUDGET'] - used)} left), "
+      f"{len(running)} running (max {lim['MAX_PARALLEL']})")
+print(f"PROXY: mode={health['mode']} running={health['running']} health={health['health']}  denied 24h: {sum(res['denied'].values())} "
+      f"(noise {sum(res['noise'].values())}), allowed tunnels 24h: {sum(res['allowed'].values())}")
+for p in health["problems"]:
+    print("  PROBLEM: " + p)
+for lvl, code_, msg in al:
+    if not msg.startswith("egress-proxy") and code_ != "proxy":
+        print(f"  EGRESS {lvl} {code_}: {msg}")
+print("ORCHESTRATOR MODE: " + (f"{guard_mode['mode']}" + (" (expected)" if guard_mode.get("expected") else " - UNEXPECTED, expected default/dontAsk") if guard_mode.get("mode") else "no guard record in the last 24 h"))
+print(f"FORGEJO: {fj}, http {fj_http}    VM: disk {disk_pct:.0f}% used, mem {mem['MemAvailable']//1024}/{mem['MemTotal']//1024} MB available, load {load:.2f}")
+print("ALERTS (24h): " + ("none" if not recent else ""))
+for l in recent[-5:]:
+    print("  " + l)
+for o in orphans:
+    print(f"ORPHANED RUN: {o}")
+for w in workers:
+    print(f"== {w['name']}  container: {w['container']}  restarts: {w['restarts']}")
+    print(f"   state: {w['state']}")
+    if w.get("run"):
+        print(f"   run: {w['run']}  task: {w['task']}  duration: {w['duration_s']}s")
+        print(f"   steps done: {w['steps']}  tool calls: {w['tool_calls']}  last tools: {', '.join(w['last_tools']) or '-'}  tokens: {w['tokens']}")
+        for x in w["last_lines"]:
+            print("   | " + x[:160])
+    if w["quota"]:
+        q = w["quota"]
+        print("   quota: " + q["message"])
+        for r in q["rows"]:
+            print(f"     {r['model']}  {r['label']}  {r['pct']:.0f}%  resets {r['reset']}")
+    elif w["state"].startswith("RUNNING"):
+        print("   quota: skipped while running")
+sys.exit(code)

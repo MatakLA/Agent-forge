@@ -1,0 +1,8 @@
+#!/bin/bash
+# Usage: bin/egress-up [enforce|discovery]  -- (re)create the egress proxy (and the internal/egress networks) in the given mode.
+set -euo pipefail
+MODE="${1:-enforce}"; [[ "$MODE" =~ ^(enforce|discovery)$ ]] || { echo "mode must be enforce or discovery" >&2; exit 2; }
+export EGRESS_MODE="$MODE"
+cd "$(cd "$(dirname "$0")/.." && pwd)/egress"
+docker compose up -d --build --force-recreate
+sleep 2; docker logs egress-proxy 2>&1 | grep -E "mode:|ERROR|FATAL" | tail -3

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Usage: bin/killswitch on [--hard] [--reason TEXT] | off [--start] | status
+on:  new dispatches are refused and running runs are killed within ~POLL_SEC + 10 s.
+     --hard additionally stops all worker containers and the egress proxy (cuts every worker connection to the model).
+off: clears the flag; containers stopped by --hard are listed; --start starts them again (proxy first)."""
+import os, re, subprocess, sys, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+
+
+def containers(all_=True):
+    r = subprocess.run(["docker", "ps", "-a" if all_ else "-q", "--format", "{{.Names}} {{.State}}"], capture_output=True, text=True)
+    return [x.split() for x in r.stdout.splitlines() if re.fullmatch(r"(worker-\d+|egress-proxy) \w+", x)]
+
+
+a = sys.argv[1:]
+if not a or a[0] not in ("on", "off", "status"):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+if a[0] == "status":
+    ks = sbx.killswitch_active()
+    print("kill switch: ON" if ks else "kill switch: off")
+    if ks:
+        print(f"  since {ks.get('at')} by {ks.get('by')}: {ks.get('reason')}{' (hard)' if ks.get('hard') else ''}")
+    for n, s in containers():
+        print(f"  {n}: {s}")
+elif a[0] == "on":
+    hard = "--hard" in a
+    reason = a[a.index("--reason") + 1] if "--reason" in a and a.index("--reason") + 1 < len(a) else "manual"
+    sbx.killswitch_on(reason, by="killswitch-cli", hard=hard)
+    print(f"kill switch ON ({reason}); running runs will be killed within ~{int(sbx.load_limits()['POLL_SEC']) + 10} s")
+    if hard:
+        deadline = time.time() + 40
+        while time.time() < deadline and any(sbx.is_running(d) for d in sbx.run_dirs()):
+            time.sleep(2)
+        names = [n for n, s in containers() if s == "running"]
+        if names:
+            subprocess.run(["docker", "stop", "-t", "10"] + names, capture_output=True)
+        print("stopped: " + (" ".join(names) or "nothing was running"))
+        sbx.alert("KILLSWITCH hard: stopped " + " ".join(names))
+else:
+    was = sbx.killswitch_off()
+    print("kill switch cleared" if was else "kill switch was not on")
+    stopped = [n for n, s in containers() if s != "running"]
+    if stopped:
+        if "--start" in a:
+            order = sorted(stopped, key=lambda n: (n != "egress-proxy", n))
+            for n in order:
+                subprocess.run(["docker", "start", n], capture_output=True)
+                if n == "egress-proxy":
+                    time.sleep(12)
+            print("started: " + " ".join(order))
+        else:
+            print("stopped containers: " + " ".join(stopped) + "  (start them with: bin/killswitch off --start)")

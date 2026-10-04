@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Usage: bin/review-branch <branch> [--diff] [--mutations SPEC.json]
+Read-only review of a worker branch (fetch with the read-only monitoring token, nothing is pushed or merged):
+  1. commits + diffstat + name-status; warns about modified/deleted files, non-worker authors, merge commits, secret-like strings
+  2. scans test files for skip/xfail/assert True and test functions without any assertion
+  3. runs the whole test suite in a fresh container (no network, read-only source, all caps dropped, 1 CPU / 1 GB, non-root)
+  4. --mutations: SPEC.json = [{"name":..., "file":"pkg/cli.py", "old":"exact text", "new":"replacement"}, ...]; each mutant must make the tests fail
+  5. --diff prints the full diff
+Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed."""
+import ast, json, os, re, shutil, subprocess, sys, tempfile
+a = sys.argv[1:]
+if not a or a[0].startswith("-"):
+    print(__doc__); sys.exit(2)
+branch = a[0]
+spec = json.load(open(a[a.index("--mutations") + 1])) if "--mutations" in a else []
+IMAGE = "sandbox-worker:1.2.11"
+tok = open(os.path.expanduser("~/.config/sandbox/secrets/monitor.token")).read().strip()
+tmp = tempfile.mkdtemp(prefix="review-")
+warn = []
+
+
+def sh(*c, cwd=None, timeout=300):
+    return subprocess.run(list(c), capture_output=True, text=True, cwd=cwd, timeout=timeout)
+
+
+def git(*c):
+    return sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", *c, cwd=repo)
+
+
+try:
+    repo = os.path.join(tmp, "repo")
+    r = sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", "clone", "-q", "http://127.0.0.1:3000/sandbox/playground.git", repo)
+    if r.returncode or git("fetch", "-q", "origin", branch).returncode:
+        print("could not fetch the branch from Forgejo:", r.stderr.strip()[:200]); sys.exit(2)
+    sh("git", "checkout", "-q", "origin/" + branch, cwd=repo)
+    base = "origin/main"
+    print(f"== review of {branch} against main")
+    print(sh("git", "log", "--format=%h %an  %s", f"{base}..HEAD", cwd=repo).stdout.rstrip())
+    for l in sh("git", "log", "--format=%an|%p", f"{base}..HEAD", cwd=repo).stdout.splitlines():
+        who, parents = l.split("|")
+        if not re.fullmatch(r"worker-\d+", who):
+            warn.append(f"commit author is not a worker bot: {who}")
+        if len(parents.split()) > 1:
+            warn.append("branch contains a merge commit")
+    print("\n" + sh("git", "diff", "--stat", f"{base}...HEAD", cwd=repo).stdout.rstrip())
+    ns = sh("git", "diff", "--name-status", f"{base}...HEAD", cwd=repo).stdout.splitlines()
+    print("\nname-status: " + ", ".join(ns))
+    for l in ns:
+        st, path = l.split("\t", 1)[0], l.split("\t")[-1]
+        if not st.startswith("A"):
+            warn.append(f"existing file changed/deleted/renamed: {l}")
+        if path.startswith(".") and path not in (".gitignore",):
+            warn.append(f"dot-file touched: {path}")
+    added = sh("git", "diff", "--unified=0", f"{base}...HEAD", cwd=repo).stdout
+    for pat, what in ((r"\b[0-9a-f]{40}\b", "40-hex string (token-like)"), (r"BEGIN [A-Z ]*PRIVATE KEY", "private key"), (r"ya29\.|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{12,}", "cloud credential pattern")):
+        if any(re.search(pat, x) for x in added.splitlines() if x.startswith("+") and not x.startswith("+++")):
+            warn.append(f"added lines contain {what}")
+    # test-quality scan
+    tests = [p.split("\t")[-1] for p in ns if re.search(r"(^|/)test_.*\.py$", p.split("\t")[-1])]
+    ntests = 0
+    for t in tests:
+        src = open(os.path.join(repo, t)).read()
+        for pat in (r"pytest\.mark\.skip", r"pytest\.skip\(", r"xfail", r"importorskip", r"assert True\b", r"skipif"):
+            if re.search(pat, src):
+                warn.append(f"{t}: contains '{pat}'")
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+                ntests += 1
+                has = any(isinstance(n, (ast.Assert,)) or (isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("raises", "fail")) for n in ast.walk(node))
+                if not has:
+                    warn.append(f"{t}::{node.name} has no assertion")
+    print(f"\ntest files: {tests or 'none'}, test functions: {ntests}")
+    if not tests:
+        warn.append("no test file in the diff")
+    dock = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "PYTHONDONTWRITEBYTECODE=1"]
+    t = sh(*dock, "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "python3", IMAGE, "-m", "pytest", "-q", "-p", "no:cacheprovider", timeout=300)
+    print("\n== full test suite in a fresh container: " + (t.stdout.strip().splitlines() or ["(no output)"])[-1])
+    fail = t.returncode != 0
+    if re.search(r"\b(skipped|xfailed|xpassed)\b", t.stdout.strip().splitlines()[-1] if t.stdout.strip() else ""):
+        warn.append("test run reports skipped/xfailed tests: " + t.stdout.strip().splitlines()[-1])
+    if fail:
+        print(t.stdout[-1500:], t.stderr[-500:])
+    surv = 0
+    if spec and not fail:
+        runner = os.path.join(tmp, "mutate.py")
+        open(runner, "w").write('''import json, os, shutil, subprocess, sys
+spec = json.load(open("/spec.json"))
+for m in spec:
+    shutil.rmtree("/tmp/m", ignore_errors=True); shutil.copytree("/src", "/tmp/m")
+    p = os.path.join("/tmp/m", m["file"]); s = open(p).read()
+    if m["old"] not in s:
+        print(json.dumps(dict(name=m["name"], result="BAD-SPEC", note="pattern not found"))); continue
+    open(p, "w").write(s.replace(m["old"], m["new"], 1))
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"], cwd="/tmp/m", capture_output=True, text=True)
+    print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
+''')
+        json.dump(spec, open(os.path.join(tmp, "spec.json"), "w"))
+        m = sh(*dock, "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro", "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro",
+               "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
+        print(f"\n== mutation check ({len(spec)} mutants)")
+        for l in m.stdout.splitlines():
+            try:
+                d = json.loads(l)
+            except Exception:
+                continue
+            print(f"  {d['result']:9} {d['name']}  {d.get('tail', d.get('note', ''))}")
+            if d["result"] != "KILLED":
+                surv += 1
+        if surv:
+            warn.append(f"{surv} mutant(s) survived or had a bad spec - check whether they are equivalent")
+    if "--diff" in a:
+        print("\n== diff\n" + sh("git", "diff", f"{base}...HEAD", cwd=repo).stdout)
+    print("\n== warnings: " + ("none" if not warn else ""))
+    for w in warn:
+        print("  ! " + w)
+    sys.exit(2 if fail else (1 if warn else 0))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)

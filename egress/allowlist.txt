@@ -1,0 +1,39 @@
+# Egress allowlist for workers (Squid dstdomain; exact hostnames, no wildcards). HTTPS (CONNECT :443) only.
+# Restricts container network egress exclusively to approved AI providers and package registries.
+
+# ==============================================================================
+# Google & Gemini Models (Antigravity CLI / Gemini API)
+# ==============================================================================
+# Model and agent API (Cloud Code Assist / Gemini endpoints)
+daily-cloudcode-pa.googleapis.com
+generativelanguage.googleapis.com
+# Feature-flag service queried by agy at startup
+antigravity-unleash.goog
+# Google API session endpoint
+www.googleapis.com
+# OAuth token refresh endpoint
+oauth2.googleapis.com
+# Profile validation endpoint required by agy
+lh3.googleusercontent.com
+
+# ==============================================================================
+# Anthropic & Claude Models (Claude Code / Anthropic API)
+# ==============================================================================
+api.anthropic.com
+statsig.anthropic.com
+
+# ==============================================================================
+# OpenAI & ChatGPT Models (OpenAI API)
+# ==============================================================================
+api.openai.com
+auth.openai.com
+
+# ==============================================================================
+# Package Registries (for running dependency tests)
+# ==============================================================================
+pypi.org
+files.pythonhosted.org
+registry.npmjs.org
+
+# Internal forge (Forgejo) is attached to the internal docker network and reached directly,
+# not through this proxy.

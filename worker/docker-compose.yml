@@ -1,0 +1,43 @@
+# Worker container, parametrized by WORKER_N (use bin/worker-add N / bin/worker-up N, not this file directly).
+# One compose project per worker (`-p worker-N`); the HOME volume is created by bin/worker-up and kept across rebuilds.
+# Limits: measured in V4 (peak 460 MiB, no CPU throttling at 2 CPUs). 2026-10-02 (owner-approved): 4 workers x (1.5 CPU, 2 GB)
+# share the 6 vCPU / 8 GB VM - these are hard caps (cgroup), not reservations; real peak usage per worker stays under 500 MiB.
+name: worker-${WORKER_N:?set WORKER_N}
+
+# Egress gate (V6): workers are only on the internal network (no route out). Forgejo is attached to it too;
+# everything else must go through the allowlisting proxy egress-proxy (see egress/ and bin/egress-up).
+networks:
+  workers_internal:
+    external: true
+    name: workers_internal
+
+volumes:
+  home:
+    external: true
+    name: worker_worker-${WORKER_N}-home
+
+services:
+  worker:
+    build: .
+    image: sandbox-worker:1.2.11
+    container_name: worker-${WORKER_N}
+    init: true
+    restart: unless-stopped
+    networks: [workers_internal]
+    cpus: ${WORKER_CPUS:-1.5}
+    mem_limit: ${WORKER_MEM:-2g}
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      - FORGEJO_USER=worker-${WORKER_N}
+      - HTTP_PROXY=http://egress-proxy:3128
+      - HTTPS_PROXY=http://egress-proxy:3128
+      - http_proxy=http://egress-proxy:3128
+      - https_proxy=http://egress-proxy:3128
+      - NO_PROXY=forgejo,egress-proxy,localhost,127.0.0.1
+      - no_proxy=forgejo,egress-proxy,localhost,127.0.0.1
+    volumes:
+      - home:/home/worker
+      - ${HOME}/.config/sandbox/secrets/worker-${WORKER_N}-keyring:/run/secrets/keyring:ro
+      - ${HOME}/.config/sandbox/secrets/worker-${WORKER_N}.token:/run/secrets/forgejo-token:ro
