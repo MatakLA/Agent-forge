@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# v1-baseline.sh — devbox baseline (phase V1): updates, tools, Docker Engine from Docker's signed
-# repository (key checked by fingerprint), log rotation, user 'dev' in group docker.
+# vm-baseline-ubuntu.sh — prepares the machine (ideally a dedicated VM) that runs Agent-Forge: updates, base tools,
+# Docker Engine from Docker's signed repository (key checked by fingerprint), log rotation, your user in group docker.
 #
-# Run INSIDE the VM:
-#   sudo bash ~/sandbox/scripts/v1-baseline.sh 2>&1 | tee ~/sandbox/v1-baseline.log
+# Run on that machine (Ubuntu 22.04+):
+#   sudo bash scripts/vm-baseline-ubuntu.sh 2>&1 | tee vm-baseline.log
 # Safe to re-run. Takes 3–10 minutes.
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 LC_ALL=C.UTF-8
@@ -18,7 +18,7 @@ warn() { printf '  ⚠ %s\n' "$*"; }
 die()  { printf '\n✘ ERROR: %s\n' "$1"; shift; for h in "$@"; do printf '    → %s\n' "$h"; done; exit 1; }
 aptg() { apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Use-Pty=0 "$@"; }
 
-[[ $EUID -eq 0 ]] || die "Run it with sudo:  sudo bash ~/sandbox/scripts/v1-baseline.sh"
+[[ $EUID -eq 0 ]] || die "Run it with sudo:  sudo bash scripts/vm-baseline-ubuntu.sh"
 
 step "System update"
 aptg update -q
@@ -49,7 +49,7 @@ if [[ $fpr != "$DOCKER_KEY_FPR" ]]; then
   rm -f /etc/apt/keyrings/docker.asc.tmp
   die "Docker key fingerprint is '${fpr:-none}', expected $DOCKER_KEY_FPR." \
     "Check https://docs.docker.com/engine/install/ubuntu/ — if Docker rotated its key, re-run:" \
-    "sudo env DOCKER_KEY_FPR=<new-fingerprint> bash ~/sandbox/scripts/v1-baseline.sh"
+    "sudo env DOCKER_KEY_FPR=<new-fingerprint> bash scripts/vm-baseline-ubuntu.sh"
 fi
 mv -f /etc/apt/keyrings/docker.asc.tmp /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -98,5 +98,5 @@ cat <<'EOF'
   Next:
     1. Log out and back in (exit, then ssh devbox) so the docker group applies:  docker ps  must work without sudo.
     2. Ask the owner for a snapshot on the host:  ./run vm-snapshot create baseline "after V1"
-    3. Continue with phase V2 (Forgejo) from ~/sandbox/CLAUDE.md.
+    3. Continue with docs/SETUP.md (step 2: Forgejo).
 EOF

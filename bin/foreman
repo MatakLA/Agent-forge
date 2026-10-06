@@ -8,8 +8,8 @@
        bin/foreman questions                        things the roadmap could not decide without the owner
        bin/foreman backlog [add "<goal>" | drop <n>] goals waiting for a free worker (taken in order when a worker would idle)
        bin/foreman autopilot on|off                 when a worker would idle and the backlog is empty, the orchestrator proposes
-                                                    the next goal from docs/app-vision.md (default on)
-       bin/foreman run                              the loop itself (systemd: sandbox-foreman.service)
+                                                    the next goal from the vision file (VISION_FILE, default on)
+       bin/foreman run                              the loop itself (systemd: scripts/install-services)
        bin/foreman tick                             one loop iteration in the foreground (debugging)
        bin/foreman --selftest                       pure-function tests, spends nothing
 
@@ -17,21 +17,27 @@ A deterministic loop: no LLM decides WHEN anything happens. LLMs are called only
   plan     goal -> tasks (role, files, spec, acceptance criteria, dependencies)
   review   gated branch -> approve / rework / reject (+ optional mutation checks for risky logic)
   check    all tasks of a goal finished -> goal done, or follow-up tasks
-Each call is a fresh, small, tool-less session (no long resumed history). The orchestrator is Claude Code (Sonnet); while it is out
-of usage the same prompt goes to Claude via Antigravity in an idle worker container, and Claude Code is retried after its printed reset.
+Each call is a fresh, small, tool-less session (no long resumed history) with a stable system prompt (prompts/orchestrator.md +
+etc/team-rules.md + the role catalogue from roles/). Providers are tried in the order of PLAN_PROVIDERS / REVIEW_PROVIDERS:
+Claude Code, Claude or Gemini via Antigravity in a worker container (the worker account with the most remaining quota; exhausted
+accounts are skipped), and optional paid APIs. A provider out of quota is retried after its printed reset.
 Worker runs go through bin/dispatch (all guards of etc/limits.conf apply), every branch through bin/review-branch (tests in a clean
 container) before any LLM looks at it; merges through bin/open-pr + bin/merge-pr. State: runs/foreman/ (files only)."""
 import concurrent.futures as cf, datetime as dt, json, os, re, signal, subprocess, sys, time, traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import sbx
-import providers
 
 ROOT, BIN = sbx.ROOT, os.path.dirname(os.path.abspath(__file__))
 FD = os.path.join(sbx.RUNS, "foreman")
 REPO = os.path.join(FD, "repo")
-CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLAN_MODEL="claude-sonnet-4-6", MAX_REWORK=3,
-            MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="Europe/Bratislava", AUTOPILOT=1, MAX_ACTIVE_GOALS=4,
-            SHARED_FILES="app-assistant/tools/tools.json")
+CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLAN_MODEL="claude-sonnet-4-6",
+            AGY_FALLBACK_MODEL="gemini-3.1-pro-high", ANTHROPIC_MODEL="", OPENAI_MODEL="", GEMINI_MODEL="", OPENAI_API_BASE="https://api.openai.com/v1",
+            # Which orchestrator answers each decision, tried in order. Free (subscription) providers: claude-cli (Claude Code),
+            # agy-claude / agy-gemini (Antigravity in a worker container). Paid per-token APIs: anthropic-api, openai-api - only
+            # used when listed here AND a key is configured (see docs/PROVIDERS.md).
+            PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli,agy-gemini",
+            MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
+            SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000)
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
@@ -252,10 +258,10 @@ def worker_busy(w):
 
 
 def refresh_repo():
-    tok = open(os.path.expanduser("~/.config/sandbox/secrets/monitor.token")).read().strip()
+    tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
     auth = ["-c", f"http.extraHeader=Authorization: token {tok}"]
     if not os.path.isdir(os.path.join(REPO, ".git")):
-        sh(["git", *auth, "clone", "-q", "http://127.0.0.1:3000/sandbox/playground.git", REPO], timeout=120)
+        sh(["git", *auth, "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", REPO], timeout=120)
     sh(["git", *auth, "fetch", "-q", "origin"], cwd=REPO, timeout=120)
     sh(["git", "checkout", "-q", "--detach", "origin/main"], cwd=REPO)
 
@@ -270,107 +276,183 @@ def read_repo(path, limit=20000):
     return out[:limit] if rc == 0 else ""
 
 
-# ---------------------------------------------------------------- LLM layer: Claude Code first, Claude-in-Antigravity as substitute
+# ---------------------------------------------------------------- LLM layer: free subscription providers first, paid APIs only if configured
 class Unavailable(Exception):
     pass
 
 
-RESERVED = set()          # workers temporarily used for an agy LLM call (not dispatched to meanwhile)
+RESERVED = set()          # idle workers lent to an agy LLM call (kept for the dashboard; busy workers are used without reserving)
+QUOTA_CACHE = {}          # worker -> (epoch, rows from `agy /usage`)
+
+
+def quota_rows(w, max_age=300):
+    at, rows = QUOTA_CACHE.get(w, (0, None))
+    if rows is None or time.time() - at > max_age:
+        try:
+            rows = sbx.read_quota(w)
+        except Exception:
+            rows = []
+        QUOTA_CACHE[w] = (time.time(), rows)
+    return rows
+
+
+def quota_pct(rows, family, label="five hour"):
+    """Lowest remaining % of a model family (e.g. 'gemini', 'claude') for a window; -1 when unknown."""
+    vals = [r["pct"] for r in rows if family.lower() in r.get("model", "").lower() and label in r.get("label", "").lower()]
+    return min(vals) if vals else -1
+
+
+def has_quota(rows, family, floor=2.0):
+    """False when `agy /usage` says this account's model family is (nearly) exhausted in either window - skip it right away instead
+    of waiting ~2 minutes for agy to answer "Individual quota reached". Unknown (no rows) counts as available."""
+    for label in ("five hour", "week"):
+        p = quota_pct(rows, family, label)
+        if 0 <= p <= floor:
+            return False
+    fam_rows = [r for r in rows if family.lower() in r.get("model", "").lower()]
+    return not (fam_rows and not any("five hour" in r.get("label", "").lower() for r in fam_rows)
+                and any(r["pct"] <= floor for r in fam_rows))
+
+
+def order_by_quota(ws, pct_of, last_used):
+    """Most remaining quota first; on a tie the least recently used. Pure, selftested."""
+    return sorted(ws, key=lambda w: (-pct_of(w), last_used.get(w, 0), w))
+
+
+def providers_for(kind):
+    order = C["REVIEW_PROVIDERS"] if kind == "review" else C["PLAN_PROVIDERS"]
+    return [p.strip() for p in str(order).split(",") if p.strip()]
 
 
 def llm_available():
     st, now = gstate(), time.time()
-    if st.get("claude_until", 0) <= now:
-        return True
+    for p in providers_for("plan") + providers_for("review"):
+        if p == "claude-cli" and st.get("claude_until", 0) <= now:
+            return True
+        if p.startswith("agy-") and any(st.get("agy_cooldown", {}).get(w, 0) <= now for w in workers()):
+            return True
+        if p in ("anthropic-api", "openai-api", "gemini-api"):
+            return True
+    return False
+
+
+def load_system_prompt():
+    """Stable orchestrator system prompt: generic team rules (prompts/orchestrator.md), the role catalogue, and the
+    project's own rules (etc/team-rules.md, optional). Passed as a system prompt so Claude Code can cache it."""
+    parts = []
+    for p in (os.path.join(ROOT, "prompts", "orchestrator.md"), os.path.join(ROOT, "etc", "team-rules.md")):
+        try:
+            parts.append(open(p).read().strip())
+        except FileNotFoundError:
+            pass
+    parts.append("## Role catalogue (assign exactly one per task; each worker gets the full playbook)\n" + role_catalogue())
+    return "\n\n".join(parts)
+
+
+def _agy(w, prompt, model):
+    """Tool-less Antigravity call (no --dangerously-skip-permissions): the reviewer/planner reads only what is in the prompt,
+    so worker-written content in a diff cannot make it run commands. Runs from an empty working directory."""
+    t0w = time.time()
+    rc, out, err = sh(["docker", "exec", "-w", "/tmp", w, "agy-run", "-p", prompt, "--model", model, "--output-format", "stream-json",
+                       "--print-timeout", "15m"], timeout=1100)
+    res = {}
+    for line in out.splitlines():
+        e = extract_json(line) if line.startswith("{") else None
+        if e and e.get("event") == "result":
+            res = e.get("result") or {}
+    text = res.get("response") or ""
+    log_llm(KIND.get("k", "?"), f"agy:{model}@{w}", rc, time.time() - t0w, None, res.get("usage"), text[:300] or err[:300])
+    ok = res.get("status") == "SUCCESS" and bool(text.strip())
+    return ok, text, parse_limit(text + "\n" + out[-2000:] + "\n" + err[-2000:]) if not ok else None, (text or err)[:160]
+
+
+KIND = {}
+LAST_LLM = {}
+
+
+def _via_agy(kind, prompt, family):
+    model = (C["AGY_REVIEW_MODEL"] if kind == "review" else C["AGY_PLAN_MODEL"]) if family == "claude" else C["AGY_FALLBACK_MODEL"]
+    st, now = gstate(), time.time()
     cd = st.get("agy_cooldown", {})
-    if any(not worker_busy(w) and w not in RESERVED and cd.get(w, 0) <= now for w in workers()):
-        return True
-    # If Claude is unavailable on all idle workers, fallback to Gemini on an idle worker
-    return any(not worker_busy(w) and w not in RESERVED for w in workers())
+    cand = [w for w in workers() if cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
+    cand = order_by_quota(cand, lambda w: quota_pct(quota_rows(w), family), LAST_LLM)
+    for w in cand:
+        idle = not worker_busy(w)
+        if idle:
+            RESERVED.add(w)
+        LAST_LLM[w] = time.time()
+        try:
+            ok, text, reset_ts, why = _agy(w, prompt, model)
+        finally:
+            RESERVED.discard(w)
+        if ok:
+            return text
+        st = gstate(); c2 = st.setdefault("agy_cooldown", {})
+        c2[w] = reset_ts if reset_ts else time.time() + 90
+        gsave(st)
+        event(f"{w}: {family} via Antigravity " + (f"out of quota until {fmt_ts(reset_ts)}" if reset_ts else f"failed ({why})") +
+              " - trying the next worker")
+    return None
+
+
+def _via_claude_cli(prompt, system):
+    st, t0 = gstate(), time.time()
+    if st.get("claude_until", 0) > t0:
+        return None
+    args = ["claude", "-p", "--model", C["CLAUDE_MODEL"], "--setting-sources", "", "--no-session-persistence", "--output-format", "json",
+            "--permission-mode", "dontAsk", "--tools", "", "--append-system-prompt", system]
+    rc, out, err = sh(args, timeout=1200, cwd=REPO, inp=prompt)
+    res = extract_json(out) or {}
+    text = res.get("result") or ""
+    log_llm(KIND.get("k", "?"), "claude", rc, time.time() - t0, res.get("total_cost_usd"), res.get("usage"), text[:300] or err[:300])
+    if rc == 0 and not res.get("is_error") and text:
+        if st.get("claude_until"):
+            st.pop("claude_until", None); gsave(st)
+            event("orchestrator Claude Code is available again")
+        return text
+    until = parse_limit(text + "\n" + out[-2000:] + "\n" + err[-2000:])
+    if until:
+        st["claude_until"] = until; gsave(st)
+        event(f"orchestrator Claude Code is out of usage until {fmt_ts(until)} - next provider substitutes")
+    else:
+        event(f"orchestrator Claude Code call failed (rc {rc}): {(text or err)[:200]} - next provider substitutes")
+    return None
+
+
+def _via_paid_api(name, prompt, system):
+    import providers
+    try:
+        if name == "anthropic-api" and C["ANTHROPIC_MODEL"]:
+            r = providers.call_anthropic_api(prompt, model=C["ANTHROPIC_MODEL"], system=system)
+        elif name == "openai-api" and C["OPENAI_MODEL"]:
+            r = providers.call_openai_api(prompt, model=C["OPENAI_MODEL"], api_base=C["OPENAI_API_BASE"], system=system)
+        elif name == "gemini-api" and C["GEMINI_MODEL"]:
+            r = providers.call_gemini_api(prompt, model=C["GEMINI_MODEL"], system=system)
+        else:
+            return None
+    except ValueError:          # no key configured
+        return None
+    log_llm(KIND.get("k", "?"), f"{name}:{r.get('model')}", 1 if r["is_error"] else 0, r["duration_s"], None, r.get("usage"), r["text"][:300])
+    return r["text"] if not r["is_error"] and r["text"].strip() else None
 
 
 def llm(kind, prompt):
-    """Multi-provider LLM caller supporting Claude (Anthropic), ChatGPT (OpenAI), and Gemini (Google).
-    Calls configured primary provider, automatically cascading to fallbacks if quota exhausted."""
-    st = gstate()
-    t0 = time.time()
-    prov = C.get("ORCHESTRATOR_PROVIDER", "auto").lower()
-
-    # 1. Claude via CLI if configured or auto
-    if prov in ("auto", "claude") and st.get("claude_until", 0) <= t0:
-        res = providers.call_claude_cli(prompt, model=C.get("CLAUDE_MODEL", "sonnet"), cwd=REPO)
-        log_llm(kind, "claude-cli", res["exit_code"], res["duration_s"], res.get("cost_usd"), res.get("usage"), res["text"][:300])
-        combined = res["text"] + "\n" + str(res.get("raw_stdout", ""))[-2000:] + "\n" + str(res.get("raw_stderr", ""))[-2000:]
-        until = parse_limit(combined) if res["is_error"] else None
-        if not res["is_error"] and res["text"]:
-            if st.get("claude_until"):
-                st.pop("claude_until", None); gsave(st)
-                event("orchestrator Claude Code is available again")
-            return res["text"], "claude"
-        if until:
-            st["claude_until"] = until; gsave(st)
-            event(f"orchestrator Claude Code is out of usage until {fmt_ts(until)} - trying fallbacks")
+    """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
+    tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code)."""
+    KIND["k"] = kind
+    system = load_system_prompt()
+    for p in providers_for(kind):
+        if p == "claude-cli":
+            text = _via_claude_cli(prompt, system)
+        elif p == "agy-claude":
+            text = _via_agy(kind, system + "\n\n" + prompt, "claude")
+        elif p == "agy-gemini":
+            text = _via_agy(kind, system + "\n\n" + prompt, "gemini")
         else:
-            event("orchestrator Claude Code call failed - trying fallbacks")
-
-    # 2. OpenAI / ChatGPT if configured or key available
-    if prov in ("openai", "chatgpt") or (prov == "auto" and (os.environ.get("OPENAI_API_KEY") or os.path.isfile(os.path.expanduser("~/.config/sandbox/secrets/openai.key")))):
-        try:
-            m = C.get("OPENAI_MODEL", "gpt-4o")
-            res = providers.call_openai_api(prompt, model=m, api_base=C.get("OPENAI_API_BASE", "https://api.openai.com/v1"))
-            log_llm(kind, f"openai:{m}", 0 if not res["is_error"] else 1, res["duration_s"], None, res.get("usage"), res["text"][:300])
-            if not res["is_error"] and res["text"].strip():
-                return res["text"], "openai"
-        except Exception as e:
-            event(f"OpenAI call failed ({e}) - trying other providers")
-
-    # 3. Anthropic API if key available directly
-    if prov == "claude" or (prov == "auto" and (os.environ.get("ANTHROPIC_API_KEY") or os.path.isfile(os.path.expanduser("~/.config/sandbox/secrets/anthropic.key")))):
-        try:
-            m = C.get("ANTHROPIC_MODEL", "claude-3-7-sonnet-20250219")
-            res = providers.call_anthropic_api(prompt, model=m)
-            log_llm(kind, f"anthropic:{m}", 0 if not res["is_error"] else 1, res["duration_s"], None, res.get("usage"), res["text"][:300])
-            if not res["is_error"] and res["text"].strip():
-                return res["text"], "anthropic-api"
-        except Exception as e:
-            event(f"Anthropic API call failed ({e}) - trying other providers")
-
-    # 4. Idle worker Antigravity substitute (Claude / GPT models)
-    agy_cd = st.get("agy_cooldown", {})
-    free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and agy_cd.get(w, 0) <= t0]
-    free.sort(key=lambda w: (LAST_LLM.get(w, 0), -int(w.split('-')[1]) if '-' in w and w.split('-')[1].isdigit() else 0))
-    model = C["AGY_PLAN_MODEL"] if kind in ("plan", "check", "roadmap", "next") else C["AGY_REVIEW_MODEL"]
-    for w in free:
-        RESERVED.add(w)
-        LAST_LLM[w] = time.time()
-        try:
-            res = providers.call_agy_container(w, prompt, model=model)
-        finally:
-            RESERVED.discard(w)
-        log_llm(kind, res["provider"], res["exit_code"], res["duration_s"], None, res.get("usage"), res["text"][:300])
-        if not res["is_error"] and res["text"].strip():
-            return res["text"], "antigravity-worker"
-        combined = res["text"] + "\n" + str(res.get("raw_stdout", ""))[-2000:] + "\n" + str(res.get("raw_stderr", ""))[-2000:]
-        reset_ts = parse_limit(combined)
-        if reset_ts:
-            st = gstate(); st.setdefault("agy_cooldown", {})[w] = reset_ts; gsave(st)
-
-    # 5. Fallback to Gemini Pro
-    gemini_model = C.get("AGY_FALLBACK_MODEL", "gemini-3.1-pro-high")
-    gemini_free = [w for w in workers() if not worker_busy(w) and w not in RESERVED]
-    gemini_free.sort(key=lambda w: (LAST_LLM.get(w, 0), -int(w.split("-")[1]) if "-" in w and w.split("-")[1].isdigit() else 0))
-    for w in gemini_free:
-        RESERVED.add(w)
-        LAST_LLM[w] = time.time()
-        try:
-            res = providers.call_agy_container(w, prompt, model=gemini_model)
-        finally:
-            RESERVED.discard(w)
-        log_llm(kind, res["provider"], res["exit_code"], res["duration_s"], None, res.get("usage"), res["text"][:300])
-        if not res["is_error"] and res["text"].strip():
-            return res["text"], "antigravity-gemini"
-
-    raise Unavailable("All configured LLM providers (Claude, OpenAI, Gemini) exhausted or unavailable")
+            text = _via_paid_api(p, prompt, system)
+        if text:
+            return text, p
+    raise Unavailable(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})")
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
@@ -384,97 +466,143 @@ def fmt_ts(ts):
     return dt.datetime.fromtimestamp(ts, zoneinfo.ZoneInfo(C["LOCAL_TZ"])).strftime("%d.%m. %H:%M") if ts else "-"
 
 
-# ---------------------------------------------------------------- prompts
-TEAM_RULES = """Team rules you enforce (the owner set them):
-- You are the manager. You never write application code; workers (Antigravity agents) do, in roles you assign: developer, backend
-  developer, frontend developer, fullstack developer, tester, security developer, security tester - whatever the task needs.
-- Workers iterate by trial and error until the full test suite genuinely passes. Code that special-cases who is calling it (call-stack
-  inspection, test-name checks, caller detection), weakened/deleted assertions, skip/xfail or overridden equality to make tests pass
-  is rejected on sight.
-- Target runtime of app-assistant tools: python:3.13-alpine, standard library only, NO zoneinfo/tzdata (copy the
-  eu_offset_hours/local_now/today_local helpers already used in app-assistant/tools/app_activity.py), pytest tests,
-  SQLite via sqlite3, no network, no update/delete operations unless the goal explicitly asks.
-- Review depth scales with risk: routine changes need spec + tests; money, security, dates/timezones get mutation checks.
-- Tool registration atomicity: test_tools_registration.py verifies that EVERY operation defined in any tools/app_*.py module is simultaneously registered in tools/tools.json and system.md. Any task that adds new tool operations MUST include app-assistant/tools/tools.json and app-assistant/system.md in its files list and register the new operation so tests pass on that branch. Never leave tool registration for a separate subsequent task (the developer branch will fail the test suite gate in isolation and get blocked)."""
+# ---------------------------------------------------------------- roles (roles/*.md playbooks)
+def _roles():
+    d = os.path.join(ROOT, "roles")
+    out = {}
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith(".md"):
+                txt = open(os.path.join(d, f)).read()
+                first = next((l for l in txt.splitlines() if l.startswith("# ")), "# " + f[:-3])
+                out[f[:-3]] = (first[2:].strip(), txt)
+    return out
 
-TASK_SCHEMA = """{"tasks": [{"key": "short-unique-key", "title": "...", "role": "backend developer", "depends_on": ["key of a task in THIS list"],
+
+def role_catalogue():
+    rs = _roles()
+    if not rs:
+        return "(no roles/ directory - use plain role names such as backend developer, tester, security tester)"
+    lines = []
+    for slug, (title, txt) in rs.items():
+        mission = next((l.strip() for l in txt.splitlines() if l.lower().startswith("**mission")), "")
+        lines.append(f"- `{slug}` - {title}" + (f": {mission.split(':', 1)[-1].strip(' *')}" if mission else ""))
+    return "\n".join(lines)
+
+
+def role_playbook(role):
+    """The playbook for a role name as the planner wrote it ('backend developer', 'security-tester', ...)."""
+    rs = _roles()
+    slug = slugify(role)
+    if slug in rs:
+        return rs[slug][1]
+    words = set(slug.split("-"))
+    best = max(rs.items(), key=lambda kv: (len(words & set(kv[0].split("-"))), -len(set(kv[0].split("-")) - words)), default=None)
+    if best and words & set(best[0].split("-")):
+        return best[1][1]
+    return ""
+
+
+# ---------------------------------------------------------------- prompts
+TASK_SCHEMA = """{"tasks": [{"key": "short-unique-key", "title": "...", "role": "<a slug from the role catalogue>", "depends_on": ["key of a task in THIS list"],
   "files": ["exact repo paths the task may create/modify"], "risk": "routine|risky",
-  "spec": "markdown: precisely what to build - interfaces, data shapes, edge cases, which existing code to follow",
+  "spec": "markdown: precisely what to build/write - interfaces, data shapes, edge cases, which existing file to follow",
   "acceptance": ["verifiable criterion", "..."]}],
- "notes": "one or two sentences for the owner (Slovak)"}"""
+ "notes": "one or two sentences for the owner"}"""
+
+PLAN_EXAMPLE = """Example of a GOOD plan for 4 workers and the goal "add a contacts module with birthdays":
+- contacts-store (backend-developer): contacts.py + test_contacts.py - storage, add/list operations, interface written in the spec
+- birthdays-ops (backend-developer): birthdays.py + test_birthdays.py - built against the contacts interface from the spec, NOT waiting for it
+- contacts-docs (technical-writer): docs/contacts.md - user-facing how-to, from the same interface spec
+- contacts-security (security-tester, depends_on contacts-store) - only because it stores personal data (risky)
+Three tasks start at once; one waits for a real reason. A BAD plan chains store -> ops -> tests -> review -> docs."""
 
 
 def context_bundle():
-    vision = open(os.path.join(ROOT, "docs", "app-vision.md")).read()[:30000] if os.path.exists(os.path.join(ROOT, "docs", "app-vision.md")) else "(none)"
+    vf = os.path.join(ROOT, C["VISION_FILE"])
+    vision = open(vf).read()[:30000] if os.path.exists(vf) else "(none)"
     hist = "\n".join(f"- {t['id']} [{t['status']}] {t['title']} ({t['role']})" for t in tasks()[-40:]) or "(none yet)"
+    active = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals() if g["status"] in ("new", "active")) or "(none)"
     tree = repo_tree()
+    pd = C["PROJECT_DIR"].strip("/")
     mods = ""
     for p in tree.splitlines():
-        if p.startswith("app-assistant/") and p.endswith(".py") and "/test_" not in p and "conftest" not in p:
+        if (not pd or p.startswith(pd + "/")) and p.endswith(".py") and "/test_" not in p and not p.split("/")[-1].startswith("test_") \
+                and "conftest" not in p:
             src = read_repo(p, 200000).splitlines()
-            mods += f"\n### {p} ({len(src)} lines; first 80)\n```python\n" + "\n".join(src[:80]) + "\n```\n"
-    return (f"## Owner's product vision (docs/app-vision.md)\n{vision}\n\n## app-assistant/AGENTS.md (every worker reads it)\n"
-            f"{read_repo('app-assistant/AGENTS.md', 8000)}\n\n## Repository files on main\n{tree}\n\n## Existing modules (heads)\n{mods}\n"
+            mods += f"\n### {p} ({len(src)} lines; first 60)\n```python\n" + "\n".join(src[:60]) + "\n```\n"
+            if len(mods) > 60000:
+                break
+    agents = read_repo((pd + "/AGENTS.md") if pd else "AGENTS.md", 8000) or "(none)"
+    return (f"## Owner's vision ({C['VISION_FILE']})\n{vision}\n\n## AGENTS.md (every worker reads it)\n{agents}\n\n"
+            f"## Repository files on main\n{tree}\n\n## Existing modules (heads)\n{mods}\n## Goals in progress (do not duplicate them)\n{active}\n\n"
             f"## Tasks so far\n{hist}\n")
 
 
 def plan_prompt(g, followup=None):
     w_list = workers() or ["worker-1", "worker-2", "worker-3", "worker-4"]
-    w_count = len(w_list)
-    w_names = ", ".join(w_list)
-    head = (f"You are the engineering manager of a {w_count}-worker team ({w_names}) building the owner's personal assistant app "
-            f"in the git repo whose clone is your working directory (code under app-assistant/).\n\n{TEAM_RULES}\n\n{context_bundle()}\n")
+    n = len(w_list)
+    head = f"You are the manager of a {n}-worker team ({', '.join(w_list)}) working in the git repository described below.\n\n{context_bundle()}\n"
     if followup is None:
-        ask = (f"## Goal from the owner\n{g['text']}\n\nBreak this goal into tasks for the workers. Keep tasks small (one worker, under ~30 "
-               f"minutes, one branch). MAXIMISE {w_count}-WAY PARALLELISM: all {w_count} workers should be busy at once! "
-               f"Split the goal into tasks that own DISJOINT files (e.g. separate modules per sub-feature, separate operations, independent test files), "
-               f"and write the interface a dependent task relies on (function names, data shapes, table schema) "
-               f"into BOTH specs so they can be built at the same time; use depends_on ONLY when a task truly and strictly needs another task's "
-               f"merged code. Do NOT create unnecessary sequential dependencies! Structure work so multiple workers can start simultaneously. "
-               f"Add tester / security tester tasks where they add real value. 2-6 tasks. "
-               f"Name the existing module a task should follow so the worker reads it itself; keep specs precise but short.\n")
+        ask = (f"## Goal from the owner\n{g['text']}\n\nBreak this goal into tasks.\n"
+               f"- PARALLEL FIRST: aim for at least {n} tasks that can start right now. Each task owns DISJOINT files; write the interface "
+               f"other tasks rely on (function names, data shapes, schemas) into every spec that needs it, so they are built at the same time "
+               f"instead of waiting. depends_on only when a task cannot even start without another task's merged code.\n"
+               f"- No routine review tasks: every branch is already gated (full test suite in a clean container) and reviewed. Add a tester / "
+               f"security-tester task only for risky work (money, personal data, security, dates/timezones) or when the goal asks.\n"
+               f"- Size every task for about {C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger.\n"
+               f"- Pick each task's role from the role catalogue; non-code roles (writer, designer, translator, analyst) are welcome when the "
+               f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n\n{PLAN_EXAMPLE}\n")
     else:
         ask = (f"## Goal from the owner\n{g['text']}\n\n## Results of this goal's tasks\n{followup}\n\nDecide whether the goal is achieved. "
-               f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences in Slovak for the owner\"}}. If not, reply with follow-up tasks "
-               f"in the schema below (only what is genuinely missing).\n")
+               f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences for the owner\"}}. If not, reply with follow-up tasks "
+               f"in the schema below (only what is genuinely missing, parallel where possible).\n")
     return head + ask + f"\nReply with ONLY one JSON object, no prose, in this schema:\n{TASK_SCHEMA}\n"
 
 
 def review_prompt(t, gate_out, diff):
-    return (f"You are the reviewing manager of a dev team. Decide whether this worker branch fulfils its task. You do not write code.\n"
-            f"You have NO file or tool access for this review and must not call run_command, view_file, grep_search or any other tool - "
-            f"everything you need is already given below. Do not explore or ask to see more; if something seems missing, judge from what "
-            f"you have. Your entire reply is a single JSON object and nothing else: no preamble, no analysis prose outside it.\n\n"
-            f"{TEAM_RULES}\n\n## Task {t['id']}: {t['title']}\nRole of the worker: {t['role']}   Risk: {t.get('risk', 'routine')}   "
-            f"Attempt: {t['attempts'] + 1}\nAllowed files: {', '.join(t.get('files', [])) or '(not restricted)'}\n\n### Spec\n{t['spec']}\n\n"
-            f"### Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) +
-            f"\n\n## Deterministic gate (full test suite in a clean, offline container + static scans)\n```\n{gate_out[-6000:]}\n```\n\n"
+    pb = role_playbook(t["role"])
+    dod = ""
+    if pb and "## Definition of done" in pb:
+        dod = "\n## The role's definition of done\n" + pb.split("## Definition of done", 1)[1].split("\n## ", 1)[0].strip() + "\n"
+    return (f"You are the reviewing manager. Decide whether this worker branch fulfils its task. You do not write code.\n"
+            f"You have NO file or tool access and must not call any tool - everything you need is below. Do not explore; judge from what "
+            f"you have. Your entire reply is one JSON object and nothing else.\n\n"
+            f"## Task {t['id']}: {t['title']}\nRole: {t['role']}   Risk: {t.get('risk', 'routine')}   Attempt: {t['attempts'] + 1}\n"
+            f"Allowed files: {', '.join(t.get('files', [])) or '(not restricted)'}\n\n### Spec\n{t['spec']}\n\n### Acceptance criteria\n" +
+            "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n{dod}"
+            f"\n## Deterministic gate (full test suite in a clean, offline container + static scans)\n```\n{gate_out[-6000:]}\n```\n\n"
             f"## Diff against main\n```diff\n{diff}\n```\n\n"
-            "Approve when the acceptance criteria are met and nothing is faked; do not demand gold-plating. An EMPTY diff with the gate "
-            "otherwise passing means this branch's work already reached main through an earlier merge (a crash-recovery re-check, not a "
-            "worker mistake) - reply {\"verdict\": \"approve\", \"feedback\": \"no diff: already merged\"} in that case, never \"reject\". "
-            "For risk=risky you may list up to 4 mutations (small exact text replacements in the NEW code that a good test suite must "
-            "catch); the foreman runs them and sends the task back if any survives. For a tester/security-tester role judge what they "
-            "found or covered, not code style.\n"
-            'Reply with ONLY one JSON object: {"verdict": "approve" | "rework" | "reject", "feedback": "concrete, actionable instructions for '
-            'the worker in English (for rework) or a one-line summary (for approve)", "mutations": [{"name": "...", "file": "repo/path.py", '
-            '"old": "exact existing text", "new": "replacement"}]}\nUse "reject" only when the task itself is wrong/impossible.\n')
+            "Approve when the acceptance criteria are met and nothing is faked; do not demand gold-plating. An EMPTY diff with a passing gate "
+            "means the work already reached main earlier - approve with feedback \"no diff: already merged\", never reject. For risk=risky you "
+            "may list up to 4 mutations (small exact text replacements in the NEW code that a good test suite must catch). Judge a tester / "
+            "security tester by what they found or covered, a writer/designer by the deliverable's quality for its audience.\n"
+            'Reply with ONLY: {"verdict": "approve" | "rework" | "reject", "feedback": "concrete, actionable instructions for the worker '
+            '(rework) or a one-line summary (approve)", "mutations": [{"name": "...", "file": "repo/path", "old": "exact existing text", '
+            '"new": "replacement"}]}\nUse "reject" only when the task itself is wrong/impossible.\n')
 
 
 def worker_spec(t):
+    pd = C["PROJECT_DIR"].strip("/")
+    agents = f"`{pd}/AGENTS.md`" if pd else "`AGENTS.md`"
+    pb = role_playbook(t["role"])
     s = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `~/playground`   Goal: {t['goal']}\n",
-         f"**Your role for this task: {t['role']}.** Act as that role would, and still do whatever it takes to finish the task.\n",
-         t["spec"].rstrip() + "\n", "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
+         f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n"),
+         "## The task\n" + t["spec"].rstrip() + "\n", "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
          "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
          "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n",
          f"""## How you work (always)
-- Work only inside `~/playground`. Follow `app-assistant/AGENTS.md`. Standard library only, no `pip install`, no network, do not touch git config.
+- Work only inside `~/playground`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
+  the whole team), do not touch git config.
 - Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout {t['branch']}` and continue from it (it holds earlier
   attempts - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.
+- Budget: about {C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. So COMMIT AND PUSH AFTER EVERY GREEN STEP
+  (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`) - work that is only staged or only local is lost when the
+  run is killed. Do not re-read large files you already read.
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Trial and error until the FULL suite passes: run `python3 -m pytest -q` from the repo root, read failures, fix, repeat.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
-- Commit with English messages and `git push -u origin {t['branch']}` (push early, push again after fixes). Never push `main`, never open a PR.
+- Never push `main`, never open a PR.
 - Final reply: what you did, the final pytest summary line, and anything you could not do and why.
 """]
     if t.get("feedback"):
@@ -526,16 +654,14 @@ def step_next():
     """Autopilot: a worker would idle and the backlog is empty -> the orchestrator proposes the next goal from the owner's vision."""
     refresh_repo()
     gl = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals()) or "(none)"
-    w_list = workers() or ["worker-1", "worker-2", "worker-3", "worker-4"]
-    w_count = len(w_list)
-    w_names = ", ".join(w_list)
-    prompt = (f"You are the engineering manager of a {w_count}-worker team ({w_names}) building the owner's personal assistant app (app-assistant/).\n\n"
-              f"{TEAM_RULES}\n\n{context_bundle()}\n## Goals so far (done, active, cancelled)\n{gl}\n\n"
+    w_count = len(workers()) or 4
+    prompt = (f"You are the manager of a {w_count}-worker team working in the git repository described below.\n\n"
+              f"{context_bundle()}\n## Goals so far (done, active, cancelled)\n{gl}\n\n"
               f"Workers are idle. Propose the single most valuable NEXT goal from the owner's vision that is not done or in progress yet, "
               f"formulated so it can be split into 2-5 parallel tasks across {w_count} workers, "
-              "buildable offline with the standard library (skip anything needing external APIs, "
+              "buildable offline inside the sandbox (skip anything needing external APIs, "
               "real personal data or decisions only the owner can make). Reply with ONLY one JSON object: "
-              '{"goal": "the goal in Slovak, concrete, as the owner would write it", "why": "one sentence"} '
+              f'{{"goal": "the goal in {C["OWNER_LANG"]}, concrete, as the owner would write it", "why": "one sentence"}} '
               'or {"goal": null, "why": "..."} if nothing sensible is left.\n')
     text, who = llm("next", prompt)
     d = extract_json(text) or {}
@@ -558,15 +684,15 @@ def step_roadmap(text):
     refresh_repo()
     gl = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals()) or "(none)"
     bl = "\n".join(f"- {x[:200]}" for x in jload(os.path.join(FD, "backlog.json"), [])) or "(empty)"
-    prompt = (f"You are the engineering manager of a team of {max(2, len(workers()))} workers building the owner's personal assistant app "
-              f"(app-assistant/).\n\n{TEAM_RULES}\n\n{context_bundle()}\n## Goals so far\n{gl}\n\n## Backlog already queued\n{bl}\n\n"
+    prompt = (f"You are the manager of a team of {max(2, len(workers()))} workers working in the git repository described below.\n\n"
+              f"{context_bundle()}\n## Goals so far\n{gl}\n\n## Backlog already queued\n{bl}\n\n"
               f"## The owner's request\n{text}\n\nTurn this into a ROADMAP: an ordered list of 6-30 goals that together deliver the request, "
               "skipping what is already done, in progress or queued. Each goal: small (about 2-5 worker tasks), self-contained, buildable "
-              "offline with the standard library, written in Slovak the way the owner would write it, mentioning which module(s) it owns so "
+              f"offline inside the sandbox, written in {C['OWNER_LANG']} the way the owner would write it, mentioning which module(s) it owns so "
               "goals running at the same time touch different files. Order: foundations first, then features, then hardening (tester / "
               "security tester goals) and integration. Leave out anything needing external APIs, real personal data or a decision only "
               'the owner can make - list those under "owner_questions" instead.\nReply with ONLY one JSON object: '
-              '{"goals": ["...", "..."], "owner_questions": ["..."], "notes": "1-2 sentences in Slovak"}\n')
+              f'{{"goals": ["...", "..."], "owner_questions": ["..."], "notes": "1-2 sentences in {C["OWNER_LANG"]}"}}\n')
     out, who = llm("roadmap", prompt)
     d = extract_json(out) or {}
 
@@ -592,7 +718,7 @@ def already_merged_pr(branch):
     """The number of an already-merged PR for `branch`, or None - used for crash recovery: a merge can succeed and
     then the process dies before the task file is marked done (next tick would otherwise re-run the whole
     gate+review on a now-empty diff and get confused by it)."""
-    rc, out, err = sh([os.path.join(BIN, "forgejo-api"), "GET", "/repos/sandbox/playground/pulls?state=closed&limit=50"], timeout=30)
+    rc, out, err = sh([os.path.join(BIN, "forgejo-api"), "GET", f"/repos/{sbx.FORGE_REPO}/pulls?state=closed&limit=50"], timeout=30)
     if rc != 0:
         return None
     try:
@@ -653,7 +779,7 @@ def step_gate_review_merge(t):
     rc, out, err = sh([os.path.join(BIN, "open-pr"), t["branch"], f"{t['id']}: {t['title']}"[:120], body], timeout=60)
     m = re.search(r"opened PR #(\d+)", out)
     if not m:
-        prs = sh([os.path.join(BIN, "forgejo-api"), "GET", "/repos/sandbox/playground/pulls?state=open&limit=50"], timeout=60)[1]
+        prs = sh([os.path.join(BIN, "forgejo-api"), "GET", f"/repos/{sbx.FORGE_REPO}/pulls?state=open&limit=50"], timeout=60)[1]
         try:
             m2 = [p["number"] for p in json.loads(prs) if p["head"]["ref"] == t["branch"]]
         except Exception:
@@ -745,7 +871,6 @@ def init_worker_dispatch_history():
 
 
 LAST_DISPATCHED = init_worker_dispatch_history()
-LAST_LLM = {}
 POOL = cf.ThreadPoolExecutor(max_workers=6)
 INFLIGHT = {}             # key -> future
 SINCE = {}                # key -> epoch second the step started
@@ -793,16 +918,16 @@ def dispatch_ready():
     free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
     if len([d for d in sbx.run_dirs() if sbx.is_running(d)]) >= lim["MAX_PARALLEL"]:
         return
-    # Balance across workers: pick least recently dispatched worker first (preferring worker-4/worker-3 on ties)
-    free.sort(key=lambda w: (LAST_DISPATCHED.get(w, 0), -int(w.split('-')[1]) if '-' in w and w.split('-')[1].isdigit() else 0))
+    # Each worker is its own account with its own quota: give work to the one with the most remaining worker-model quota, so
+    # all accounts drain evenly (overnight 2026-10-04 "least recently dispatched" still left worker-4 with zero runs).
+    fam = str(lim.get("QUOTA_MODEL_FILTER", "gemini"))
+    by_quota = lambda ws: order_by_quota(ws, lambda w: quota_pct(quota_rows(w, 120), fam), LAST_DISPATCHED)
+    free = by_quota(free)
     for t in ready_tasks(ts, busy_files):
         if not free:
             return
         w = free[0]
-        try:
-            rows = sbx.read_quota(w)
-        except Exception as e:
-            rows = []
+        rows = quota_rows(w, 60)
         ok, msg = sbx.quota_verdict(rows, lim)
         if not ok:
             cd_sec = 180
@@ -833,8 +958,9 @@ def dispatch_ready():
         t.update(status="running", worker=w, run=run, dispatched=sbx.now())
         save_task(t)
         LAST_DISPATCHED[w] = time.time()
+        QUOTA_CACHE.pop(w, None)
         free.remove(w)
-        free.sort(key=lambda w: (LAST_DISPATCHED.get(w, 0), -int(w.split('-')[1]) if '-' in w and w.split('-')[1].isdigit() else 0))
+        free = by_quota(free)
         busy_files |= set(t.get("files", []))
         event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else ""), task=t["id"])
 
@@ -849,7 +975,7 @@ def advance():
             m = sbx.meta(t["run"])
             reason = m.get("reason")
             if reason == "setup-failed":
-                sh(["docker", "exec", "-w", "/home/worker/playground", t["worker"], "git", "stash", "-u"], timeout=60)
+                sh(["docker", "exec", "-w", sbx.WORKER_CLONE, t["worker"], "git", "stash", "-u"], timeout=60)
                 t.update(status="pending"); save_task(t)
                 event(f"task {t['id']}: {t['worker']} clone was not clean - stashed it, task re-queued", task=t["id"]); continue
             if reason == "killswitch":
@@ -895,28 +1021,31 @@ def advance():
 
 
 def feed_idle_workers():
-    """Never let a worker idle: when free workers outnumber startable tasks, start the next backlog goal, else ask the autopilot."""
-    if any(k.startswith(("goal:", "next", "roadmap")) for k in INFLIGHT) or any(g["status"] == "new" for g in goals()):
-        return      # something is being planned already; its tasks will fill the gap
+    """Never let a worker idle. Capacity that is coming anyway = ready tasks + ~2 tasks per goal still being planned; while idle
+    workers outnumber that, start further backlog goals in the SAME tick (planning runs in parallel), else ask the autopilot."""
     ts = tasks()
-    unfinished_gids = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review")}
-    live_goals = [g for g in goals() if g.get("status") in ("new", "active") and (g["id"] in unfinished_gids or g["status"] == "new")]
-    max_active = max(int(C["MAX_ACTIVE_GOALS"]), len(workers()))
-    if len(live_goals) >= max_active:
-        return
     free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
-    running_files = set(f for t in ts if t["status"] == "running" for f in t.get("files", []))
-    ready = ready_tasks(ts, running_files)
-    active_tasks = [t for t in ts if t["status"] in ("running", "pending")]
-    if len(free) <= len(ready) and len(active_tasks) >= len(workers()):
+    if not free:
         return
+    running_files = set(f for t in ts if t["status"] == "running" for f in t.get("files", []))
+    planning = [g for g in goals() if g["status"] == "new"] + [k for k in INFLIGHT if k.startswith("roadmap")]
+    coming = len(ready_tasks(ts, running_files)) + 2 * len(planning)
+    unfinished = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review")}
+    live = [g for g in goals() if g["status"] == "new" or (g["status"] == "active" and g["id"] in unfinished)]
+    cap = max(int(C["MAX_ACTIVE_GOALS"]), 2 * len(workers()))
+    started = []
     bl = jload(os.path.join(FD, "backlog.json"), [])
-    if bl:
+    while bl and len(free) > coming and len(live) + len(started) < cap:
         text = bl.pop(0)
-        jsave(os.path.join(FD, "backlog.json"), bl)
-        gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime())
+        gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + (f"-{len(started)}" if started else "")
         save_goal(dict(id=gid, text=text, status="new", created=sbx.now(), source="backlog"))
-        event(f"{', '.join(free)} idle - started goal {gid} from the backlog: {text[:200]}", goal=gid)
+        started.append(gid)
+        coming += 2
+        event(f"{len(free)} idle worker(s) - started goal {gid} from the backlog: {text[:200]}", goal=gid)
+    if started:
+        jsave(os.path.join(FD, "backlog.json"), bl)
+        return
+    if len(free) <= coming or "next:autopilot" in INFLIGHT:
         return
     st = gstate()
     if C["AUTOPILOT"] and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")) and st.get("autopilot_quiet_until", 0) <= time.time():
@@ -1066,12 +1195,41 @@ def selftest():
           dict(id="0005-e", status="pending", files=["y.py"], not_before=time.time() + 99)]
     check("ready: deps done, not deferred", [t["id"] for t in ready_tasks(ts, set())] == ["0002-b", "0004-d"])
     check("ready: file overlap with a running task waits", [t["id"] for t in ready_tasks(ts, {"z.py"})] == ["0002-b"])
-    ts2 = [dict(id="0006-f", status="pending", files=["a.py", "app-assistant/tools/tools.json"])]
-    check("ready: a shared registry file does not block", [t["id"] for t in ready_tasks(ts2, {"b.py", "app-assistant/tools/tools.json"})] == ["0006-f"])
+    ts2 = [dict(id="0006-f", status="pending", files=["a.py", "tools/registry.json"])]
+    C["SHARED_FILES"] = "tools/registry.json"
+    check("ready: a shared registry file does not block", [t["id"] for t in ready_tasks(ts2, {"b.py", "tools/registry.json"})] == ["0006-f"])
     check("slugify", slugify("Spending Alert: Billing!") == "spending-alert-billing")
     check("numstat: adds and removes summed, binary files ignored",
           parse_numstat("12\t3\ta.py\n0\t7\tb.py\n-\t-\timg.png\n") == (12, 10))
     check("numstat: empty diff", parse_numstat("") == (0, 0))
+    rows = [dict(model="Gemini Models", label="Five Hour Limit Remaining", pct=24.0), dict(model="Gemini Models", label="Weekly Limit Remaining", pct=48.0),
+            dict(model="Claude and GPT models", label="Five Hour Limit Remaining", pct=100.0)]
+    check("quota_pct picks the family and window", quota_pct(rows, "gemini") == 24.0 and quota_pct(rows, "claude") == 100.0 and quota_pct(rows, "x") == -1)
+    dead = [dict(model="Claude and GPT models", label="Weekly Limit Remaining", pct=0.0)]   # 5h row shows "disabled" -> not parsed
+    check("has_quota: exhausted weekly skipped, healthy kept, unknown kept",
+          not has_quota(dead, "claude") and has_quota(rows, "claude") and has_quota([], "claude") and not has_quota(rows[:1] + [dict(model="Gemini Models", label="Weekly Limit Remaining", pct=1.0)], "gemini"))
+    t_now = 1_700_000_000
+    check("parse_limit: agy 'Individual quota reached ... Resets in 110h11m52s'",
+          parse_limit("Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 110h11m52s.", t_now) == t_now + 110 * 3600 + 11 * 60 + 52 + 120)
+    pcts = {"worker-1": 24, "worker-2": 79, "worker-3": 100, "worker-4": 100}
+    check("order_by_quota: most quota first, ties by least recently used",
+          order_by_quota(list(pcts), pcts.get, {"worker-3": 50, "worker-4": 10}) == ["worker-4", "worker-3", "worker-2", "worker-1"])
+    global ROOT
+    old_root, rd = ROOT, tempfile.mkdtemp(prefix="foreman-roles-")
+    os.makedirs(os.path.join(rd, "roles"))
+    open(os.path.join(rd, "roles", "backend-developer.md"), "w").write("# Backend developer\n**Mission:** build it\n## Definition of done\n- tests\n")
+    open(os.path.join(rd, "roles", "security-tester.md"), "w").write("# Security tester\n**Mission:** break it\n")
+    open(os.path.join(rd, "roles", "tester.md"), "w").write("# Tester\n**Mission:** find bugs\n")
+    ROOT = rd
+    try:
+        check("role_playbook: exact slug, free-text name, unknown role",
+              role_playbook("backend-developer").startswith("# Backend") and role_playbook("Security Tester").startswith("# Security")
+              and role_playbook("QA tester").startswith("# Tester")
+              and role_playbook("astronaut") == "")
+        check("role_catalogue lists slug, title and mission", "`backend-developer` - Backend developer: build it" in role_catalogue())
+    finally:
+        ROOT = old_root
+        shutil.rmtree(rd, ignore_errors=True)
     d = tempfile.mkdtemp(prefix="foreman-tasks-")
     os.makedirs(os.path.join(d, "tasks"))
     json.dump([{"name": "m1"}], open(os.path.join(d, "tasks", "0001-a.mutations.json"), "w"))     # a list, not a task dict
@@ -1124,7 +1282,7 @@ def main():
         for i, x in enumerate(bl, 1):
             print(f"{i}. {x}")
         if not bl:
-            print("(backlog empty" + (", autopilot proposes goals from docs/app-vision.md)" if C["AUTOPILOT"] else ")"))
+            print("(backlog empty" + (", autopilot proposes goals from " + C["VISION_FILE"] + ")" if C["AUTOPILOT"] else ")"))
     elif a[:1] == ["autopilot"] and a[1:] in (["on"], ["off"]):
         f = os.path.join(FD, "AUTOPILOT_OFF")
         if a[1] == "off":

@@ -31,6 +31,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       - FORGEJO_USER=worker-${WORKER_N}
+      - FORGE_REPO=${FORGE_REPO:-sandbox/playground}
       - HTTP_PROXY=http://egress-proxy:3128
       - HTTPS_PROXY=http://egress-proxy:3128
       - http_proxy=http://egress-proxy:3128

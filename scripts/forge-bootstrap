@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Usage: scripts/forge-bootstrap        one-time (idempotent) setup of the internal Forgejo for Agent-Forge
+
+Run after `bin/egress-up` (it creates the internal docker network) on the machine that runs Agent-Forge. It:
+  1. starts Forgejo (forgejo/docker-compose.yml) and waits until it answers
+  2. creates the site admin `forge-admin` and the bots `orchestrator` (opens + merges PRs) and `monitor` (read-only)
+  3. creates the organisation + repository from FORGE_REPO (etc/forge.conf, default sandbox/playground) with a first commit
+  4. gives orchestrator write and monitor read access, creates team `workers` (write; bin/worker-add puts each worker in it)
+  5. protects `main`: nobody pushes to it directly, only `orchestrator` may merge a PR
+Passwords and tokens go to the secrets directory (~/.config/sandbox/secrets, mode 0600) - never to stdout or logs.
+Re-running is safe: anything that already exists is kept.
+Environment: FORGE_CONTAINER (default forgejo), FORGE_HTTP_PORT (3000), FORGE_SSH_PORT (2222), COMPOSE_PROJECT (forgejo)."""
+import json, os, re, subprocess, sys, time, urllib.error, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "lib"))
+import sbx
+
+if sys.argv[1:]:
+    print(__doc__); sys.exit(0 if sys.argv[1] in ("-h", "--help") else 2)
+CT = os.environ.get("FORGE_CONTAINER", "forgejo")
+ORG, REPO = sbx.FORGE_REPO.split("/", 1)
+S = sbx.SECRETS
+os.makedirs(S, mode=0o700, exist_ok=True)
+
+
+def say(msg):
+    print(f"  ✔ {msg}", flush=True)
+
+
+def secret(name, value=None):
+    p = os.path.join(S, name)
+    if value is not None:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, value.encode()); os.close(fd)
+    return open(p).read().strip() if os.path.exists(p) else ""
+
+
+def api(method, path, token, body=None, ok=(200, 201, 204), exists=(409, 422)):
+    req = urllib.request.Request(sbx.FORGE_URL + "/api/v1" + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "token " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        if e.code in exists:
+            return e.code, None
+        sys.exit(f"✘ {method} {path}: HTTP {e.code} {e.read().decode()[:300]}")
+
+
+def user(name, scopes, admin=False):
+    """Create a Forgejo user with a random password and an access token (kept in the secrets dir); no-op if the token exists."""
+    if secret(f"{name}.token"):
+        say(f"user {name}: token already in {S}"); return secret(f"{name}.token")
+    users = subprocess.run(["docker", "exec", CT, "forgejo", "admin", "user", "list"], capture_output=True, text=True).stdout
+    if any(l.split()[1:2] == [name] for l in users.splitlines()[1:]):
+        sys.exit(f"✘ user {name} exists but {S}/{name}.token is missing - create a token for it in the web UI and save it there")
+    cmd = ["docker", "exec", CT, "forgejo", "admin", "user", "create", "--username", name, "--email", f"{name}@agent-forge.local",
+           "--random-password", "--must-change-password=false", "--access-token", "--access-token-name", f"{name}-agent-forge",
+           "--access-token-scopes", scopes] + (["--admin"] if admin else [])
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    pw = re.search(r"random password is '([^']+)'", out.stdout)
+    tok = re.search(r"successfully created\.\.\. (\S+)", out.stdout) or re.search(r"\b([0-9a-f]{40})\b", out.stdout)
+    if out.returncode or not tok:
+        sys.exit(f"✘ creating {name} failed: {(out.stderr or out.stdout)[-300:]}")
+    if pw:
+        secret(f"{name}.password", pw.group(1))
+    say(f"user {name} created (password + token in {S})")
+    return secret(f"{name}.token", tok.group(1))
+
+
+print("==> Forgejo container")
+env = dict(os.environ, FORGE_CONTAINER=CT)
+root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+r = subprocess.run(["docker", "compose", "-p", os.environ.get("COMPOSE_PROJECT", "forgejo"), "-f", os.path.join(root, "forgejo", "docker-compose.yml"),
+                    "up", "-d"], env=env, capture_output=True, text=True)
+if r.returncode:
+    sys.exit("✘ docker compose up failed (did you run bin/egress-up first? it creates the workers_internal network):\n" + r.stderr[-500:])
+for _ in range(60):
+    try:
+        if urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=3).status == 200:
+            break
+    except Exception:
+        time.sleep(2)
+else:
+    sys.exit(f"✘ Forgejo does not answer on {sbx.FORGE_URL}")
+say(f"Forgejo answers on {sbx.FORGE_URL}")
+
+print("==> Accounts")
+admin = user("forge-admin", "write:admin,write:organization,write:repository,write:user", admin=True)
+orch = user("orchestrator", "write:repository,read:user,read:organization")
+user("monitor", "read:repository,read:user,read:organization")
+
+print("==> Organisation, repository, access")
+c, _ = api("POST", "/orgs", admin, dict(username=ORG, visibility="private"))
+say(f"organisation {ORG}" + (" (exists)" if c in (409, 422) else ""))
+c, _ = api("POST", f"/orgs/{ORG}/repos", admin, dict(name=REPO, private=True, auto_init=True, default_branch="main",
+                                                       readme="Default", description="Agent-Forge workspace"))
+say(f"repository {ORG}/{REPO}" + (" (exists)" if c in (409, 422) else ""))
+api("PUT", f"/repos/{ORG}/{REPO}/collaborators/orchestrator", admin, dict(permission="write"))
+api("PUT", f"/repos/{ORG}/{REPO}/collaborators/monitor", admin, dict(permission="read"))
+say("orchestrator: write, monitor: read")
+c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
+if not any(t["name"] == "workers" for t in teams or []):
+    api("POST", f"/orgs/{ORG}/teams", admin, dict(name="workers", permission="write", includes_all_repositories=True,
+                                                   units=["repo.code", "repo.pulls"]))
+say("team workers (write; bin/worker-add N adds worker-N)")
+# bin/worker-add looks up the team with the orchestrator token: make the orchestrator a member of the org (read)
+c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
+readers = next((t for t in teams if t["name"] == "bots-read"), None)
+if not readers:
+    _, readers = api("POST", f"/orgs/{ORG}/teams", admin, dict(name="bots-read", permission="read", includes_all_repositories=True,
+                                                              units=["repo.code", "repo.pulls"]))
+for bot in ("orchestrator", "monitor"):
+    api("PUT", f"/teams/{readers['id']}/members/{bot}", admin)
+say("bots are org members (team bots-read)")
+
+print("==> Branch protection on main")
+_, rules = api("GET", f"/repos/{ORG}/{REPO}/branch_protections", admin)
+c = 409 if any((r.get("rule_name") or r.get("branch_name")) == "main" for r in rules or []) else None
+if c is None:
+    c, _ = api("POST", f"/repos/{ORG}/{REPO}/branch_protections", admin,
+               dict(rule_name="main", branch_name="main", enable_push=False, enable_merge_whitelist=True,
+                    merge_whitelist_usernames=["orchestrator"], required_approvals=0))
+say("main: no direct pushes, only orchestrator merges" + (" (rule exists)" if c in (409, 422) else ""))
+print(f"\nDone. Next: bin/worker-add 1   (then log the worker in once: docker exec -it worker-1 agy-run)")

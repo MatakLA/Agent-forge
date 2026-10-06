@@ -1,39 +1,25 @@
-# Egress allowlist for workers (Squid dstdomain; exact hostnames, no wildcards). HTTPS (CONNECT :443) only.
-# Restricts container network egress exclusively to approved AI providers and package registries.
+# Egress allowlist for WORKER containers (squid dstdomain; exact hostnames, no wildcards). HTTPS (CONNECT :443) only.
+# Workers run the Antigravity CLI (agy) and nothing else talks to the internet from inside them. Every entry below was observed
+# in the proxy access log during a discovery run (agy 1.2.11, pip) - add a host only after you saw agy/pip need it.
+# The orchestrator's optional PAID API providers (Anthropic/OpenAI/Gemini API, docs/PROVIDERS.md) run on the host, NOT in a
+# worker, so their hosts do not belong here.
 
-# ==============================================================================
-# Google & Gemini Models (Antigravity CLI / Gemini API)
-# ==============================================================================
-# Model and agent API (Cloud Code Assist / Gemini endpoints)
+# --- Antigravity CLI (agy) ---
+# Model / agent API (Cloud Code Assist backend); all prompts, tool results and responses go here.
 daily-cloudcode-pa.googleapis.com
-generativelanguage.googleapis.com
-# Feature-flag service queried by agy at startup
+# Feature-flag service queried by agy at startup.
 antigravity-unleash.goog
-# Google API session endpoint
+# Google API endpoint used for the signed-in session (userinfo/session calls).
 www.googleapis.com
-# OAuth token refresh endpoint
+# OAuth token refresh: the access token lives ~1 hour; without this host every worker stops ~1 hour after login.
 oauth2.googleapis.com
-# Profile validation endpoint required by agy
+# Account profile picture: agy's startup eligibility check fails hard ("failed to get profile picture") without it.
 lh3.googleusercontent.com
 
-# ==============================================================================
-# Anthropic & Claude Models (Claude Code / Anthropic API)
-# ==============================================================================
-api.anthropic.com
-statsig.anthropic.com
-
-# ==============================================================================
-# OpenAI & ChatGPT Models (OpenAI API)
-# ==============================================================================
-api.openai.com
-auth.openai.com
-
-# ==============================================================================
-# Package Registries (for running dependency tests)
-# ==============================================================================
+# --- Package registries (pip) ---
 pypi.org
 files.pythonhosted.org
-registry.npmjs.org
 
-# Internal forge (Forgejo) is attached to the internal docker network and reached directly,
-# not through this proxy.
+# Deliberately NOT allowed although agy contacts it: play.googleapis.com (telemetry / crash logs; agy works without it) -
+# listed in etc/egress-baseline.txt so its denials do not raise alarms.
+# The internal forge (Forgejo) is on the internal docker network and reached directly, not through this proxy.

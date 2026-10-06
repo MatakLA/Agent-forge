@@ -1,11 +1,14 @@
 #!/bin/bash
 # Usage: bin/worker-add N   -- one command for a new worker: Forgejo bot user + scoped token, team membership,
-# keyring password, HOME volume, container (own clone of sandbox/playground made by the entrypoint). Idempotent.
+# keyring password, HOME volume, container (own clone of FORGE_REPO made by the entrypoint). Idempotent.
 set -euo pipefail
 N="${1:?usage: worker-add N}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
-U="worker-$N"; S="$HOME/.config/sandbox/secrets"; API=http://127.0.0.1:3000/api/v1
+U="worker-$N"; S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
+read -r FORGE_URL FORGE_ORG < <(python3 -c "import sys; sys.path.insert(0, '$(dirname "$0")/lib'); import sbx; print(sbx.FORGE_URL, sbx.FORGE_ORG)")
+API="$FORGE_URL/api/v1"
 umask 077; mkdir -p "$S"
-OT=$(cat "$S/orchestrator.token")
+# adding a team member needs org-admin rights: the forge-admin token from scripts/forge-bootstrap, else the orchestrator token
+OT=$(cat "$S/forge-admin.token" 2>/dev/null || cat "$S/orchestrator.token")
 
 if docker exec forgejo forgejo admin user list | awk 'NR>1{print $2}' | grep -qx "$U"; then
   echo "forgejo user $U exists"
@@ -21,7 +24,7 @@ fi
 [ -s "$S/$U-keyring" ] || { openssl rand -base64 24 | tr -d '\n' > "$S/$U-keyring"; echo "created keyring password file"; }
 chmod 600 "$S"/"$U"*
 
-TEAM=$(curl -fsS -H "Authorization: token $OT" "$API/orgs/sandbox/teams" | python3 -c "import json,sys;print(next(t['id'] for t in json.load(sys.stdin) if t['name']=='workers'))")
+TEAM=$(curl -fsS -H "Authorization: token $OT" "$API/orgs/$FORGE_ORG/teams" | python3 -c "import json,sys;print(next(t['id'] for t in json.load(sys.stdin) if t['name']=='workers'))")
 curl -fsS -o /dev/null -X PUT -H "Authorization: token $OT" "$API/teams/$TEAM/members/$U"
 echo "$U is a member of team workers (id $TEAM)"
 

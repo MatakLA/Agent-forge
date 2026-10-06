@@ -46,7 +46,7 @@ if guard_mode.get("mode") and not guard_mode.get("expected"):
 # --- forgejo, VM
 fj = sh("docker", "inspect", "-f", "{{.State.Status}}", "forgejo").stdout.strip() or "missing"
 try:
-    fj_http = urllib.request.urlopen("http://127.0.0.1:3000/api/healthz", timeout=5).status
+    fj_http = urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=5).status
 except Exception as e:
     fj_http = getattr(e, "code", None) or "unreachable"
 if fj != "running" or fj_http != 200:

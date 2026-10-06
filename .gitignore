@@ -6,7 +6,6 @@ secrets/
 .secrets/
 .env
 .env.*
-!.env.example
 
 # Temporary and runtime states
 runs/
@@ -35,3 +34,9 @@ data/
 .vscode/
 *.swp
 *~
+
+# Local configuration (copy from the *.example files)
+etc/foreman.conf
+etc/limits.conf
+etc/forge.conf
+etc/team-rules.md

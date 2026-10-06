@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Usage: bin/forgejo-api GET /repos/sandbox/playground/pulls?state=all     (read-only Forgejo API access with the monitoring token)
-Only GET, only paths under /repos/sandbox/playground, /orgs/sandbox or /users/worker-N. Writes have dedicated wrappers (open-pr, merge-pr)."""
+"""Usage: bin/forgejo-api GET /repos/<FORGE_REPO>/pulls?state=all     (read-only Forgejo API access with the monitoring token)
+Only GET, only paths under /repos/<FORGE_REPO>, /orgs/<FORGE_ORG> or /users/worker-N. Writes have dedicated wrappers (open-pr, merge-pr)."""
 import json, os, re, sys, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
 a = sys.argv[1:]
-if len(a) != 2 or a[0].upper() != "GET" or not re.match(r"^/(repos/sandbox/playground|orgs/sandbox|users/worker-\d+)(/|\?|$)", a[1]) or ".." in a[1]:
+if len(a) != 2 or a[0].upper() != "GET" or not re.match(r"^/(repos/" + re.escape(sbx.FORGE_REPO) + r"|orgs/" + re.escape(sbx.FORGE_ORG) + r"|users/worker-\d+)(/|\?|$)", a[1]) or ".." in a[1]:
     print(__doc__, file=sys.stderr); sys.exit(2)
-tok = open(os.path.expanduser("~/.config/sandbox/secrets/monitor.token")).read().strip()
-req = urllib.request.Request("http://127.0.0.1:3000/api/v1" + a[1], headers={"Authorization": "token " + tok})
+tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
+req = urllib.request.Request(sbx.FORGE_URL + "/api/v1" + a[1], headers={"Authorization": "token " + tok})
 try:
     with urllib.request.urlopen(req, timeout=20) as r:
         print(r.read().decode())

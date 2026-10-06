@@ -129,10 +129,10 @@ if not runner:
     # here punishes near-success harder than outright failure. Genuine uncommitted leftovers that actually block
     # `git checkout main` still surface as setup-failed below, which the caller recovers from with `git stash -u`
     # (keeps the work, does not delete it).
-    sh("docker", "exec", "-w", "/home/worker/playground", W, "bash", "-c",
+    sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
        "if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ] || [ -f .git/MERGE_HEAD ]; then "
        "git rebase --abort 2>/dev/null; git merge --abort 2>/dev/null; fi; true")
-    r = sh("docker", "exec", "-w", "/home/worker/playground", W, "bash", "-c",
+    r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
            "git fetch -q origin && git checkout -q main && git pull -q --ff-only")
     open(run + "/setup.log", "w").write(r.stdout + r.stderr)
     if r.returncode != 0:
@@ -141,7 +141,7 @@ if not runner:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_', 'agy-run', '-p', open(run + "/prompt.md").read(),
              '--model', m.get("model") or lim["WORKER_MODEL"],
              '--dangerously-skip-permissions', '--output-format', 'stream-json', '--print-timeout', f"{max(1, int(timeout_s // 60) + 1)}m"]
-    cmd = ["docker", "exec", "-i", "-w", "/home/worker/playground", W] + inner
+    cmd = ["docker", "exec", "-i", "-w", sbx.WORKER_CLONE, W] + inner
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
     cmd = ["docker", "exec", "-i", W] + inner

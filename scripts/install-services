@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Usage: sudo scripts/install-services [--web-port 8171]
+# Installs and starts two systemd services for the Agent-Forge checkout this script lives in, running as the user who called sudo:
+#   agent-forge-foreman.service  bin/foreman run (the loop; restarts on failure)
+#   agent-forge-web.service      web/server.py on 127.0.0.1:<web-port> (the dashboard)
+# Safe to re-run. Remove: sudo systemctl disable --now agent-forge-foreman agent-forge-web; sudo rm /etc/systemd/system/agent-forge-*.service
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 2; }
+USER_NAME="${SUDO_USER:?run with sudo from your normal user}"
+HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PORT=8171; [[ "${1:-}" == "--web-port" ]] && PORT="${2:?}"
+[[ -f "$DIR/etc/limits.conf" ]] || { echo "etc/limits.conf missing - copy etc/limits.example.conf first (docs/SETUP.md)" >&2; exit 1; }
+cat > /etc/systemd/system/agent-forge-foreman.service <<UNIT
+[Unit]
+Description=Agent-Forge foreman: plans, dispatches, gates, reviews and merges worker tasks
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$DIR
+Environment=HOME=$HOME_DIR PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 $DIR/bin/foreman run
+Restart=always
+RestartSec=30
+# Worker runs are separate processes under bin/run-supervisor and keep running across a foreman restart.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/agent-forge-web.service <<UNIT
+[Unit]
+Description=Agent-Forge web dashboard (127.0.0.1:$PORT)
+After=network-online.target
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$DIR
+Environment=HOME=$HOME_DIR BIND_PORT=$PORT FORGE_DIR=$DIR
+ExecStart=/usr/bin/python3 $DIR/web/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now agent-forge-foreman.service agent-forge-web.service
+systemctl --no-pager --lines=0 status agent-forge-foreman.service agent-forge-web.service | grep -E "●|Active:"
+echo "Dashboard: http://127.0.0.1:$PORT   (status: bin/foreman status)"
