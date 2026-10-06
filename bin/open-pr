@@ -2,12 +2,14 @@
 """Usage: bin/open-pr <branch> "<title>" <body-file>     open a pull request branch -> main as orchestrator (write token).
 The body file is written by the orchestrator (review summary + attribution line). Refuses when the branch is missing or a PR for it is already open."""
 import json, os, sys, urllib.parse, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
 a = sys.argv[1:]
 if len(a) != 3 or not os.path.isfile(a[2]) or not a[1].strip() or not a[0].startswith(("feat/", "fix/", "chore/", "test/")):
     print(__doc__, file=sys.stderr); sys.exit(2)
 branch, title, body = a[0], a[1], open(a[2]).read()
-tok = open(os.path.expanduser("~/.config/sandbox/secrets/orchestrator.token")).read().strip()
-API = "http://127.0.0.1:3000/api/v1/repos/sandbox/playground"
+tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
+API = f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}"
 def call(method, path, data=None):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(data).encode() if data else None,
                                  headers={"Authorization": "token " + tok, "Content-Type": "application/json"})

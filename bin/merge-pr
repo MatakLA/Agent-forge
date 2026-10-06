@@ -2,11 +2,13 @@
 """Usage: bin/merge-pr <number>     merge an open, mergeable PR (merge commit) as orchestrator - the only account allowed to merge.
 Merging stays a manual decision: in the permission profiles this command is ASK (interactive) / DENY (unattended)."""
 import json, os, sys, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
 a = sys.argv[1:]
 if len(a) != 1 or not a[0].isdigit():
     print(__doc__, file=sys.stderr); sys.exit(2)
-tok = open(os.path.expanduser("~/.config/sandbox/secrets/orchestrator.token")).read().strip()
-API = "http://127.0.0.1:3000/api/v1/repos/sandbox/playground"
+tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
+API = f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}"
 def call(method, path, data=None):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(data).encode() if data else None,
                                  headers={"Authorization": "token " + tok, "Content-Type": "application/json"})

@@ -1,9 +1,0 @@
-[Unit]
-Description=Daily sandbox report at 23:55 UTC
-
-[Timer]
-OnCalendar=*-*-* 23:55:00 UTC
-Persistent=true
-
-[Install]
-WantedBy=timers.target

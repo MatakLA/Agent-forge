@@ -3,9 +3,10 @@
 set -euo pipefail
 N="${1:?usage: worker-up N}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
 D="$(cd "$(dirname "$0")/.." && pwd)/worker"
-S="$HOME/.config/sandbox/secrets"
+S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
 for f in "worker-$N-keyring" "worker-$N.token"; do [ -s "$S/$f" ] || { echo "missing secret $S/$f (run bin/worker-add $N)" >&2; exit 1; }; done
 docker volume inspect "worker_worker-$N-home" >/dev/null 2>&1 || docker volume create "worker_worker-$N-home" >/dev/null
 export WORKER_N="$N"
+export FORGE_REPO="$(python3 -c "import sys; sys.path.insert(0, '$(dirname "$0")/lib'); import sbx; print(sbx.FORGE_REPO)")"
 docker image inspect sandbox-worker:1.2.11 >/dev/null 2>&1 || docker compose -f "$D/docker-compose.yml" build
 docker compose -f "$D/docker-compose.yml" up -d

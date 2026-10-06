@@ -1,190 +1,90 @@
-# Agent-Forge 🔨
+# Agent-Forge
 
-> **Autonomous Multi-Agent Software Development Sandbox**  
-> Orchestrate teams of AI coding workers (Claude, ChatGPT, Gemini) in isolated containers with automated testing gates, pull request reviews, and self-hosted Git forge integration.
+**A self-hosted AI team that works through a queue on its own, inside a sandbox it cannot escape.**
 
----
+You write a goal ("add a contacts module with birthday reminders", "write the user guide", "translate the app to German").
+An orchestrator splits it into small tasks, each with a role (backend developer, tester, security tester, technical writer,
+UX designer, translator, ... 19 playbooks in `roles/`). Worker agents build the tasks in parallel, each in its own locked-down
+container on its own branch. Every branch runs the full test suite in a fresh offline container, gets reviewed, and is merged
+through a pull request on your own Forgejo - or sent back with concrete feedback until it is right.
 
-## ⚡ Highlights
+It is built to run on subscriptions you already pay for: **Claude Code** for the orchestrator and **Google Antigravity** (`agy`)
+for the workers. Paid per-token APIs are optional (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
 
-- **Multi-Provider AI Support:** Seamlessly plan and build with **Claude** (Anthropic), **ChatGPT / GPT-4o** (OpenAI), and **Gemini** (Google). Automatic fallback cascade prevents downtime when rate limits or quotas are reached.
-- **True Engineering Team Lifecycle:** Tasks are planned with explicit roles (`backend developer`, `tester`, `security tester`, `fullstack developer`). Code is pushed to feature branches, verified in clean throwaway test containers, and merged via Pull Requests.
-- **Ironclad Sandboxing:** Workers run as non-root users (`uid 1000`) with `cap_drop: ALL`, `no-new-privileges: true`, resource caps, and **NO** access to `/var/run/docker.sock`.
-- **Strict Egress Whitelisting:** An internal Squid proxy blocks arbitrary internet connections and LAN subnets, restricting network traffic exclusively to approved model APIs and package registries.
-- **Deterministic Orchestration:** A Python-based supervisory loop (`bin/foreman`) manages token budgets, execution timeouts, automatic rework loops, and blocked-task recovery without unmanaged LLM drift.
-- **Zero Heavy Dependencies:** Core orchestrator runs on standard-library Python 3. Docker and Docker Compose handle containerization.
-
----
-
-## 🏗️ Architecture
-
-```mermaid
-flowchart TD
-    User([User / Product Owner]) -->|bin/foreman goal| Foreman[Foreman Orchestrator]
-
-    subgraph Orchestrator_Loop [Orchestration Engine]
-        Foreman -->|Plan Goal| Planner[Goal Planner\nClaude / GPT-4o / Gemini]
-        Planner -->|Dispatch Tasks| Dispatch[bin/dispatch & run-supervisor]
-        GateVerdict[Clean Test Gate] -->|PR Review| Reviewer[Review Engine\nMulti-Model Verdict]
-        Reviewer -->|Auto-Merge PR| Forgejo[(Internal Forgejo Git)]
-    end
-
-    subgraph Sandboxed_Workers [Isolated Worker Containers]
-        Dispatch --> Worker1[Worker 1\nDeveloper]
-        Dispatch --> Worker2[Worker 2\nTester]
-        Dispatch --> WorkerN[Worker N\nSecurity Tester]
-
-        Worker1 -->|Egress Proxy| Proxy[Squid Allowlist Proxy]
-        Worker2 -->|Egress Proxy| Proxy
-        WorkerN -->|Egress Proxy| Proxy
-    end
-
-    subgraph External_APIs [Whitelisted Model Endpoints]
-        Proxy --> Anthropic[Anthropic API / Claude]
-        Proxy --> OpenAI[OpenAI API / ChatGPT]
-        Proxy --> Google[Google API / Gemini]
-    end
-
-    Worker1 -->|git push feat/*| Forgejo
-    Worker2 -->|git push test/*| Forgejo
-    WorkerN -->|git push test/*| Forgejo
-    Forgejo -->|Ephemeral Test Container| GateVerdict
-```
+> Status: alpha. Extracted from a setup that ran a 4-worker team on one owner's project for two weeks (~400 worker runs,
+> ~190 pull requests). Expect rough edges and read [SECURITY.md](SECURITY.md) before you run it.
 
 ---
 
-## 🚀 Quickstart
+## What is different from Vibe Kanban, Conductor, Claude Squad & co.
 
-### 1. Prerequisites
-- Linux host or VM (Ubuntu 22.04+ / Debian 12+)
-- Docker Engine & Docker Compose (v2.20+)
-- Python 3.10+
-- Git
+Most parallel-agent tools run agents on your machine in git worktrees and leave review and merging to you. Agent-Forge
+assumes you are asleep:
 
-### 2. Clone & Setup Configuration
+| | typical parallel-agent UI | Agent-Forge |
+|---|---|---|
+| Isolation | git worktree on your machine, full network | a container per worker, all capabilities dropped, no docker socket, **egress only to an allow-list** through a proxy |
+| What happens next | you decide | the orchestrator plans goals into role-tagged tasks; an optional autopilot picks the next goal from your vision file |
+| Verification | you read the diff | full test suite in a **fresh offline container** + an AI review + optional **mutation tests** before any merge |
+| Failures | you notice | automatic rework with the gate output, review retries that do not blame the worker, crash recovery, kill switch |
+| Capacity | one key or one subscription | several worker accounts; work goes to the account with the most quota left, exhausted accounts are skipped |
+| Team | coding agents | 19 roles incl. technical writer, translator, UX designer, product manager, data analyst |
+
+If you want an interactive cockpit for agents you watch, those tools are great. Agent-Forge is for a queue you leave running.
+
+## How it works
+
+```
+ you ──goal──► bin/foreman (deterministic loop, 20 s tick)
+                 ├ plan ──► orchestrator LLM (Claude Code · Claude or Gemini via Antigravity · optional paid API)
+                 │          → tasks: role · files it owns · spec · acceptance criteria · dependencies
+                 ├ dispatch ──► worker-N container (agy, its own account, its own branch, egress only to the model API)
+                 ├ gate ──► fresh offline container: full test suite + static checks (+ mutation tests for risky code)
+                 ├ review ──► orchestrator LLM: approve / rework (with feedback) / reject
+                 └ merge ──► pull request on the internal Forgejo; only the orchestrator bot may merge to main
+```
+
+No LLM decides *when* anything happens - the loop does. LLMs are called only for judgement (plan, review, "is the goal done?"),
+each time as a fresh, tool-less call, so worker-written content in a diff cannot make the reviewer run anything.
+Details: [ARCHITECTURE.md](ARCHITECTURE.md) · security model: [SECURITY.md](SECURITY.md) · roles: [docs/ROLES.md](docs/ROLES.md).
+
+## Day to day
+
 ```bash
-git clone https://github.com/your-org/agent-forge.git
-cd agent-forge
-
-# Initialize configurations from templates
-cp etc/foreman.example.conf etc/foreman.conf
-cp etc/limits.example.conf etc/limits.conf
-cp .env.example .env
+bin/foreman goal "Add a CSV export to the expenses module, with tests"
+bin/foreman project "Build the app described in docs/vision.md"   # → a roadmap of goals in the backlog
+bin/foreman status            # goals, tasks, workers, recent events
+bin/foreman backlog           # what is queued
+bin/foreman questions         # what the planner needs you to decide
+bin/foreman pause | resume
+bin/foreman retry <task> | cancel <goal>
+bin/killswitch on [--hard]    # stop everything now
 ```
 
-### 3. Configure API Credentials
-You can provide API keys via `.env` or place them in `~/.config/sandbox/secrets/`:
+The web dashboard (`web/server.py`, installed by `scripts/install-services`) shows the team, the task board with each task's
+spec, history and diff size, live worker transcripts, quota per account, and a one-click "Continue" after a soft kill-switch trip.
+
+## Setup
+
+About an hour, most of it waiting for images. Full guide: **[docs/SETUP.md](docs/SETUP.md)**. In short:
+
 ```bash
-# Example: configure Anthropic and OpenAI keys
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-proj-..."
-export GEMINI_API_KEY="AIzaSy..."
+sudo bash scripts/vm-baseline-ubuntu.sh        # Docker + basics, ideally on a dedicated Ubuntu VM; log in again afterwards
+cp etc/limits.example.conf etc/limits.conf && cp etc/foreman.example.conf etc/foreman.conf
+bin/egress-up                                  # the allow-list proxy + the internal network
+scripts/forge-bootstrap                        # Forgejo, bot accounts, repository, branch protection
+bin/worker-add 1 && docker exec -it worker-1 agy-run    # one worker; log it in once with its own Google account
+bin/foreman --selftest && sudo scripts/install-services
+bin/foreman goal "..."
 ```
 
-### 4. Start the Infrastructure
-```bash
-# 1. Start the internal Git server (Forgejo)
-docker compose -f forgejo/docker-compose.yml up -d
+## Read this before you add workers
 
-# 2. Start the egress proxy
-bin/egress-up
+Each worker logs into Antigravity with its own Google account. Google's terms prohibit **bypassing system measures or
+circumventing usage limits**, and Google has banned accounts for it. Running several accounts you pay for, for your own work,
+is your judgement and your risk - Agent-Forge does not encourage pooling accounts to get around limits, and you should not use
+it that way. The same goes for any provider whose CLI you automate: read its terms first.
 
-# 3. Provision worker containers (e.g. 4 workers)
-bin/worker-up 1
-bin/worker-up 2
-bin/worker-up 3
-bin/worker-up 4
+## License
 
-# 4. Verify system baseline and run self-tests
-bin/foreman --selftest
-```
-
-### 5. Launch the Foreman Orchestrator
-```bash
-# Run in foreground for inspection
-bin/foreman run
-
-# Or enable as a systemd service
-sudo cp etc/systemd/sandbox-foreman.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sandbox-foreman.service
-```
-
----
-
-## 🎮 CLI Usage
-
-### Queue a Feature Goal
-```bash
-bin/foreman goal "Add user authentication module with SQLite storage, bcrypt hashing, and comprehensive unit tests"
-```
-
-### Queue a Large Project (Roadmap Generation)
-```bash
-bin/foreman project "Build a full-featured personal budgeting CLI app with currency conversion and transaction reports"
-```
-
-### Monitor Team Status
-```bash
-# Real-time compact view of workers, active goals, and queue
-bin/foreman status
-
-# JSON output for dashboards
-bin/foreman status --json
-```
-
-### Task & Goal Management
-```bash
-# Retry a blocked task (resets attempt counter)
-bin/foreman retry 0142-auth-core
-
-# Cancel a stuck or obsolete goal
-bin/foreman cancel G20261005-010000
-
-# Pause / Resume task dispatch
-bin/foreman pause
-bin/foreman resume
-
-# Toggle vision-based autonomous autopilot
-bin/foreman autopilot on
-bin/foreman autopilot off
-```
-
----
-
-## ⚙️ Multi-Model Configuration (`etc/foreman.conf`)
-
-Configure your preferred LLM provider for planning and reviewing:
-
-```ini
-# Options: auto | claude | openai | gemini
-ORCHESTRATOR_PROVIDER=auto
-
-# Model settings
-CLAUDE_MODEL=sonnet
-ANTHROPIC_MODEL=claude-3-7-sonnet-20250219
-OPENAI_MODEL=gpt-4o
-AGY_PLAN_MODEL=claude-sonnet-4-6
-AGY_FALLBACK_MODEL=gemini-3.1-pro-high
-
-# Concurrency & rework rules
-MAX_ACTIVE_GOALS=4
-MAX_REWORK=3
-MAX_GOAL_ROUNDS=3
-AUTO_MERGE=1
-```
-
----
-
-## 🛡️ Security & Isolation
-
-Agent-Forge is designed to execute untrusted code safely. For complete technical specifications, see [SECURITY.md](SECURITY.md) and [ARCHITECTURE.md](ARCHITECTURE.md):
-- **No Host Privileges:** Containers cannot touch host networks, filesystems, or docker sockets.
-- **Strict Network Whitelist:** Outbound access is blocked by default and whitelisted per hostname.
-- **Clean Container Integration Gates:** Every pull request must pass the test suite in a clean, ephemeral container before code review.
-
----
-
-## 📄 License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Apache 2.0 - see [LICENSE](LICENSE).

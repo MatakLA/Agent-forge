@@ -8,13 +8,15 @@ Read-only review of a worker branch (fetch with the read-only monitoring token, 
   5. --diff prints the full diff
 Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed."""
 import ast, json, os, re, shutil, subprocess, sys, tempfile
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
 a = sys.argv[1:]
 if not a or a[0].startswith("-"):
     print(__doc__); sys.exit(2)
 branch = a[0]
 spec = json.load(open(a[a.index("--mutations") + 1])) if "--mutations" in a else []
 IMAGE = "sandbox-worker:1.2.11"
-tok = open(os.path.expanduser("~/.config/sandbox/secrets/monitor.token")).read().strip()
+tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
 tmp = tempfile.mkdtemp(prefix="review-")
 warn = []
 
@@ -29,7 +31,7 @@ def git(*c):
 
 try:
     repo = os.path.join(tmp, "repo")
-    r = sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", "clone", "-q", "http://127.0.0.1:3000/sandbox/playground.git", repo)
+    r = sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", repo)
     if r.returncode or git("fetch", "-q", "origin", branch).returncode:
         print("could not fetch the branch from Forgejo:", r.stderr.strip()[:200]); sys.exit(2)
     sh("git", "checkout", "-q", "origin/" + branch, cwd=repo)

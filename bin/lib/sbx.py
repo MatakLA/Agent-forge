@@ -7,6 +7,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 TEST_MODE = os.environ.get("SANDBOX_TEST") == "1"
 RUNS = os.environ.get("SANDBOX_RUNS_DIR") if TEST_MODE and os.environ.get("SANDBOX_RUNS_DIR") else os.path.join(ROOT, "runs")
 LIMITS_FILE = os.environ.get("LIMITS_FILE") if TEST_MODE and os.environ.get("LIMITS_FILE") else os.path.join(ROOT, "etc", "limits.conf")
+
+def _kv(path):
+    out = {}
+    try:
+        for line in open(path):
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, v = (x.strip() for x in line.split("=", 1))
+                out[k] = v.strip('"')
+    except FileNotFoundError:
+        pass
+    return out
+
+
+# Where the git forge lives and which repository the team works on (etc/forge.conf or the environment; see docs/SETUP.md).
+_FORGE = _kv(os.path.join(ROOT, "etc", "forge.conf"))
+FORGE_URL = os.environ.get("FORGE_URL") or _FORGE.get("FORGE_URL", "http://127.0.0.1:3000")
+FORGE_REPO = os.environ.get("FORGE_REPO") or _FORGE.get("FORGE_REPO", "sandbox/playground")
+FORGE_ORG = FORGE_REPO.split("/")[0]
+WORKER_CLONE = "/home/worker/playground"
+SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
 DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=1500000, DAILY_TOKEN_BUDGET=3000000,
                 MAX_RUNS_PER_DAY=6, MAX_PARALLEL=2, QUOTA_MODEL_FILTER="Gemini", QUOTA_MIN_5H_PCT=25,
                 QUOTA_MIN_WEEK_PCT=15, CONSEC_FAIL_TRIP=3, POLL_SEC=2, WORKER_MODEL="gemini-3.8-flash-high")

@@ -1,87 +1,94 @@
-# Architecture Specification
+# Architecture
 
-**Agent-Forge** operates as an autonomous, multi-agent software engineering team. It translates high-level user goals into parallel work packages, dispatches tasks across isolated worker containers, enforces safety guards, runs clean-container integration gates, reviews pull requests, and merges approved code into a self-hosted Git forge.
+Agent-Forge is a handful of small, standard-library Python and bash programs around four long-running pieces: the foreman loop,
+worker containers, an egress proxy and an internal Forgejo. All state is plain files.
 
 ```
-                      ┌────────────────────────────┐
-                      │    User / Product Owner    │
-                      └─────────────┬──────────────┘
-                                    │ bin/foreman goal "..."
-                                    ▼
-       ┌────────────────────────────────────────────────────────┐
-       │             Foreman Engine (Orchestrator)              │
-       │                                                        │
-       │   [ Autopilot ] ──► [ Goal Planner ] ──► [ Task Queue ] │
-       │          ▲                                      │      │
-       │          │ (check / follow-up)                  │      │
-       │   [ Review & Merge ] ◄── [ Gate Verdict ] ◄─────┤      │
-       └──────────────────────────────┬─────────────────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-      ┌───────────────┐       ┌───────────────┐       ┌───────────────┐
-      │   Worker 1    │       │   Worker 2    │       │   Worker N    │
-      │  (Developer)  │       │   (Tester)    │       │  (Security)   │
-      └───────┬───────┘       └───────┬───────┘       └───────┬───────┘
-              │                       │                       │
-              └───────────────────────┼───────────────────────┘
-                                      │ Git push feature branch
-                                      ▼
-                      ┌────────────────────────────┐
-                      │   Forgejo Internal Forge   │
-                      │   - Protected main branch  │
-                      │   - Pull Request lifecycle │
-                      └────────────────────────────┘
+                         ┌──────────────────────────── the Agent-Forge machine (ideally a dedicated VM) ─────────────────────────┐
+  you ── bin/foreman ──► │ bin/foreman run ── runs/foreman/ (goals, tasks, events, llm log)        web/server.py (dashboard)     │
+                         │      │  plan / review / check                                                                         │
+                         │      ├──► claude -p (Claude Code)  ·  agy in a worker (Claude/Gemini)  ·  optional paid API            │
+                         │      │  dispatch                                                                                      │
+                         │      ├──► bin/dispatch ─► bin/run-supervisor ─► docker exec worker-N agy-run …   (one run per worker)  │
+                         │      │                                              │ git push feat/…                                  │
+                         │      │                          ┌────────── workers_internal (no route out) ──────────┐               │
+                         │      │                          │ worker-1 … worker-N ──► egress-proxy ──► allow-list │──► model API  │
+                         │      │                          │            └──────────► forgejo                     │               │
+                         │      │  gate                    └─────────────────────────────────────────────────────┘               │
+                         │      ├──► bin/review-branch: fresh clone, full test suite in a new offline container (+ mutations)    │
+                         │      │  merge                                                                                         │
+                         │      └──► bin/open-pr + bin/merge-pr (orchestrator bot; main is protected)                            │
+                         └───────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
+## Components
 
-## 1. Components & Roles
+### bin/foreman - the loop
+A daemon that ticks every `LOOP_SEC` (20 s). It never asks an LLM *when* to act; it calls one only for judgement:
 
-### 1.1 Foreman (`bin/foreman`)
-The Foreman is a deterministic daemon running as a systemd service or background process:
-- **No LLM decides timing:** Ticks every `LOOP_SEC` seconds (default: 20s).
-- **LLMs are called only for three core decisions:**
-  1. `plan`: Breaks a goal down into 2–5 parallel tasks with explicit roles, target files, specifications, and acceptance criteria.
-  2. `review`: Evaluates clean-container gate outputs, code diffs, and mutation checks to approve, request rework, or reject.
-  3. `check`: Determines whether a goal is fulfilled or requires follow-up tasks.
-- **Auto-Recovery:** If a task blocks after repeated attempts, the orchestrator automatically replans the goal or gracefully closes it, preventing stuck queues.
+| call | input | output |
+|---|---|---|
+| `plan` | goal, vision file, repo tree, module heads, goals in progress, recent tasks | tasks: role, files, spec, acceptance criteria, depends_on, risk |
+| `review` | task, role's definition of done, gate output, diff | approve / rework (feedback) / reject (+ mutations for risky code) |
+| `check` | goal + results of its tasks | done (summary) or follow-up tasks |
+| `next` / `roadmap` | vision, goals so far | the next goal / an ordered backlog of goals + questions for the owner |
 
-### 1.2 Dispatcher & Supervisor (`bin/dispatch` & `bin/run-supervisor`)
-- **`bin/dispatch`:** Evaluates preflight guards (one run per worker, daily token budget, quota floors, and kill switch status) before launching a task.
-- **`bin/run-supervisor`:** Runs in the background for each active task:
-  - Enforces hard execution timeouts (`RUN_TIMEOUT_MIN`).
-  - Monitors token consumption against `RUN_TOKEN_CAP`.
-  - Detects network egress anomalies.
-  - Terminates container process trees cleanly upon limit violations.
+Every call is a new, tool-less session. A stable system prompt - `prompts/orchestrator.md`, the project's `etc/team-rules.md` and
+the role catalogue - goes in as a system prompt (Claude Code caches it). Providers are tried in the order of `PLAN_PROVIDERS` /
+`REVIEW_PROVIDERS`; a provider out of quota is skipped until its printed reset (Claude Code: "resets 3pm (Europe/Prague)";
+agy: "Resets in 110h11m52s"). Antigravity calls go to the worker account with the most remaining quota for that model family
+and skip accounts `agy /usage` reports as exhausted.
 
-### 1.3 Worker Containers (`worker/`)
-- Each worker runs in an isolated container with an unprivileged Linux user (`worker`, UID 1000).
-- Connected exclusively to the internal Docker network `workers_internal`.
-- Outbound access is strictly routed through the local Squid proxy (`egress-proxy:3128`).
-- Uses `agent-run` to launch coding agents with Gemini, Claude, or OpenAI models.
+Scheduling rules the loop enforces:
+- **Parallel by default.** A task is ready when its dependencies are merged and no running task owns one of its files
+  (`SHARED_FILES` such as a registry are exempt). Free workers get ready tasks; while idle workers outnumber the work that is
+  coming (ready tasks + ~2 per goal being planned), further backlog goals are started in the same tick and planned in parallel.
+- **Even quota drain.** A task goes to the free worker with the most remaining worker-model quota.
+- **Rework, not blame.** A failing gate or a review asking for changes sends the task back with the output (up to `MAX_REWORK`).
+  A review that produced no usable verdict is retried without costing the worker an attempt. A merge conflict is sent back as
+  "rebase" without costing an attempt.
+- **Crash-safe.** Before re-reviewing a branch the loop checks Forgejo for an already-merged PR (a restart between merge and
+  bookkeeping does not re-open finished work).
+- **Goals close themselves.** When all of a goal's tasks are done/blocked, a `check` call decides "done" or plans follow-ups,
+  up to `MAX_GOAL_ROUNDS`.
 
-### 1.4 Egress Proxy (`egress/`)
-- Intercepts all worker outbound traffic.
-- Restricts external connections strictly to configured model API endpoints and package repositories.
-- Blocks access to internal LAN IP addresses, preventing lateral movement or port scanning.
+### bin/dispatch and bin/run-supervisor - guarded runs
+`dispatch` refuses (fail closed) when: the kill switch is on, the worker is busy, `MAX_PARALLEL` is reached, the day's run/token
+budget is used, the worker's subscription quota is under the floor (`agy /usage`), the egress proxy is unhealthy, or there are
+unacknowledged HIGH egress alarms. `run-supervisor` prepares the worker's clone (aborting a rebase/merge a killed run left
+behind), runs `agy-run` with the task prompt, and kills the run on timeout, token cap or kill switch. A run that ends with only a
+transient network error on the final API call after a complete answer is not counted as a failure. After the run it checks the
+proxy log for that worker; any HIGH alarm trips the kill switch. `CONSEC_FAIL_TRIP` non-ok runs in a row trip it as well.
 
-### 1.5 Internal Git Forge (`forgejo/`)
-- Self-hosted Forgejo instance running as a rootless container.
-- Main branch protection enabled: direct pushes to `main` are rejected.
-- All code integration occurs via Pull Requests managed by the orchestrator bot.
+### Worker containers (worker/)
+Ubuntu image with Python, git and `agy` (pinned version, SHA-512 verified, installed outside HOME). Non-root user, all
+capabilities dropped, `no-new-privileges`, CPU/memory/PID limits, only on the internal network. Each worker has its own HOME
+volume (its agy login lives in a private gnome-keyring unlocked per run), its own Forgejo account and token (read-only mount),
+and its own clone of the repository. Workers read `AGENTS.md` / `GEMINI.md` automatically.
 
----
+### Egress proxy (egress/)
+Squid on the internal network, the only way out. `CONNECT :443` to exact hostnames in `egress/allowlist.txt` (no wildcards);
+private, loopback, link-local and CGNAT destinations are denied whatever a name resolves to. `etc/egress-baseline.txt` lists
+denials that are known and harmless so they do not raise alarms; they stay blocked.
 
-## 2. Multi-Provider LLM Integration
+### Forgejo (forgejo/, scripts/forge-bootstrap)
+Rootless Forgejo on the internal network and `127.0.0.1`. Bots: `orchestrator` (opens and merges PRs), `monitor` (read-only,
+used by the gate and the dashboard), `worker-N` (team `workers`, push branches). `main` is protected: no direct pushes, only the
+orchestrator merges.
 
-Agent-Forge supports three major model families interchangeably:
+### Roles (roles/) and prompts (prompts/)
+Each role file is a playbook - mission, what it owns, how it works, what it never does, definition of done. The planner sees the
+catalogue; the worker gets its role's full playbook in the task; the reviewer gets that role's definition of done.
 
-| Provider | Supported Models | Recommended Use |
-| :--- | :--- | :--- |
-| **Anthropic / Claude** | `claude-3-7-sonnet`, `claude-3-5-sonnet`, `claude-3-5-haiku` | Strategic planning, deep architectural review, complex backend logic |
-| **OpenAI / ChatGPT** | `gpt-4o`, `o1`, `o3-mini`, `gpt-4.5-preview` | Fast code generation, test authoring, code refactoring |
-| **Google / Gemini** | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3.1-pro` | High-throughput routines, large-context exploration, headless workers |
+### Dashboard (web/)
+One file, standard library. Reads `bin/foreman status --dashboard`, run logs and `agy /usage` locally (or over ssh), serves a
+single page on 127.0.0.1. Its only write action is "Continue" after a soft kill-switch trip.
 
-### Fallback Cascading
-If the primary provider hits quota limits or encounters rate limits, the orchestrator automatically cascades to the next configured fallback provider, ensuring zero downtime.
+## State on disk
+
+| path | what |
+|---|---|
+| `runs/foreman/goals/*.json`, `tasks/*.json`, `*.md` | goals, tasks (spec, history, diff stats), the exact prompt each worker got |
+| `runs/foreman/events.jsonl`, `llm.jsonl` | everything the loop did; every orchestrator call with provider, duration and usage |
+| `runs/<UTC>-worker-N/` | one worker run: prompt, full agy event stream, meta (tokens, reason, quota before/after) |
+| `runs/ledger.jsonl`, `runs/ALERT`, `runs/KILLSWITCH` | run ledger, alerts, the kill switch flag |

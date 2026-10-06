@@ -90,19 +90,19 @@ else:
     table(rows, ["worker", "model", "window", "resets (UTC)"])
 
 # ---- pull requests
-w("## Pull requests (sandbox/playground)")
-tokfile = next((p for p in (os.path.expanduser("~/.config/sandbox/secrets/monitor.token"), os.path.expanduser("~/.config/sandbox/secrets/orchestrator.token")) if os.path.exists(p)), None)
+w(f"## Pull requests ({sbx.FORGE_REPO})")
+tokfile = next((p for p in (os.path.join(sbx.SECRETS, "monitor.token"), os.path.join(sbx.SECRETS, "orchestrator.token")) if os.path.exists(p)), None)
 try:
     def api(path):
-        req = urllib.request.Request("http://127.0.0.1:3000/api/v1" + path, headers={"Authorization": "token " + open(tokfile).read().strip()})
+        req = urllib.request.Request(sbx.FORGE_URL + "/api/v1" + path, headers={"Authorization": "token " + open(tokfile).read().strip()})
         return json.load(urllib.request.urlopen(req, timeout=15))
     def utc(s):
         return datetime.fromisoformat(s).astimezone(timezone.utc).timestamp() if s else 0
-    prs = api("/repos/sandbox/playground/pulls?state=all&limit=50&sort=recentupdate")
+    prs = api(f"/repos/{sbx.FORGE_REPO}/pulls?state=all&limit=50&sort=recentupdate")
     rows = []
     for p in prs:
         if t0 <= utc(p["created_at"]) < t1 or t0 <= utc(p.get("merged_at") or "") < t1:
-            by_ = api(f"/repos/sandbox/playground/pulls/{p['number']}").get("merged_by") or {}
+            by_ = api(f"/repos/{sbx.FORGE_REPO}/pulls/{p['number']}").get("merged_by") or {}
             rows.append((f"#{p['number']}", p["title"][:60], p["user"]["login"], "merged by " + by_.get("login", "?") if p["merged"] else p["state"],
                          datetime.fromtimestamp(utc(p["created_at"]), timezone.utc).strftime("%Y-%m-%d %H:%M"),
                          datetime.fromtimestamp(utc(p["merged_at"]), timezone.utc).strftime("%Y-%m-%d %H:%M") if p.get("merged_at") else ""))
@@ -155,83 +155,6 @@ ks = sbx.killswitch_active()
 w(f"Kill switch now: **{'ON since ' + str(ks.get('at')) + ' - ' + str(ks.get('reason')) if ks else 'off'}**\n")
 if ks:
     attention.append("kill switch is ON")
-
-# ---- orchestrator actions (guard hook log)
-w("## Orchestrator actions (guard log)")
-gl = None
-try:
-    gl = json.loads(sh(os.path.join(sbx.ROOT, "bin", "guard-log"), "summary", "--day", day, "--json").stdout)
-    if not gl["calls"]:
-        w("No guard records this day.\n")
-    else:
-        w(f"{gl['calls']} tool calls checked by the guard hook. Decisions: " + ", ".join(f"{k}: {v}" for k, v in sorted(gl["by_decision"].items())) +
-          ". Permission modes: " + ", ".join(f"`{k}`: {v}" for k, v in sorted(gl["by_mode"].items(), key=lambda x: str(x[0]))) +
-          ". Tools: " + ", ".join(f"{k}: {v}" for k, v in sorted(gl["by_tool"].items())) + ".\n")
-        if gl["unexpected_modes"]:
-            w(f"**Unexpected permission mode(s): {gl['unexpected_modes']}** (interactive profile = `default`, unattended = `dontAsk`).\n")
-            attention.append(f"orchestrator ran in an unexpected permission mode: {gl['unexpected_modes']}")
-        if gl["notable"]:
-            w("Blocked or escalated calls:")
-            for n in gl["notable"]:
-                w(f"- **{n['decision'].upper()}** {n['ts']} {n['tool']} [{n['mode']}] `{n['subject']}` - {n['reason']}")
-            w("")
-            if any(n["decision"] == "deny" for n in gl["notable"]):
-                attention.append("the guard blocked call(s) - review the list in the guard log section")
-except Exception as ex:
-    w(f"Guard log unavailable: {ex}\n")
-
-# ---- unattended orchestrator sessions (bin/unattended-run; records under runs/unattended/, read-only here)
-w("## Unattended runs")
-UN = os.path.join(sbx.RUNS, "unattended")
-un_dirs = sorted(x for x in (os.listdir(UN) if os.path.isdir(UN) else []) if x.startswith(day.replace("-", "")) and os.path.isdir(os.path.join(UN, x)))
-un_led = []
-try:
-    for line in open(os.path.join(UN, "ledger.jsonl")):
-        try:
-            e = json.loads(line)
-        except ValueError:
-            continue
-        if str(e.get("started", "")).startswith(day):
-            un_led.append(e)
-except FileNotFoundError:
-    pass
-if not un_dirs and not un_led:
-    w("No unattended runs this day.\n")
-else:
-    rows = []
-    for name in un_dirs:
-        d = os.path.join(UN, name)
-        m = sbx.meta(d)
-        if os.path.exists(d + "/finished"):
-            result = m.get("reason") or "no result"
-        elif sbx.alive(sbx.read(d + "/pid")):
-            result = "running"
-        else:
-            result = "ORPHANED"
-            attention.append(f"unattended run {name} has no result and its process is gone")
-        cost, budget, den = m.get("total_cost_usd"), m.get("budget_usd"), len(m.get("permission_denials") or [])
-        rows.append((name, m.get("label", "-"), result, m.get("exit_code", "-"), m.get("duration_s", "-"), "-" if cost is None else f"{cost:.3f}" + ("" if budget is None else f" / {budget:g}"),
-                     m.get("num_turns", "-"), sum((m.get("tool_calls") or {}).values()), den))
-        if result not in ("ok", "running", "ORPHANED"):
-            attention.append(f"unattended run {name} ended with '{result}' (exit {m.get('exit_code', '?')})")
-        if den:
-            attention.append(f"unattended run {name} had {den} permission denial(s) - each one is a finding for v7/shadow-log.md (see its meta.json)")
-        if cost is not None and budget and cost >= 0.8 * budget:
-            attention.append(f"unattended run {name} used {100 * cost / budget:.0f}% of its budget cap")
-    table(rows, ["run", "label", "result", "exit", "sec", "cost / cap USD", "turns", "tool calls", "denials"])
-    w(f"Sessions: **{len(un_dirs)}**, cost {sum((sbx.meta(os.path.join(UN, n)).get('total_cost_usd') or 0) for n in un_dirs):.3f} USD. Details: runs/unattended/<run>/meta.json (full stream in stdout.jsonl).\n")
-    missing = [e.get("run") for e in un_led if e.get("run") not in un_dirs]
-    if missing:
-        w(f"**Ledger entries without a run directory: {missing}**\n"); attention.append(f"unattended ledger entries without run directory: {missing}")
-    unledgered = [n for n in un_dirs if os.path.exists(os.path.join(UN, n, "finished")) and n not in {e.get("run") for e in un_led}]
-    if unledgered:
-        w(f"**Finished runs without a ledger entry: {unledgered}**\n"); attention.append(f"unattended runs without ledger entry: {unledgered}")
-dontask = (gl or {}).get("by_mode", {}).get("dontAsk", 0)
-if dontask and not un_dirs:
-    w(f"**The guard log shows {dontask} call(s) in mode `dontAsk` but no unattended run is recorded this day.**\n")
-    attention.append(f"guard log has {dontask} dontAsk call(s) without a recorded unattended run")
-elif dontask:
-    w(f"Guard log: {dontask} call(s) in mode `dontAsk` this day (the unattended sessions' tool calls).\n")
 
 # ---- containers / VM
 w("## Containers and VM")

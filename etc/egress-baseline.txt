@@ -1,12 +1,5 @@
-# Known, accepted DENIED hosts ("noise"): they are counted in reports but do NOT raise a new-domain alarm.
+# Known, accepted DENIED hosts ("noise"): counted in reports but they do NOT raise a new-domain alarm (and so do not trip the
+# kill switch). They stay blocked - this file is about alarms, egress/allowlist.txt is about access.
 # Add a host only after a human decided that the denial is harmless. One hostname per line.
-# agy 1.2.11 telemetry / crash-log streaming; blocked on purpose (agy works without it), retried ~130x per run.
+# agy telemetry / crash-log streaming; blocked on purpose (agy works without it), retried ~130x per run.
 play.googleapis.com
-# 2026-10-03 (host, owner-reviewed): workers repeatedly tried these while building nexus-assistant/ and got denied -
-# harmless (no legitimate need established, nothing ever passed), but kept auto-tripping the kill switch for the
-# whole team over an already-decided case. Deliberately NOT in egress/allowlist.txt - stays fully blocked, this only
-# stops the repeat alarm. AGENTS.md (2026-10-03, task 0046) now tells workers directly they have no internet access.
-raw.githubusercontent.com
-docs.rs
-api-docs.firefly-iii.org
-demo.firefly-iii.org

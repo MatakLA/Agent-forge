@@ -1,11 +1,9 @@
 # ==============================================================================
 # Worker Container Image
-# Multi-provider AI development environment:
 # - Python 3 & pytest runtime
-# - Git & Forgejo credential integration
-# - D-Bus & gnome-keyring for headless CLI sessions
-# - Antigravity CLI (agy) for Gemini / Claude / GPT models
-# - Node.js LTS for Claude Code CLI and modern JS tooling
+# - Git & Forgejo credential helper
+# - D-Bus & gnome-keyring for headless agy sessions (tokens live in the keyring)
+# - Antigravity CLI (agy), pinned by version + SHA-512; it serves Gemini, Claude and GPT-OSS models from the worker's own account
 # ==============================================================================
 FROM ubuntu@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
@@ -35,11 +33,10 @@ RUN userdel -r ubuntu 2>/dev/null || true \
  && useradd --uid 1000 --create-home --shell /bin/bash worker
 
 COPY agy-run /usr/local/bin/agy-run
-COPY agent-run /usr/local/bin/agent-run
 COPY git-credential-forgejo /usr/local/bin/git-credential-forgejo
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY gitconfig /etc/gitconfig
-RUN chmod 755 /usr/local/bin/agy-run /usr/local/bin/agent-run /usr/local/bin/git-credential-forgejo /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/agy-run /usr/local/bin/git-credential-forgejo /usr/local/bin/entrypoint.sh
 
 ENV AGY_CLI_DISABLE_AUTO_UPDATE=true
 USER worker
