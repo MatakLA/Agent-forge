@@ -80,8 +80,9 @@ orchestrator merges.
 `bin/foreman --project NAME` (or `FORGE_PROJECT`) selects `projects/NAME/project.conf` (on top of `etc/foreman.conf`), its
 repository (`FORGE_REPO`), worker pool (`WORKERS`), team rules, vision, lessons and state (`runs/projects/NAME/foreman/`). Everything
 the foreman starts inherits the project, so dispatch, the gate and the PR tools work on that repository and workers use the clone
-`~/work/NAME`. The default project (no `--project`) keeps the original layout (`etc/`, `runs/foreman/`, `~/playground`). Run
-directories, the ledger, the kill switch and the egress proxy are shared.
+`~/work/NAME`. The default project (no `--project`) keeps the original layout (`etc/`, `runs/foreman/`, `~/playground`). Each project
+has its own kill switch (`runs/projects/NAME/KILLSWITCH`; `runs/KILLSWITCH-ALL` stops all). Run directories, the ledger, the
+global limits (`etc/limits.conf`) and the egress proxy are shared.
 
 ### Self-healing details
 - `auto_rebase()` (before every gate and on a merge conflict): orchestrator-bot rebase onto main; conflicts only in line-based
@@ -97,7 +98,9 @@ catalogue; the worker gets its role's full playbook in the task; the reviewer ge
 
 ### Dashboard (web/)
 One file, standard library. Reads `bin/foreman status --dashboard`, run logs and `agy /usage` locally (or over ssh), serves a
-single page on 127.0.0.1. Its only write action is "Continue" after a soft kill-switch trip.
+single page on 127.0.0.1. Write actions: stop/continue a project (or all), edit settings (a fixed list of keys, validated by
+`bin/foreman settings apply`; the loop reloads its config on the next tick), add a worker (`bin/worker-add`) and run its agy login
+in a browser terminal. It is an admin console - see SECURITY.md.
 
 ## State on disk
 
@@ -109,4 +112,6 @@ single page on 127.0.0.1. Its only write action is "Continue" after a soft kill-
 | `runs/foreman/diffs/<task>.diff` | the diff each review saw (dashboard diff viewer) |
 | `runs/foreman/events.jsonl`, `llm.jsonl` | everything the loop did; every orchestrator call with provider, duration and usage |
 | `runs/<UTC>-worker-N/` | one worker run: prompt, full agy event stream, meta (tokens, reason, quota before/after) |
-| `runs/ledger.jsonl`, `runs/ALERT`, `runs/KILLSWITCH` | run ledger, alerts, the kill switch flag |
+| `runs/ledger.jsonl`, `runs/ALERT` | run ledger, alerts |
+| `runs/KILLSWITCH`, `runs/projects/<name>/KILLSWITCH`, `runs/KILLSWITCH-ALL` | kill switch of the default project / a project / all projects |
+| `runs/agy-models.json` | the cached `agy models` list for the dashboard's model pickers |

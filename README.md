@@ -58,11 +58,14 @@ bin/foreman backlog           # what is queued
 bin/foreman questions         # what the planner needs you to decide
 bin/foreman pause | resume
 bin/foreman retry <task> | cancel <goal>
-bin/killswitch on [--hard]    # stop everything now
+bin/killswitch on [--hard]    # stop this project now (--all: every project)
 ```
 
 The web dashboard (`web/server.py`, installed by `scripts/install-services`) shows the team, the task board with each task's
-spec, history and diff size, live worker transcripts, quota per account, and a one-click "Continue" after a soft kill-switch trip.
+spec, history and diff, a 24-hour timeline per worker, dependency graphs, team metrics and live worker transcripts, and lets you
+ask the team questions about the code. Its **Settings** tab stops/continues a project (soft or hard, or all projects), picks the
+orchestrator providers and models and the worker models (from the live `agy models` list), assigns workers to the project, edits
+behaviour and the global limits, and adds a worker including its Antigravity login in a browser terminal.
 
 ## Several projects at once
 
@@ -76,8 +79,9 @@ bin/foreman --project shop goal "Add a cart page"
 bin/foreman projects                                   # every project with its pool and state
 ```
 
-With 8 workers that is e.g. workers 1-4 on the default project and 5-8 on `shop`. The kill switch and the egress proxy are shared
-(a safety stop stops everything); goals, tasks, lessons and quotas are per project. The dashboard has a project selector.
+With 8 workers that is e.g. workers 1-4 on the default project and 5-8 on `shop`. Each project has its own kill switch
+(`bin/killswitch --project shop on`), and `bin/killswitch --all on` stops every project at once; goals, tasks, lessons and quotas
+are per project too. The egress proxy is shared. The dashboard has a project selector.
 
 ## What the loop does so you do not have to
 

@@ -52,7 +52,9 @@ def preflight(worker, lim, runner):
         h = egress.proxy_health()
         if not h["ok"]:
             refuse("egress proxy problem: " + "; ".join(h["problems"]) + " (workers must only run behind an enforcing proxy)", alert=True)
-        high = [m for lvl, code, m in egress.alarms(egress.analyze(since=time.time() - 86400)) if lvl == "HIGH"]
+        pool = sbx.project_pool()
+        high = [m for lvl, code, m in egress.alarms(egress.analyze(since=time.time() - 86400)) if lvl == "HIGH"
+                and (pool is None or not re.findall(r"\bworker-\d+\b", m) or set(re.findall(r"\bworker-\d+\b", m)) & pool)]
         if high:
             refuse(f"{len(high)} unacknowledged HIGH egress alarm(s), e.g. {high[0]} - review with bin/egress-report, then bin/egress-report --ack", alert=True)
     quota = None
