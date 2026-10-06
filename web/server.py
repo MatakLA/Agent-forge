@@ -55,11 +55,14 @@ def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
         return ""
 
 
-def ssh_run_full(remote_cmd, timeout=30):
+ASK_LOCK = threading.Lock()
+
+
+def ssh_run_full(remote_cmd, timeout=30, inp=None):
     """Like ssh_run but returns (returncode, stdout, stderr) - used by the one write action this dashboard has
     (/api/resume), so a failure can be reported instead of silently swallowed."""
     try:
-        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout, input=inp)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return 1, "", str(e)
@@ -390,7 +393,7 @@ def shutdown(*_a):
 
 
 # ---- HTTP -----------------------------------------------------------------------------------------------------
-PAGE = """<!DOCTYPE html>
+PAGE = r"""<!DOCTYPE html>
 <html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent-Forge dev tím</title>
 <style>
@@ -494,6 +497,36 @@ PAGE = """<!DOCTYPE html>
   .l-tool_done { border-left-color:var(--idle); color:var(--muted); font-size:12.5px; }
   .l-result { border-left-color:var(--bad); font-weight:800; background:color-mix(in srgb, var(--ok) 10%, transparent); }
   .empty { color:var(--muted); text-align:center; padding:20px 0; font-size:13px; }
+  /* timeline, DAG, diff, metrics, ask */
+  .tl { width:100%; display:block; }
+  .tl text { font-size:11px; fill:var(--muted); font-family:inherit; }
+  .tl .lane { font-size:12px; fill:var(--text); font-weight:600; }
+  .tl rect.run { cursor:pointer; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:6px 0 2px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  .dag { width:100%; display:block; margin-top:8px; }
+  .dag text { font-size:11px; fill:var(--text); font-family:ui-monospace,Menlo,monospace; pointer-events:none; }
+  .dag g { cursor:pointer; }
+  .linkbtn { background:none; border:0; color:var(--accent); cursor:pointer; font-size:12px; padding:2px 0; }
+  .diff { font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; background:var(--card2); border-radius:8px; padding:8px; overflow-x:auto; max-height:60dvh; overflow-y:auto; }
+  .diff div { white-space:pre; }
+  .diff .a { color:var(--ok); background:color-mix(in srgb, var(--ok) 10%, transparent); }
+  .diff .r { color:var(--bad); background:color-mix(in srgb, var(--bad) 10%, transparent); }
+  .diff .h { color:var(--accent); font-weight:700; margin-top:6px; }
+  .diff .at { color:var(--tool); }
+  table.m { width:100%; border-collapse:collapse; font-size:13px; }
+  table.m th, table.m td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.m th { color:var(--muted); font-weight:600; font-size:12px; }
+  table.m td.num, table.m th.num { text-align:right; }
+  .tablewrap { overflow-x:auto; background:var(--card); border-radius:12px; }
+  .bars { display:flex; align-items:flex-end; gap:6px; height:120px; background:var(--card); border-radius:12px; padding:10px; }
+  .bars div { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; font-size:11px; color:var(--muted); }
+  .bars b { display:block; width:100%; background:var(--accent); border-radius:4px 4px 0 0; min-height:2px; }
+  .ask { background:var(--card); border-radius:12px; padding:10px 12px; }
+  .ask textarea { width:100%; min-height:56px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; font-size:14px; resize:vertical; }
+  .ask button { margin-top:6px; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:7px 14px; font-weight:700; cursor:pointer; }
+  .ask button:disabled { opacity:.6; cursor:default; }
+  .answer { margin-top:10px; white-space:pre-wrap; font-size:13.5px; line-height:1.5; border-left:3px solid var(--accent); padding-left:10px; }
   .muted { color:var(--muted); }
 </style></head>
 <body>
@@ -505,18 +538,25 @@ PAGE = """<!DOCTYPE html>
   <nav id="nav">
     <button data-t="overview">Prehľad</button>
     <button data-t="queue">Fronta <span class="cnt" id="c-queue">0</span></button>
+    <button data-t="timeline">Časová os</button>
     <button data-t="live">Live <span class="cnt" id="c-live">0</span></button>
+    <button data-t="metrics">Metriky</button>
     <button data-t="events">Udalosti</button>
   </nav>
 </header>
 <main>
   <section id="t-overview">
+    <h3>Spýtaj sa tímu</h3>
+    <div class="ask"><textarea id="ask-q" placeholder="Napr. Ako funguje app_food a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)"></textarea>
+      <button id="ask-btn">Spýtať sa</button><div id="ask-a"></div></div>
     <h3>Tím</h3><div id="team" class="team"><div class="empty">načítavam…</div></div>
     <h3>Ciele</h3><div id="goals"></div>
     <h3>Backlog</h3><div id="backlog"></div>
   </section>
   <section id="t-queue"><div id="board" class="board"></div></section>
+  <section id="t-timeline"><div id="timeline"></div></section>
   <section id="t-live"><div id="grid" class="grid"></div></section>
+  <section id="t-metrics"><div id="metrics"></div></section>
   <section id="t-events"><div id="events"></div></section>
 </main>
 <div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
@@ -534,14 +574,23 @@ try { tab = localStorage.getItem('app-tab') || 'overview'; } catch (e) {}
 
 function setTab(t) {
   tab = t;
+  for (const k in lastHTML) delete lastHTML[k];
   try { localStorage.setItem('app-tab', t); } catch (e) {}
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
   document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 't-' + t));
   render();
 }
 document.getElementById('nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.t); });
-document.getElementById('detail').addEventListener('click', e => { if (e.target.id === 'detail' || e.target.classList.contains('close')) { openTask = null; e.currentTarget.classList.remove('on'); } });
-document.addEventListener('click', e => { const c = e.target.closest('[data-task]'); if (c) { openTask = c.dataset.task; renderDetail(); } });
+document.getElementById('detail').addEventListener('click', e => { if (e.target.id === 'detail' || e.target.classList.contains('close')) { openTask = null; lastDetailHtml = ''; e.currentTarget.classList.remove('on'); } });
+document.addEventListener('click', e => {
+  const df = e.target.closest('[data-diff]');
+  if (df) { loadDiff(df.dataset.diff); return; }
+  const dg = e.target.closest('[data-dag]');
+  if (dg) { const id = dg.dataset.dag; openDags.has(id) ? openDags.delete(id) : openDags.add(id); render(true); return; }
+  const c = e.target.closest('[data-task]');
+  if (c) { openTask = c.dataset.task; renderDetail(); }
+});
+document.getElementById('ask-btn').addEventListener('click', askTeam);
 
 let resuming = false;
 async function resumeDev() {
@@ -650,7 +699,9 @@ function goalsHtml() {
       (mine.length ? ' · ' + done + '/' + mine.length : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div></div>' +
       '<div class="bar">' + seg + '</div>' + ((g.summary || g.notes) ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') +
       '<div class="chips">' + mine.map(t => '<span class="chip" data-task="' + esc(t.id) + '">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) +
-        (t.diff ? ' · +' + t.diff.added + '/-' + t.diff.removed : '') + '</span>').join('') + '</div></div>';
+        (t.diff ? ' · +' + t.diff.added + '/-' + t.diff.removed : '') + '</span>').join('') + '</div>' +
+      (mine.length > 1 ? '<button class="linkbtn" data-dag="' + esc(g.id) + '">' + (openDags.has(g.id) ? 'skryť graf závislostí' : 'graf závislostí') + '</button>' +
+        (openDags.has(g.id) ? dagSvg(mine, ts) : '') : '') + '</div>';
   }).join('');
 }
 
@@ -677,12 +728,12 @@ function boardHtml() {
 function renderDetail() {
   const d = document.getElementById('detail');
   const t = F && (F.tasks || []).find(x => x.id === openTask);
-  if (!t) { d.classList.remove('on'); return; }
+  if (!t) { d.classList.remove('on'); lastDetailHtml = ''; return; }
   const g = (F.goals || []).find(x => x.id === t.goal);
   const sheet = document.getElementById('sheet'), keep = sheet.scrollTop;
   const hist = (t.history || []).map(h => '<div class="hist"><b>' + esc(dfmt(h.at)) + ' · ' + esc(h.outcome) + '</b>' +
     (h.reviewer ? ' (' + esc(h.reviewer) + ')' : '') + '<br>' + esc(h.feedback || h.why || h.what || '') + '</div>').join('');
-  document.getElementById('sheet').innerHTML = '<button class="close">Zavrieť</button><h2>' + esc(t.title) + '</h2>' +
+  const html = '<button class="close">Zavrieť</button><h2>' + esc(t.title) + '</h2>' +
     '<div class="muted" style="font-size:12.5px">' + esc(t.id) + ' · <span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span> · ' +
     esc(STATUS[t.status] || t.status) + ' · pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + (t.worker ? ' · ' + esc(t.worker) : '') +
     (t.pr ? ' · PR #' + t.pr : '') + (t.risk ? ' · riziko: ' + esc(t.risk) : '') + (t.run_tokens ? ' · ' + (t.run_tokens/1000).toFixed(0) + 'k tokenov' : '') +
@@ -694,7 +745,14 @@ function renderDetail() {
     (hist ? '<h3>História</h3>' + hist : '') +
     ((t.acceptance || []).length ? '<h3>Akceptačné kritériá</h3><ul style="font-size:13px;margin:0;padding-left:18px">' + t.acceptance.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '') +
     ((t.files || []).length ? '<h3>Súbory</h3><div class="muted" style="font-size:12.5px;font-family:ui-monospace,monospace">' + t.files.map(esc).join('<br>') + '</div>' : '') +
+    ((t.mutations || []).length ? '<h3>Mutačné testy</h3><pre>' + esc(t.mutations.join('\n')) + '</pre>' : '') +
+    (t.diff || t.pr ? '<h3>Zmeny (diff)</h3>' + (diffCache[t.id] == null
+        ? '<button class="linkbtn" data-diff="' + esc(t.id) + '">' + (diffLoading.has(t.id) ? 'načítavam…' : 'zobraziť diff') + '</button>'
+        : diffHtml(diffCache[t.id])) : '') +
     (t.spec ? '<h3>Zadanie</h3><pre>' + esc(t.spec) + '</pre>' : '');
+  if (html === lastDetailHtml && d.classList.contains('on')) return;
+  lastDetailHtml = html;
+  sheet.innerHTML = html;
   d.classList.add('on');
   sheet.scrollTop = keep;
 }
@@ -707,40 +765,178 @@ function eventsHtml() {
     return '<div class="ev ' + cls + '"><time>' + esc(dfmt(e.at)) + '</time><div>' + esc(m) + '</div></div>'; }).join('') || '<div class="empty">Zatiaľ nič.</div>';
 }
 
+const paneEls = {};
 function liveHtml() {
   const grid = document.getElementById('grid');
   const panes = P.panes || [];
   document.getElementById('c-live').textContent = panes.length;
   if (tab !== 'live') return;
-  if (!panes.length) { grid.innerHTML = '<div class="empty">Žiadne AI momentálne nebežia — prepis sa zjaví, keď niečo pobeží.</div>'; return; }
+  if (!panes.length) { setHTML('grid', '<div class="empty">Žiadne AI momentálne nebežia — prepis sa zjaví, keď niečo pobeží.</div>'); for (const k in paneEls) delete paneEls[k]; return; }
+  if (grid.querySelector('.empty')) { grid.innerHTML = ''; lastHTML['grid'] = null; }
   const ts = (F && F.tasks) || [];
-  grid.innerHTML = '';
+  const seen = new Set();
   for (const p of panes) {
+    seen.add(p.id);
+    let pe = paneEls[p.id];
+    if (!pe) {
+      const el = document.createElement('div'); el.className = 'pane';
+      const h = document.createElement('h2'); const log = document.createElement('div'); log.className = 'log';
+      el.appendChild(h); el.appendChild(log); grid.appendChild(el);
+      pe = paneEls[p.id] = {el, h, log, n: 0, first: null, last: null, head: ''};
+    }
     const w = p.id.startsWith('worker:') ? p.id.slice(7) : null, t = w && ts.find(x => x.worker === w && x.status === 'running');
-    const el = document.createElement('div'); el.className = 'pane';
-    el.innerHTML = '<h2><span class="dot ' + (p.state === 'running' ? 'running' : '') + '"></span>' + esc(p.title) +
+    const head = '<span class="dot ' + (p.state === 'running' ? 'running' : '') + '"></span>' + esc(p.title) +
       (t ? ' <span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span> <span class="muted" style="font-weight:400;font-size:13px">' + esc(t.id) + '</span>' :
-           ' <span class="muted" style="font-weight:400;font-size:13px">(' + esc(p.state) + ')</span>') + '</h2>';
-    const log = document.createElement('div'); log.className = 'log';
-    log.innerHTML = p.lines.map(l => '<div class="line l-' + l.kind + '">' + esc(l.text) + '</div>').join('');
-    el.appendChild(log); grid.appendChild(el);
-    log.scrollTop = log.scrollHeight;
+           ' <span class="muted" style="font-weight:400;font-size:13px">(' + esc(p.state) + ')</span>');
+    if (head !== pe.head) { pe.h.innerHTML = head; pe.head = head; }
+    const L = p.lines, firstTxt = L.length ? L[0].text : null, lastTxt = L.length ? L[L.length - 1].text : null;
+    if (L.length === pe.n && firstTxt === pe.first && lastTxt === pe.last) continue;
+    const atBottom = pe.log.scrollHeight - pe.log.scrollTop - pe.log.clientHeight < 40;
+    const line = l => '<div class="line l-' + l.kind + '">' + esc(l.text) + '</div>';
+    if (firstTxt === pe.first && L.length > pe.n) pe.log.insertAdjacentHTML('beforeend', L.slice(pe.n).map(line).join(''));
+    else pe.log.innerHTML = L.map(line).join('');
+    pe.n = L.length; pe.first = firstTxt; pe.last = lastTxt;
+    if (atBottom) pe.log.scrollTop = pe.log.scrollHeight;
   }
+  for (const id in paneEls) if (!seen.has(id)) { paneEls[id].el.remove(); delete paneEls[id]; }
 }
 
-function render() {
-  document.getElementById('pills').innerHTML = pills();
-  document.getElementById('stats').innerHTML = stats();
+// ---- only touch the DOM when a section's HTML actually changed (no flicker, no lost scroll, less battery)
+const lastHTML = {};
+function setHTML(id, html, force) {
+  if (!force && lastHTML[id] === html) return;
+  lastHTML[id] = html;
+  document.getElementById(id).innerHTML = html;
+}
+let lastDetailHtml = '';
+const openDags = new Set(), diffCache = {}, diffLoading = new Set();
+
+// ---- 1. timeline: one lane per worker, one bar per run, last 24 h
+const RUNCOL = {ok: 'var(--ok)', running: 'var(--accent)', 'token-cap': 'var(--warn)', timeout: 'var(--warn)', failed: 'var(--bad)',
+                'setup-failed': 'var(--bad)', killswitch: 'var(--idle)'};
+function timelineHtml() {
+  if (!F || !F.timeline) return '<div class="empty">Časová os potrebuje novšiu verziu foremana.</div>';
+  const now = Date.now() / 1000, span = 24 * 3600, t0 = now - span, W = 1000, LW = 90, lane = 30;
+  const runs = F.timeline;
+  const ws = [...new Set(runs.map(r => r.worker).concat(Object.keys((P && P.roster) || {}).filter(k => k.startsWith('worker:')).map(k => k.slice(7))))].filter(Boolean).sort();
+  if (!ws.length) return '<div class="empty">Za posledných 24 h žiadne behy.</div>';
+  const x = t => LW + Math.max(0, Math.min(1, (t - t0) / span)) * (W - LW);
+  let svg = '<svg class="tl" viewBox="0 0 ' + W + ' ' + (ws.length * lane + 24) + '" preserveAspectRatio="none">';
+  for (let h = 0; h <= 24; h += 3) {
+    const tx = x(t0 + h * 3600), d = new Date((t0 + h * 3600) * 1000);
+    svg += '<line x1="' + tx + '" x2="' + tx + '" y1="0" y2="' + ws.length * lane + '" stroke="var(--line)"/>' +
+           '<text x="' + tx + '" y="' + (ws.length * lane + 16) + '" text-anchor="middle">' + d.getHours() + ':00</text>';
+  }
+  const util = {};
+  ws.forEach((w, i) => {
+    const y = i * lane;
+    svg += '<text class="lane" x="4" y="' + (y + 19) + '">' + esc(w) + '</text>';
+    let busy = 0;
+    for (const r of runs.filter(r => r.worker === w)) {
+      const s0 = Math.max(r.start, t0), e0 = Math.min(r.end || now, now);
+      if (e0 <= s0) continue;
+      busy += e0 - s0;
+      const tip = esc(r.task) + ' · ' + esc(r.reason) + ' · ' + Math.round((e0 - s0) / 60) + ' min · ' + Math.round((r.tokens || 0) / 1000) + 'k tokenov';
+      svg += '<g data-task="' + esc(r.task.replace(/\.md$/, '')) + '"><title>' + tip + '</title><rect class="run" x="' + x(s0) + '" y="' + (y + 5) + '" width="' +
+             Math.max(2, x(e0) - x(s0)) + '" height="' + (lane - 10) + '" rx="3" fill="' + (RUNCOL[r.reason] || 'var(--idle)') + '"' +
+             (r.reason === 'running' ? ' opacity=".8"><animate attributeName="opacity" values=".5;1;.5" dur="2s" repeatCount="indefinite"/></rect>' : '/>') + '</g>';
+    }
+    util[w] = Math.round(100 * busy / span);
+  });
+  svg += '</svg>';
+  const legend = '<div class="legend">' + [['ok','hotové'],['running','beží'],['token-cap','strop tokenov / čas'],['failed','zlyhalo'],['killswitch','kill switch']]
+    .map(([k, l]) => '<span><i style="background:' + RUNCOL[k] + '"></i>' + l + '</span>').join('') + '</div>';
+  const u = '<div class="legend">' + ws.map(w => '<span>' + esc(w) + ': <b style="color:var(--text)">' + util[w] + ' %</b> času pracoval</span>').join('') + '</div>';
+  return '<h3>Posledných 24 hodín</h3>' + legend + '<div class="tablewrap" style="padding:8px">' + svg + '</div>' + u +
+         '<div class="muted" style="font-size:12px;margin-top:6px">Medzery v pruhu = worker stál. Klik na blok otvorí úlohu.</div>';
+}
+
+// ---- 3. dependency graph of a goal
+const NODECOL = {done: 'var(--ok)', running: 'var(--tool)', gate: 'var(--accent)', review: 'var(--accent)', blocked: 'var(--bad)', pending: 'var(--idle)', cancelled: 'var(--idle)'};
+function dagSvg(mine) {
+  const ids = new Set(mine.map(t => t.id)), depth = {};
+  const d = (t, seen) => { if (depth[t.id] != null) return depth[t.id]; if (seen.has(t.id)) return 0; seen.add(t.id);
+    const ps = (t.depends_on || []).filter(x => ids.has(x)).map(x => d(mine.find(m => m.id === x), seen));
+    return depth[t.id] = ps.length ? 1 + Math.max(...ps) : 0; };
+  mine.forEach(t => d(t, new Set()));
+  const cols = {}; mine.forEach(t => (cols[depth[t.id]] = cols[depth[t.id]] || []).push(t));
+  const nc = Object.keys(cols).length, maxRows = Math.max(...Object.values(cols).map(c => c.length));
+  const BW = 170, BH = 34, GX = 50, GY = 12, W = nc * (BW + GX), H = maxRows * (BH + GY);
+  const pos = {};
+  Object.entries(cols).forEach(([c, ts]) => ts.forEach((t, r) => pos[t.id] = {x: c * (BW + GX), y: r * (BH + GY)}));
+  let svg = '<svg class="dag" viewBox="0 0 ' + W + ' ' + H + '" style="max-width:' + W + 'px">';
+  mine.forEach(t => (t.depends_on || []).filter(x => pos[x]).forEach(x => {
+    const a = pos[x], b = pos[t.id];
+    svg += '<path d="M' + (a.x + BW) + ',' + (a.y + BH / 2) + ' C' + (a.x + BW + GX / 2) + ',' + (a.y + BH / 2) + ' ' + (b.x - GX / 2) + ',' + (b.y + BH / 2) + ' ' + b.x + ',' + (b.y + BH / 2) +
+           '" fill="none" stroke="var(--muted)" stroke-width="1.5"/>';
+  }));
+  mine.forEach(t => { const p = pos[t.id];
+    svg += '<g data-task="' + esc(t.id) + '"><title>' + esc(t.title) + ' · ' + esc(t.role) + '</title><rect x="' + p.x + '" y="' + p.y + '" width="' + BW + '" height="' + BH + '" rx="6" fill="var(--card2)" stroke="' +
+           (NODECOL[t.status] || 'var(--idle)') + '" stroke-width="2"/><text x="' + (p.x + 8) + '" y="' + (p.y + 14) + '">' + esc(t.id.slice(0, 24)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 27) +
+           '" style="fill:var(--muted)">' + esc((STATUS[t.status] || t.status) + ' · ' + t.role).slice(0, 26) + '</text></g>'; });
+  return svg + '</svg>';
+}
+
+// ---- 4. diff of a task (what the reviewer saw, or the merged PR)
+async function loadDiff(id) {
+  diffLoading.add(id); renderDetail();
+  try { diffCache[id] = await (await fetch('/api/diff?task=' + encodeURIComponent(id))).text(); }
+  catch (e) { diffCache[id] = '(nepodarilo sa načítať: ' + e + ')'; }
+  diffLoading.delete(id); renderDetail();
+}
+function diffHtml(text) {
+  const lines = text.split('\n').slice(0, 4000);
+  return '<div class="diff">' + lines.map(l => {
+    const c = l.startsWith('diff --git') || l.startsWith('+++') || l.startsWith('---') ? 'h' : l.startsWith('@@') ? 'at' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'r' : '';
+    return '<div' + (c ? ' class="' + c + '"' : '') + '>' + (esc(l) || ' ') + '</div>'; }).join('') + '</div>';
+}
+
+// ---- 8. team metrics
+function metricsHtml() {
+  const M = F && F.metrics;
+  if (!M) return '<div class="empty">Metriky potrebujú novšiu verziu foremana.</div>';
+  const T = M.totals || {}, box = (v, lab) => '<div class="stat"><b>' + (v == null ? '–' : v) + '</b><span>' + lab + '</span></div>';
+  let h = '<div class="stats">' + box(T.done, 'hotových úloh') + box(T.first_pass_pct == null ? null : T.first_pass_pct + ' %', 'schválené na 1. pokus') +
+          box(T.reworks, 'vrátení na opravu') + box(T.blocked, 'zaseknutých') + box(T.tokens_per_done ? Math.round(T.tokens_per_done / 1000) + 'k' : null, 'tokenov na hotovú úlohu') + '</div>';
+  const days = M.merged_per_day || [], mx = Math.max(1, ...days.map(d => d[1]));
+  h += '<h3>Hotové úlohy za deň</h3><div class="bars">' + (days.map(([d, n]) => '<div><span>' + n + '</span><b style="height:' + (100 * n / mx) + '%"></b><span>' + d.slice(5) + '</span></div>').join('') || '<span class="muted">zatiaľ nič</span>') + '</div>';
+  const roles = Object.entries(M.roles || {}).sort((a, b) => b[1].tasks - a[1].tasks);
+  h += '<h3>Podľa roly</h3><div class="tablewrap"><table class="m"><tr><th>rola</th><th class="num">úloh</th><th class="num">hotovo</th><th class="num">1. pokus</th><th class="num">vrátení</th><th class="num">zaseknuté</th><th class="num">tokeny/úloha</th><th class="num">riadky</th></tr>' +
+       roles.map(([r, v]) => '<tr><td>' + esc(r) + '</td><td class="num">' + v.tasks + '</td><td class="num">' + v.done + '</td><td class="num">' + (v.first_pass_pct == null ? '–' : v.first_pass_pct + ' %') +
+         '</td><td class="num">' + v.reworks + '</td><td class="num">' + v.blocked + '</td><td class="num">' + (v.tokens_per_done ? Math.round(v.tokens_per_done / 1000) + 'k' : '–') + '</td><td class="num">' + v.lines_done + '</td></tr>').join('') + '</table></div>';
+  const prov = Object.entries(M.providers || {}).sort((a, b) => b[1].calls - a[1].calls);
+  h += '<h3>Orchestrátor za 7 dní (kto plánoval a robil review)</h3><div class="tablewrap"><table class="m"><tr><th>poskytovateľ</th><th class="num">volaní</th><th class="num">zlyhalo</th><th class="num">priemer</th></tr>' +
+       prov.map(([p, v]) => '<tr><td>' + esc(p) + '</td><td class="num">' + v.calls + '</td><td class="num">' + v.failed + '</td><td class="num">' + (v.calls ? Math.round(v.secs / v.calls) + ' s' : '–') + '</td></tr>').join('') + '</table></div>';
+  return h;
+}
+
+// ---- 10. ask the team
+async function askTeam() {
+  const q = document.getElementById('ask-q').value.trim(), btn = document.getElementById('ask-btn'), out = document.getElementById('ask-a');
+  if (!q) return;
+  btn.disabled = true; btn.textContent = 'Orchestrátor premýšľa… (aj 1–2 min)';
+  let r;
+  try { r = await (await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: q})})).json(); }
+  catch (e) { r = {answer: '(chyba spojenia: ' + e + ')'}; }
+  btn.disabled = false; btn.textContent = 'Spýtať sa';
+  out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(bez odpovede)') + '</div>' + out.innerHTML;
+}
+
+function render(force) {
+  setHTML('pills', pills(), force);
+  setHTML('stats', stats(), force);
   const ts = (F && F.tasks) || [];
   document.getElementById('c-queue').textContent = ts.filter(t => ['pending', 'running', 'gate', 'review'].includes(t.status)).length;
   if (tab === 'overview') {
-    document.getElementById('team').innerHTML = team();
-    document.getElementById('goals').innerHTML = goalsHtml();
+    setHTML('team', team(), force);
+    setHTML('goals', goalsHtml(), force);
     const bl = (F && F.backlog) || [];
-    document.getElementById('backlog').innerHTML = bl.length ? bl.map((b, i) => '<div class="goal"><span class="muted">' + (i + 1) + '.</span> ' + esc(b) + '</div>').join('')
-      : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie appky.' : '.') + '</div>';
-  } else if (tab === 'queue') document.getElementById('board').innerHTML = boardHtml();
-  else if (tab === 'events') document.getElementById('events').innerHTML = eventsHtml();
+    setHTML('backlog', bl.length ? bl.map((b, i) => '<div class="goal"><span class="muted">' + (i + 1) + '.</span> ' + esc(b) + '</div>').join('')
+      : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie appky.' : '.') + '</div>', force);
+  } else if (tab === 'queue') setHTML('board', boardHtml(), force);
+  else if (tab === 'events') setHTML('events', eventsHtml(), force);
+  else if (tab === 'timeline') setHTML('timeline', timelineHtml(), force);
+  else if (tab === 'metrics') setHTML('metrics', metricsHtml(), force);
   liveHtml();
   if (openTask) renderDetail();
 }
@@ -758,7 +954,10 @@ function showJsError(msg) {
 window.addEventListener('error', e => showJsError((e.message || 'neznáma') + ' (' + (e.lineno || '?') + ')'));
 window.addEventListener('unhandledrejection', e => showJsError(String(e.reason && e.reason.message || e.reason)));
 setTab(tab);
-poll(); setInterval(poll, 2000);
+let busyPoll = false;
+async function tickPoll() { if (document.hidden || busyPoll) return; busyPoll = true; try { await poll(); } finally { busyPoll = false; } }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tickPoll(); });
+tickPoll(); setInterval(tickPoll, 2500);
 </script>
 </body></html>"""
 
@@ -776,6 +975,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self):
+        if self.path == "/api/ask":
+            try:
+                n = min(int(self.headers.get("Content-Length", "0")), 20000)
+                q = str(json.loads(self.rfile.read(n) or b"{}").get("question", "")).strip()[:4000]
+            except Exception:
+                q = ""
+            if not q:
+                self._json({"error": "empty question"}, 400); return
+            if not ASK_LOCK.acquire(blocking=False):
+                self._json({"error": "another question is being answered - wait for it"}, 429); return
+            try:
+                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman ask", timeout=900, inp=q)
+            finally:
+                ASK_LOCK.release()
+            self._json({"answer": out.strip() or (err.strip()[-500:] if rc else "(empty answer)")})
+            return
         if self.path != "/api/resume":
             self.send_response(404); self.end_headers(); return
         steps = []
@@ -808,6 +1023,18 @@ class Handler(BaseHTTPRequestHandler):
                 panes = [{"id": p.id, "title": p.title, "kind": p.kind, "state": p.state,
                           "lines": list(p.lines)} for p in items]
             self._json({"roster": ROSTER.snapshot(), "panes": panes})
+        elif self.path.startswith("/api/diff?"):
+            import urllib.parse
+            tid = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("task", [""])[0]
+            if not re.fullmatch(r"\d{4}-[\w-]+", tid):
+                self._json({"error": "bad task id"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman diff {tid}", timeout=40)
+            raw = (out if rc == 0 else f"(chyba: {err.strip()[-300:]})").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
         elif self.path == "/api/foreman":
             self._json({"foreman": FOREMAN["data"], "fetched_at": FOREMAN["at"], "error": FOREMAN["error"]})
         elif self.path in ("/", "/index.html"):
