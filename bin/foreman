@@ -6,6 +6,8 @@
        bin/foreman cancel <goal-id>                 drop a goal and its unfinished tasks
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
        bin/foreman questions                        things the roadmap could not decide without the owner
+       bin/foreman diff <task-id>                   the diff the reviewer saw (or the merged PR's diff)
+       echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
        bin/foreman backlog [add "<goal>" | drop <n>] goals waiting for a free worker (taken in order when a worker would idle)
        bin/foreman autopilot on|off                 when a worker would idle and the backlog is empty, the orchestrator proposes
                                                     the next goal from the vision file (VISION_FILE, default on)
@@ -745,6 +747,8 @@ def step_gate_review_merge(t):
     t = jload(os.path.join(FD, "tasks", t["id"] + ".json")) or t
     t["diff"] = dict(added=added, removed=removed)
     save_task(t)
+    os.makedirs(os.path.join(FD, "diffs"), exist_ok=True)
+    open(os.path.join(FD, "diffs", t["id"] + ".diff"), "w").write(diff[:400000])
     if len(diff) > C["DIFF_MAX"]:
         diff = diff[:C["DIFF_MAX"]] + f"\n... (diff truncated, {len(diff)} bytes total)"
     PHASE[t["id"]] = "review orchestrátorom"
@@ -766,6 +770,9 @@ def step_gate_review_merge(t):
         PHASE[t["id"]] = f"mutačné testy ({len(muts)})"
         rc2, out2, _ = sh([os.path.join(BIN, "review-branch"), t["branch"], "--mutations", spec], timeout=1500)
         surv = [l.strip() for l in out2.splitlines() if l.strip().startswith(("SURVIVED", "BAD-SPEC"))]
+        t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json")) or t
+        t2["mutations"] = [l.strip() for l in out2.splitlines() if l.strip().startswith(("KILLED", "SURVIVED", "BAD-SPEC"))][:8]
+        save_task(t2)
         if any(l.startswith("SURVIVED") for l in surv):
             return lambda: rework(t, "Your tests do not catch these deliberate bugs in your code (mutation check); add tests that fail for "
                                      "each of them:\n" + "\n".join(f"- {m['name']}: in {m['file']} replace `{m['old']}` with `{m['new']}`"
@@ -1096,6 +1103,107 @@ def run_loop():
 
 
 # ---------------------------------------------------------------- CLI
+def timeline(hours=24):
+    """Worker runs that overlap the last `hours` hours: one bar per run for the dashboard's swimlanes."""
+    now, since = time.time(), time.time() - hours * 3600
+    out = []
+    for e in sbx.read_ledger():
+        if e.get("test"):
+            continue
+        try:
+            end = dt.datetime.fromisoformat(e["at"].replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        start = end - (e.get("duration_s") or 0)
+        if end >= since:
+            out.append(dict(worker=e.get("worker"), start=start, end=end, reason=e.get("reason"), tokens=e.get("tokens", 0),
+                            task=str(e.get("task", "")).removesuffix(".md")))
+    for d in sbx.run_dirs():
+        if sbx.is_running(d):
+            m = sbx.meta(d)
+            try:
+                start = dt.datetime.fromisoformat(sbx.read(d + "/started").replace("Z", "+00:00")).timestamp()
+            except Exception:
+                start = now
+            out.append(dict(worker=m.get("worker"), start=start, end=None, reason="running", tokens=sbx.stream_tokens(d + "/stream.jsonl"),
+                            task=str(m.get("task", "")).removesuffix(".md")))
+    return out
+
+
+def team_metrics(ts=None, days=7):
+    """What works: per role first-pass approvals, reworks, blocks, tokens per merged task; per day merged tasks; per provider calls."""
+    ts = ts if ts is not None else tasks()
+    tok = {}
+    for e in sbx.read_ledger():
+        if not e.get("test"):
+            k = str(e.get("task", "")).removesuffix(".md")
+            tok[k] = tok.get(k, 0) + (e.get("tokens") or 0)
+    roles = {}
+    for t in ts:
+        if t["status"] == "cancelled":
+            continue
+        r = roles.setdefault(slugify(t.get("role", "?")), dict(tasks=0, done=0, first_pass=0, reworks=0, blocked=0, tokens_done=0, lines_done=0))
+        r["tasks"] += 1
+        reworks = sum(1 for h in t.get("history", []) if h.get("outcome") == "rework")
+        r["reworks"] += reworks
+        if t["status"] == "blocked":
+            r["blocked"] += 1
+        if t["status"] == "done":
+            r["done"] += 1
+            r["first_pass"] += reworks == 0
+            r["tokens_done"] += tok.get(t["id"], 0)
+            r["lines_done"] += sum((t.get("diff") or {}).get(k, 0) for k in ("added", "removed"))
+    for r in roles.values():
+        r["first_pass_pct"] = round(100 * r["first_pass"] / r["done"]) if r["done"] else None
+        r["tokens_per_done"] = round(r["tokens_done"] / r["done"]) if r["done"] else None
+    per_day = {}
+    for t in ts:
+        if t["status"] == "done" and t.get("finished"):
+            per_day[t["finished"][:10]] = per_day.get(t["finished"][:10], 0) + 1
+    last = sorted(per_day.items())[-days:]
+    prov, cutoff = {}, (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        for l in open(os.path.join(FD, "llm.jsonl")):
+            e = json.loads(l)
+            if e.get("at", "") >= cutoff:
+                who = e.get("who", "?").split("@")[0]
+                p = prov.setdefault(who, dict(calls=0, failed=0, secs=0.0))
+                p["calls"] += 1; p["failed"] += e.get("rc", 0) != 0; p["secs"] += e.get("secs") or 0
+    except FileNotFoundError:
+        pass
+    done = [t for t in ts if t["status"] == "done"]
+    total_reworks = sum(r["reworks"] for r in roles.values())
+    return dict(roles=roles, merged_per_day=last, providers=prov,
+                totals=dict(done=len(done), blocked=sum(1 for t in ts if t["status"] == "blocked"), reworks=total_reworks,
+                            first_pass_pct=round(100 * sum(r["first_pass"] for r in roles.values()) / len(done)) if done else None,
+                            tokens_per_done=round(sum(tok.get(t["id"], 0) for t in done) / len(done)) if done else None))
+
+
+def task_diff(task_id):
+    if not re.fullmatch(r"\d{4}-[\w-]+", task_id or ""):
+        return "(invalid task id)"
+    p = os.path.join(FD, "diffs", task_id + ".diff")
+    if os.path.exists(p):
+        return open(p).read()
+    t = jload(os.path.join(FD, "tasks", task_id + ".json"))
+    if t and t.get("pr"):
+        rc, out, _ = sh([os.path.join(BIN, "forgejo-api"), "GET", f"/repos/{sbx.FORGE_REPO}/pulls/{int(t['pr'])}.diff"], timeout=30)
+        if rc == 0 and out.strip():
+            return out[:400000]
+    return "(no diff recorded for this task)"
+
+
+def ask(question):
+    """Answer a question about the project from the repository context (one orchestrator call)."""
+    refresh_repo()
+    prompt = (f"{context_bundle()}\n## Question from the owner\n{question.strip()[:4000]}\n\nAnswer in {C['OWNER_LANG']}, concretely, "
+              "from the repository content above. Cite file paths. If the repository does not contain the answer, say so plainly. "
+              "Plain text or markdown, no JSON.")
+    text, who = llm("ask", prompt)
+    event(f"owner question answered by {who}: {question.strip()[:120]}")
+    return text, who
+
+
 def dashboard_json():
     """Everything the host dashboard shows, in one read-only call (`bin/foreman status --dashboard`)."""
     st, ts, now = gstate(), tasks(), time.time()
@@ -1125,7 +1233,8 @@ def dashboard_json():
                              depends_on=t.get("depends_on", []), files=t.get("files", []), spec=t.get("spec", "")[:2500],
                              acceptance=t.get("acceptance", []), blocked_why=t.get("blocked_why", ""), feedback=t.get("feedback", "")[:1500],
                              history=t.get("history", [])[-6:], dispatched=t.get("dispatched"), finished=t.get("finished"),
-                             updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines")))
+                             updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines"),
+                             mutations=t.get("mutations", [])))
     return dict(now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
                 autopilot=bool(C["AUTOPILOT"]) and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
@@ -1134,7 +1243,7 @@ def dashboard_json():
                 owner_questions=jload(os.path.join(FD, "owner_questions.json"), []), roadmap_request=st.get("roadmap_request"),
                 goals=[dict(id=g["id"], text=g["text"], status=g["status"], source=g.get("source", "owner"), summary=g.get("summary", ""),
                             notes=g.get("notes", ""), created=g.get("created")) for g in goals()],
-                tasks=task_out, events=evs, llm_today=llm_today,
+                tasks=task_out, events=evs, llm_today=llm_today, timeline=timeline(), metrics=team_metrics(ts),
                 today=dict(runs=len(led), runs_max=lim["MAX_RUNS_PER_DAY"], tokens=sum(e.get("tokens", 0) for e in led),
                            tokens_max=lim["DAILY_TOKEN_BUDGET"], ok=sum(1 for e in led if e.get("reason") == "ok"),
                            merged=sum(1 for t in ts if t["status"] == "done" and (t.get("finished") or "")[:10] == sbx.today())))
@@ -1214,6 +1323,16 @@ def selftest():
     pcts = {"worker-1": 24, "worker-2": 79, "worker-3": 100, "worker-4": 100}
     check("order_by_quota: most quota first, ties by least recently used",
           order_by_quota(list(pcts), pcts.get, {"worker-3": 50, "worker-4": 10}) == ["worker-4", "worker-3", "worker-2", "worker-1"])
+    mts = [dict(id="0001-a", role="backend developer", status="done", history=[dict(outcome="rework"), dict(outcome="done")], diff=dict(added=10, removed=2)),
+           dict(id="0002-b", role="Backend Developer", status="done", history=[dict(outcome="done")], diff=dict(added=5, removed=0)),
+           dict(id="0003-c", role="tester", status="blocked", history=[dict(outcome="rework"), dict(outcome="blocked")]),
+           dict(id="0004-d", role="tester", status="cancelled", history=[])]
+    mm = team_metrics(mts)
+    check("team_metrics: roles merged by slug, first-pass %, reworks, cancelled ignored",
+          mm["roles"]["backend-developer"]["done"] == 2 and mm["roles"]["backend-developer"]["first_pass_pct"] == 50
+          and mm["roles"]["backend-developer"]["lines_done"] == 17 and mm["roles"]["tester"]["tasks"] == 1
+          and mm["totals"]["reworks"] == 2 and mm["totals"]["blocked"] == 1)
+    check("task_diff rejects ids that are not task ids", task_diff("../../etc/passwd") == "(invalid task id)" and task_diff("x; rm -rf /") == "(invalid task id)")
     global ROOT
     old_root, rd = ROOT, tempfile.mkdtemp(prefix="foreman-roles-")
     os.makedirs(os.path.join(rd, "roles"))
@@ -1266,6 +1385,17 @@ def main():
     elif a == ["questions"]:
         qs = jload(os.path.join(FD, "owner_questions.json"), [])
         print("\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1)) or "(no open questions)")
+    elif a[:1] == ["diff"] and len(a) == 2:
+        print(task_diff(a[1]))
+    elif a == ["ask"]:
+        q = sys.stdin.read()
+        if not q.strip():
+            print("usage: echo 'question' | bin/foreman ask", file=sys.stderr); sys.exit(2)
+        try:
+            text, who = ask(q)
+        except Unavailable as e:
+            print(f"(no orchestrator available right now: {e})"); sys.exit(3)
+        print(text)
     elif a[:1] == ["status"] and "--dashboard" in a:
         print(json.dumps(dashboard_json(), ensure_ascii=False))
     elif a[:1] == ["status"]:
