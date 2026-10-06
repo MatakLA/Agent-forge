@@ -79,33 +79,59 @@ def lock():
 def alert(msg):
     ensure_runs()
     with open(os.path.join(RUNS, "ALERT"), "a") as f:
-        f.write(f"{now()} {msg}\n")
+        f.write(f"{now()} {'[' + PROJECT + '] ' if PROJECT else ''}{msg}\n")
 
 
-def ks_path():
-    return os.path.join(RUNS, "KILLSWITCH")
+# Kill switches: one per project (the default project keeps the original runs/KILLSWITCH) plus one for ALL projects
+# (bin/killswitch on --all). A project is stopped when its own or the global one is on.
+def ks_path(project=None):
+    p = PROJECT if project is None else project
+    return os.path.join(RUNS, "projects", p, "KILLSWITCH") if p else os.path.join(RUNS, "KILLSWITCH")
 
 
-def killswitch_active():
+def ks_all_path():
+    return os.path.join(RUNS, "KILLSWITCH-ALL")
+
+
+def _ks_read(path):
     try:
-        return json.load(open(ks_path()))
+        return json.load(open(path))
     except FileNotFoundError:
         return None
     except Exception:
         return {"reason": "unreadable kill switch file (treated as ON)", "at": "?", "by": "?"}
 
 
-def killswitch_on(reason, by="orchestrator", hard=False):
+def killswitch_active():
+    ks = _ks_read(ks_all_path())
+    if ks:
+        return dict(ks, scope="all")
+    ks = _ks_read(ks_path())
+    return dict(ks, scope="project") if ks else None
+
+
+def project_pool(project=None):
+    """The worker containers a project may use (its WORKERS setting), or None for 'every worker'."""
+    p = PROJECT if project is None else project
+    conf = _kv(os.path.join(ROOT, "projects", p, "project.conf")) if p else _kv(os.path.join(ROOT, "etc", "foreman.conf"))
+    pool = {w.strip() for w in conf.get("WORKERS", "").split(",") if w.strip()}
+    return pool or None
+
+
+def killswitch_on(reason, by="orchestrator", hard=False, all_projects=False):
     ensure_runs()
-    if not killswitch_active():
-        json.dump({"at": now(), "reason": reason, "by": by, "hard": hard}, open(ks_path(), "w"))
-        alert(f"KILLSWITCH ON by {by}: {reason}")
+    path = ks_all_path() if all_projects else ks_path()
+    if not _ks_read(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump({"at": now(), "reason": reason, "by": by, "hard": hard, "project": "ALL" if all_projects else (PROJECT or "default")},
+                  open(path, "w"))
+        alert(f"KILLSWITCH ON{' (all projects)' if all_projects else ''} by {by}: {reason}")
 
 
-def killswitch_off():
+def killswitch_off(all_projects=False):
     try:
-        os.remove(ks_path())
-        alert("KILLSWITCH OFF")
+        os.remove(ks_all_path() if all_projects else ks_path())
+        alert(f"KILLSWITCH OFF{' (all projects)' if all_projects else ''}")
         return True
     except FileNotFoundError:
         return False
@@ -132,6 +158,7 @@ def read_ledger():
 
 def append_ledger(entry):
     ensure_runs()
+    entry.setdefault("project", PROJECT)
     with open(ledger_path(), "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         f.write(json.dumps(entry, separators=(",", ":")) + "\n")

@@ -56,6 +56,104 @@ def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
 
 
 ASK_LOCK = threading.Lock()
+FOREMAN_SERVICE = os.environ.get("FOREMAN_SERVICE", "agent-forge-foreman")     # + "-<project>" for named projects
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
+JOBS = {}
+
+
+def start_job(kind, fn):
+    jid = f"{kind}-{int(time.time() * 1000)}"
+    JOBS[jid] = {"id": jid, "kind": kind, "state": "running", "log": "", "started": time.time()}
+    threading.Thread(target=fn, args=(JOBS[jid],), daemon=True).start()
+    return JOBS[jid]
+
+
+def add_worker_job(job):
+    """Next free worker-N: Forgejo account + token, keyring password, HOME volume, container (bin/worker-add). The agy login is a
+    separate interactive step (LOGIN) because it needs the owner to open a URL with that worker's Google account."""
+    try:
+        out = ssh_run("docker ps -a --format '{{.Names}}'", timeout=20)
+        nums = [int(x.split("-")[1]) for x in out.split() if re.fullmatch(r"worker-\d+", x)]
+        n = max(nums or [0]) + 1
+        job["worker"] = f"worker-{n}"
+        job["log"] += f"creating worker-{n}...\n"
+        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n} 2>&1", timeout=1500)
+        job["log"] += ANSI.sub("", o + e)[-4000:]
+        job["state"] = "done" if rc == 0 else "failed"
+    except Exception as ex:
+        job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
+
+
+class LoginSessions:
+    """`docker exec -it worker-N agy-run` with a real terminal (ssh -tt / a local pty), so the owner can do agy's interactive
+    login from the browser: the page shows the output (the login URL) and sends the code back."""
+    def __init__(self):
+        self.s = {}
+        self.lock = threading.Lock()
+
+    def start(self, w):
+        with self.lock:
+            old = self.s.get(w)
+            if old and old["proc"].poll() is None:
+                return {"ok": True, "note": "already running"}
+            cmd = f"docker exec -it {w} agy-run"
+            if VM_IP:
+                argv = SSH_BASE[:1] + ["-tt"] + SSH_BASE[1:] + [cmd]
+                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+                rfd, wf = proc.stdout.fileno(), proc.stdin
+            else:
+                import pty
+                mfd, sfd = pty.openpty()
+                proc = subprocess.Popen(["docker", "exec", "-it", w, "agy-run"], stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
+                os.close(sfd)
+                rfd, wf = mfd, None
+            sess = {"proc": proc, "rfd": rfd, "wf": wf, "buf": "", "started": time.time()}
+            self.s[w] = sess
+            ALL_PROCS.append(proc)
+            threading.Thread(target=self._pump, args=(sess,), daemon=True).start()
+            return {"ok": True}
+
+    def _pump(self, sess):
+        while True:
+            try:
+                chunk = os.read(sess["rfd"], 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            sess["buf"] = (sess["buf"] + ANSI.sub("", chunk.decode(errors="replace")))[-20000:]
+
+    def send(self, w, text):
+        sess = self.s.get(w)
+        if not sess or sess["proc"].poll() is not None:
+            return {"error": "no running login session"}
+        data = (text + "\r").encode()
+        if sess["wf"]:
+            sess["wf"].write(data); sess["wf"].flush()
+        else:
+            os.write(sess["rfd"], data)
+        return {"ok": True}
+
+    def read(self, w):
+        sess = self.s.get(w)
+        if not sess:
+            return {"running": False, "output": ""}
+        out = sess["buf"]
+        urls = re.findall(r"https://[^\s'\"<>]+", out)
+        return {"running": sess["proc"].poll() is None, "output": out[-6000:], "url": urls[-1] if urls else None}
+
+    def stop(self, w):
+        sess = self.s.pop(w, None)
+        if sess and sess["proc"].poll() is None:
+            try:
+                os.killpg(sess["proc"].pid, signal.SIGTERM)
+            except Exception:
+                sess["proc"].terminate()
+        ok = "Five Hour" in ssh_run(f"docker exec {w} agy-run -p /usage --print-timeout 60s 2>/dev/null", timeout=90)
+        return {"ok": True, "logged_in": ok}
+
+
+LOGIN = LoginSessions()
 
 
 def ssh_run_full(remote_cmd, timeout=30, inp=None):
@@ -439,6 +537,20 @@ PAGE = r"""<!DOCTYPE html>
   .projsel { background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:13px; font-weight:600; }
   .resume-btn { font-size:12.5px; font-weight:700; padding:4px 12px; border-radius:999px; border:0; background:var(--ok); color:#06130d; cursor:pointer; }
   .resume-btn:disabled { opacity:.6; cursor:default; }
+  .warnbtn, .badbtn, .mini { font-size:12.5px; font-weight:700; padding:5px 12px; border-radius:999px; border:0; cursor:pointer; }
+  .warnbtn { background:var(--warn); color:#1a1205; } .badbtn { background:var(--bad); color:#fff; } .mini { background:var(--card2); color:var(--text); border:1px solid var(--line); font-weight:600; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .btnrow.sticky { position:sticky; bottom:0; background:var(--bg); padding:10px 0; }
+  .setcard { background:var(--card); border-radius:12px; padding:12px; margin-bottom:12px; }
+  .setcard h3 { margin-top:0; }
+  .setrow { display:grid; grid-template-columns:minmax(150px, 40%) 1fr; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--line); font-size:13.5px; }
+  @media (max-width:560px) { .setrow { grid-template-columns:1fr; gap:4px; } }
+  .setrow input[type=text], .setrow input[type=number], .setrow select { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; }
+  .seterr { color:var(--bad); font-size:12px; margin-top:3px; }
+  .prov, .poolrow { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; }
+  .prov .mini { padding:2px 8px; margin-left:4px; }
+  .term { background:#0b0d10; color:#d6dbe3; max-height:45dvh; overflow:auto; white-space:pre-wrap; font-size:12px; }
+  #login-in { background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px 9px; font:inherit; }
   .stats { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .stat { background:var(--card); border-radius:10px; padding:6px 10px; min-width:88px; }
   .stat b { display:block; font-size:16px; }
@@ -568,6 +680,7 @@ PAGE = r"""<!DOCTYPE html>
     <button data-t="timeline">Časová os</button>
     <button data-t="live">Live <span class="cnt" id="c-live">0</span></button>
     <button data-t="metrics">Metriky</button>
+    <button data-t="settings">Nastavenia</button>
     <button data-t="events">Udalosti</button>
   </nav>
 </header>
@@ -584,9 +697,17 @@ PAGE = r"""<!DOCTYPE html>
   <section id="t-timeline"><div id="timeline"></div></section>
   <section id="t-live"><div id="grid" class="grid"></div></section>
   <section id="t-metrics"><div id="metrics"></div></section>
+  <section id="t-settings"><div id="settings"></div></section>
   <section id="t-events"><div id="events"></div></section>
 </main>
 <div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
+<div class="detail" id="login"><div class="sheet"><button class="close" id="login-close">Zavrieť</button><h2 id="login-title">Prihlásenie</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">Toto je terminál workera. Otvor odkaz, prihlás sa Google účtom určeným pre tohto workera, skopíruj kód
+  a pošli ho sem. Ak sa agy na niečo pýta, odpovedz tu.</div>
+  <div id="login-url" style="font-size:13px;margin:6px 0"></div>
+  <pre id="login-out" class="term"></pre>
+  <div class="btnrow"><input type="text" id="login-in" placeholder="kód alebo odpoveď" style="flex:1"><button class="mini" id="login-send">Poslať</button></div>
+  <div class="btnrow"><button class="resume-btn" id="login-done">Hotovo — overiť prihlásenie</button></div></div></div>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit'}); };
@@ -621,25 +742,171 @@ document.addEventListener('click', e => {
 });
 document.getElementById('ask-btn').addEventListener('click', askTeam);
 
-let resuming = false;
-async function resumeDev() {
-  if (resuming) return;
-  resuming = true;
-  const btn = document.getElementById('resume-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Pokračujem…'; }
-  let res;
-  try {
-    res = await (await fetch('/api/resume', {method: 'POST'})).json();
-  } catch (e) {
-    res = {ok: false, steps: [{label: 'spojenie', ok: false, output: String(e)}]};
-  }
-  resuming = false;
+// ---- kill switch (per project; "all" = every project)
+let ksBusy = false;
+async function killswitch(action, opts) {
+  opts = opts || {};
+  if (ksBusy) return;
+  const hard = !!opts.hard, all = !!opts.all;
+  if (action === 'on' && !confirm((all ? 'Zastaviť VŠETKY projekty' : 'Zastaviť projekt „' + project + '“') + (hard ? ' NATVRDO (zastaví aj kontajnery workerov)' : '') + '?')) return;
+  if (action === 'off' && F && F.killswitch && F.killswitch.hard && !confirm('Kill switch je v tvrdom režime. Spustiť workerov znova a pokračovať?')) return;
+  ksBusy = true;
   const box = document.getElementById('resume-result');
-  const lines = (res.steps || []).map(s => '<div class="ev ' + (s.ok ? 'good' : 'bad') + '">' + (s.ok ? '✓ ' : '✗ ') +
-    esc(s.label) + (s.output ? ': ' + esc(s.output) : '') + '</div>').join('');
-  box.innerHTML = lines;
-  box.style.display = 'block';
+  box.style.display = 'block'; box.innerHTML = '<div class="ev">' + (action === 'on' ? 'zastavujem…' : 'pokračujem…') + '</div>';
+  let res;
+  try { res = await (await fetch('/api/killswitch', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                       body: JSON.stringify({project, action, hard, all})})).json(); }
+  catch (e) { res = {ok: false, steps: [{label: 'spojenie', ok: false, output: String(e)}]}; }
+  ksBusy = false;
+  box.innerHTML = (res.steps || []).map(s => '<div class="ev ' + (s.ok ? 'good' : 'bad') + '">' + (s.ok ? '✓ ' : '✗ ') +
+    esc(s.label) + (s.output ? ': ' + esc(s.output) : '') + '</div>').join('') || esc(res.error || '');
   poll();
+}
+function resumeDev() { killswitch('off', {all: !!(F && F.killswitch && F.killswitch.scope === 'all')}); }
+
+// ---- settings tab
+let S = null, sLoadedFor = null, sErr = {}, sMsg = '';
+const LABEL = {PLAN_PROVIDERS: 'Kto plánuje (poradie)', REVIEW_PROVIDERS: 'Kto robí review (poradie)', CLAUDE_MODEL: 'Claude Code model',
+  AGY_PLAN_MODEL: 'Antigravity model pre plánovanie', AGY_REVIEW_MODEL: 'Antigravity model pre review', AGY_FALLBACK_MODEL: 'Antigravity záložný (Gemini)',
+  WORKER_MODEL: 'Model workerov', WORKER_MODEL_RISKY: 'Model workerov pre rizikové úlohy', ANTHROPIC_MODEL: 'Anthropic API model (platené)',
+  OPENAI_MODEL: 'OpenAI-compatible model (platené)', GEMINI_MODEL: 'Gemini API model (platené)', OWNER_LANG: 'Jazyk pre teba',
+  AUTOPILOT: 'Autopilot (sám vyberá ďalšie ciele)', AUTO_MERGE: 'Automatický merge', CONTINUE_CONVERSATIONS: 'Pokračovať v konverzácii pri oprave',
+  MAX_REWORK: 'Max. vrátení na úlohu', MAX_ACTIVE_GOALS: 'Max. aktívnych cieľov', SPLIT_AFTER_CAPS: 'Rozdeliť úlohu po N stropoch tokenov',
+  TASK_TOKEN_BUDGET: 'Cieľová veľkosť úlohy (tokeny)', MAX_PARALLEL: 'Max. súbežných behov', RUN_TOKEN_CAP: 'Strop tokenov na beh',
+  RUN_TIMEOUT_MIN: 'Časový limit behu (min)', QUOTA_MIN_5H_PCT: 'Minimálna 5h kvóta workera (%)', QUOTA_MIN_WEEK_PCT: 'Minimálna týždenná kvóta (%)',
+  CONSEC_FAIL_TRIP: 'Kill switch po N zlyhaniach za sebou'};
+const PROVLABEL = {'claude-cli': 'Claude Code (predplatné)', 'agy-claude': 'Claude cez Antigravity', 'agy-gemini': 'Gemini cez Antigravity',
+  'anthropic-api': 'Anthropic API (platené)', 'openai-api': 'OpenAI API (platené)', 'gemini-api': 'Gemini API (platené)'};
+async function loadSettings(force) {
+  if (!force && sLoadedFor === project && S) return;
+  sLoadedFor = project;
+  try { S = await (await fetch('/api/settings?project=' + encodeURIComponent(project))).json(); } catch (e) { S = {error: String(e)}; }
+  render(true);
+}
+function sval(k) { const el = document.getElementById('set-' + k); if (!el) return null;
+  if (el.dataset.kind === 'prov') return [...el.querySelectorAll('.prov')].filter(r => r.querySelector('input').checked).map(r => r.dataset.p).join(',');
+  if (el.dataset.kind === 'pool') return [...el.querySelectorAll('input:checked')].map(i => i.value).join(',');
+  if (el.type === 'checkbox') return el.checked ? '1' : '0';
+  return el.value.trim(); }
+function provEditor(k, v) {
+  const on = String(v || '').split(',').filter(Boolean), all = on.concat((S.providers || []).filter(p => !on.includes(p)));
+  return '<div class="provlist" id="set-' + k + '" data-kind="prov">' + all.map(p => '<div class="prov" data-p="' + esc(p) + '"><label><input type="checkbox"' +
+    (on.includes(p) ? ' checked' : '') + '> ' + esc(PROVLABEL[p] || p) + '</label><span><button class="mini" data-mv="-1">↑</button><button class="mini" data-mv="1">↓</button></span></div>').join('') + '</div>';
+}
+function modelSel(k, v, allowEmpty, emptyLabel) {
+  const ms = (S.models || []).map(m => m.id), opts = (allowEmpty ? [''] : []).concat(ms.includes(v) || !v ? ms : [v].concat(ms));
+  return '<select id="set-' + k + '">' + opts.map(m => '<option value="' + esc(m) + '"' + (m === v ? ' selected' : '') + '>' +
+    esc(m ? ((S.models || []).find(x => x.id === m) || {name: m}).name + ' (' + m + ')' : emptyLabel) + '</option>').join('') + '</select>';
+}
+function field(k, inner) { return '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + '</label><div>' + inner +
+  (sErr[k] ? '<div class="seterr">' + esc(sErr[k]) + '</div>' : '') + '</div></div>'; }
+function settingsHtml() {
+  if (!S) { loadSettings(); return '<div class="empty">načítavam…</div>'; }
+  if (S.error) return '<div class="empty">Nastavenia nie sú dostupné: ' + esc(S.error) + '</div>';
+  const V = S.values || {}, num = k => '<input type="number" id="set-' + k + '" value="' + esc(V[k]) + '">',
+        txt = k => '<input type="text" id="set-' + k + '" value="' + esc(V[k]) + '">', tog = k => '<input type="checkbox" id="set-' + k + '"' + (String(V[k]) === '1' ? ' checked' : '') + '>';
+  const ks = F && F.killswitch, pool = String(V.WORKERS || '').split(',').filter(Boolean);
+  let h = '<div class="setcard"><h3>Kill switch</h3><div class="muted" style="font-size:12.5px;margin-bottom:8px">' +
+    (ks ? 'ZAPNUTÝ' + (ks.scope === 'all' ? ' pre všetky projekty' : ' pre tento projekt') + (ks.hard ? ' (natvrdo)' : '') + ' — ' + esc(ks.reason || '') : 'vypnutý — projekt beží') + '</div>' +
+    '<div class="btnrow">' + (ks ? '<button class="resume-btn" onclick="resumeDev()">Pokračovať</button>' :
+      '<button class="warnbtn" onclick="killswitch(\'on\')">Zastaviť projekt</button><button class="badbtn" onclick="killswitch(\'on\',{hard:true})">Zastaviť natvrdo</button>') +
+    '<button class="badbtn" onclick="killswitch(\'on\',{all:true})">Zastaviť všetky projekty</button></div></div>';
+  h += '<div class="setcard"><h3>Workeri tohto projektu</h3><div class="muted" style="font-size:12.5px">Zaškrtnutí patria projektu „' + esc(project) +
+    '“. Nikto zaškrtnutý = všetci. Každý worker je samostatný Antigravity účet.</div><div id="set-WORKERS" data-kind="pool" class="pool">' +
+    (S.workers || []).map(w => '<div class="poolrow"><label><input type="checkbox" value="' + esc(w.name) + '"' + (pool.includes(w.name) ? ' checked' : '') + '> ' + esc(w.name) +
+      ' <span class="muted">(' + esc(w.state) + ')</span></label><button class="mini" data-login="' + esc(w.name) + '">prihlásiť do Antigravity</button></div>').join('') +
+    '</div>' + (sErr.WORKERS ? '<div class="seterr">' + esc(sErr.WORKERS) + '</div>' : '') +
+    '<div class="btnrow"><button class="mini" id="add-worker">+ Pridať workera</button><span id="addw-status" class="muted" style="font-size:12.5px"></span></div></div>';
+  h += '<div class="setcard"><h3>Orchestrátor</h3>' + field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS', V.PLAN_PROVIDERS)) +
+    field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS', V.REVIEW_PROVIDERS)) +
+    field('CLAUDE_MODEL', '<select id="set-CLAUDE_MODEL">' + ['sonnet', 'opus', 'haiku', 'fable'].concat(['sonnet', 'opus', 'haiku', 'fable'].includes(V.CLAUDE_MODEL) ? [] : [V.CLAUDE_MODEL])
+      .map(m => '<option' + (m === V.CLAUDE_MODEL ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select>') +
+    field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL', V.AGY_PLAN_MODEL)) + field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL', V.AGY_REVIEW_MODEL)) +
+    field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL', V.AGY_FALLBACK_MODEL)) +
+    '<details><summary class="muted">Platené API (len ak sú vyššie zaškrtnuté a máš kľúč)</summary>' + field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL')) +
+    field('OPENAI_MODEL', txt('OPENAI_MODEL')) + field('GEMINI_MODEL', txt('GEMINI_MODEL')) + '</details></div>';
+  h += '<div class="setcard"><h3>Workeri — modely</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'predvolený (' + (S.limits_worker_model || '') + ')')) +
+    field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'rovnaký ako bežné úlohy')) +
+    '<div class="btnrow"><button class="mini" id="refresh-models">obnoviť zoznam modelov z Antigravity</button></div></div>';
+  h += '<div class="setcard"><h3>Správanie</h3>' + field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) +
+    field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) + field('OWNER_LANG', txt('OWNER_LANG')) + field('MAX_REWORK', num('MAX_REWORK')) +
+    field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS')) + field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET')) + '</div>';
+  h += '<div class="setcard"><h3>Limity <span class="pill warn">platia pre VŠETKY projekty</span></h3>' +
+    ['MAX_PARALLEL', 'RUN_TOKEN_CAP', 'RUN_TIMEOUT_MIN', 'QUOTA_MIN_5H_PCT', 'QUOTA_MIN_WEEK_PCT', 'CONSEC_FAIL_TRIP'].map(k => field(k, num(k))).join('') +
+    ((S.workers || []).length > Number(V.MAX_PARALLEL) ? '<div class="seterr">Workerov je viac (' + S.workers.length + ') ako MAX_PARALLEL — niektorí budú stáť.</div>' : '') + '</div>';
+  h += '<div class="btnrow sticky"><button class="resume-btn" id="save-settings">Uložiť zmeny</button><span class="muted" style="font-size:12.5px">' + esc(sMsg) + '</span></div>';
+  return h;
+}
+async function saveSettings() {
+  const V = S.values || {}, changes = {};
+  for (const k of Object.keys(V)) { const v = sval(k); if (v !== null && String(v) !== String(V[k])) changes[k] = v; }
+  if (!Object.keys(changes).length) { sMsg = 'nič sa nezmenilo'; render(true); return; }
+  let r;
+  try { r = await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, changes})})).json(); }
+  catch (e) { r = {ok: false, errors: {_: String(e)}}; }
+  sErr = r.errors || {};
+  sMsg = r.ok ? 'uložené: ' + Object.keys(changes).join(', ') + ' — platí od najbližšieho kola (do 20 s)' : 'neuložené — oprav označené polia' + (sErr._ ? ': ' + sErr._ : '');
+  if (r.ok) { await loadSettings(true); return; }
+  // keep everything the owner typed: only mark the bad fields
+  document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
+  for (const [k, msg] of Object.entries(sErr)) {
+    const el = document.getElementById('set-' + k);
+    if (el) el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
+  }
+  const st = document.querySelector('#settings .btnrow.sticky .muted'); if (st) st.textContent = sMsg;
+  sErr = {};
+}
+document.addEventListener('click', async e => {
+  const mv = e.target.closest('[data-mv]');
+  if (mv) { const row = mv.closest('.prov'), d = Number(mv.dataset.mv);
+    if (d < 0 && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
+    if (d > 0 && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); return; }
+  if (e.target.id === 'save-settings') { saveSettings(); return; }
+  if (e.target.id === 'refresh-models') { e.target.textContent = 'načítavam…';
+    try { await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, refresh_models: true})}); } catch (err) {}
+    loadSettings(true); return; }
+  if (e.target.id === 'add-worker') { addWorker(); return; }
+  const lg = e.target.closest('[data-login]'); if (lg) { openLogin(lg.dataset.login); return; }
+  if (e.target.id === 'login-send') { const i = document.getElementById('login-in');
+    await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'input', text: i.value})}); i.value = ''; return; }
+  if (e.target.id === 'login-done' || e.target.id === 'login-close') { closeLogin(e.target.id === 'login-done'); return; }
+});
+
+// ---- add a worker, then log it in
+async function addWorker() {
+  if (!confirm('Vytvoriť nového workera (Forgejo účet, kontajner)? Potom ho prihlásiš jeho vlastným Google účtom.')) return;
+  const st = document.getElementById('addw-status');
+  let j = await (await fetch('/api/workers', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, action: 'add'})})).json();
+  while (j.state === 'running') { st.textContent = 'vytváram ' + (j.worker || '') + '… (prvý raz aj pár minút)'; await new Promise(r => setTimeout(r, 3000));
+    j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
+  st.textContent = j.state === 'done' ? j.worker + ' vytvorený — teraz ho prihlás' : 'zlyhalo: ' + (j.log || '').slice(-300);
+  await loadSettings(true);
+  if (j.state === 'done') openLogin(j.worker);
+}
+let loginW = null, loginTimer = null;
+async function openLogin(w) {
+  loginW = w;
+  const m = document.getElementById('login'); m.classList.add('on');
+  document.getElementById('login-title').textContent = 'Prihlásenie ' + w + ' do Antigravity';
+  document.getElementById('login-out').textContent = 'spúšťam…';
+  await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: w, action: 'start'})});
+  clearInterval(loginTimer);
+  loginTimer = setInterval(async () => {
+    let r; try { r = await (await fetch('/api/login?worker=' + encodeURIComponent(w))).json(); } catch (e) { return; }
+    const o = document.getElementById('login-out'), atBottom = o.scrollHeight - o.scrollTop - o.clientHeight < 30;
+    o.textContent = r.output || '(čakám na výstup…)'; if (atBottom) o.scrollTop = o.scrollHeight;
+    const u = document.getElementById('login-url');
+    u.innerHTML = r.url ? 'Otvor a prihlás sa <b>účtom pre ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
+  }, 1500);
+}
+async function closeLogin(check) {
+  clearInterval(loginTimer);
+  const st = document.getElementById('login-url');
+  if (check) st.textContent = 'overujem prihlásenie…';
+  let r = {}; try { r = await (await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'stop'})})).json(); } catch (e) {}
+  if (check) { alert(r.logged_in ? loginW + ' je prihlásený a vidí svoju kvótu. Zaškrtni ho v projekte a ulož.' : loginW + ' zatiaľ nie je prihlásený — skús to znova.'); }
+  document.getElementById('login').classList.remove('on');
+  loadSettings(true);
 }
 
 function pills() {
@@ -653,9 +920,9 @@ function pills() {
   if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman nebeží</span>');
   else if (F.killswitch) {
     p.push('<span class="pill bad">kill switch ZAP — ' + esc(F.killswitch.reason || '') + '</span>');
-    p.push(F.killswitch.hard
-      ? '<span class="pill bad">tvrdý režim — kontajnery zastavené, toto vyžaduje ručnú kontrolu</span>'
-      : '<button class="resume-btn" onclick="resumeDev()" id="resume-btn">Pokračovať</button>');
+    p.push((F.killswitch.scope === 'all' ? '<span class="pill bad">všetky projekty</span>' : '') +
+           (F.killswitch.hard ? '<span class="pill bad">natvrdo — workeri zastavení</span>' : '') +
+           '<button class="resume-btn" onclick="resumeDev()" id="resume-btn">Pokračovať</button>');
   }
   else if (F.paused) p.push('<span class="pill warn">foreman pozastavený</span>');
   else p.push('<span class="pill ok"><span class="dot running"></span>foreman beží</span>');
@@ -967,6 +1234,7 @@ function render(force) {
   else if (tab === 'events') setHTML('events', eventsHtml(), force);
   else if (tab === 'timeline') setHTML('timeline', timelineHtml(), force);
   else if (tab === 'metrics') setHTML('metrics', metricsHtml(), force);
+  else if (tab === 'settings' && (force || !document.getElementById('settings').contains(document.activeElement))) setHTML('settings', settingsHtml(), force);
   liveHtml();
   if (openTask) renderDetail();
 }
@@ -992,6 +1260,7 @@ document.getElementById('proj').addEventListener('change', e => {
   for (const k in lastHTML) delete lastHTML[k];
   for (const k in diffCache) delete diffCache[k];
   for (const id in paneEls) { paneEls[id].el.remove(); delete paneEls[id]; }
+  S = null; sLoadedFor = null; sErr = {}; sMsg = '';
   poll();
 });
 async function poll() {
@@ -1027,49 +1296,85 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _body(self):
+        try:
+            n = min(int(self.headers.get("Content-Length", "0")), 50000)
+            return json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return {}
+
     def do_POST(self):
+        body = self._body()
+        proj = str(body.get("project", "default"))
+        try:
+            pf = pflag(proj)
+        except ValueError:
+            self._json({"error": "bad project"}, 400); return
+        penv = f"FORGE_PROJECT={proj} " if pf else ""
         if self.path == "/api/ask":
-            try:
-                n = min(int(self.headers.get("Content-Length", "0")), 20000)
-                body = json.loads(self.rfile.read(n) or b"{}")
-                q = str(body.get("question", "")).strip()[:4000]
-                proj = str(body.get("project", "default"))
-                pflag(proj)
-            except Exception:
-                q = ""
+            q = str(body.get("question", "")).strip()[:4000]
             if not q:
                 self._json({"error": "empty question"}, 400); return
             if not ASK_LOCK.acquire(blocking=False):
                 self._json({"error": "another question is being answered - wait for it"}, 429); return
             try:
-                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pflag(proj)} ask", timeout=900, inp=q)
+                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} ask", timeout=900, inp=q)
             finally:
                 ASK_LOCK.release()
             self._json({"answer": out.strip() or (err.strip()[-500:] if rc else "(empty answer)")})
-            return
-        if self.path != "/api/resume":
-            self.send_response(404); self.end_headers(); return
-        steps = []
+        elif self.path in ("/api/killswitch", "/api/resume"):
+            action = "off" if self.path == "/api/resume" else str(body.get("action"))
+            scope = "--all " if body.get("all") else ""
+            steps = []
 
-        def run(label, cmd, timeout=30):
-            rc, out, err = ssh_run_full(cmd, timeout=timeout)
-            steps.append({"label": label, "ok": rc == 0, "output": (out or err or "").strip()[-600:]})
-            return rc == 0
-
-        rc, status_out, _ = ssh_run_full(f"cd {FORGE_DIR} && bin/killswitch status", timeout=15)
-        if "kill switch: off" in status_out:
-            self._json({"ok": True, "steps": [{"label": "status", "ok": True, "output": "kill switch is already off"}]})
-            return
-        if "(hard)" in status_out:
-            self._json({"ok": False, "steps": [{"label": "status", "ok": False,
-                        "output": "kill switch is in hard mode (containers stopped) — manual inspection required"}]})
-            return
-        run("acknowledge egress alerts", f"cd {FORGE_DIR} && bin/egress-report --ack", timeout=20)
-        ok_off = run("turn off kill switch", f"cd {FORGE_DIR} && bin/killswitch off --start", timeout=40)
-        rc, active_out, _ = ssh_run_full("systemctl is-active sandbox-foreman", timeout=10)
-        if active_out.strip() != "active":
-            run("restart foreman service", f"cd {FORGE_DIR} && sudo systemctl restart sandbox-foreman", timeout=30)
-        self._json({"ok": ok_off, "steps": steps})
+            def run(label, cmd, timeout=40):
+                rc, out, err = ssh_run_full(cmd, timeout=timeout)
+                steps.append({"label": label, "ok": rc == 0, "output": (out or err or "").strip()[-600:]})
+                return rc == 0
+            if action == "on":
+                ok = run("kill switch on" + (" (hard)" if body.get("hard") else ""),
+                         f"cd {FORGE_DIR} && {penv}bin/killswitch {scope}on{' --hard' if body.get('hard') else ''} --reason dashboard", timeout=90)
+            elif action == "off":
+                run("acknowledge egress alerts", f"cd {FORGE_DIR} && bin/egress-report --ack", timeout=30)
+                ok = run("kill switch off (+ start stopped containers)", f"cd {FORGE_DIR} && {penv}bin/killswitch {scope}off --start", timeout=120)
+                svc = FOREMAN_SERVICE + (f"-{proj}" if pf else "")
+                rc, active, _ = ssh_run_full(f"systemctl is-active {svc}", timeout=10)
+                if active.strip() != "active":
+                    run(f"restart {svc}", f"sudo systemctl restart {svc}", timeout=60)
+            else:
+                self._json({"error": "action must be on or off"}, 400); return
+            self._json({"ok": ok, "steps": steps})
+        elif self.path == "/api/settings":
+            if body.get("refresh_models"):
+                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} settings --refresh-models", timeout=200)
+                self._json(json.loads(out) if rc == 0 else {"error": err[-300:]}); return
+            changes = body.get("changes") or {}
+            if not isinstance(changes, dict) or not all(isinstance(k, str) and isinstance(v, (str, int)) for k, v in changes.items()):
+                self._json({"error": "changes must be an object of strings"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} settings apply", timeout=60,
+                                        inp=json.dumps({k: str(v) for k, v in changes.items()}))
+            try:
+                self._json(json.loads(out))
+            except Exception:
+                self._json({"ok": False, "errors": {"_": (err or out)[-300:]}})
+        elif self.path == "/api/workers":
+            if body.get("action") != "add":
+                self._json({"error": "unknown action"}, 400); return
+            self._json(start_job("add-worker", add_worker_job))
+        elif self.path == "/api/login":
+            w, act = str(body.get("worker", "")), str(body.get("action", ""))
+            if not re.fullmatch(r"worker-\d+", w):
+                self._json({"error": "bad worker"}, 400); return
+            if act == "start":
+                self._json(LOGIN.start(w))
+            elif act == "input":
+                self._json(LOGIN.send(w, str(body.get("text", ""))[:500]))
+            elif act == "stop":
+                self._json(LOGIN.stop(w))
+            else:
+                self._json({"error": "unknown action"}, 400)
+        else:
+            self.send_response(404); self.end_headers()
 
     def do_GET(self):
         if self.path == "/api/panes":
@@ -1096,6 +1401,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+        elif self.path.split("?")[0] == "/api/settings":
+            import urllib.parse
+            proj = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", ["default"])[0]
+            try:
+                pf = pflag(proj)
+            except ValueError:
+                self._json({"error": "bad project"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} settings", timeout=60)
+            try:
+                self._json(json.loads(out))
+            except Exception:
+                self._json({"error": (err or out)[-300:] or "settings need a newer bin/foreman"})
+        elif self.path.startswith("/api/jobs/"):
+            j = JOBS.get(self.path.rsplit("/", 1)[-1])
+            self._json(j or {"error": "unknown job"})
+        elif self.path.startswith("/api/login?"):
+            import urllib.parse
+            w = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("worker", [""])[0]
+            self._json(LOGIN.read(w) if re.fullmatch(r"worker-\d+", w) else {"error": "bad worker"})
         elif self.path == "/api/projects":
             self._json({"projects": PROJECTS["list"] or [{"name": "default"}]})
         elif self.path.split("?")[0] == "/api/foreman":

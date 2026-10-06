@@ -22,10 +22,19 @@ strong but not a VM boundary. Never put your real secrets, personal data or prod
 | Limits | runaway cost or loops | per-run timeout and token cap, quota floors, consecutive-failure kill switch |
 
 ### The kill switch
-`runs/KILLSWITCH` is a flag file. While it exists nothing is dispatched and running runs are killed within ~12 s. `--hard` also
-stops all worker containers and the proxy. It trips automatically on a HIGH egress alarm or `CONSEC_FAIL_TRIP` failed runs in a
-row. Clear it with `bin/egress-report --ack` (after reading the report) and `bin/killswitch off --start`, or the dashboard's
-"Continue" button for soft trips. Treat every HIGH alarm as a finding until you know why it happened.
+Every project has its own kill switch (`runs/KILLSWITCH` for the default project, `runs/projects/<name>/KILLSWITCH` otherwise) and
+there is one for all projects (`runs/KILLSWITCH-ALL`, `bin/killswitch --all`). While a project's switch (or the global one) is on,
+nothing of that project is dispatched and its running runs are killed within ~12 s. `--hard` also stops the project's worker
+containers (with `--all`: every worker and the proxy). A project's switch trips automatically on a HIGH egress alarm from one of
+its workers, or after `CONSEC_FAIL_TRIP` failed runs of that project in a row. Clear it with `bin/egress-report --ack` (after
+reading the report) and `bin/killswitch [--project X] off --start`, or the dashboard's "Continue" button. Treat every HIGH alarm
+as a finding until you know why it happened.
+
+### The dashboard is an admin console - keep it private
+Besides showing state, the dashboard can stop/continue projects, change settings (models, worker pools, behaviour and the
+global limits such as the token cap), create workers and run a worker's interactive agy login. Anyone who can reach it can do
+all of that. It binds to 127.0.0.1; publish it only to yourself (SSH tunnel, Tailscale serve - never `funnel`, never a public
+reverse proxy). Values are validated server-side against a fixed list of keys and formats before anything is written.
 
 ### The orchestrator cannot be steered by the code it reviews
 Review and planning calls are fresh sessions **without tools** (`claude -p --tools ""`; agy without
@@ -39,6 +48,7 @@ read by the foreman on the host and sent in headers only (never in URLs, so they
 containers never see them.
 
 ## Honest limits
+- The egress proxy is shared by all projects; an alarm acknowledged with `bin/egress-report --ack` is acknowledged for everyone.
 - The audit logs are protected against silent truncation by size high-water marks, not cryptographically. Someone with your
   user account on the machine can change them.
 - Containers share the kernel with the machine; a kernel exploit escapes them. That is why a VM is recommended.

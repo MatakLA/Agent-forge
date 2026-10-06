@@ -138,7 +138,7 @@ def finish(reason, rc):
         sbx.append_ledger(dict(run_id=m["run_id"], date=sbx.today(), at=sbx.now(), worker=W, task=m["task"], test=test,
                                reason=reason, exit_code=code, tokens=tokens, duration_s=dur, tool_calls=tools, egress_alarms=len(egress_high)))
         if not test:
-            led = [e for e in sbx.read_ledger() if not e.get("test")]
+            led = [e for e in sbx.read_ledger() if not e.get("test") and e.get("project", "") == sbx.PROJECT]   # this project only
             n = int(lim["CONSEC_FAIL_TRIP"])
             if reason != "ok":
                 sbx.alert(f"run {m['run_id']} ended with reason {reason} (exit {code}, {tokens} tokens)")

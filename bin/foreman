@@ -8,6 +8,8 @@
        bin/foreman questions                        things the roadmap could not decide without the owner
        bin/foreman diff <task-id>                   the diff the reviewer saw (or the merged PR's diff)
        bin/foreman projects [--json]                every project on this install (default + projects/<name>/)
+       bin/foreman settings [--refresh-models]      editable settings, worker containers and Antigravity models as JSON
+       echo '{"KEY": "value"}' | bin/foreman settings apply      validate + write (project keys to its config, limits to etc/limits.conf)
        bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak]
        --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
@@ -73,7 +75,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
             SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
             # this project's worker pool ("" = every worker container); risky tasks may use a stronger worker model
-            WORKERS="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40)
+            WORKERS="", WORKER_MODEL="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40)
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
@@ -1170,7 +1172,7 @@ def dispatch_ready():
         spec = os.path.join(FD, "tasks", t["id"] + ".md")
         open(spec, "w").write(worker_spec(t, continuing))
         env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
-               "DISPATCH_MODEL": C["WORKER_MODEL_RISKY"] if t.get("risk") == "risky" else ""}
+               "DISPATCH_MODEL": (C["WORKER_MODEL_RISKY"] if t.get("risk") == "risky" else "") or C["WORKER_MODEL"]}
         rc, out, err = sh([os.path.join(BIN, "dispatch"), w, spec], timeout=300, env=env)
         if rc != 0:
             reason = (err or out).strip()[-200:]
@@ -1293,7 +1295,21 @@ def feed_idle_workers():
         submit("next:autopilot", step_next)
 
 
+CONF_MTIME = {}
+
+
+def reload_conf_if_changed():
+    """Settings changed in the dashboard (or by hand) take effect on the next tick - no restart."""
+    paths = [os.path.join(ROOT, "etc", "foreman.conf")] + ([os.path.join(PDIR, "project.conf")] if PDIR else [])
+    mt = {p: os.path.getmtime(p) for p in paths if os.path.exists(p)}
+    if CONF_MTIME and mt != CONF_MTIME:
+        C.update(load_conf())
+        event("settings reloaded")
+    CONF_MTIME.clear(); CONF_MTIME.update(mt)
+
+
 def tick():
+    reload_conf_if_changed()
     collect()
     try:
         if os.path.exists(os.path.join(FD, "PAUSED")) or sbx.killswitch_active():
@@ -1435,6 +1451,90 @@ def ask(question):
     text, who = llm("ask", prompt)
     event(f"owner question answered by {who}: {question.strip()[:120]}")
     return text, who
+
+
+PROVIDERS_ALL = ("claude-cli", "agy-claude", "agy-gemini", "anthropic-api", "openai-api", "gemini-api")
+MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"
+# key -> (validation regex or (min, max), scope: "project" = this project's config, "limits" = etc/limits.conf for ALL projects)
+EDITABLE = {
+    "PLAN_PROVIDERS": (r"(%s)(,(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
+    "REVIEW_PROVIDERS": (r"(%s)(,(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
+    "CLAUDE_MODEL": (MODEL_RE, "project"), "AGY_PLAN_MODEL": (MODEL_RE, "project"), "AGY_REVIEW_MODEL": (MODEL_RE, "project"),
+    "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
+    "ANTHROPIC_MODEL": ("|" + MODEL_RE, "project"), "OPENAI_MODEL": ("|" + MODEL_RE, "project"), "GEMINI_MODEL": ("|" + MODEL_RE, "project"),
+    "WORKERS": (r"|worker-\d+(,worker-\d+)*", "project"), "OWNER_LANG": (r"[^\W\d_][^\W\d_ ]*( [^\W\d_]+)?", "project"),
+    "AUTOPILOT": (r"[01]", "project"), "AUTO_MERGE": (r"[01]", "project"), "CONTINUE_CONVERSATIONS": (r"[01]", "project"),
+    "MAX_REWORK": ((0, 10), "project"), "MAX_ACTIVE_GOALS": ((1, 50), "project"), "SPLIT_AFTER_CAPS": ((1, 10), "project"),
+    "TASK_TOKEN_BUDGET": ((50000, 5000000), "project"),
+    "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
+    "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
+}
+
+
+def conf_path(scope):
+    if scope == "limits":
+        return os.path.join(ROOT, "etc", "limits.conf")
+    return os.path.join(PDIR, "project.conf") if PDIR else os.path.join(ROOT, "etc", "foreman.conf")
+
+
+def write_conf(path, values):
+    """Update KEY=VALUE lines in place (keeping comments and order), append keys that are not there yet."""
+    lines = open(path).read().splitlines() if os.path.exists(path) else []
+    done = set()
+    for i, l in enumerate(lines):
+        k = l.split("=", 1)[0].strip()
+        if "=" in l and not l.lstrip().startswith("#") and k in values:
+            lines[i] = f"{k}={values[k]}"; done.add(k)
+    lines += [f"{k}={v}" for k, v in values.items() if k not in done]
+    tmp = path + ".tmp"
+    open(tmp, "w").write("\n".join(lines) + "\n")
+    os.replace(tmp, path)
+
+
+def settings_get():
+    lim = sbx.load_limits()
+    vals = {k: (lim[k] if sc == "limits" else C[k]) for k, (_, sc) in EDITABLE.items()}
+    rc, out, _ = sh(["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"], timeout=30)
+    allw = sorted((x.split() for x in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", x)), key=lambda x: int(x[0].split("-")[1]))
+    return dict(project=PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
+                limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
+                workers=[dict(name=n, state=st) for n, st in allw])
+
+
+def settings_apply(changes):
+    """Validate every value; write project keys to this project's config and limit keys to etc/limits.conf. Returns errors."""
+    errors, by_scope = {}, {}
+    for k, v in (changes or {}).items():
+        if k not in EDITABLE:
+            errors[k] = "not editable"; continue
+        rule, scope = EDITABLE[k]
+        v = str(v).strip()
+        if isinstance(rule, tuple):
+            if not re.fullmatch(r"\d+", v) or not rule[0] <= int(v) <= rule[1]:
+                errors[k] = f"number {rule[0]}-{rule[1]}"; continue
+        elif not re.fullmatch(rule, v):
+            errors[k] = "invalid value"; continue
+        by_scope.setdefault(scope, {})[k] = v
+    if errors:
+        return errors
+    for scope, vals in by_scope.items():
+        write_conf(conf_path(scope), vals)
+    event("settings changed: " + ", ".join(f"{k}={v}" for sc in by_scope.values() for k, v in sc.items())[:300])
+    return {}
+
+
+def models_cached(refresh=False):
+    """Models Antigravity offers (agy models, no quota used), cached for a day in runs/agy-models.json."""
+    p = os.path.join(sbx.RUNS, "agy-models.json")
+    d = jload(p, {})
+    if refresh or time.time() - d.get("at", 0) > 86400:
+        for w in workers():
+            rc, out, _ = sh(["docker", "exec", w, "agy-run", "models"], timeout=90)
+            ms = [dict(id=l.split("\t")[0].strip(), name=l.split("\t")[1].strip()) for l in out.splitlines()
+                  if "\t" in l and re.fullmatch(MODEL_RE, l.split("\t")[0].strip())]
+            if ms:
+                d = dict(at=time.time(), models=ms); jsave(p, d); break
+    return d.get("models", [])
 
 
 def list_projects():
@@ -1650,6 +1750,24 @@ def selftest():
         FD = old_fd
         sbx.FORGE_URL, sbx.FORGE_REPO, sbx.SECRETS, C["SHARED_FILES"] = old_url, old_repo, old_sec, old_shared
         shutil.rmtree(tmp, ignore_errors=True)
+    old_root, old_fd, st_dir = ROOT, FD, tempfile.mkdtemp(prefix="foreman-settings-")
+    os.makedirs(os.path.join(st_dir, "etc")); FD = os.path.join(st_dir, "fd"); os.makedirs(FD)
+    open(os.path.join(st_dir, "etc", "foreman.conf"), "w").write("# keep me\nCLAUDE_MODEL=sonnet\nAUTOPILOT=1\n")
+    open(os.path.join(st_dir, "etc", "limits.conf"), "w").write("# limits\nMAX_PARALLEL=4\n")
+    ROOT = st_dir
+    try:
+        errs = settings_apply({"CLAUDE_MODEL": "x; rm -rf /", "MAX_PARALLEL": "999", "NOPE": "1", "WORKERS": "worker-1,evil"})
+        check("settings_apply rejects shell-ish values, out-of-range numbers, unknown keys, bad pools - and writes nothing",
+              set(errs) == {"CLAUDE_MODEL", "MAX_PARALLEL", "NOPE", "WORKERS"} and "x; rm" not in open(os.path.join(st_dir, "etc", "foreman.conf")).read())
+        ok_ = settings_apply({"CLAUDE_MODEL": "opus", "WORKERS": "worker-1,worker-3", "WORKER_MODEL": "gemini-3.1-pro-high", "MAX_PARALLEL": "8",
+                              "OWNER_LANG": "Slovak"})
+        fc, lc = open(os.path.join(st_dir, "etc", "foreman.conf")).read(), open(os.path.join(st_dir, "etc", "limits.conf")).read()
+        check("settings_apply writes project keys in place (comments kept) and limits to etc/limits.conf",
+              not ok_ and "# keep me" in fc and "CLAUDE_MODEL=opus" in fc and "CLAUDE_MODEL=sonnet" not in fc and "WORKERS=worker-1,worker-3" in fc
+              and "MAX_PARALLEL=8" in lc and "MAX_PARALLEL=4" not in lc and "MAX_PARALLEL" not in fc)
+    finally:
+        ROOT, FD = old_root, old_fd
+        shutil.rmtree(st_dir, ignore_errors=True)
     ct = dict(id="0009-x", title="t", role="tester", branch="test/0009-x", goal="G1", spec="SPEC-TEXT", acceptance=["a"], files=["f.py"],
               attempts=1, feedback="add a test for empty input", last_run=dict(reason="token-cap", salvage=dict(rc=0)))
     full, short = worker_spec(ct), worker_spec(ct, continuing=True)
@@ -1706,6 +1824,13 @@ def main():
     elif a == ["questions"]:
         qs = jload(os.path.join(FD, "owner_questions.json"), [])
         print("\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1)) or "(no open questions)")
+    elif a[:1] == ["settings"]:
+        if a[1:2] == ["apply"]:
+            errs = settings_apply(json.loads(sys.stdin.read() or "{}"))
+            print(json.dumps({"ok": not errs, "errors": errs})); sys.exit(0 if not errs else 2)
+        if "--refresh-models" in a:
+            models_cached(refresh=True)
+        print(json.dumps(settings_get(), ensure_ascii=False))
     elif a[:1] == ["projects"]:
         ps = list_projects()
         if "--json" in a:

@@ -34,6 +34,8 @@ Passwords and tokens are written to `~/.config/sandbox/secrets/` (0600). Forgejo
 (`ssh -L 3000:127.0.0.1:3000 <vm>` from your laptop; log in as `forge-admin` with the password from the secrets directory).
 
 ## 4. Workers
+Easiest: dashboard → Settings → "+ Pridať workera" creates the next worker and opens a terminal for its Antigravity login (open
+the link with that worker's Google account, paste the code). By hand:
 ```bash
 bin/worker-add 1                       # Forgejo user + token, keyring password, HOME volume, container (builds the image once)
 docker exec -it worker-1 agy-run       # once per worker: log in with THAT worker's Google account (URL + code), then /exit
