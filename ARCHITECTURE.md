@@ -76,6 +76,21 @@ Rootless Forgejo on the internal network and `127.0.0.1`. Bots: `orchestrator` (
 used by the gate and the dashboard), `worker-N` (team `workers`, push branches). `main` is protected: no direct pushes, only the
 orchestrator merges.
 
+### Projects
+`bin/foreman --project NAME` (or `FORGE_PROJECT`) selects `projects/NAME/project.conf` (on top of `etc/foreman.conf`), its
+repository (`FORGE_REPO`), worker pool (`WORKERS`), team rules, vision, lessons and state (`runs/projects/NAME/foreman/`). Everything
+the foreman starts inherits the project, so dispatch, the gate and the PR tools work on that repository and workers use the clone
+`~/work/NAME`. The default project (no `--project`) keeps the original layout (`etc/`, `runs/foreman/`, `~/playground`). Run
+directories, the ledger, the kill switch and the egress proxy are shared.
+
+### Self-healing details
+- `auto_rebase()` (before every gate and on a merge conflict): orchestrator-bot rebase onto main; conflicts only in line-based
+  `SHARED_FILES` are resolved with `git merge-file --union`; anything else goes back to the worker without costing an attempt.
+- `run-supervisor` salvage: after a token-cap/timeout kill, `git add -A && commit && push` on the task branch (never main).
+- Split: `SPLIT_AFTER_CAPS` cap hits → `step_split` asks the planner for 2-3 smaller tasks; dependents are re-pointed.
+- Continuation: the agy `conversation_id` of each run is kept; a rework on the same worker passes `--conversation` and a short prompt.
+- Lessons: reviews may return `lesson`; stored in `lessons.md` per project, shown to planner, reviewer and workers.
+
 ### Roles (roles/) and prompts (prompts/)
 Each role file is a playbook - mission, what it owns, how it works, what it never does, definition of done. The planner sees the
 catalogue; the worker gets its role's full playbook in the task; the reviewer gets that role's definition of done.
@@ -88,7 +103,10 @@ single page on 127.0.0.1. Its only write action is "Continue" after a soft kill-
 
 | path | what |
 |---|---|
+| `projects/<name>/` | per-project config: project.conf, team-rules.md, vision.md, lessons.md |
+| `runs/foreman/` or `runs/projects/<name>/foreman/` | the foreman state of the default / a named project (the rows below) |
 | `runs/foreman/goals/*.json`, `tasks/*.json`, `*.md` | goals, tasks (spec, history, diff stats), the exact prompt each worker got |
+| `runs/foreman/diffs/<task>.diff` | the diff each review saw (dashboard diff viewer) |
 | `runs/foreman/events.jsonl`, `llm.jsonl` | everything the loop did; every orchestrator call with provider, duration and usage |
 | `runs/<UTC>-worker-N/` | one worker run: prompt, full agy event stream, meta (tokens, reason, quota before/after) |
 | `runs/ledger.jsonl`, `runs/ALERT`, `runs/KILLSWITCH` | run ledger, alerts, the kill switch flag |

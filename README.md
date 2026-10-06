@@ -64,6 +64,33 @@ bin/killswitch on [--hard]    # stop everything now
 The web dashboard (`web/server.py`, installed by `scripts/install-services`) shows the team, the task board with each task's
 spec, history and diff size, live worker transcripts, quota per account, and a one-click "Continue" after a soft kill-switch trip.
 
+## Several projects at once
+
+One install can run several projects side by side, each with its own orchestrator (foreman), repository, vision and worker pool:
+
+```bash
+bin/foreman init-project shop --repo acme/shop --workers worker-5,worker-6,worker-7,worker-8
+FORGE_REPO=acme/shop scripts/forge-bootstrap          # repository, access, protected main
+sudo scripts/install-services --project shop          # its own foreman service
+bin/foreman --project shop goal "Add a cart page"
+bin/foreman projects                                   # every project with its pool and state
+```
+
+With 8 workers that is e.g. workers 1-4 on the default project and 5-8 on `shop`. The kill switch and the egress proxy are shared
+(a safety stop stops everything); goals, tasks, lessons and quotas are per project. The dashboard has a project selector.
+
+## What the loop does so you do not have to
+
+- **Rebases for the worker.** Before a branch is tested it is rebased onto main by the orchestrator bot; append-conflicts in shared
+  registries (`SHARED_FILES` with .jsonl/.md/.txt/.csv) are merged keeping both sides. Only real conflicts go back to the worker.
+- **Never loses work.** A run stopped by its token cap or timeout has its unfinished work committed and pushed as a WIP commit; the
+  next attempt continues from it. A task stopped by the cap twice is split by the planner into smaller tasks.
+- **Continues instead of restarting.** A rework on the same worker resumes the worker's own agy conversation with a short prompt.
+- **Learns.** A review that sends work back may record one general lesson; lessons go into every later plan, review and task.
+- **Goal-level acceptance.** Each goal gets observable acceptance criteria; tasks are reviewed against them and the goal is only
+  closed when they hold.
+- **Structured answers.** Antigravity orchestrator calls use `--json-schema`, so plans and verdicts come back as valid JSON.
+
 ## Setup
 
 About an hour, most of it waiting for images. Full guide: **[docs/SETUP.md](docs/SETUP.md)**. In short:

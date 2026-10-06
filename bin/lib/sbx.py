@@ -26,7 +26,13 @@ _FORGE = _kv(os.path.join(ROOT, "etc", "forge.conf"))
 FORGE_URL = os.environ.get("FORGE_URL") or _FORGE.get("FORGE_URL", "http://127.0.0.1:3000")
 FORGE_REPO = os.environ.get("FORGE_REPO") or _FORGE.get("FORGE_REPO", "sandbox/playground")
 FORGE_ORG = FORGE_REPO.split("/")[0]
-WORKER_CLONE = "/home/worker/playground"
+# Several projects can share one Agent-Forge install (each with its own foreman, repository and worker pool: bin/foreman --project).
+# FORGE_PROJECT is set by bin/foreman for everything it starts; "" = the default project (legacy single-project layout).
+PROJECT = os.environ.get("FORGE_PROJECT", "")
+if PROJECT and not __import__("re").fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", PROJECT):
+    raise SystemExit(f"invalid FORGE_PROJECT {PROJECT!r} (lowercase letters, digits, dashes)")
+WORKER_CLONE = f"/home/worker/work/{PROJECT}" if PROJECT else "/home/worker/playground"
+SAFE_ARG = __import__("re").compile(r"[A-Za-z0-9._/:-]{1,200}")
 SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
 DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=1500000, DAILY_TOKEN_BUDGET=3000000,
                 MAX_RUNS_PER_DAY=6, MAX_PARALLEL=2, QUOTA_MODEL_FILTER="Gemini", QUOTA_MIN_5H_PCT=25,

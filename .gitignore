@@ -40,3 +40,6 @@ etc/foreman.conf
 etc/limits.conf
 etc/forge.conf
 etc/team-rules.md
+# Per-install projects (bin/foreman init-project) and their lessons
+projects/
+etc/lessons.md

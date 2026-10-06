@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Usage: scripts/forge-bootstrap        one-time (idempotent) setup of the internal Forgejo for Agent-Forge
+       FORGE_REPO=org/other scripts/forge-bootstrap     the same for a further project's repository (bin/foreman init-project)
 
 Run after `bin/egress-up` (it creates the internal docker network) on the machine that runs Agent-Forge. It:
   1. starts Forgejo (forgejo/docker-compose.yml) and waits until it answers
@@ -102,7 +103,14 @@ c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
 if not any(t["name"] == "workers" for t in teams or []):
     api("POST", f"/orgs/{ORG}/teams", admin, dict(name="workers", permission="write", includes_all_repositories=True,
                                                    units=["repo.code", "repo.pulls"]))
-say("team workers (write; bin/worker-add N adds worker-N)")
+# a further project in a new organisation: put the existing worker accounts into this org's team too
+c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
+wt = next(t for t in teams if t["name"] == "workers")
+_, users = api("GET", "/admin/users?limit=200", admin)
+for u in users or []:
+    if re.fullmatch(r"worker-\d+", u.get("login", "")):
+        api("PUT", f"/teams/{wt['id']}/members/{u['login']}", admin)
+say("team workers (write; existing worker-N accounts added; bin/worker-add N adds new ones)")
 # bin/worker-add looks up the team with the orchestrator token: make the orchestrator a member of the org (read)
 c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
 readers = next((t for t in teams if t["name"] == "bots-read"), None)

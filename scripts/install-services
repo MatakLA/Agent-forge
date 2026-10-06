@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Usage: sudo scripts/install-services [--web-port 8171]
+# Usage: sudo scripts/install-services [--web-port 8171]          the default project + the dashboard
+#        sudo scripts/install-services --project <name>             one more foreman for projects/<name> (bin/foreman init-project)
 # Installs and starts two systemd services for the Agent-Forge checkout this script lives in, running as the user who called sudo:
 #   agent-forge-foreman.service  bin/foreman run (the loop; restarts on failure)
 #   agent-forge-web.service      web/server.py on 127.0.0.1:<web-port> (the dashboard)
@@ -10,6 +11,30 @@ USER_NAME="${SUDO_USER:?run with sudo from your normal user}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PORT=8171; [[ "${1:-}" == "--web-port" ]] && PORT="${2:?}"
+if [[ "${1:-}" == "--project" ]]; then
+  P="${2:?project name}"; [[ "$P" =~ ^[a-z0-9][a-z0-9-]{0,39}$ && -f "$DIR/projects/$P/project.conf" ]] || { echo "no projects/$P/project.conf" >&2; exit 1; }
+  cat > "/etc/systemd/system/agent-forge-foreman-$P.service" <<UNIT
+[Unit]
+Description=Agent-Forge foreman for project $P
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$DIR
+Environment=HOME=$HOME_DIR PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 $DIR/bin/foreman --project $P run
+Restart=always
+RestartSec=30
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload && systemctl enable --now "agent-forge-foreman-$P.service"
+  systemctl --no-pager --lines=0 status "agent-forge-foreman-$P.service" | grep -E "●|Active:"
+  exit 0
+fi
 [[ -f "$DIR/etc/limits.conf" ]] || { echo "etc/limits.conf missing - copy etc/limits.example.conf first (docs/SETUP.md)" >&2; exit 1; }
 cat > /etc/systemd/system/agent-forge-foreman.service <<UNIT
 [Unit]

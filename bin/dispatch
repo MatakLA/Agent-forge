@@ -10,6 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import sbx, egress
 
 
+def _opt(name):
+    """Optional per-run settings bin/foreman passes in the environment; only plain identifiers are accepted."""
+    v = os.environ.get(name, "").strip()
+    return v if v and sbx.SAFE_ARG.fullmatch(v) else ""
+
+
 def refuse(msg, alert=False):
     print(f"REFUSED: {msg}", file=sys.stderr)
     if alert:
@@ -87,7 +93,8 @@ def main():
         open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
         open(run + "/task", "w").write(os.path.realpath(task) + "\n")
         json.dump(dict(run_id=os.path.basename(run), worker=worker, task=os.path.basename(task), test=bool(runner) and not os.environ.get('DISPATCH_RUNNER_COUNTS'), runner=runner,
-                       model=lim["WORKER_MODEL"],
+                       model=_opt("DISPATCH_MODEL") or lim["WORKER_MODEL"], project=sbx.PROJECT, repo=sbx.FORGE_REPO,
+                       branch=_opt("DISPATCH_BRANCH"), conversation=_opt("DISPATCH_CONVERSATION"),
                        limits=dict(timeout_min=minutes, token_cap=info["token_cap"], daily_budget=lim["DAILY_TOKEN_BUDGET"],
                                    tokens_used_today_before=info["tokens_used_today"]),
                        quota_before=info["quota_before"], dispatched=sbx.now()), open(run + "/meta.json", "w"), indent=1)

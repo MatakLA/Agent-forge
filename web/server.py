@@ -291,7 +291,18 @@ def quota_loop():
 
 
 FOREMAN_INTERVAL = 4
-FOREMAN = {"data": None, "at": 0, "error": "not loaded yet"}
+PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+FOREMAN_BY = {}           # project name -> {"data", "at", "error"}; "default" = the project without --project
+PROJECTS = {"list": [], "at": 0}
+
+
+def pflag(project):
+    """`--project NAME` for bin/foreman, "" for the default project; anything that is not a project name is rejected."""
+    if not project or project == "default":
+        return ""
+    if not PROJECT_RE.fullmatch(project):
+        raise ValueError("bad project")
+    return f" --project {project}"
 
 
 def foreman_from_old_json(d):
@@ -305,25 +316,40 @@ def foreman_from_old_json(d):
                 tasks=tasks, events=d.get("events", []), llm_today={}, today={}, old=True)
 
 
+def poll_project(name):
+    entry = FOREMAN_BY.setdefault(name, {"data": None, "at": 0, "error": "not loaded yet"})
+    out = ssh_run(f"cd {FORGE_DIR} && bin/foreman{pflag(name)} status --dashboard 2>/dev/null", timeout=12)
+    data = None
+    try:
+        data = json.loads(out)
+    except Exception:
+        if name == "default":
+            try:
+                data = foreman_from_old_json(json.loads(ssh_run(f"cd {FORGE_DIR} && bin/foreman status --json 2>/dev/null", timeout=12)))
+            except Exception:
+                pass
+    if data is not None:
+        entry.update(data=data, at=time.time(), error=None)
+    else:
+        entry["error"] = "cannot read foreman status (machine unavailable?)"
+
+
 def foreman_loop():
     while True:
         try:
-            out = ssh_run(f"cd {FORGE_DIR} && bin/foreman status --dashboard 2>/dev/null", timeout=12)
-            data = None
-            try:
-                data = json.loads(out)
-            except Exception:
+            if time.time() - PROJECTS["at"] > 30:
                 try:
-                    data = foreman_from_old_json(json.loads(ssh_run(f"cd {FORGE_DIR} && bin/foreman status --json 2>/dev/null", timeout=12)))
+                    lst = json.loads(ssh_run(f"cd {FORGE_DIR} && bin/foreman projects --json 2>/dev/null", timeout=15))
+                    PROJECTS.update(list=[p for p in lst if PROJECT_RE.fullmatch(p.get("name", ""))], at=time.time())
                 except Exception:
-                    pass
-            if data is not None:
-                FOREMAN.update(data=data, at=time.time(), error=None)
-            else:
-                FOREMAN["error"] = "cannot read foreman status (devbox unavailable?)"
+                    PROJECTS["at"] = time.time() - 20      # older foreman without `projects`: retry soon, default only meanwhile
+            names = [p["name"] for p in PROJECTS["list"]] or ["default"]
+            for n in names:
+                poll_project(n)
         except Exception as e:
             # whatever the cause, never let this thread die silently and leave the dashboard frozen on stale data forever
-            FOREMAN["error"] = f"foreman_loop crashed: {e}"
+            for e2 in FOREMAN_BY.values():
+                e2["error"] = f"foreman_loop crashed: {e}"
         time.sleep(FOREMAN_INTERVAL)
 
 
@@ -395,7 +421,7 @@ def shutdown(*_a):
 # ---- HTTP -----------------------------------------------------------------------------------------------------
 PAGE = r"""<!DOCTYPE html>
 <html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nexus dev tím</title>
+<title>Agent-Forge</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --card2:#22262f; --text:#e8e9ec; --muted:#8b8f99; --accent:#5b8def; --ok:#3ecf8e; --idle:#5a5f6b;
           --bad:#e5566d; --tool:#c9a84c; --warn:#e59a3c; --line:#2c313b; }
@@ -410,6 +436,7 @@ PAGE = r"""<!DOCTYPE html>
   h1 { font-size:17px; margin:0 6px 0 0; }
   .pill { font-size:12px; padding:3px 9px; border-radius:999px; background:var(--card2); color:var(--muted); white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
   .pill.ok { color:var(--ok); } .pill.bad { color:var(--bad); background:color-mix(in srgb, var(--bad) 14%, transparent); } .pill.warn { color:var(--warn); }
+  .projsel { background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:13px; font-weight:600; }
   .resume-btn { font-size:12.5px; font-weight:700; padding:4px 12px; border-radius:999px; border:0; background:var(--ok); color:#06130d; cursor:pointer; }
   .resume-btn:disabled { opacity:.6; cursor:default; }
   .stats { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
@@ -531,7 +558,7 @@ PAGE = r"""<!DOCTYPE html>
 </style></head>
 <body>
 <header>
-  <div class="top"><h1>Nexus — dev tím</h1><span id="pills"></span></div>
+  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="projekt"></select><span id="pills"></span></div>
   <div id="jserr" style="display:none; margin-top:8px; font-size:12.5px; color:var(--bad);"></div>
   <div id="resume-result" style="display:none; margin-top:8px; font-size:12.5px;"></div>
   <div class="stats" id="stats"></div>
@@ -567,9 +594,11 @@ const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const toda
   return today ? d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : d.toLocaleString('sk-SK', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now()/1000 - (typeof ts === 'number' ? ts : Date.parse(ts)/1000)));
   return s < 60 ? s + ' s' : s < 3600 ? Math.round(s/60) + ' min' : Math.round(s/3600) + ' h'; };
-const STATUS = {pending:'Čaká', running:'Beží', gate:'Kontrola', review:'Kontrola', done:'Hotovo', blocked:'Zaseknuté', cancelled:'Zrušené'};
+const STATUS = {splitting:'Delí sa', pending:'Čaká', running:'Beží', gate:'Kontrola', review:'Kontrola', done:'Hotovo', blocked:'Zaseknuté', cancelled:'Zrušené'};
 const roleCls = r => /secur/i.test(r) ? 'sec' : (/test/i.test(r) && !/develop/i.test(r)) ? 'test' : '';
-let tab = 'overview', F = null, P = {roster:{}, panes:[]}, openTask = null;
+let tab = 'overview', F = null, P = {roster:{}, panes:[]}, openTask = null, project = 'default';
+try { project = localStorage.getItem('af-project') || 'default'; } catch (e) {}
+const inPool = w => !F || !(F.pool || []).length || F.pool.includes(w);
 try { tab = localStorage.getItem('nexus-tab') || 'overview'; } catch (e) {}
 
 function setTab(t) {
@@ -665,8 +694,8 @@ function team() {
     '<div class="node-sub">' + (F && F.claude_until ? 'Claude cez Antigravity (náhradník)' : 'Claude Code Sonnet') + ' · plánuje, kontroluje, merguje</div>' +
     (steps || '<div class="node-sub">nič nerieši — čaká na workerov</div>') +
     (live.unavailable ? '<div class="step" style="color:var(--warn)">čaká: ' + esc(live.unavailable) + '</div>' : '') + '</div>';
-  const names = new Set(Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7)));
-  ts.forEach(t => t.worker && names.add(t.worker));
+  const names = new Set(Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7)).filter(inPool));
+  ts.forEach(t => t.worker && inPool(t.worker) && names.add(t.worker));
   const ws = [...names].sort().map(w => {
     const e = R['worker:' + w] || {}, t = ts.find(x => x.worker === w && x.status === 'running');
     const cool = live.cooldown && live.cooldown[w];
@@ -776,6 +805,7 @@ function liveHtml() {
   const ts = (F && F.tasks) || [];
   const seen = new Set();
   for (const p of panes) {
+    if (p.id.startsWith('worker:') ? !inPool(p.id.slice(7)) : project !== 'default') continue;
     seen.add(p.id);
     let pe = paneEls[p.id];
     if (!pe) {
@@ -880,7 +910,7 @@ function dagSvg(mine) {
 // ---- 4. diff of a task (what the reviewer saw, or the merged PR)
 async function loadDiff(id) {
   diffLoading.add(id); renderDetail();
-  try { diffCache[id] = await (await fetch('/api/diff?task=' + encodeURIComponent(id))).text(); }
+  try { diffCache[id] = await (await fetch('/api/diff?task=' + encodeURIComponent(id) + '&project=' + encodeURIComponent(project))).text(); }
   catch (e) { diffCache[id] = '(nepodarilo sa načítať: ' + e + ')'; }
   diffLoading.delete(id); renderDetail();
 }
@@ -916,7 +946,7 @@ async function askTeam() {
   if (!q) return;
   btn.disabled = true; btn.textContent = 'Orchestrátor premýšľa… (aj 1–2 min)';
   let r;
-  try { r = await (await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: q})})).json(); }
+  try { r = await (await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: q, project})})).json(); }
   catch (e) { r = {answer: '(chyba spojenia: ' + e + ')'}; }
   btn.disabled = false; btn.textContent = 'Spýtať sa';
   out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(bez odpovede)') + '</div>' + out.innerHTML;
@@ -942,8 +972,31 @@ function render(force) {
 }
 
 let foremanFetchedAt = 0;
+let projAt = 0;
+async function loadProjects() {
+  if (Date.now() - projAt < 30000) return;
+  projAt = Date.now();
+  let ps = [];
+  try { ps = (await (await fetch('/api/projects')).json()).projects || []; } catch (e) { return; }
+  const sel = document.getElementById('proj');
+  if (!ps.some(p => p.name === project)) project = (ps[0] || {name: 'default'}).name;
+  const html = ps.map(p => '<option value="' + esc(p.name) + '"' + (p.name === project ? ' selected' : '') + '>' + esc(p.name) +
+                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('');
+  if (sel.innerHTML !== html) sel.innerHTML = html;
+  sel.style.display = ps.length > 1 ? '' : 'none';
+}
+document.getElementById('proj').addEventListener('change', e => {
+  project = e.target.value;
+  try { localStorage.setItem('af-project', project); } catch (err) {}
+  F = null; openTask = null; lastDetailHtml = ''; document.getElementById('detail').classList.remove('on');
+  for (const k in lastHTML) delete lastHTML[k];
+  for (const k in diffCache) delete diffCache[k];
+  for (const id in paneEls) { paneEls[id].el.remove(); delete paneEls[id]; }
+  poll();
+});
 async function poll() {
-  try { const r = await (await fetch('/api/foreman')).json(); F = r.foreman; window._ferr = r.error; foremanFetchedAt = r.fetched_at || 0; } catch (e) {}
+  await loadProjects();
+  try { const r = await (await fetch('/api/foreman?project=' + encodeURIComponent(project))).json(); F = r.foreman; window._ferr = r.error; foremanFetchedAt = r.fetched_at || 0; } catch (e) {}
   try { P = await (await fetch('/api/panes')).json(); } catch (e) {}
   render();
 }
@@ -978,7 +1031,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/ask":
             try:
                 n = min(int(self.headers.get("Content-Length", "0")), 20000)
-                q = str(json.loads(self.rfile.read(n) or b"{}").get("question", "")).strip()[:4000]
+                body = json.loads(self.rfile.read(n) or b"{}")
+                q = str(body.get("question", "")).strip()[:4000]
+                proj = str(body.get("project", "default"))
+                pflag(proj)
             except Exception:
                 q = ""
             if not q:
@@ -986,7 +1042,7 @@ class Handler(BaseHTTPRequestHandler):
             if not ASK_LOCK.acquire(blocking=False):
                 self._json({"error": "another question is being answered - wait for it"}, 429); return
             try:
-                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman ask", timeout=900, inp=q)
+                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pflag(proj)} ask", timeout=900, inp=q)
             finally:
                 ASK_LOCK.release()
             self._json({"answer": out.strip() or (err.strip()[-500:] if rc else "(empty answer)")})
@@ -1025,18 +1081,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"roster": ROSTER.snapshot(), "panes": panes})
         elif self.path.startswith("/api/diff?"):
             import urllib.parse
-            tid = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("task", [""])[0]
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            tid, proj = qs.get("task", [""])[0], qs.get("project", ["default"])[0]
+            try:
+                pf = pflag(proj)
+            except ValueError:
+                self._json({"error": "bad project"}, 400); return
             if not re.fullmatch(r"\d{4}-[\w-]+", tid):
                 self._json({"error": "bad task id"}, 400); return
-            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman diff {tid}", timeout=40)
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} diff {tid}", timeout=40)
             raw = (out if rc == 0 else f"(chyba: {err.strip()[-300:]})").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
-        elif self.path == "/api/foreman":
-            self._json({"foreman": FOREMAN["data"], "fetched_at": FOREMAN["at"], "error": FOREMAN["error"]})
+        elif self.path == "/api/projects":
+            self._json({"projects": PROJECTS["list"] or [{"name": "default"}]})
+        elif self.path.split("?")[0] == "/api/foreman":
+            import urllib.parse
+            proj = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", ["default"])[0]
+            e = FOREMAN_BY.get(proj) or {"data": None, "at": 0, "error": "unknown project or not loaded yet"}
+            self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
         elif self.path in ("/", "/index.html"):
             raw = PAGE.encode()
             self.send_response(200)

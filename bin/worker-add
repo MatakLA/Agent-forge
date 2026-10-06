@@ -24,9 +24,17 @@ fi
 [ -s "$S/$U-keyring" ] || { openssl rand -base64 24 | tr -d '\n' > "$S/$U-keyring"; echo "created keyring password file"; }
 chmod 600 "$S"/"$U"*
 
-TEAM=$(curl -fsS -H "Authorization: token $OT" "$API/orgs/$FORGE_ORG/teams" | python3 -c "import json,sys;print(next(t['id'] for t in json.load(sys.stdin) if t['name']=='workers'))")
-curl -fsS -o /dev/null -X PUT -H "Authorization: token $OT" "$API/teams/$TEAM/members/$U"
-echo "$U is a member of team workers (id $TEAM)"
+# every project's organisation has a team "workers" (scripts/forge-bootstrap): join all of them, so the worker can serve any project
+ORGS="$FORGE_ORG"
+if [ -s "$S/forge-admin.token" ]; then
+  ORGS=$(curl -fsS -H "Authorization: token $OT" "$API/admin/orgs?limit=100" | python3 -c "import json,sys;print(' '.join(o['username'] for o in json.load(sys.stdin)))")
+fi
+for ORG in $ORGS; do
+  TEAM=$(curl -fsS -H "Authorization: token $OT" "$API/orgs/$ORG/teams" | python3 -c "import json,sys;print(next((t['id'] for t in json.load(sys.stdin) if t['name']=='workers'), ''))")
+  [ -n "$TEAM" ] || continue
+  curl -fsS -o /dev/null -X PUT -H "Authorization: token $OT" "$API/teams/$TEAM/members/$U"
+  echo "$U is a member of team workers in $ORG"
+done
 
 "$(dirname "$0")/worker-up" "$N"
 echo "container $U up. Next: owner logs in once:  docker exec -it $U agy-run"

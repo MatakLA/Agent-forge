@@ -7,6 +7,9 @@
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
        bin/foreman questions                        things the roadmap could not decide without the owner
        bin/foreman diff <task-id>                   the diff the reviewer saw (or the merged PR's diff)
+       bin/foreman projects [--json]                every project on this install (default + projects/<name>/)
+       bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak]
+       --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
        bin/foreman backlog [add "<goal>" | drop <n>] goals waiting for a free worker (taken in order when a worker would idle)
        bin/foreman autopilot on|off                 when a worker would idle and the backlog is empty, the orchestrator proposes
@@ -27,33 +30,66 @@ Worker runs go through bin/dispatch (all guards of etc/limits.conf apply), every
 container) before any LLM looks at it; merges through bin/open-pr + bin/merge-pr. State: runs/foreman/ (files only)."""
 import concurrent.futures as cf, datetime as dt, json, os, re, signal, subprocess, sys, time, traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+
+
+def _early_project():
+    """`--project NAME` (anywhere in argv) or FORGE_PROJECT selects a project: its own config (projects/NAME/project.conf),
+    repository, worker pool and state (runs/projects/NAME/). Must run before `import sbx`, which reads the environment."""
+    a, name = sys.argv, os.environ.get("FORGE_PROJECT", "")
+    if "--project" in a:
+        i = a.index("--project")
+        name = a[i + 1] if i + 1 < len(a) else ""
+        del a[i:i + 2]
+    if name and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
+        sys.exit(f"invalid project name {name!r} (lowercase letters, digits, dashes)")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pdir = os.path.join(root, "projects", name) if name else ""
+    if name:
+        os.environ["FORGE_PROJECT"] = name
+        conf = os.path.join(pdir, "project.conf")
+        if os.path.exists(conf):
+            for line in open(conf):
+                line = line.split("#", 1)[0].strip()
+                if line.startswith("FORGE_REPO="):
+                    os.environ["FORGE_REPO"] = line.split("=", 1)[1].strip().strip('"')
+        elif not (a[1:2] == ["init-project"]):
+            sys.exit(f"unknown project {name!r}: projects/{name}/project.conf is missing (bin/foreman init-project {name} --repo org/repo)")
+    return name, pdir
+
+
+PROJECT, PDIR = _early_project()
 import sbx
 
 ROOT, BIN = sbx.ROOT, os.path.dirname(os.path.abspath(__file__))
-FD = os.path.join(sbx.RUNS, "foreman")
+FD = os.path.join(sbx.RUNS, "projects", PROJECT, "foreman") if PROJECT else os.path.join(sbx.RUNS, "foreman")
 REPO = os.path.join(FD, "repo")
+CFG_DIR = PDIR or os.path.join(ROOT, "etc")         # where this project's team-rules.md and lessons.md live
 CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLAN_MODEL="claude-sonnet-4-6",
             AGY_FALLBACK_MODEL="gemini-3.1-pro-high", ANTHROPIC_MODEL="", OPENAI_MODEL="", GEMINI_MODEL="", OPENAI_API_BASE="https://api.openai.com/v1",
             # Which orchestrator answers each decision, tried in order. Free (subscription) providers: claude-cli (Claude Code),
             # agy-claude / agy-gemini (Antigravity in a worker container). Paid per-token APIs: anthropic-api, openai-api - only
             # used when listed here AND a key is configured (see docs/PROVIDERS.md).
-            PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli,agy-gemini",
+            PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli",
             MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
-            SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000)
+            SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
+            # this project's worker pool ("" = every worker container); risky tasks may use a stronger worker model
+            WORKERS="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40)
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
 def load_conf():
+    """etc/foreman.conf (shared defaults), then projects/<name>/project.conf (per project) on top."""
     c = dict(CONF)
-    try:
-        for line in open(os.path.join(ROOT, "etc", "foreman.conf")):
-            line = line.split("#", 1)[0].strip()
-            if "=" in line:
-                k, v = (x.strip() for x in line.split("=", 1))
-                if k in c:
-                    c[k] = type(CONF[k])(v)
-    except FileNotFoundError:
-        pass
+    for path in [os.path.join(ROOT, "etc", "foreman.conf")] + ([os.path.join(PDIR, "project.conf")] if PDIR else []):
+        try:
+            for line in open(path):
+                line = line.split("#", 1)[0].strip()
+                if "=" in line:
+                    k, v = (x.strip() for x in line.split("=", 1))
+                    if k in c:
+                        c[k] = type(CONF[k])(v.strip('"'))
+        except FileNotFoundError:
+            pass
     return c
 
 
@@ -242,17 +278,20 @@ def ready_tasks(ts, running_files):
 
 
 # ---------------------------------------------------------------- shell helpers
-def sh(args, timeout=600, cwd=None, inp=None):
+def sh(args, timeout=600, cwd=None, inp=None, env=None):
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=inp)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=inp,
+                           env=dict(os.environ, **env) if env else None)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:
         return 124, (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
 
 
 def workers():
+    """This project's worker pool: the running worker containers, limited to WORKERS when the project sets one."""
     rc, out, _ = sh(["docker", "ps", "--format", "{{.Names}}"], timeout=30)
-    return sorted(n for n in out.split() if re.fullmatch(r"worker-\d+", n))
+    pool = {w.strip() for w in str(C["WORKERS"]).split(",") if w.strip()}
+    return sorted(n for n in out.split() if re.fullmatch(r"worker-\d+", n) and (not pool or n in pool))
 
 
 def worker_busy(w):
@@ -342,21 +381,45 @@ def load_system_prompt():
     """Stable orchestrator system prompt: generic team rules (prompts/orchestrator.md), the role catalogue, and the
     project's own rules (etc/team-rules.md, optional). Passed as a system prompt so Claude Code can cache it."""
     parts = []
-    for p in (os.path.join(ROOT, "prompts", "orchestrator.md"), os.path.join(ROOT, "etc", "team-rules.md")):
+    for p in (os.path.join(ROOT, "prompts", "orchestrator.md"), os.path.join(CFG_DIR, "team-rules.md")):
         try:
             parts.append(open(p).read().strip())
         except FileNotFoundError:
             pass
     parts.append("## Role catalogue (assign exactly one per task; each worker gets the full playbook)\n" + role_catalogue())
+    ls = lessons()
+    if ls:
+        parts.append("## Lessons this team learned from earlier reworks (apply them when planning and reviewing)\n" + "\n".join(f"- {l}" for l in ls))
     return "\n\n".join(parts)
 
 
-def _agy(w, prompt, model):
+def lessons():
+    try:
+        return [l[2:].strip() for l in open(os.path.join(CFG_DIR, "lessons.md")) if l.startswith("- ")][-int(C["LESSONS_MAX"]):]
+    except FileNotFoundError:
+        return []
+
+
+def add_lesson(text, source):
+    """One general, reusable sentence from a review that sent work back. Deduplicated; only the newest LESSONS_MAX are used."""
+    text = " ".join(str(text or "").split())[:300]
+    if len(text) < 15 or text.lower() in {l.lower() for l in lessons()}:
+        return
+    p = os.path.join(CFG_DIR, "lessons.md")
+    new = not os.path.exists(p)
+    with open(p, "a") as f:
+        if new:
+            f.write("# Lessons learned (written by the orchestrator after reworks; edit or delete freely)\n\n")
+        f.write(f"- {text}\n")
+    event(f"lesson learned ({source}): {text[:160]}")
+
+
+def _agy(w, prompt, model, schema=None):
     """Tool-less Antigravity call (no --dangerously-skip-permissions): the reviewer/planner reads only what is in the prompt,
     so worker-written content in a diff cannot make it run commands. Runs from an empty working directory."""
     t0w = time.time()
     rc, out, err = sh(["docker", "exec", "-w", "/tmp", w, "agy-run", "-p", prompt, "--model", model, "--output-format", "stream-json",
-                       "--print-timeout", "15m"], timeout=1100)
+                       "--print-timeout", "15m"] + (["--json-schema", schema] if schema else []), timeout=1100)
     res = {}
     for line in out.splitlines():
         e = extract_json(line) if line.startswith("{") else None
@@ -384,7 +447,7 @@ def _via_agy(kind, prompt, family):
             RESERVED.add(w)
         LAST_LLM[w] = time.time()
         try:
-            ok, text, reset_ts, why = _agy(w, prompt, model)
+            ok, text, reset_ts, why = _agy(w, prompt, model, REVIEW_SCHEMA if kind == "review" else None if kind == "ask" else OBJECT_SCHEMA)
         finally:
             RESERVED.discard(w)
         if ok:
@@ -510,6 +573,7 @@ TASK_SCHEMA = """{"tasks": [{"key": "short-unique-key", "title": "...", "role": 
   "files": ["exact repo paths the task may create/modify"], "risk": "routine|risky",
   "spec": "markdown: precisely what to build/write - interfaces, data shapes, edge cases, which existing file to follow",
   "acceptance": ["verifiable criterion", "..."]}],
+ "goal_acceptance": ["observable outcome that proves the WHOLE goal works, e.g. an end-to-end behaviour", "..."],
  "notes": "one or two sentences for the owner"}"""
 
 PLAN_EXAMPLE = """Example of a GOOD plan for 4 workers and the goal "add a contacts module with birthdays":
@@ -521,7 +585,7 @@ Three tasks start at once; one waits for a real reason. A BAD plan chains store 
 
 
 def context_bundle():
-    vf = os.path.join(ROOT, C["VISION_FILE"])
+    vf = os.path.join(PDIR or ROOT, C["VISION_FILE"])
     vision = open(vf).read()[:30000] if os.path.exists(vf) else "(none)"
     hist = "\n".join(f"- {t['id']} [{t['status']}] {t['title']} ({t['role']})" for t in tasks()[-40:]) or "(none yet)"
     active = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals() if g["status"] in ("new", "active")) or "(none)"
@@ -554,9 +618,12 @@ def plan_prompt(g, followup=None):
                f"security-tester task only for risky work (money, personal data, security, dates/timezones) or when the goal asks.\n"
                f"- Size every task for about {C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger.\n"
                f"- Pick each task's role from the role catalogue; non-code roles (writer, designer, translator, analyst) are welcome when the "
-               f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n\n{PLAN_EXAMPLE}\n")
+               f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n- Write 2-5 goal_acceptance criteria: observable "
+               f"outcomes of the whole goal (not per task). Every task's spec must serve them; the goal is done only when all hold.\n\n{PLAN_EXAMPLE}\n")
     else:
-        ask = (f"## Goal from the owner\n{g['text']}\n\n## Results of this goal's tasks\n{followup}\n\nDecide whether the goal is achieved. "
+        ga = "\n".join(f"- {a}" for a in g.get("acceptance", [])) or "(none recorded - judge from the goal text)"
+        ask = (f"## Goal from the owner\n{g['text']}\n\n## Goal acceptance criteria\n{ga}\n\n## Results of this goal's tasks\n{followup}\n\n"
+               f"Check every goal acceptance criterion against the merged results. Decide whether the goal is achieved. "
                f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences for the owner\"}}. If not, reply with follow-up tasks "
                f"in the schema below (only what is genuinely missing, parallel where possible).\n")
     return head + ask + f"\nReply with ONLY one JSON object, no prose, in this schema:\n{TASK_SCHEMA}\n"
@@ -572,7 +639,7 @@ def review_prompt(t, gate_out, diff):
             f"you have. Your entire reply is one JSON object and nothing else.\n\n"
             f"## Task {t['id']}: {t['title']}\nRole: {t['role']}   Risk: {t.get('risk', 'routine')}   Attempt: {t['attempts'] + 1}\n"
             f"Allowed files: {', '.join(t.get('files', [])) or '(not restricted)'}\n\n### Spec\n{t['spec']}\n\n### Acceptance criteria\n" +
-            "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n{dod}"
+            "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n{dod}" + goal_context(t) +
             f"\n## Deterministic gate (full test suite in a clean, offline container + static scans)\n```\n{gate_out[-6000:]}\n```\n\n"
             f"## Diff against main\n```diff\n{diff}\n```\n\n"
             "Approve when the acceptance criteria are met and nothing is faked; do not demand gold-plating. An EMPTY diff with a passing gate "
@@ -581,37 +648,73 @@ def review_prompt(t, gate_out, diff):
             "security tester by what they found or covered, a writer/designer by the deliverable's quality for its audience.\n"
             'Reply with ONLY: {"verdict": "approve" | "rework" | "reject", "feedback": "concrete, actionable instructions for the worker '
             '(rework) or a one-line summary (approve)", "mutations": [{"name": "...", "file": "repo/path", "old": "exact existing text", '
-            '"new": "replacement"}]}\nUse "reject" only when the task itself is wrong/impossible.\n')
+            '"new": "replacement"}], "lesson": "only when sending work back: ONE general sentence that would have prevented this mistake in '
+            'ANY future task (not specific to this file), else empty"}\nUse "reject" only when the task itself is wrong/impossible.\n')
 
 
-def worker_spec(t):
+def goal_context(t):
+    g = jload(os.path.join(FD, "goals", t["goal"] + ".json")) or {}
+    ga = g.get("acceptance") or []
+    return ("\n## The goal this task serves\n" + str(g.get("text", ""))[:600] +
+            ("\nThe goal is done when:\n" + "\n".join(f"- {a}" for a in ga) if ga else "") + "\n") if g else ""
+
+
+REVIEW_SCHEMA = json.dumps({"type": "object", "required": ["verdict", "feedback"], "properties": {
+    "verdict": {"type": "string", "enum": ["approve", "rework", "reject"]}, "feedback": {"type": "string"}, "lesson": {"type": "string"},
+    "mutations": {"type": "array", "items": {"type": "object", "required": ["name", "file", "old", "new"], "properties": {
+        "name": {"type": "string"}, "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}}}}})
+OBJECT_SCHEMA = json.dumps({"type": "object"})
+
+
+def clone_hint():
+    return "~/" + os.path.relpath(sbx.WORKER_CLONE, "/home/worker")
+
+
+def rules_block(t):
     pd = C["PROJECT_DIR"].strip("/")
     agents = f"`{pd}/AGENTS.md`" if pd else "`AGENTS.md`"
-    pb = role_playbook(t["role"])
-    s = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `~/playground`   Goal: {t['goal']}\n",
-         f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n"),
-         "## The task\n" + t["spec"].rstrip() + "\n", "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
-         "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
-         "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n",
-         f"""## How you work (always)
-- Work only inside `~/playground`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
+    ls = lessons()
+    return (f"""## How you work (always)
+- Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
   the whole team), do not touch git config.
-- Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout {t['branch']}` and continue from it (it holds earlier
-  attempts - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.
-- Budget: about {C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. So COMMIT AND PUSH AFTER EVERY GREEN STEP
-  (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`) - work that is only staged or only local is lost when the
-  run is killed. Do not re-read large files you already read.
+- Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout -B {t['branch']} origin/{t['branch']}` and continue from it
+  (it holds earlier attempts and possibly an auto-saved WIP commit - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.
+- Budget: about {C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
+  (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`). Do not re-read large files you already read.
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Trial and error until the FULL suite passes: run `python3 -m pytest -q` from the repo root, read failures, fix, repeat.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Never push `main`, never open a PR.
 - Final reply: what you did, the final pytest summary line, and anything you could not do and why.
-"""]
+""" + ("\n## Team lessons (from earlier reworks - avoid repeating them)\n" + "\n".join(f"- {l}" for l in ls) + "\n" if ls else ""))
+
+
+def rework_block(t):
+    s = []
+    lr = t.get("last_run") or {}
+    if lr.get("reason") in ("token-cap", "timeout"):
+        s.append(f"Your previous run was stopped by its {lr['reason']}" + (" - your unfinished work was auto-saved as a WIP commit on the branch, "
+                 "continue from it" if (lr.get("salvage") or {}).get("rc") == 0 else "") + ". Work in smaller steps and push after each.\n")
     if t.get("feedback"):
         s.append(f"## Rework - attempt {t['attempts'] + 1} of {C['MAX_REWORK'] + 1}. The reviewer sent your branch back:\n{t['feedback']}\n")
         if t.get("gate_tail"):
             s.append(f"Gate output (tests in a clean container):\n```\n{t['gate_tail'][-3000:]}\n```\n")
     return "\n".join(s)
+
+
+def worker_spec(t, continuing=False):
+    """The prompt a worker gets. `continuing`: the worker resumes its own earlier agy conversation (it already has the full
+    task and playbook), so it only needs what changed - much shorter, and no re-reading of the repository."""
+    if continuing:
+        return "\n".join([f"# Task {t['id']} - continue (same branch `{t['branch']}`)\n", rework_block(t), rules_block(t)])
+    pb = role_playbook(t["role"])
+    s = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `{clone_hint()}`   Goal: {t['goal']}\n",
+         f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n"),
+         "## The task\n" + t["spec"].rstrip() + "\n", "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
+         goal_context(t),
+         "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
+         "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n", rules_block(t), rework_block(t)]
+    return "\n".join(x for x in s if x)
 
 
 # ---------------------------------------------------------------- steps (run in worker threads, return a function applied in the main loop)
@@ -647,8 +750,51 @@ def step_plan(g, followup=None):
                            depends_on=[keys[k] for k in x.get("depends_on", []) if k in keys], spec=str(x.get("spec", "")),
                            acceptance=[str(a) for a in x.get("acceptance", [])], status="pending", attempts=0, history=[],
                            created=sbx.now(), planned_by=who))
-        g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=d.get("notes", "")); save_goal(g2)
+        g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=d.get("notes", ""))
+        if d.get("goal_acceptance") and not g2.get("acceptance"):
+            g2["acceptance"] = [str(a)[:300] for a in d["goal_acceptance"]][:6]
+        save_goal(g2)
         event(f"goal {g['id']} planned by {who}: {len(keys)} task(s) - {d.get('notes', '')}", goal=g["id"], tasks=list(keys.values()))
+    return apply
+
+
+def step_split(t):
+    """A task stopped by its token cap SPLIT_AFTER_CAPS times is too big: the planner splits it into 2-3 smaller tasks. The first
+    new task keeps the branch, so it continues from the auto-saved WIP."""
+    refresh_repo()
+    prompt = (f"{context_bundle()}\n## A task that is too big\nTask {t['id']} ({t['role']}): {t['title']}\n### Spec\n{t['spec']}\n### Acceptance\n" +
+              "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n### Files\n{', '.join(t.get('files', []))}\n\n"
+              f"Its worker was stopped by the per-run token cap {t.get('caps', 0)} times. Work already done may be on branch `{t['branch']}` "
+              f"(the first task you list continues on that branch). Split the task into 2-3 smaller tasks that together deliver exactly the "
+              f"same spec and acceptance criteria, each well under {C['TASK_TOKEN_BUDGET']:,} tokens of work, disjoint files where possible.\n"
+              f"Reply with ONLY one JSON object in this schema:\n{TASK_SCHEMA}\n")
+    text, who = llm("plan", prompt)
+    d = extract_json(text) or {}
+
+    def apply():
+        t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
+        new = d.get("tasks") or []
+        if not new:
+            t2.update(status="gate"); save_task(t2)
+            event(f"task {t['id']}: {who} could not split it - reviewing what exists", task=t["id"]); return
+        keys, n = {}, next_task_number()
+        for i, x in enumerate(new[:3]):
+            keys[x.get("key") or str(i)] = f"{n + i:04d}-{slugify(x.get('key') or x.get('title', 'part'))}"
+        ids = []
+        for i, x in enumerate(new[:3]):
+            tid = keys[x.get("key") or str(i)]
+            ids.append(tid)
+            save_task(dict(id=tid, goal=t["goal"], title=str(x.get("title", tid))[:150], role=str(x.get("role", t["role"])),
+                           risk=x.get("risk", t.get("risk", "routine")), branch=t["branch"] if i == 0 else f"{t['branch'].split('/')[0]}/{tid}",
+                           files=[f for f in x.get("files", []) if FILES_LINE.match(f)],
+                           depends_on=list(t.get("depends_on", [])) + [keys[k] for k in x.get("depends_on", []) if k in keys],
+                           spec=str(x.get("spec", "")), acceptance=[str(a) for a in x.get("acceptance", [])], status="pending",
+                           attempts=0, history=[], created=sbx.now(), planned_by=who, split_from=t["id"]))
+        t2.update(status="cancelled", cancelled_why=f"split into {', '.join(ids)}"); save_task(t2)
+        for ot in tasks():
+            if t["id"] in ot.get("depends_on", []):
+                ot["depends_on"] = [x for x in ot["depends_on"] if x != t["id"]] + ids; save_task(ot)
+        event(f"task {t['id']} split by {who} into {', '.join(ids)}", task=t["id"])
     return apply
 
 
@@ -716,6 +862,63 @@ def step_roadmap(text):
     return apply
 
 
+UNION_EXT = (".jsonl", ".md", ".txt", ".csv")
+
+
+def auto_rebase(branch):
+    """Rebase a task branch onto main without bothering the worker. Conflicts in SHARED_FILES that are line-based (.jsonl, .md,
+    .txt, .csv - registries every task appends to) are resolved by keeping both sides (git merge-file --union); any other
+    conflict aborts. Returns uptodate | rebased | conflict | missing | push-failed."""
+    if not sbx.SAFE_ARG.fullmatch(branch or "") or branch in ("main", "master"):
+        return "missing"
+    tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
+    auth = ["-c", f"http.extraHeader=Authorization: token {tok}"]
+    who = ["-c", "user.name=orchestrator", "-c", "user.email=orchestrator@agent-forge.local"]
+    d = os.path.join(FD, "rebase")
+    if not os.path.isdir(os.path.join(d, ".git")):
+        sh(["git", *auth, "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", d], timeout=180)
+    g = lambda *a, **kw: sh(["git", *a], cwd=d, timeout=kw.get("timeout", 120), env={"GIT_EDITOR": "true"})
+    sh(["git", *auth, "fetch", "-q", "--prune", "origin"], cwd=d, timeout=180)
+    g("rebase", "--abort")
+    if g("checkout", "-q", "-B", "_af_rebase", f"origin/{branch}")[0] != 0:
+        return "missing"
+    if g("merge-base", "--is-ancestor", "origin/main", "HEAD")[0] == 0:
+        return "uptodate"
+    shared = {f.strip() for f in str(C["SHARED_FILES"]).split(",") if f.strip()}
+    rc = g(*who, "rebase", "origin/main", timeout=300)[0]
+    for _ in range(60):
+        if rc == 0:
+            break
+        conflicted = [f for f in g("diff", "--name-only", "--diff-filter=U")[1].split() if f]
+        if not conflicted or any(f not in shared or not f.endswith(UNION_EXT) for f in conflicted):
+            g("rebase", "--abort")
+            return "conflict"
+        for f in conflicted:
+            parts = []
+            for st in (2, 1, 3):           # ours, base, theirs
+                r = g("show", f":{st}:{f}")
+                tmp = os.path.join(FD, f".union-{st}")
+                open(tmp, "w").write(r[1] if r[0] == 0 else "")
+                parts.append(tmp)
+            out = sh(["git", "merge-file", "--union", "-p", *parts], cwd=d)[1]
+            open(os.path.join(d, f), "w").write(out)
+            g("add", f)
+        rc = g(*who, "-c", "core.editor=true", "rebase", "--continue", timeout=300)[0]
+    if rc != 0:
+        g("rebase", "--abort")
+        return "conflict"
+    r = sh(["git", *auth, "push", "-q", f"--force-with-lease={branch}:origin/{branch}", "origin", f"HEAD:{branch}"], cwd=d, timeout=180)
+    return "rebased" if r[0] == 0 else "push-failed"
+
+
+def requeue_gate(t, why):
+    t = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
+    t["status"] = "gate"
+    t["history"].append(dict(at=sbx.now(), outcome="regate", why=why))
+    save_task(t)
+    event(f"task {t['id']}: {why} - testing + review again", task=t["id"])
+
+
 def already_merged_pr(branch):
     """The number of an already-merged PR for `branch`, or None - used for crash recovery: a merge can succeed and
     then the process dies before the task file is marked done (next tick would otherwise re-run the whole
@@ -734,6 +937,14 @@ def step_gate_review_merge(t):
     pr = already_merged_pr(t["branch"])
     if pr:
         return lambda: finish(t, f"already merged as PR #{pr} (recovered after an interruption)", "foreman", "", pr)
+    PHASE[t["id"]] = "rebase na main"
+    rb = auto_rebase(t["branch"])
+    if rb == "conflict":
+        return lambda: rework(t, "Your branch conflicts with main in a way that cannot be merged automatically. `git fetch origin && git rebase "
+                                 "origin/main`, resolve the conflicts keeping both sides' intent, rerun the full test suite, `git push "
+                                 "--force-with-lease`. Change nothing else.", "", count=False)
+    if rb == "rebased":
+        event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
     PHASE[t["id"]] = "testy v čistom kontajneri"
     refresh_repo()
     rc, out, err = sh([os.path.join(BIN, "review-branch"), t["branch"]], timeout=900)
@@ -759,10 +970,12 @@ def step_gate_review_merge(t):
         # the review itself produced nothing usable (tool-call denial, rambling with no final JSON, ...) - this is a
         # reviewer/infra failure, not the worker's fault, so it must not burn one of the worker's rework attempts
         return lambda: retry_review(t, who, text)
+    lesson = str(v.get("lesson") or "")
     if verdict == "reject":
-        return lambda: block(t, f"rejected by {who}: {fb}")
+        return lambda: (add_lesson(lesson, t["id"]), block(t, f"rejected by {who}: {fb}"))
     if verdict != "approve":
-        return lambda: rework(t, (f"Review ({who}): " + fb) if fb else f"Review ({who}) asked for rework but gave no specifics - re-check the spec.", gate)
+        return lambda: (add_lesson(lesson, t["id"]),
+                        rework(t, (f"Review ({who}): " + fb) if fb else f"Review ({who}) asked for rework but gave no specifics - re-check the spec.", gate))
     muts = [m for m in v.get("mutations", []) if isinstance(m, dict) and {"name", "file", "old", "new"} <= set(m)][:4]
     if muts:
         spec = os.path.join(FD, "mutations", t["id"] + ".json")
@@ -798,6 +1011,8 @@ def step_gate_review_merge(t):
         num = int(m.group(1))
     rc, out, err = sh([os.path.join(BIN, "merge-pr"), str(num)], timeout=90)
     if rc != 0:
+        if "not mergeable" in out + err and auto_rebase(t["branch"]) == "rebased":
+            return lambda: requeue_gate(t, "main moved while it was reviewed - auto-rebased")
         if "not mergeable" in out + err:
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, rerun "
                                      "the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
@@ -933,7 +1148,8 @@ def dispatch_ready():
     for t in ready_tasks(ts, busy_files):
         if not free:
             return
-        w = free[0]
+        prev = (t.get("last_run") or {}).get("worker")
+        w = prev if t.get("feedback") and prev in free and C["CONTINUE_CONVERSATIONS"] else free[0]
         rows = quota_rows(w, 60)
         ok, msg = sbx.quota_verdict(rows, lim)
         if not ok:
@@ -948,9 +1164,14 @@ def dispatch_ready():
             free.remove(w)
             event(f"{w}: {msg} - checking quota again in {cd_sec}s")
             continue
+        lr = t.get("last_run") or {}
+        continuing = bool(C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and lr.get("conversation") and lr.get("reason") == "ok"
+                          and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
         spec = os.path.join(FD, "tasks", t["id"] + ".md")
-        open(spec, "w").write(worker_spec(t))
-        rc, out, err = sh([os.path.join(BIN, "dispatch"), w, spec], timeout=300)
+        open(spec, "w").write(worker_spec(t, continuing))
+        env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
+               "DISPATCH_MODEL": C["WORKER_MODEL_RISKY"] if t.get("risk") == "risky" else ""}
+        rc, out, err = sh([os.path.join(BIN, "dispatch"), w, spec], timeout=300, env=env)
         if rc != 0:
             reason = (err or out).strip()[-200:]
             # this gate is almost always global (egress alarm backlog, kill switch, max-parallel), not specific to
@@ -969,7 +1190,8 @@ def dispatch_ready():
         free.remove(w)
         free = by_quota(free)
         busy_files |= set(t.get("files", []))
-        event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else ""), task=t["id"])
+        event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else "") +
+              (" (continuing its conversation)" if continuing else "") + (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
 
 
 def advance():
@@ -987,10 +1209,21 @@ def advance():
                 event(f"task {t['id']}: {t['worker']} clone was not clean - stashed it, task re-queued", task=t["id"]); continue
             if reason == "killswitch":
                 t.update(status="pending"); save_task(t); continue
-            t.update(status="gate", run_reason=reason, run_tokens=m.get("tokens")); save_task(t)
-            event(f"task {t['id']}: {t['worker']} finished ({reason}, {m.get('tokens', 0):,} tokens) - testing + review", task=t["id"])
+            t["last_run"] = dict(worker=t["worker"], conversation=m.get("conversation_id"), tokens=m.get("tokens", 0), reason=reason,
+                                 salvage=m.get("salvage"))
+            if reason in ("token-cap", "timeout"):
+                t["caps"] = t.get("caps", 0) + 1
+            saved = " (WIP auto-saved to the branch)" if (m.get("salvage") or {}).get("rc") == 0 else ""
+            if t.get("caps", 0) >= int(C["SPLIT_AFTER_CAPS"]) and not t.get("split_from"):
+                t.update(status="splitting", run_reason=reason, run_tokens=m.get("tokens")); save_task(t)
+                event(f"task {t['id']}: stopped by its {reason} {t['caps']}x{saved} - asking the planner to split it", task=t["id"])
+            else:
+                t.update(status="gate", run_reason=reason, run_tokens=m.get("tokens")); save_task(t)
+                event(f"task {t['id']}: {t['worker']} finished ({reason}, {m.get('tokens', 0):,} tokens){saved} - testing + review", task=t["id"])
         if t["status"] in ("gate", "review") and can_think:
             submit("task:" + t["id"], step_gate_review_merge, t)
+        if t["status"] == "splitting" and can_think:
+            submit("split:" + t["id"], step_split, t)
     if not can_think:
         return
     for g in goals():
@@ -1204,6 +1437,58 @@ def ask(question):
     return text, who
 
 
+def list_projects():
+    """Every project on this install: the default one (etc/, runs/foreman/) and projects/<name>/. Read-only summary."""
+    out = []
+    names = ([""] if os.path.exists(os.path.join(ROOT, "etc", "foreman.conf")) or os.path.isdir(os.path.join(sbx.RUNS, "foreman")) else [])
+    pd = os.path.join(ROOT, "projects")
+    names += sorted(n for n in (os.listdir(pd) if os.path.isdir(pd) else []) if os.path.exists(os.path.join(pd, n, "project.conf")))
+    for n in names:
+        conf = sbx._kv(os.path.join(pd, n, "project.conf")) if n else {}
+        fd = os.path.join(sbx.RUNS, "projects", n, "foreman") if n else os.path.join(sbx.RUNS, "foreman")
+        live = jload(os.path.join(fd, "live.json"), {})
+        st = {}
+        tdir = os.path.join(fd, "tasks")
+        for f in (os.listdir(tdir) if os.path.isdir(tdir) else []):
+            if re.fullmatch(r"\d{4}-[\w-]+\.json", f):
+                x = (jload(os.path.join(tdir, f)) or {}).get("status", "?")
+                st[x] = st.get(x, 0) + 1
+        out.append(dict(name=n or "default", repo=conf.get("FORGE_REPO", sbx._FORGE.get("FORGE_REPO", "sandbox/playground")) if n else sbx.FORGE_REPO,
+                        workers=conf.get("WORKERS", "") or ("" if n else C["WORKERS"]), alive=live.get("at", 0) > time.time() - 120,
+                        paused=os.path.exists(os.path.join(fd, "PAUSED")), tasks=st))
+    return out
+
+
+def init_project(name, repo, workers_, lang):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name or "") or name == "default":
+        sys.exit("project name: lowercase letters, digits, dashes (not 'default')")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or ""):
+        sys.exit("--repo must be org/repository")
+    d = os.path.join(ROOT, "projects", name)
+    if os.path.exists(os.path.join(d, "project.conf")):
+        sys.exit(f"projects/{name} already exists")
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "project.conf"), "w").write(f"""# Agent-Forge project "{name}" - overrides etc/foreman.conf for this project only (same keys).
+FORGE_REPO={repo}
+# Worker containers this project's foreman may use (comma-separated; empty = all). Give each project its own pool.
+WORKERS={workers_}
+OWNER_LANG={lang}
+# Subdirectory of the repository the team works in ("" = whole repo), and the vision file in THIS directory.
+PROJECT_DIR=
+VISION_FILE=vision.md
+SHARED_FILES=
+""")
+    for src, dst in (("etc/team-rules.example.md", "team-rules.md"), ("docs/vision.example.md", "vision.md")):
+        if os.path.exists(os.path.join(ROOT, src)) and not os.path.exists(os.path.join(d, dst)):
+            open(os.path.join(d, dst), "w").write(open(os.path.join(ROOT, src)).read())
+    print(f"""created projects/{name}/ (project.conf, team-rules.md, vision.md)
+next:
+  1. edit projects/{name}/vision.md and team-rules.md
+  2. FORGE_REPO={repo} scripts/forge-bootstrap          # creates the repository, access and branch protection
+  3. sudo scripts/install-services --project {name}      # its own foreman service
+  4. bin/foreman --project {name} goal "..."            # or pick the project in the dashboard""")
+
+
 def dashboard_json():
     """Everything the host dashboard shows, in one read-only call (`bin/foreman status --dashboard`)."""
     st, ts, now = gstate(), tasks(), time.time()
@@ -1235,7 +1520,7 @@ def dashboard_json():
                              history=t.get("history", [])[-6:], dispatched=t.get("dispatched"), finished=t.get("finished"),
                              updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines"),
                              mutations=t.get("mutations", [])))
-    return dict(now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
+    return dict(project=PROJECT or "default", repo=sbx.FORGE_REPO, pool=workers(), now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
                 autopilot=bool(C["AUTOPILOT"]) and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
                 agy_cooldown={w: u for w, u in st.get("agy_cooldown", {}).items() if u > now},
@@ -1279,6 +1564,7 @@ def status(as_json):
 
 
 def selftest():
+    global FD, ROOT
     import shutil, tempfile
     bad = 0
 
@@ -1333,7 +1619,43 @@ def selftest():
           and mm["roles"]["backend-developer"]["lines_done"] == 17 and mm["roles"]["tester"]["tasks"] == 1
           and mm["totals"]["reworks"] == 2 and mm["totals"]["blocked"] == 1)
     check("task_diff rejects ids that are not task ids", task_diff("../../etc/passwd") == "(invalid task id)" and task_diff("x; rm -rf /") == "(invalid task id)")
-    global ROOT
+    # auto_rebase against real git repositories (a local bare repo stands in for the forge)
+    old_fd, tmp = FD, tempfile.mkdtemp(prefix="foreman-rebase-")
+    old_url, old_repo, old_sec, old_shared = sbx.FORGE_URL, sbx.FORGE_REPO, sbx.SECRETS, C["SHARED_FILES"]
+    try:
+        FD = os.path.join(tmp, "fd"); os.makedirs(FD)
+        sbx.FORGE_URL, sbx.FORGE_REPO, sbx.SECRETS = "file://" + tmp, "o/r", tmp
+        open(os.path.join(tmp, "orchestrator.token"), "w").write("x")
+        C["SHARED_FILES"] = "reg.jsonl"
+        G = lambda *a, cwd=os.path.join(tmp, "w"): subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd,
+                                                                    capture_output=True, text=True)
+        os.makedirs(os.path.join(tmp, "o")); G("init", "-q", "--bare", "-b", "main", os.path.join(tmp, "o", "r.git"), cwd=tmp)
+        G("clone", "-q", os.path.join(tmp, "o", "r.git"), "w", cwd=tmp)
+        w = os.path.join(tmp, "w")
+        open(os.path.join(w, "reg.jsonl"), "w").write('{"a":1}\n'); open(os.path.join(w, "code.py"), "w").write("x = 1\n")
+        G("add", "-A"); G("commit", "-qm", "base"); G("push", "-q", "origin", "HEAD:main")
+        G("checkout", "-qb", "feat/1"); open(os.path.join(w, "reg.jsonl"), "a").write('{"b":2}\n'); G("commit", "-qam", "b"); G("push", "-q", "origin", "feat/1")
+        G("checkout", "-qb", "feat/2", "main"); open(os.path.join(w, "code.py"), "w").write("x = 2\n"); G("commit", "-qam", "x2"); G("push", "-q", "origin", "feat/2")
+        G("checkout", "-q", "main"); open(os.path.join(w, "reg.jsonl"), "a").write('{"c":3}\n')
+        open(os.path.join(w, "code.py"), "w").write("x = 3\n"); G("commit", "-qam", "c"); G("push", "-q", "origin", "main")
+        r1 = auto_rebase("feat/1")
+        G("fetch", "-q")
+        merged = G("show", "origin/feat/1:reg.jsonl").stdout
+        anc = G("merge-base", "--is-ancestor", "origin/main", "origin/feat/1").returncode == 0
+        check("auto_rebase: append-conflict in a shared .jsonl is merged keeping both sides, branch now on top of main",
+              r1 == "rebased" and anc and all(k in merged for k in ('"a"', '"b"', '"c"')))
+        check("auto_rebase: a real code conflict is refused (worker resolves it)", auto_rebase("feat/2") == "conflict")
+        check("auto_rebase: already up to date / missing branch", auto_rebase("feat/1") == "uptodate" and auto_rebase("feat/nope") == "missing")
+    finally:
+        FD = old_fd
+        sbx.FORGE_URL, sbx.FORGE_REPO, sbx.SECRETS, C["SHARED_FILES"] = old_url, old_repo, old_sec, old_shared
+        shutil.rmtree(tmp, ignore_errors=True)
+    ct = dict(id="0009-x", title="t", role="tester", branch="test/0009-x", goal="G1", spec="SPEC-TEXT", acceptance=["a"], files=["f.py"],
+              attempts=1, feedback="add a test for empty input", last_run=dict(reason="token-cap", salvage=dict(rc=0)))
+    full, short = worker_spec(ct), worker_spec(ct, continuing=True)
+    check("worker_spec: continuation prompt is short, keeps feedback + rules, drops the spec; WIP note after a token cap",
+          "SPEC-TEXT" in full and "SPEC-TEXT" not in short and "add a test for empty input" in short and "COMMIT AND PUSH" in short
+          and "auto-saved as a WIP commit" in short and len(short) < len(full))
     old_root, rd = ROOT, tempfile.mkdtemp(prefix="foreman-roles-")
     os.makedirs(os.path.join(rd, "roles"))
     open(os.path.join(rd, "roles", "backend-developer.md"), "w").write("# Backend developer\n**Mission:** build it\n## Definition of done\n- tests\n")
@@ -1354,7 +1676,6 @@ def selftest():
     json.dump([{"name": "m1"}], open(os.path.join(d, "tasks", "0001-a.mutations.json"), "w"))     # a list, not a task dict
     json.dump({"id": "0002-b", "status": "pending"}, open(os.path.join(d, "tasks", "0002-b.json"), "w"))
     open(os.path.join(d, "tasks", "0003-c.md"), "w").write("not json at all")
-    global FD
     old_fd = FD
     FD = d
     try:
@@ -1385,6 +1706,16 @@ def main():
     elif a == ["questions"]:
         qs = jload(os.path.join(FD, "owner_questions.json"), [])
         print("\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1)) or "(no open questions)")
+    elif a[:1] == ["projects"]:
+        ps = list_projects()
+        if "--json" in a:
+            print(json.dumps(ps, ensure_ascii=False)); return
+        for x in ps:
+            print(f"{x['name']:16} {x['repo']:30} workers={x['workers'] or 'all':28} {'running' if x['alive'] else 'stopped'}"
+                  f"{' paused' if x['paused'] else ''}  tasks={x['tasks']}")
+    elif a[:1] == ["init-project"] and len(a) >= 2:
+        opt = lambda k, d="": a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else d
+        init_project(a[1], opt("--repo"), opt("--workers"), opt("--lang", "English"))
     elif a[:1] == ["diff"] and len(a) == 2:
         print(task_diff(a[1]))
     elif a == ["ask"]:

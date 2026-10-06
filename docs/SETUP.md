@@ -50,7 +50,18 @@ bin/foreman goal "Create a hello module with one function and a test"
 ```
 Watch `bin/foreman status` or the dashboard. The first goal takes a few minutes: plan → run → gate → review → merge.
 
-## 6. Day to day
+## 6. More projects (optional)
+```bash
+bin/foreman init-project shop --repo acme/shop --workers worker-5,worker-6 --lang English   # projects/shop/
+$EDITOR projects/shop/vision.md projects/shop/team-rules.md
+FORGE_REPO=acme/shop scripts/forge-bootstrap
+sudo scripts/install-services --project shop
+bin/foreman --project shop goal "..."
+```
+Each worker in the pool clones the project's repository on first use (`~/work/<project>` inside the worker). Give every project
+its own pool. `bin/worker-add N` puts a new worker into the `workers` team of every organisation, so it can serve any project.
+
+## 7. Day to day
 - Big requests: `bin/foreman project "…"` turns them into a roadmap in the backlog; workers drain it day and night.
 - Decisions only you can make end up in `bin/foreman questions`.
 - After a soft kill-switch trip: read `bin/egress-report`, then `bin/egress-report --ack && bin/killswitch off --start`

@@ -40,6 +40,37 @@ def kill_in_container():
         sh("docker", "restart", "-t", "5", W)
 
 
+def salvage(reason):
+    """A run killed by its token cap / timeout loses everything that is not pushed. Commit + push whatever is in the worker's
+    clone to the task branch so the next attempt continues from it instead of starting over (58 of 168 reworks in the first
+    two weeks were "branch was not pushed" after a token cap). Only on the task's own branch, never on main."""
+    br = m.get("branch") or ""
+    if runner or not br or br in ("main", "master") or not sbx.SAFE_ARG.fullmatch(br):
+        return None
+    r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           f'[ "$(git branch --show-current)" = "{br}" ] || exit 3; '
+           f'git add -A && (git diff --cached --quiet || git commit -qm "WIP: auto-saved when the run hit its {reason} (agent-forge)"); '
+           f'[ -n "$(git log --oneline origin/{br}..HEAD 2>/dev/null || git log --oneline -1)" ] || exit 4; '
+           f'git push -q -u origin HEAD:{br} --force-with-lease 2>&1 | tail -2')
+    return {"rc": r.returncode, "out": (r.stdout + r.stderr)[-300:]}
+
+
+def conversation_id():
+    """The agy conversation this run used (bin/foreman can resume it for a rework on the same worker)."""
+    try:
+        for line in open(run + "/stream.jsonl"):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            for part in (e.get("init"), e.get("result"), e.get("step_update")):
+                if isinstance(part, dict) and part.get("conversation_id"):
+                    return part["conversation_id"]
+    except OSError:
+        pass
+    return None
+
+
 def finish(reason, rc):
     tokens = sbx.stream_tokens(run + "/stream.jsonl")
     res, tools = None, 0
@@ -82,6 +113,9 @@ def finish(reason, rc):
         except Exception:
             pass
     m2 = sbx.meta(run)
+    if reason in ("token-cap", "timeout"):
+        m2["salvage"] = salvage(reason)
+    m2["conversation_id"] = conversation_id()
     m2.update(started=open(run + "/started").read().strip(), finished=sbx.now(), duration_s=dur, reason=reason, exit_code=code,
               tokens=tokens, tool_calls=tools, agy_status=(res or {}).get("status"), result_usage=(res or {}).get("usage"),
               quota_after=quota_after)
@@ -129,6 +163,13 @@ if not runner:
     # here punishes near-success harder than outright failure. Genuine uncommitted leftovers that actually block
     # `git checkout main` still surface as setup-failed below, which the caller recovers from with `git stash -u`
     # (keeps the work, does not delete it).
+    # a project's clone is created on first use (one clone per project inside the worker's HOME)
+    repo = m.get("repo") or sbx.FORGE_REPO
+    if not sbx.SAFE_ARG.fullmatch(repo):
+        open(run + "/stderr.log", "w").write("invalid repo in meta\n"); finish("setup-failed", 90)
+    sh("docker", "exec", W, "bash", "-c",
+       f'[ -d {sbx.WORKER_CLONE}/.git ] || {{ git clone -q "http://forgejo:3000/{repo}.git" {sbx.WORKER_CLONE} && '
+       f'git -C {sbx.WORKER_CLONE} config user.name "$FORGEJO_USER" && git -C {sbx.WORKER_CLONE} config user.email "$FORGEJO_USER@sandbox.local"; }}')
     sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
        "if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ] || [ -f .git/MERGE_HEAD ]; then "
        "git rebase --abort 2>/dev/null; git merge --abort 2>/dev/null; fi; true")
@@ -141,6 +182,8 @@ if not runner:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_', 'agy-run', '-p', open(run + "/prompt.md").read(),
              '--model', m.get("model") or lim["WORKER_MODEL"],
              '--dangerously-skip-permissions', '--output-format', 'stream-json', '--print-timeout', f"{max(1, int(timeout_s // 60) + 1)}m"]
+    if m.get("conversation"):
+        inner += ['--conversation', m["conversation"]]       # rework continues the worker's own earlier conversation
     cmd = ["docker", "exec", "-i", "-w", sbx.WORKER_CLONE, W] + inner
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
