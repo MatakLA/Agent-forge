@@ -47,16 +47,31 @@ else:
 CLAUDE_PROJECT = "-" + os.path.expanduser(FORGE_DIR).strip("/").replace("/", "-") if not VM_IP else "-home-dev-sandbox"
 
 
+LAST_ERR = {"msg": ""}           # why the last ssh_run failed, shown on the page instead of a vague "unavailable"
+
+
 def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
     try:
         r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout)
+        if r.returncode:
+            LAST_ERR["msg"] = f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
         return r.stdout if r.returncode == 0 else ""
-    except Exception:
+    except Exception as e:
+        LAST_ERR["msg"] = f"{type(e).__name__}: {e}"[:300]
         return ""
 
 
+def open_fds():
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:
+        return -1
+
+
 ASK_LOCK = threading.Lock()
-FOREMAN_SERVICE = os.environ.get("FOREMAN_SERVICE", "agent-forge-foreman")     # + "-<project>" for named projects
+FOREMAN_SERVICE = os.environ.get("FOREMAN_SERVICE", "agent-forge-foreman")     # the default project's foreman unit
+# a named project's foreman unit, as scripts/install-services --project names it
+FOREMAN_SERVICE_PROJECT = os.environ.get("FOREMAN_SERVICE_PROJECT", "agent-forge-foreman-{project}")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
 JOBS = {}
 
@@ -84,6 +99,43 @@ def add_worker_job(job):
         job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
 
 
+def create_project_job(job, name, repo, workers_, lang, vision):
+    """A new project end to end: projects/<name>/ (bin/foreman init-project), its repository + access on Forgejo
+    (scripts/forge-bootstrap with FORGE_REPO), its own foreman service (scripts/install-services --project, needs sudo), and -
+    if the default project still uses every worker - the default project's pool shrinks to the workers not given away."""
+    def step(label, cmd, timeout=600, inp=None):
+        job["log"] += f"==> {label}\n"
+        rc, o, e = ssh_run_full(cmd, timeout=timeout, inp=inp)
+        job["log"] += ANSI.sub("", o + e)[-3000:] + "\n"
+        return rc == 0
+    try:
+        wf = f" --workers {','.join(workers_)}" if workers_ else ""
+        if not step("project files", f"cd {FORGE_DIR} && bin/foreman init-project {name} --repo {repo}{wf} --lang '{lang}' --vision -",
+                    timeout=30, inp=vision):
+            job["state"] = "failed"; return
+        if not step("repository on Forgejo", f"cd {FORGE_DIR} && FORGE_REPO={repo} scripts/forge-bootstrap 2>&1"):
+            job["state"] = "failed"; return
+        if workers_:
+            rc, out, _ = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman settings", timeout=60)
+            try:
+                cur = json.loads(out)
+                if not cur["values"].get("WORKERS"):
+                    rest = [w for w in cur.get("workers", []) if w not in workers_]
+                    step("default project keeps the other workers", f"cd {FORGE_DIR} && bin/foreman settings apply", timeout=60,
+                         inp=json.dumps({"WORKERS": ",".join(rest)}))
+            except Exception:
+                job["log"] += "(could not read the default project's settings; check its worker pool in Settings)\n"
+        if step("foreman service", f"cd {FORGE_DIR} && sudo -n scripts/install-services --project {name} 2>&1", timeout=120):
+            job["state"] = "done"
+        else:
+            job["log"] += (f"\nThe service needs root. Run on the Agent-Forge machine:\n  cd {FORGE_DIR} && "
+                           f"sudo scripts/install-services --project {name}\n")
+            job["state"] = "needs-sudo"
+        PROJECTS["at"] = 0          # refresh the project list on the next loop
+    except Exception as ex:
+        job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
+
+
 class LoginSessions:
     """`docker exec -it worker-N agy-run` with a real terminal (ssh -tt / a local pty), so the owner can do agy's interactive
     login from the browser: the page shows the output (the login URL) and sends the code back."""
@@ -107,9 +159,9 @@ class LoginSessions:
                 proc = subprocess.Popen(["docker", "exec", "-it", w, "agy-run"], stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
                 os.close(sfd)
                 rfd, wf = mfd, None
-            sess = {"proc": proc, "rfd": rfd, "wf": wf, "buf": "", "started": time.time()}
+            sess = {"proc": proc, "rfd": rfd, "wf": wf, "buf": "", "started": time.time(), "pty": not VM_IP}
             self.s[w] = sess
-            ALL_PROCS.append(proc)
+            ALL_PROCS.add(proc)
             threading.Thread(target=self._pump, args=(sess,), daemon=True).start()
             return {"ok": True}
 
@@ -122,6 +174,12 @@ class LoginSessions:
             if not chunk:
                 break
             sess["buf"] = (sess["buf"] + ANSI.sub("", chunk.decode(errors="replace")))[-20000:]
+        if sess.get("pty"):
+            try:
+                os.close(sess["rfd"])
+            except OSError:
+                pass
+        reap(sess["proc"])
 
     def send(self, w, text):
         sess = self.s.get(w)
@@ -291,7 +349,15 @@ class Pane:
                                            bufsize=1, start_new_session=True)
         except Exception:
             return
-        ALL_PROCS.append(self._proc)
+        ALL_PROCS.add(self._proc)
+        try:
+            self._read_lines()
+        finally:
+            # close the pipe and reap the process: a finished tail that kept its pipe open leaked one fd per worker run
+            # until the process hit its open-files limit (1024) and could not start ssh any more - the "stale data" bug
+            reap(self._proc)
+
+    def _read_lines(self):
         for raw in self._proc.stdout:
             if self._stop.is_set():
                 break
@@ -320,7 +386,26 @@ class Pane:
                          last_line=(self.lines[-1] if self.lines else None))
 
 
-ALL_PROCS = []   # every ssh subprocess ever started, for a clean shutdown
+ALL_PROCS = set()   # live ssh subprocesses, for a clean shutdown (removed again by reap())
+
+
+def reap(proc):
+    for f in (proc.stdin, proc.stdout, proc.stderr):
+        try:
+            if f:
+                f.close()
+        except Exception:
+            pass
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill(); proc.wait(timeout=5)
+        except Exception:
+            pass
+    ALL_PROCS.discard(proc)
 PANES = {}
 PANES_LOCK = threading.Lock()
 
@@ -429,7 +514,7 @@ def poll_project(name):
     if data is not None:
         entry.update(data=data, at=time.time(), error=None)
     else:
-        entry["error"] = "cannot read foreman status (machine unavailable?)"
+        entry["error"] = f"cannot read foreman status ({LAST_ERR['msg'] or 'no output'}; open files {open_fds()})"
 
 
 def foreman_loop():
@@ -508,7 +593,7 @@ def shutdown(*_a):
     with PANES_LOCK:
         for p in list(PANES.values()):
             p.stop()
-    for proc in ALL_PROCS:
+    for proc in list(ALL_PROCS):
         try:
             proc.terminate()
         except Exception:
@@ -547,6 +632,8 @@ PAGE = r"""<!DOCTYPE html>
   @media (max-width:560px) { .setrow { grid-template-columns:1fr; gap:4px; } }
   .setrow input[type=text], .setrow input[type=number], .setrow select { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; }
   .seterr { color:var(--bad); font-size:12px; margin-top:3px; }
+  .npta { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; resize:vertical; }
+  .chk { display:inline-flex; gap:4px; align-items:center; margin:2px 10px 2px 0; }
   .prov, .poolrow { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; }
   .prov .mini { padding:2px 8px; margin-left:4px; }
   .term { background:#0b0d10; color:#d6dbe3; max-height:45dvh; overflow:auto; white-space:pre-wrap; font-size:12px; }
@@ -708,6 +795,17 @@ PAGE = r"""<!DOCTYPE html>
   <pre id="login-out" class="term"></pre>
   <div class="btnrow"><input type="text" id="login-in" placeholder="kód alebo odpoveď" style="flex:1"><button class="mini" id="login-send">Poslať</button></div>
   <div class="btnrow"><button class="resume-btn" id="login-done">Hotovo — overiť prihlásenie</button></div></div></div>
+<div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close">Zavrieť</button><h2>Nový projekt</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">Vytvorí projekt s vlastným orchestrátorom, repozitárom na Forgejo a skupinou workerov.
+  Každý worker by mal patriť len jednému projektu.</div>
+  <div id="np-form">
+  <div class="setrow"><label>Názov (malé písmená, pomlčky)</label><div><input type="text" id="np-name" placeholder="napr. eshop"><div class="seterr" id="np-e-name"></div></div></div>
+  <div class="setrow"><label>Repozitár (organizácia/repozitár)</label><div><input type="text" id="np-repo" placeholder="napr. acme/eshop"><div class="seterr" id="np-e-repo"></div></div></div>
+  <div class="setrow"><label>Jazyk, v ktorom sa ťa tím pýta</label><div><input type="text" id="np-lang" value="Slovak"><div class="seterr" id="np-e-lang"></div></div></div>
+  <div class="setrow"><label>Vízia — čo má projekt robiť (z toho plánuje autopilot)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
+  <div class="setrow"><label>Workeri pre tento projekt</label><div><div id="np-workers" class="muted">načítavam…</div><div class="seterr" id="np-e-workers"></div></div></div>
+  <div class="btnrow"><button class="resume-btn" id="np-create">Vytvoriť projekt</button></div></div>
+  <pre id="np-log" class="term" style="display:none"></pre></div></div>
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit'}); };
@@ -866,6 +964,9 @@ document.addEventListener('click', async e => {
     try { await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, refresh_models: true})}); } catch (err) {}
     loadSettings(true); return; }
   if (e.target.id === 'add-worker') { addWorker(); return; }
+  if (e.target.id === 'np-create') { createProject(); return; }
+  if (e.target.id === 'np-close') { document.getElementById('newproj').classList.remove('on'); projAt = 0; loadProjects().then(() => {
+    const sel = document.getElementById('proj'); if (sel.value !== project) { sel.value = project; sel.dispatchEvent(new Event('change')); } }); return; }
   const lg = e.target.closest('[data-login]'); if (lg) { openLogin(lg.dataset.login); return; }
   if (e.target.id === 'login-send') { const i = document.getElementById('login-in');
     await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'input', text: i.value})}); i.value = ''; return; }
@@ -914,7 +1015,8 @@ function pills() {
   const p = [];
   const staleFor = foremanFetchedAt ? (Date.now()/1000 - foremanFetchedAt) : 0;
   if (staleFor > 30) {
-    p.push('<span class="pill bad">dashboard nemá čerstvé dáta (' + Math.round(staleFor/60) + ' min staré) - nedôveruj stavu nižšie, skontroluj priamo</span>');
+    p.push('<span class="pill bad">dashboard nemá čerstvé dáta (' + Math.round(staleFor/60) + ' min staré) - nedôveruj stavu nižšie' +
+           (window._ferr ? ' · príčina: ' + esc(window._ferr) : '') + '</span>');
     return p.join(' ');
   }
   if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman nebeží</span>');
@@ -1248,12 +1350,45 @@ async function loadProjects() {
   try { ps = (await (await fetch('/api/projects')).json()).projects || []; } catch (e) { return; }
   const sel = document.getElementById('proj');
   if (!ps.some(p => p.name === project)) project = (ps[0] || {name: 'default'}).name;
+  PROJ_LIST = ps;
   const html = ps.map(p => '<option value="' + esc(p.name) + '"' + (p.name === project ? ' selected' : '') + '>' + esc(p.name) +
-                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('');
+                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('') + '<option value="__new">+ Nový projekt…</option>';
   if (sel.innerHTML !== html) sel.innerHTML = html;
-  sel.style.display = ps.length > 1 ? '' : 'none';
+  sel.style.display = '';
+}
+let PROJ_LIST = [];
+
+// ---- a new project from the dashboard (bin/foreman init-project + forge-bootstrap + its foreman service)
+async function openNewProject() {
+  const m = document.getElementById('newproj'); m.classList.add('on');
+  document.getElementById('np-form').style.display = ''; document.getElementById('np-log').style.display = 'none';
+  const box = document.getElementById('np-workers');
+  let st = {}; try { st = await (await fetch('/api/settings?project=default')).json(); } catch (e) {}
+  const owner = {};
+  for (const p of PROJ_LIST) for (const w of String(p.workers || '').split(',').filter(Boolean)) owner[w] = p.name;
+  const ws = st.workers || [];
+  box.innerHTML = ws.length ? ws.map(w => '<label class="chk"><input type="checkbox" data-npw="' + esc(w) + '"> ' + esc(w) +
+      ' <span class="muted">(' + esc(owner[w] || (st.values && !st.values.WORKERS ? 'default — všetci' : 'voľný')) + ')</span></label>').join(' ')
+    : 'žiadni workeri — pridaj ich v Nastaveniach';
+}
+async function createProject() {
+  const v = id => document.getElementById(id).value.trim();
+  const body = {action: 'create', name: v('np-name'), repo: v('np-repo'), lang: v('np-lang'), vision: document.getElementById('np-vision').value,
+                workers: [...document.querySelectorAll('[data-npw]')].filter(c => c.checked).map(c => c.dataset.npw)};
+  for (const k of ['name', 'repo', 'lang', 'workers']) document.getElementById('np-e-' + k).textContent = '';
+  let j = await (await fetch('/api/projects', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+  if (j.errors) { for (const k in j.errors) { const el = document.getElementById('np-e-' + k); if (el) el.textContent = j.errors[k]; } return; }
+  document.getElementById('np-form').style.display = 'none';
+  const log = document.getElementById('np-log'); log.style.display = '';
+  while (j.state === 'running') { log.textContent = (j.log || '') + '\n… pracujem'; await new Promise(r => setTimeout(r, 2500));
+    j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
+  log.textContent = (j.log || '') + '\n' + ({done: '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.',
+    'needs-sudo': '⚠ Projekt je vytvorený, len jeho služba potrebuje root — spusti príkaz vyššie.'}[j.state] || '✘ Zlyhalo — pozri výpis vyššie.');
+  projAt = 0; await loadProjects();
+  if (j.state !== 'failed') { project = body.name; try { localStorage.setItem('af-project', project); } catch (e) {} }
 }
 document.getElementById('proj').addEventListener('change', e => {
+  if (e.target.value === '__new') { e.target.value = project; openNewProject(); return; }
   project = e.target.value;
   try { localStorage.setItem('af-project', project); } catch (err) {}
   F = null; openTask = null; lastDetailHtml = ''; document.getElementById('detail').classList.remove('on');
@@ -1337,7 +1472,7 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "off":
                 run("acknowledge egress alerts", f"cd {FORGE_DIR} && bin/egress-report --ack", timeout=30)
                 ok = run("kill switch off (+ start stopped containers)", f"cd {FORGE_DIR} && {penv}bin/killswitch {scope}off --start", timeout=120)
-                svc = FOREMAN_SERVICE + (f"-{proj}" if pf else "")
+                svc = FOREMAN_SERVICE_PROJECT.format(project=proj) if pf else FOREMAN_SERVICE
                 rc, active, _ = ssh_run_full(f"systemctl is-active {svc}", timeout=10)
                 if active.strip() != "active":
                     run(f"restart {svc}", f"sudo systemctl restart {svc}", timeout=60)
@@ -1357,6 +1492,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(json.loads(out))
             except Exception:
                 self._json({"ok": False, "errors": {"_": (err or out)[-300:]}})
+        elif self.path == "/api/projects":
+            if body.get("action") != "create":
+                self._json({"error": "unknown action"}, 400); return
+            name, repo = str(body.get("name", "")).strip(), str(body.get("repo", "")).strip()
+            lang = str(body.get("lang", "English")).strip() or "English"
+            ws = [str(w) for w in body.get("workers") or []]
+            errs = {}
+            if not PROJECT_RE.fullmatch(name) or name == "default":
+                errs["name"] = "malé písmená, číslice a pomlčky (nie 'default')"
+            elif any(p.get("name") == name for p in PROJECTS["list"]):
+                errs["name"] = "projekt už existuje"
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}/[A-Za-z0-9_.-]{1,60}", repo):
+                errs["repo"] = "organizácia/repozitár, napr. acme/shop"
+            if not all(re.fullmatch(r"worker-\d+", w) for w in ws):
+                errs["workers"] = "neplatný worker"
+            if not re.fullmatch(r"[A-Za-z][A-Za-z ()-]{0,30}", lang):
+                errs["lang"] = "názov jazyka, napr. Slovak"
+            if errs:
+                self._json({"ok": False, "errors": errs}); return
+            vision = str(body.get("vision", ""))[:20000]
+            self._json(start_job("create-project", lambda job: create_project_job(job, name, repo, ws, lang, vision)))
         elif self.path == "/api/workers":
             if body.get("action") != "add":
                 self._json({"error": "unknown action"}, 400); return

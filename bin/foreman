@@ -10,7 +10,7 @@
        bin/foreman projects [--json]                every project on this install (default + projects/<name>/)
        bin/foreman settings [--refresh-models]      editable settings, worker containers and Antigravity models as JSON
        echo '{"KEY": "value"}' | bin/foreman settings apply      validate + write (project keys to its config, limits to etc/limits.conf)
-       bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak]
+       bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak] [--vision -  (vision.md from stdin)]
        --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
        bin/foreman backlog [add "<goal>" | drop <n>] goals waiting for a free worker (taken in order when a worker would idle)
@@ -1559,7 +1559,7 @@ def list_projects():
     return out
 
 
-def init_project(name, repo, workers_, lang):
+def init_project(name, repo, workers_, lang, vision=None):
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name or "") or name == "default":
         sys.exit("project name: lowercase letters, digits, dashes (not 'default')")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or ""):
@@ -1578,6 +1578,8 @@ PROJECT_DIR=
 VISION_FILE=vision.md
 SHARED_FILES=
 """)
+    if vision and vision.strip():
+        open(os.path.join(d, "vision.md"), "w").write(vision.strip() + "\n")
     for src, dst in (("etc/team-rules.example.md", "team-rules.md"), ("docs/vision.example.md", "vision.md")):
         if os.path.exists(os.path.join(ROOT, src)) and not os.path.exists(os.path.join(d, dst)):
             open(os.path.join(d, dst), "w").write(open(os.path.join(ROOT, src)).read())
@@ -1840,7 +1842,12 @@ def main():
                   f"{' paused' if x['paused'] else ''}  tasks={x['tasks']}")
     elif a[:1] == ["init-project"] and len(a) >= 2:
         opt = lambda k, d="": a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else d
-        init_project(a[1], opt("--repo"), opt("--workers"), opt("--lang", "English"))
+        if opt("--workers") and not re.fullmatch(r"(worker-\d+)(,worker-\d+)*", opt("--workers")):
+            sys.exit("--workers: comma-separated worker-N names")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z ()-]{0,30}", opt("--lang", "English")):
+            sys.exit("--lang: a language name such as English or Slovak")
+        init_project(a[1], opt("--repo"), opt("--workers"), opt("--lang", "English"),
+                     vision=sys.stdin.read()[:20000] if opt("--vision") == "-" else None)
     elif a[:1] == ["diff"] and len(a) == 2:
         print(task_diff(a[1]))
     elif a == ["ask"]:
