@@ -94,6 +94,11 @@ are per project too. The egress proxy is shared. The dashboard has a project sel
 - **Goal-level acceptance.** Each goal gets observable acceptance criteria; tasks are reviewed against them and the goal is only
   closed when they hold.
 - **Structured answers.** Antigravity orchestrator calls use `--json-schema`, so plans and verdicts come back as valid JSON.
+- **Spends quota on work, not on reading.** Each task carries a context pack (its files and the interfaces it uses, generated
+  from main - no LLM), the worker fixes a red test suite in the same conversation before its run ends, tasks over
+  `MAX_TASK_FILES` files are split before work starts, and the Metrics tab shows quota per merged task by model and variant
+  (A/B tests built in). While all accounts wait for their quota, the planner prepares the next goals and main is checked
+  without any LLM. See [docs/EFFICIENCY.md](docs/EFFICIENCY.md).
 
 ## Setup
 

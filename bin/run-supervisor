@@ -41,16 +41,22 @@ def kill_in_container():
 
 
 def salvage(reason):
-    """A run killed by its token cap / timeout loses everything that is not pushed. Commit + push whatever is in the worker's
-    clone to the task branch so the next attempt continues from it instead of starting over (58 of 168 reworks in the first
-    two weeks were "branch was not pushed" after a token cap). Only on the task's own branch, never on main."""
+    """Whatever a run leaves uncommitted or unpushed is lost to the gate. After EVERY run (not only a token cap / timeout) commit +
+    push what is in the worker's clone to the task branch, so the next attempt continues from it and a finished run that forgot
+    to push is not sent back (58 of 168 reworks in the first two weeks were "branch was not pushed"). Only on the task's own
+    branch, never on main; build caches are left out."""
     br = m.get("branch") or ""
     if runner or not br or br in ("main", "master") or not sbx.SAFE_ARG.fullmatch(br):
         return None
+    what = "auto-saved when the run hit its " + reason if reason in ("token-cap", "timeout") else f"auto-committed at the end of the run ({reason})"
     r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
-           f'[ "$(git branch --show-current)" = "{br}" ] || exit 3; '
-           f'git add -A && (git diff --cached --quiet || git commit -qm "WIP: auto-saved when the run hit its {reason} (agent-forge)"); '
-           f'[ -n "$(git log --oneline origin/{br}..HEAD 2>/dev/null || git log --oneline -1)" ] || exit 4; '
+           f'set -o pipefail; [ "$(git branch --show-current)" = "{br}" ] || exit 3; '
+           f"git add -A -- . ':(exclude)**/__pycache__/**' ':(exclude)**/*.pyc' ':(exclude).pytest_cache/**' && "
+           f'(git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"); '
+           # nothing beyond main (a run that did nothing): never push a branch equal to main - the gate would see an empty
+           # diff and the review would take it for "already merged"
+           f'[ -n "$(git log --oneline origin/main..HEAD | head -1)" ] || exit 4; '
+           f'if git rev-parse -q --verify origin/{br} >/dev/null; then [ -n "$(git log --oneline origin/{br}..HEAD | head -1)" ] || exit 4; fi; '
            f'git push -q -u origin HEAD:{br} --force-with-lease 2>&1 | tail -2')
     return {"rc": r.returncode, "out": (r.stdout + r.stderr)[-300:]}
 
@@ -113,8 +119,10 @@ def finish(reason, rc):
         except Exception:
             pass
     m2 = sbx.meta(run)
-    if reason in ("token-cap", "timeout"):
+    if reason not in ("killswitch", "setup-failed", "egress-not-enforced") and container_ok():
         m2["salvage"] = salvage(reason)
+    if SELF_CHECKS:
+        m2["self_checks"] = SELF_CHECKS
     m2["conversation_id"] = conversation_id()
     m2.update(started=open(run + "/started").read().strip(), finished=sbx.now(), duration_s=dur, reason=reason, exit_code=code,
               tokens=tokens, tool_calls=tools, agy_status=(res or {}).get("status"), result_usage=(res or {}).get("usage"),
@@ -153,6 +161,100 @@ def container_ok():
     return sh("docker", "inspect", "-f", "{{.State.Running}}", W).stdout.strip() == "true"
 
 
+SELF_CHECKS = []
+SELF_CHECK_PY = r"""
+import json, re, subprocess
+def sh(*c, t=60):
+    return subprocess.run(list(c), capture_output=True, text=True, timeout=t)
+problems = []
+changed = set(sh("git", "diff", "--name-only", "origin/main").stdout.split()) | set(sh("git", "ls-files", "--others", "--exclude-standard").stdout.split())
+for f in sorted(changed):
+    if re.search(r"(^|/)test_[^/]*\.py$", f):
+        try:
+            src = open(f).read()
+        except OSError:
+            continue
+        for pat, name in ((r"pytest\.mark\.skip", "pytest.mark.skip"), (r"pytest\.skip\(", "pytest.skip("), (r"xfail", "xfail"),
+                          (r"importorskip", "importorskip"), (r"skipif", "skipif"), (r"assert True\b", "assert True")):
+            if re.search(pat, src):
+                problems.append(f"{f} contains {name} (the gate rejects it)")
+try:
+    t = sh("python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--maxfail=5", t=360)
+    out, rc = t.stdout + t.stderr, t.returncode
+except subprocess.TimeoutExpired:
+    out, rc = "the test suite did not finish within 6 minutes", 1
+rc = 0 if rc == 5 else rc
+last = out.strip().splitlines()[-1] if out.strip() else ""
+print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems}))
+"""
+
+
+def self_check():
+    """The full test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). Infrastructure trouble never
+    blocks the run: it counts as passed and the real gate decides."""
+    try:
+        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-w", sbx.WORKER_CLONE, W, "python3", "-", input=SELF_CHECK_PY, timeout=420)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception as e:
+        return {"ok": True, "error": f"self-check could not run: {e}"[:200]}
+
+
+def fix_prompt(chk):
+    br = m.get("branch") or "your task branch"
+    probs = "".join(f"- {p}\n" for p in chk.get("problems") or [])
+    return (f"## Self-check before you finish: your branch is not ready\n"
+            f"This is the check the gate runs in a clean container; it would send the task back, so fix it now.\n{probs}"
+            f"\nTest output (`python3 -m pytest -q`):\n```\n{chk.get('tail', '')[-3000:]}\n```\n"
+            f"Fix the cause - change a test only if the spec says the test itself is wrong, never skip or weaken one. Run "
+            f"`python3 -m pytest -q` until it passes, then commit and push to `{br}`. Final reply: what you changed and the final pytest "
+            f"summary line.\n")
+
+
+def agy_cmd(prompt, conversation=None):
+    left_min = max(1, int((timeout_s - (time.time() - t0)) // 60) + 1)
+    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_', 'agy-run', '-p', prompt,
+             '--model', m.get("model") or lim["WORKER_MODEL"],
+             '--dangerously-skip-permissions', '--output-format', 'stream-json', '--print-timeout', f"{left_min}m"]
+    if conversation:
+        inner += ['--conversation', conversation]
+    return ["docker", "exec", "-i", "-w", sbx.WORKER_CLONE, W] + inner
+
+
+def watch(cmd, mode):
+    """Run one agy invocation (stream appended to the run's stream.jsonl) under the run's limits. Returns (reason, rc): reason is
+    None unless a limit stopped it. The token cap and the timeout count for the whole run, not per invocation."""
+    global next_egress_check
+    reason = None
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=open(run + "/stream.jsonl", mode), stderr=open(run + "/stderr.log", mode))
+    while proc.poll() is None:
+        time.sleep(lim["POLL_SEC"])
+        if proc.poll() is not None:
+            break
+        if time.time() - t0 > timeout_s:
+            reason = "timeout"
+        elif sbx.stream_tokens(run + "/stream.jsonl") >= cap:
+            reason = "token-cap"
+        elif sbx.killswitch_active():
+            reason = "killswitch"
+        elif EGRESS_CHECKS and time.time() >= next_egress_check:
+            next_egress_check = time.time() + 15
+            h = egress.proxy_health()
+            if not h["ok"]:
+                reason = "egress-not-enforced"
+                sbx.alert(f"run {m['run_id']} stopped: " + "; ".join(h["problems"]))
+        if reason:
+            with open(run + "/supervisor.log", "a") as f:
+                f.write(f"{sbx.now()} limit hit: {reason}; killing the run in {W}\n")
+            proc.terminate()
+            kill_in_container()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+    return reason, proc.poll()
+
+
 # ---- setup + launch
 if not runner:
     # A worker can be left mid rebase/merge from an earlier rework attempt that was killed by a timeout/token-cap
@@ -179,43 +281,30 @@ if not runner:
     if r.returncode != 0:
         open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")
         finish("setup-failed", 90)
-    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_', 'agy-run', '-p', open(run + "/prompt.md").read(),
-             '--model', m.get("model") or lim["WORKER_MODEL"],
-             '--dangerously-skip-permissions', '--output-format', 'stream-json', '--print-timeout', f"{max(1, int(timeout_s // 60) + 1)}m"]
-    if m.get("conversation"):
-        inner += ['--conversation', m["conversation"]]       # rework continues the worker's own earlier conversation
-    cmd = ["docker", "exec", "-i", "-w", sbx.WORKER_CLONE, W] + inner
+    cmd = agy_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
     cmd = ["docker", "exec", "-i", W] + inner
-proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=open(run + "/stream.jsonl", "w"), stderr=open(run + "/stderr.log", "w"))
+reason, rc = watch(cmd, "w")
 
-# ---- watchdog
-while proc.poll() is None:
-    time.sleep(lim["POLL_SEC"])
-    if proc.poll() is not None:
-        break
-    if time.time() - t0 > timeout_s:
-        reason = "timeout"
-    elif sbx.stream_tokens(run + "/stream.jsonl") >= cap:
-        reason = "token-cap"
-    elif sbx.killswitch_active():
-        reason = "killswitch"
-    elif EGRESS_CHECKS and time.time() >= next_egress_check:
-        next_egress_check = time.time() + 15
-        h = egress.proxy_health()
-        if not h["ok"]:
-            reason = "egress-not-enforced"
-            sbx.alert(f"run {m['run_id']} stopped: " + "; ".join(h["problems"]))
-    if reason:
+# ---- self-check: the gate's test run, in the worker's own clone, before the run ends. A red suite is sent back by the gate
+# anyway - fixing it now, in the same agy conversation that still has the context, is far cheaper than a new attempt.
+if not runner and reason is None and rc == 0:
+    for i in range(int(m.get("self_check") or 0)):
+        chk = self_check()
+        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
+        if chk.get("ok"):
+            break
+        conv = conversation_id()
+        if not conv:
+            break
         with open(run + "/supervisor.log", "a") as f:
-            f.write(f"{sbx.now()} limit hit: {reason}; killing the run in {W}\n")
-        proc.terminate()
-        kill_in_container()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        break
-rc = proc.poll()
+            f.write(f"{sbx.now()} self-check {i + 1} failed ({chk.get('summary', '')}); continuing the conversation to fix it\n")
+        reason, rc = watch(agy_cmd(fix_prompt(chk), conv), "a")
+        if reason is not None or rc != 0:
+            break
+    else:
+        if SELF_CHECKS and not SELF_CHECKS[-1].get("ok"):
+            chk = self_check()                      # record whether the last fix made it green (CPU only, no tokens)
+            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
 finish(reason, rc)

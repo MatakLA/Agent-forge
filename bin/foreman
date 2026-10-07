@@ -10,6 +10,7 @@
        bin/foreman projects [--json]                every project on this install (default + projects/<name>/)
        bin/foreman settings [--refresh-models]      editable settings, worker containers and Antigravity models as JSON
        echo '{"KEY": "value"}' | bin/foreman settings apply      validate + write (project keys to its config, limits to etc/limits.conf)
+       bin/foreman pack <task>              the context pack a worker would get for this task (no LLM)
        bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak] [--vision -  (vision.md from stdin)]
        --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
@@ -30,7 +31,7 @@ Claude Code, Claude or Gemini via Antigravity in a worker container (the worker 
 accounts are skipped), and optional paid APIs. A provider out of quota is retried after its printed reset.
 Worker runs go through bin/dispatch (all guards of etc/limits.conf apply), every branch through bin/review-branch (tests in a clean
 container) before any LLM looks at it; merges through bin/open-pr + bin/merge-pr. State: runs/foreman/ (files only)."""
-import concurrent.futures as cf, datetime as dt, json, os, re, signal, subprocess, sys, time, traceback
+import concurrent.futures as cf, datetime as dt, hashlib, json, os, re, signal, subprocess, sys, time, traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
 
@@ -61,6 +62,7 @@ def _early_project():
 
 PROJECT, PDIR = _early_project()
 import sbx
+import codemap
 
 ROOT, BIN = sbx.ROOT, os.path.dirname(os.path.abspath(__file__))
 FD = os.path.join(sbx.RUNS, "projects", PROJECT, "foreman") if PROJECT else os.path.join(sbx.RUNS, "foreman")
@@ -75,7 +77,15 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
             SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
             # this project's worker pool ("" = every worker container); risky tasks may use a stronger worker model
-            WORKERS="", WORKER_MODEL="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40)
+            WORKERS="", WORKER_MODEL="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40,
+            # efficiency (docs/EFFICIENCY.md): a context pack in every task (on|off|ab = half the tasks, to measure it), test the
+            # worker's clone before the run ends and let it fix failures in the same conversation, split tasks that own more files
+            # than MAX_TASK_FILES before anyone works on them (tasks with 4-5 files hit the token cap twice as often as 1-2)
+            CONTEXT_PACK="on", CONTEXT_PACK_CHARS=60000, SELF_CHECK_ROUNDS=1, MAX_TASK_FILES=3,
+            # cheaper model for light roles; A/B: AB_SHARE % of routine tasks use AB_MODEL (compare in Metrics)
+            WORKER_MODEL_LIGHT="", LIGHT_ROLES="tester,technical-writer,translator", AB_MODEL="", AB_SHARE=0,
+            # while every worker waits for quota: plan backlog goals ahead (orchestrator only) and check main without any LLM
+            PLAN_AHEAD=1, MAINTENANCE=1)
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
@@ -319,6 +329,119 @@ def read_repo(path, limit=20000):
     return out[:limit] if rc == 0 else ""
 
 
+# ---------------------------------------------------------------- code map + context pack (deterministic, no tokens)
+CODEMAP = {}
+
+
+def codemap_main():
+    """The code map (bin/lib/codemap.py) of PROJECT_DIR on main, cached per main commit."""
+    rc, sha, _ = sh(["git", "rev-parse", "origin/main"], cwd=REPO)
+    sha = sha.strip()
+    if not sha:
+        return {}
+    if CODEMAP.get("sha") == sha:
+        return CODEMAP["map"]
+    p = os.path.join(FD, "codemap.json")
+    d = jload(p, {})
+    if d.get("sha") != sha:
+        rc, head, _ = sh(["git", "rev-parse", "HEAD"], cwd=REPO)
+        m = codemap.build(REPO, C["PROJECT_DIR"].strip("/"))
+        if head.strip() != sha:              # checkout not at origin/main yet (a refresh is running): use it, do not cache it
+            return m
+        d = dict(sha=sha, map=m)
+        jsave(p, d)
+    CODEMAP.update(d)
+    return d["map"]
+
+
+def shared_files():
+    return {x.strip() for x in str(C["SHARED_FILES"]).split(",") if x.strip()}
+
+
+def own_files(t):
+    """The files a task owns, without shared registries (they do not make a task bigger to understand)."""
+    sf = shared_files()
+    return [f for f in t.get("files", []) if f not in sf and os.path.basename(f) not in sf]
+
+
+def context_pack(t):
+    """What a worker would otherwise spend its first 20-30 tool calls reading: the current content of its own files, the
+    interfaces of the modules they import / the spec names / their tests, and a one-line map of the rest. Built from main
+    without any LLM; bounded by CONTEXT_PACK_CHARS (it is resent with every agent turn, so more is not better)."""
+    cm = codemap_main()
+    budget = int(C["CONTEXT_PACK_CHARS"])
+    pd = C["PROJECT_DIR"].strip("/")
+    out, used, shown = [], 0, set()
+
+    def add(block):
+        nonlocal used
+        if used + len(block) > budget:
+            return False
+        out.append(block); used += len(block); return True
+
+    fresh = not t.get("attempts") and not t.get("last_run")
+    mine = t.get("files", [])
+    if fresh:
+        for f in mine:
+            src = read_repo(f, 200000)
+            if not src:
+                add(f"### `{f}` - does not exist yet (you create it)\n"); continue
+            shown.add(f)
+            if len(src) <= min(25000, budget // 2):
+                lang = os.path.splitext(f)[1].lstrip(".") or ""
+                if not add(f"### `{f}` (current content on main, {src.count(chr(10)) + 1} lines)\n```{lang}\n{src}\n```\n"):
+                    add(f"### `{f}` - too large for the pack; interface:\n{codemap.render(cm, [f])}\n")
+            else:
+                add(f"### `{f}` - {src.count(chr(10)) + 1} lines, too large to include whole; its interface:\n{codemap.render(cm, [f])}\n"
+                    f"Open only the parts you change.\n")
+    else:
+        add("(Your branch already has earlier work, so your own files are not included - start with `git diff origin/main --stat`.)\n")
+    related = []
+    for f in mine:
+        if f in cm:
+            related += codemap.imports_of(f, read_repo(f, 200000), cm)
+        tf = codemap.test_for(f, cm)
+        if tf:
+            related.append(tf)
+    related += codemap.mentioned_in(t.get("spec", "") + " " + " ".join(t.get("acceptance", [])), cm)
+    related = [r for r in dict.fromkeys(related) if r not in shown and r not in mine]
+    if related:
+        add("## Interfaces you will use (from main - signatures and docstrings, no bodies)\n" + codemap.render(cm, related, max_chars=budget // 3) + "\n")
+    rest = [p for p in sorted(cm) if p not in shown and p not in related and p not in mine]
+    if rest:
+        add("## Other files in the project (one line each)\n" + codemap.render(cm, rest, with_api=False, max_chars=max(2000, budget - used - 500)) + "\n")
+    if not out:
+        return ""
+    return ("## Context pack (generated from main for this task)\nThis already contains the files and interfaces you need. Do not open "
+            "them again with tools; read further files only when something you need is really missing here.\n"
+            f"Tests: `python3 -m pytest -q` from the repository root{f' (project code in `{pd}/`)' if pd else ''}.\n\n" + "\n".join(out))
+
+
+def _bucket(key, n):
+    return int(hashlib.sha1(key.encode()).hexdigest(), 16) % n
+
+
+def variant(t):
+    """Per-task experiment settings, fixed at the first dispatch (reworks keep them): context pack on/off, worker model."""
+    v = t.get("variant")
+    if v is None:
+        cp = str(C["CONTEXT_PACK"]).lower()
+        pack = cp == "on" or (cp == "ab" and _bucket(t["id"] + ":pack", 2) == 0)
+        risky = t.get("risk") == "risky"
+        light = slugify(t.get("role", "")) in {slugify(r) for r in str(C["LIGHT_ROLES"]).split(",") if r.strip()}
+        if risky and C["WORKER_MODEL_RISKY"]:
+            model, why = C["WORKER_MODEL_RISKY"], "risky"
+        elif not risky and C["AB_MODEL"] and _bucket(t["id"] + ":model", 100) < int(C["AB_SHARE"]):
+            model, why = C["AB_MODEL"], "ab"
+        elif light and C["WORKER_MODEL_LIGHT"]:
+            model, why = C["WORKER_MODEL_LIGHT"], "light"
+        else:
+            model, why = C["WORKER_MODEL"], "default"
+        v = dict(pack=pack, model=model, why=why)
+        t["variant"] = v
+    return v
+
+
 # ---------------------------------------------------------------- LLM layer: free subscription providers first, paid APIs only if configured
 class Unavailable(Exception):
     pass
@@ -355,6 +478,20 @@ def has_quota(rows, family, floor=2.0):
     fam_rows = [r for r in rows if family.lower() in r.get("model", "").lower()]
     return not (fam_rows and not any("five hour" in r.get("label", "").lower() for r in fam_rows)
                 and any(r["pct"] <= floor for r in fam_rows))
+
+
+def pool_quota_out():
+    """True when no worker of this project can start a run: every one is below the dispatch quota floor (or paused for it)."""
+    ws, lim, now = workers(), sbx.load_limits(), time.time()
+    if not ws:
+        return False
+    for w in ws:
+        until, why = COOLDOWN.get(w, (0, ""))
+        if until > now and why.startswith("quota low"):
+            continue
+        if sbx.quota_verdict(quota_rows(w, 900), lim)[0]:
+            return False
+    return True
 
 
 def order_by_quota(ws, pct_of, last_used):
@@ -593,17 +730,13 @@ def context_bundle():
     active = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals() if g["status"] in ("new", "active")) or "(none)"
     tree = repo_tree()
     pd = C["PROJECT_DIR"].strip("/")
-    mods = ""
-    for p in tree.splitlines():
-        if (not pd or p.startswith(pd + "/")) and p.endswith(".py") and "/test_" not in p and not p.split("/")[-1].startswith("test_") \
-                and "conftest" not in p:
-            src = read_repo(p, 200000).splitlines()
-            mods += f"\n### {p} ({len(src)} lines; first 60)\n```python\n" + "\n".join(src[:60]) + "\n```\n"
-            if len(mods) > 60000:
-                break
+    cm = codemap_main()
+    mods = codemap.render(cm, [p for p in sorted(cm) if not cm[p]["test"]], max_chars=50000)
+    tests = [p for p in sorted(cm) if cm[p]["test"]]
+    mods += f"\n\nTest files: {', '.join(tests)}" if tests else ""
     agents = read_repo((pd + "/AGENTS.md") if pd else "AGENTS.md", 8000) or "(none)"
     return (f"## Owner's vision ({C['VISION_FILE']})\n{vision}\n\n## AGENTS.md (every worker reads it)\n{agents}\n\n"
-            f"## Repository files on main\n{tree}\n\n## Existing modules (heads)\n{mods}\n## Goals in progress (do not duplicate them)\n{active}\n\n"
+            f"## Repository files on main\n{tree}\n\n## Code map (purpose + interface of every module on main)\n{mods}\n## Goals in progress (do not duplicate them)\n{active}\n\n"
             f"## Tasks so far\n{hist}\n")
 
 
@@ -618,7 +751,9 @@ def plan_prompt(g, followup=None):
                f"instead of waiting. depends_on only when a task cannot even start without another task's merged code.\n"
                f"- No routine review tasks: every branch is already gated (full test suite in a clean container) and reviewed. Add a tester / "
                f"security-tester task only for risky work (money, personal data, security, dates/timezones) or when the goal asks.\n"
-               f"- Size every task for about {C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger.\n"
+               f"- Size every task for about {C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger. "
+               f"A task owns at most {C['MAX_TASK_FILES']} files (shared registries do not count) - tasks spread over more files hit the "
+               f"token cap about twice as often, and the foreman splits them before anyone starts.\n"
                f"- Pick each task's role from the role catalogue; non-code roles (writer, designer, translator, analyst) are welcome when the "
                f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n- Write 2-5 goal_acceptance criteria: observable "
                f"outcomes of the whole goal (not per task). Every task's spec must serve them; the goal is done only when all hold.\n\n{PLAN_EXAMPLE}\n")
@@ -626,8 +761,10 @@ def plan_prompt(g, followup=None):
         ga = "\n".join(f"- {a}" for a in g.get("acceptance", [])) or "(none recorded - judge from the goal text)"
         ask = (f"## Goal from the owner\n{g['text']}\n\n## Goal acceptance criteria\n{ga}\n\n## Results of this goal's tasks\n{followup}\n\n"
                f"Check every goal acceptance criterion against the merged results. Decide whether the goal is achieved. "
-               f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences for the owner\"}}. If not, reply with follow-up tasks "
-               f"in the schema below (only what is genuinely missing, parallel where possible).\n")
+               f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences for the owner\", \"criteria\": [...]}}. If not, reply with "
+               f"follow-up tasks in the schema below (only what is genuinely missing, parallel where possible) plus \"criteria\". "
+               f"\"criteria\" is a list with one entry per goal acceptance criterion, in order: "
+               f"{{\"criterion\": \"...\", \"met\": true|false, \"evidence\": \"one short sentence\"}}.\n")
     return head + ask + f"\nReply with ONLY one JSON object, no prose, in this schema:\n{TASK_SCHEMA}\n"
 
 
@@ -686,6 +823,8 @@ def rules_block(t):
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Trial and error until the FULL suite passes: run `python3 -m pytest -q` from the repo root, read failures, fix, repeat.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
+- Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
+  change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
 - Never push `main`, never open a PR.
 - Final reply: what you did, the final pytest summary line, and anything you could not do and why.
 """ + ("\n## Team lessons (from earlier reworks - avoid repeating them)\n" + "\n".join(f"- {l}" for l in ls) + "\n" if ls else ""))
@@ -716,6 +855,11 @@ def worker_spec(t, continuing=False):
          goal_context(t),
          "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
          "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n", rules_block(t), rework_block(t)]
+    if variant(t)["pack"]:
+        try:
+            s.append(context_pack(t))
+        except Exception as e:                  # the pack is an optimisation; a task never fails because of it
+            event(f"task {t['id']}: context pack failed: {e}", task=t["id"])
     return "\n".join(x for x in s if x)
 
 
@@ -733,6 +877,10 @@ def step_plan(g, followup=None):
             if g2["plan_errors"] >= 3:
                 g2["status"] = "blocked"; sbx.alert(f"foreman: goal {g['id']} could not be planned")
             save_goal(g2); return
+        if isinstance(d.get("criteria"), list):
+            g2["criteria"] = [dict(criterion=str(c.get("criterion", ""))[:300], met=bool(c.get("met")), evidence=str(c.get("evidence", ""))[:300])
+                              for c in d["criteria"][:8] if isinstance(c, dict)]
+            g2["criteria_at"] = sbx.now()
         if d.get("done"):
             g2.update(status="done", summary=d.get("summary", ""), finished=sbx.now()); save_goal(g2)
             for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending")]:
@@ -743,15 +891,21 @@ def step_plan(g, followup=None):
         keys, n = {}, next_task_number()
         for i, x in enumerate(d.get("tasks", [])[:8]):
             keys[x.get("key") or str(i)] = f"{n + i:04d}-{slugify(x.get('key') or x.get('title', 'task'))}"
+        presplit = []
         for i, x in enumerate(d.get("tasks", [])[:8]):
             tid = keys[x.get("key") or str(i)]
             role = str(x.get("role", "developer"))
             prefix = "test" if "test" in role.lower() and "developer" not in role.lower() else "feat"
-            save_task(dict(id=tid, goal=g["id"], title=str(x.get("title", tid))[:150], role=role, risk=x.get("risk", "routine"),
-                           branch=f"{prefix}/{tid}", files=[f for f in x.get("files", []) if FILES_LINE.match(f)],
-                           depends_on=[keys[k] for k in x.get("depends_on", []) if k in keys], spec=str(x.get("spec", "")),
-                           acceptance=[str(a) for a in x.get("acceptance", [])], status="pending", attempts=0, history=[],
-                           created=sbx.now(), planned_by=who))
+            nt = dict(id=tid, goal=g["id"], title=str(x.get("title", tid))[:150], role=role, risk=x.get("risk", "routine"),
+                      branch=f"{prefix}/{tid}", files=[f for f in x.get("files", []) if FILES_LINE.match(f)],
+                      depends_on=[keys[k] for k in x.get("depends_on", []) if k in keys], spec=str(x.get("spec", "")),
+                      acceptance=[str(a) for a in x.get("acceptance", [])], status="pending", attempts=0, history=[],
+                      created=sbx.now(), planned_by=who)
+            if len(own_files(nt)) > int(C["MAX_TASK_FILES"]):
+                nt.update(status="splitting", presplit=True); presplit.append(tid)
+            save_task(nt)
+        if presplit:
+            event(f"goal {g['id']}: {', '.join(presplit)} own more than {C['MAX_TASK_FILES']} files - splitting before dispatch", goal=g["id"])
         g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=d.get("notes", ""))
         if d.get("goal_acceptance") and not g2.get("acceptance"):
             g2["acceptance"] = [str(a)[:300] for a in d["goal_acceptance"]][:6]
@@ -766,9 +920,12 @@ def step_split(t):
     refresh_repo()
     prompt = (f"{context_bundle()}\n## A task that is too big\nTask {t['id']} ({t['role']}): {t['title']}\n### Spec\n{t['spec']}\n### Acceptance\n" +
               "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n### Files\n{', '.join(t.get('files', []))}\n\n"
-              f"Its worker was stopped by the per-run token cap {t.get('caps', 0)} times. Work already done may be on branch `{t['branch']}` "
-              f"(the first task you list continues on that branch). Split the task into 2-3 smaller tasks that together deliver exactly the "
-              f"same spec and acceptance criteria, each well under {C['TASK_TOKEN_BUDGET']:,} tokens of work, disjoint files where possible.\n"
+              + (f"It owns {len(own_files(t))} files; tasks spread over more than {C['MAX_TASK_FILES']} files hit the token cap about twice "
+                 f"as often, so it is split before anyone works on it. " if t.get("presplit") and not t.get("caps") else
+                 f"Its worker was stopped by the per-run token cap {t.get('caps', 0)} times. Work already done may be on branch `{t['branch']}` "
+                 f"(the first task you list continues on that branch). ") +
+              f"Split the task into 2-3 smaller tasks that together deliver exactly the same spec and acceptance criteria, each well under "
+              f"{C['TASK_TOKEN_BUDGET']:,} tokens of work and at most {C['MAX_TASK_FILES']} files, disjoint files where possible.\n"
               f"Reply with ONLY one JSON object in this schema:\n{TASK_SCHEMA}\n")
     text, who = llm("plan", prompt)
     d = extract_json(text) or {}
@@ -777,6 +934,9 @@ def step_split(t):
         t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
         new = d.get("tasks") or []
         if not new:
+            if t2.get("presplit") and not t2.get("caps"):
+                t2.update(status="pending", presplit=False); save_task(t2)
+                event(f"task {t['id']}: {who} could not split it - dispatching it as planned", task=t["id"]); return
             t2.update(status="gate"); save_task(t2)
             event(f"task {t['id']}: {who} could not split it - reviewing what exists", task=t["id"]); return
         keys, n = {}, next_task_number()
@@ -1171,8 +1331,10 @@ def dispatch_ready():
                           and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
         spec = os.path.join(FD, "tasks", t["id"] + ".md")
         open(spec, "w").write(worker_spec(t, continuing))
+        v = variant(t)
         env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
-               "DISPATCH_MODEL": (C["WORKER_MODEL_RISKY"] if t.get("risk") == "risky" else "") or C["WORKER_MODEL"]}
+               "DISPATCH_MODEL": v["model"], "DISPATCH_SELF_CHECK": str(int(C["SELF_CHECK_ROUNDS"])),
+               "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"]}
         rc, out, err = sh([os.path.join(BIN, "dispatch"), w, spec], timeout=300, env=env)
         if rc != 0:
             reason = (err or out).strip()[-200:]
@@ -1267,32 +1429,116 @@ def feed_idle_workers():
     workers outnumber that, start further backlog goals in the SAME tick (planning runs in parallel), else ask the autopilot."""
     ts = tasks()
     free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
+    ahead = False
     if not free:
-        return
+        # PLAN_AHEAD: when every worker waits for its quota (Antigravity's weekly limit can idle a team for days), plan backlog
+        # goals now - that costs only orchestrator quota - so up to ~2 tasks per worker are ready the moment the quota resets
+        if not (C["PLAN_AHEAD"] and not any(t["status"] == "running" for t in ts) and pool_quota_out()):
+            return
+        ahead = True
     running_files = set(f for t in ts if t["status"] == "running" for f in t.get("files", []))
     planning = [g for g in goals() if g["status"] == "new"] + [k for k in INFLIGHT if k.startswith("roadmap")]
-    coming = len(ready_tasks(ts, running_files)) + 2 * len(planning)
+    if ahead:
+        slots = 2 * len(workers())
+        coming = sum(1 for t in ts if t["status"] in ("pending", "splitting")) + 2 * len(planning)
+    else:
+        slots = len(free)
+        coming = len(ready_tasks(ts, running_files)) + 2 * len(planning)
     unfinished = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review")}
     live = [g for g in goals() if g["status"] == "new" or (g["status"] == "active" and g["id"] in unfinished)]
     cap = max(int(C["MAX_ACTIVE_GOALS"]), 2 * len(workers()))
     started = []
     bl = jload(os.path.join(FD, "backlog.json"), [])
-    while bl and len(free) > coming and len(live) + len(started) < cap:
+    while bl and slots > coming and len(live) + len(started) < cap:
         text = bl.pop(0)
         gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + (f"-{len(started)}" if started else "")
         save_goal(dict(id=gid, text=text, status="new", created=sbx.now(), source="backlog"))
         started.append(gid)
         coming += 2
-        event(f"{len(free)} idle worker(s) - started goal {gid} from the backlog: {text[:200]}", goal=gid)
+        event((f"all workers wait for quota - planning ahead: goal {gid}" if ahead else f"{len(free)} idle worker(s) - started goal {gid}") +
+              f" from the backlog: {text[:200]}", goal=gid)
     if started:
         jsave(os.path.join(FD, "backlog.json"), bl)
         return
-    if len(free) <= coming or "next:autopilot" in INFLIGHT:
+    if slots <= coming or "next:autopilot" in INFLIGHT:
         return
     st = gstate()
     if C["AUTOPILOT"] and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")) and st.get("autopilot_quiet_until", 0) <= time.time():
         PHASE["autopilot"] = "autopilot vyberá ďalší cieľ z vízie"
         submit("next:autopilot", step_next)
+
+
+GATE_IMAGE = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
+MAINT_PREFIX = "[maintenance]"
+
+
+def run_suite_on_main():
+    """The full test suite on main exactly like the gate runs it (fresh offline container, read-only source). (rc, summary line)."""
+    rc, out, err = sh(["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
+                       "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256",
+                       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{REPO}:/src:ro", "-w", "/src", "--entrypoint", "python3", GATE_IMAGE,
+                       "-m", "pytest", "-q", "-p", "no:cacheprovider"], timeout=600)
+    lines = (out or err).strip().splitlines()
+    fails = [l for l in lines if l.startswith(("FAILED ", "ERROR "))]
+    return rc, (lines[-1] if lines else "(no output)")[:200], fails[:10]
+
+
+def maybe_maintenance():
+    """MAINTENANCE: while the team is idle (nobody running, every worker out of quota or nothing to do), check main once per new
+    main commit and at most every 6 h - without any LLM: the full suite 3x (red main / flaky tests) and the code map (modules
+    without a docstring). Findings become goals/backlog entries, so the team starts on them when quota is back."""
+    if not C["MAINTENANCE"] or "maint:main" in INFLIGHT:
+        return
+    ts = tasks()
+    if any(t["status"] in ("running", "gate", "review", "splitting") for t in ts):
+        return
+    st = gstate()
+    if time.time() - st.get("maint_at", 0) < 6 * 3600:
+        return
+    rc, sha, _ = sh(["git", "rev-parse", "origin/main"], cwd=REPO)
+    if not sha.strip() or sha.strip() == st.get("maint_sha"):
+        return
+    if any(t["status"] == "pending" for t in ts) and not pool_quota_out():
+        return
+    PHASE["main"] = "údržba: testy na main 3x, mapa kódu (bez AI)"
+    submit("maint:main", step_maintenance)
+
+
+def step_maintenance():
+    refresh_repo()
+    rc, sha, _ = sh(["git", "rev-parse", "origin/main"], cwd=REPO)
+    runs = [run_suite_on_main() for _ in range(3)]
+    cm = codemap_main()
+    nodoc = [p for p, e in sorted(cm.items()) if not e["test"] and p.endswith(".py") and not e["purpose"]]
+
+    def apply():
+        st = gstate()
+        st.update(maint_at=time.time(), maint_sha=sha.strip(),
+                  maint=dict(at=sbx.now(), sha=sha.strip()[:10], suite=[dict(rc=r[0], summary=r[1]) for r in runs], nodoc=len(nodoc)))
+        gsave(st)
+        bl = jload(os.path.join(FD, "backlog.json"), [])
+        open_goals = " ".join(g["text"] for g in goals() if g["status"] in ("new", "active"))
+        found = []
+        if all(r[0] != 0 for r in runs) and f"{MAINT_PREFIX} main is red" not in open_goals:
+            fails = sorted({f for r in runs for f in r[2]})
+            gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + "-m"
+            save_goal(dict(id=gid, text=f"{MAINT_PREFIX} main is red: the full test suite fails on main ({runs[0][1]}). Make it green "
+                           f"again without weakening tests. Failing: {'; '.join(fails)[:800] or 'see the test output'}",
+                           status="new", created=sbx.now(), source="maintenance"))
+            found.append("main is red - goal " + gid)
+        elif len({r[0] == 0 for r in runs}) > 1:
+            flaky = sorted({f for r in runs for f in r[2]})
+            text = f"{MAINT_PREFIX} flaky tests: the same main passed and failed in 3 runs. Make them deterministic: {'; '.join(flaky)[:600]}"
+            if not any(b.startswith(f"{MAINT_PREFIX} flaky tests") for b in bl):
+                bl.insert(0, text); found.append("flaky tests")
+        if nodoc and not any(b.startswith(f"{MAINT_PREFIX} module docstrings") for b in bl):
+            bl.append(f"{MAINT_PREFIX} module docstrings: give every module a docstring (purpose, public interface, invariants; 3-8 lines, "
+                      f"no code changes) - the team's code map and context packs are built from them. Modules: {', '.join(nodoc[:30])}")
+            found.append(f"{len(nodoc)} module(s) without a docstring")
+        jsave(os.path.join(FD, "backlog.json"), bl)
+        event("maintenance on main " + sha.strip()[:10] + ": suite " + " / ".join(r[1] for r in runs)[:200] +
+              (" - " + "; ".join(found) if found else " - nothing to do"))
+    return apply
 
 
 CONF_MTIME = {}
@@ -1316,6 +1562,7 @@ def tick():
             return
         advance()
         dispatch_ready()
+        maybe_maintenance()
     finally:
         write_live()
 
@@ -1379,6 +1626,71 @@ def timeline(hours=24):
     return out
 
 
+def run_stats():
+    """Per finished run of this project: model, variant, reason, tokens, tool calls, self-checks and the share of the account's
+    WEEKLY worker-model quota the run used (agy /usage before/after). Finished runs never change, so they are cached."""
+    p = os.path.join(FD, "run-stats.json")
+    cache = jload(p, {})
+    try:
+        fam = str(sbx.load_limits().get("QUOTA_MODEL_FILTER", "gemini")).lower()
+    except SystemExit:                          # no etc/limits.conf yet (fresh checkout, selftest)
+        fam = "gemini"
+
+    def week(q):
+        for r in q if isinstance(q, list) else []:
+            if fam in str(r.get("model", "")).lower() and "week" in str(r.get("label", "")).lower():
+                return r.get("pct")
+    changed = False
+    for d in sbx.run_dirs():
+        rid = os.path.basename(d)
+        if rid in cache or not os.path.exists(os.path.join(d, "finished")):
+            continue
+        m = sbx.meta(d)
+        if m.get("test") or m.get("project", "") != sbx.PROJECT:
+            cache[rid] = 0; changed = True; continue
+        wb, wa = week(m.get("quota_before")), week(m.get("quota_after"))
+        cache[rid] = dict(task=str(m.get("task", "")).removesuffix(".md"), model=m.get("model") or "?", variant=m.get("variant") or "",
+                          reason=m.get("reason"), tokens=m.get("tokens") or 0, tools=m.get("tool_calls") or 0,
+                          week=round(wb - wa, 2) if wb is not None and wa is not None and wb >= wa else None,
+                          checks=[c.get("ok") for c in m.get("self_checks") or []])
+        changed = True
+    if changed:
+        jsave(p, cache)
+    return {k: v for k, v in cache.items() if v}
+
+
+def efficiency(ts, rs):
+    """Quota per merged task by worker model and by context pack on/off (A/B), plus what the self-check fixed."""
+    med = lambda v: sorted(v)[len(v) // 2] if v else None
+    groups = {}
+    tmodel = {t["id"]: (t.get("variant") or {}) for t in ts}
+    for r in rs.values():
+        v = tmodel.get(r["task"], {})
+        pack = "pack" if r["variant"].startswith("pack") else "bez packu" if r["variant"].startswith("nopack") else "pred meraním"
+        for dim, key in (("model", r["model"]), ("pack", pack)):
+            g = groups.setdefault(dim, {}).setdefault(key, dict(runs=0, ok=0, caps=0, week=0.0, week_n=0, tok=[], tools=[], tasks=set()))
+            g["runs"] += 1; g["ok"] += r["reason"] == "ok"; g["caps"] += r["reason"] in ("token-cap", "timeout")
+            if r["week"] is not None:
+                g["week"] += r["week"]; g["week_n"] += 1
+            g["tok"].append(r["tokens"]); g["tools"].append(r["tools"]); g["tasks"].add(r["task"])
+    out = {}
+    status = {t["id"]: t for t in ts}
+    for dim, gs in groups.items():
+        out[dim] = {}
+        for key, g in gs.items():
+            done = [status[x] for x in g["tasks"] if x in status and status[x]["status"] == "done"]
+            fp = sum(1 for t in done if not any(h.get("outcome") == "rework" for h in t.get("history", [])))
+            out[dim][key] = dict(runs=g["runs"], ok_pct=round(100 * g["ok"] / g["runs"]), cap_pct=round(100 * g["caps"] / g["runs"]),
+                                 week_per_run=round(g["week"] / g["week_n"], 2) if g["week_n"] else None,
+                                 week_per_done=round(g["week"] * g["runs"] / max(g["week_n"], 1) / len(done), 2) if done and g["week_n"] else None,
+                                 tokens_median=med(g["tok"]), tools_median=med(g["tools"]), done=len(done),
+                                 first_pass_pct=round(100 * fp / len(done)) if done else None)
+    chk = [r["checks"] for r in rs.values() if r["checks"]]
+    out["self_check"] = dict(runs=len(chk), green_first=sum(1 for c in chk if c[0]),
+                             fixed=sum(1 for c in chk if not c[0] and c[-1]), still_red=sum(1 for c in chk if not c[-1]))
+    return out
+
+
 def team_metrics(ts=None, days=7):
     """What works: per role first-pass approvals, reworks, blocks, tokens per merged task; per day merged tasks; per provider calls."""
     ts = ts if ts is not None else tasks()
@@ -1422,7 +1734,11 @@ def team_metrics(ts=None, days=7):
         pass
     done = [t for t in ts if t["status"] == "done"]
     total_reworks = sum(r["reworks"] for r in roles.values())
-    return dict(roles=roles, merged_per_day=last, providers=prov,
+    try:
+        eff = efficiency(ts, run_stats())
+    except Exception as e:
+        eff = dict(error=str(e)[:200])
+    return dict(roles=roles, merged_per_day=last, providers=prov, efficiency=eff,
                 totals=dict(done=len(done), blocked=sum(1 for t in ts if t["status"] == "blocked"), reworks=total_reworks,
                             first_pass_pct=round(100 * sum(r["first_pass"] for r in roles.values()) / len(done)) if done else None,
                             tokens_per_done=round(sum(tok.get(t["id"], 0) for t in done) / len(done)) if done else None))
@@ -1466,6 +1782,10 @@ EDITABLE = {
     "AUTOPILOT": (r"[01]", "project"), "AUTO_MERGE": (r"[01]", "project"), "CONTINUE_CONVERSATIONS": (r"[01]", "project"),
     "MAX_REWORK": ((0, 10), "project"), "MAX_ACTIVE_GOALS": ((1, 50), "project"), "SPLIT_AFTER_CAPS": ((1, 10), "project"),
     "TASK_TOKEN_BUDGET": ((50000, 5000000), "project"),
+    "CONTEXT_PACK": (r"on|off|ab", "project"), "CONTEXT_PACK_CHARS": ((5000, 200000), "project"), "SELF_CHECK_ROUNDS": ((0, 3), "project"),
+    "MAX_TASK_FILES": ((1, 20), "project"), "WORKER_MODEL_LIGHT": ("|" + MODEL_RE, "project"),
+    "LIGHT_ROLES": (r"|[a-z][a-z-]{1,40}(,[a-z][a-z-]{1,40})*", "project"), "AB_MODEL": ("|" + MODEL_RE, "project"),
+    "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),
     "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
     "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
 }
@@ -1629,7 +1949,10 @@ def dashboard_json():
                 live=live, backlog=jload(os.path.join(FD, "backlog.json"), []),
                 owner_questions=jload(os.path.join(FD, "owner_questions.json"), []), roadmap_request=st.get("roadmap_request"),
                 goals=[dict(id=g["id"], text=g["text"], status=g["status"], source=g.get("source", "owner"), summary=g.get("summary", ""),
-                            notes=g.get("notes", ""), created=g.get("created")) for g in goals()],
+                            notes=g.get("notes", ""), created=g.get("created"), finished=g.get("finished"), rounds=g.get("rounds", 0),
+                            acceptance=g.get("acceptance", []), criteria=g.get("criteria", []), criteria_at=g.get("criteria_at"))
+                       for g in goals()],
+                maintenance=st.get("maint"),
                 tasks=task_out, events=evs, llm_today=llm_today, timeline=timeline(), metrics=team_metrics(ts),
                 today=dict(runs=len(led), runs_max=lim["MAX_RUNS_PER_DAY"], tokens=sum(e.get("tokens", 0) for e in led),
                            tokens_max=lim["DAILY_TOKEN_BUDGET"], ok=sum(1 for e in led if e.get("reason") == "ok"),
@@ -1803,6 +2126,66 @@ def selftest():
     finally:
         FD = old_fd
         shutil.rmtree(d, ignore_errors=True)
+    # variants: context pack A/B splits tasks roughly in half and is stable per task; model routing
+    saved = {k: C[k] for k in ("CONTEXT_PACK", "WORKER_MODEL", "WORKER_MODEL_RISKY", "WORKER_MODEL_LIGHT", "AB_MODEL", "AB_SHARE", "LIGHT_ROLES",
+                               "SHARED_FILES", "PROJECT_DIR", "CONTEXT_PACK_CHARS")}
+    try:
+        C.update(CONTEXT_PACK="ab", WORKER_MODEL="m-default", WORKER_MODEL_RISKY="m-risky", WORKER_MODEL_LIGHT="m-light", AB_MODEL="m-ab",
+                 AB_SHARE=30, LIGHT_ROLES="tester,technical-writer")
+        vs = [variant(dict(id=f"{i:04d}-t", role="backend developer", risk="routine")) for i in range(400)]
+        packs, abs_ = sum(v["pack"] for v in vs), sum(v["model"] == "m-ab" for v in vs)
+        t1 = dict(id="0001-x", role="tester", risk="routine")
+        check("variant: ab packs ~half the tasks, AB_SHARE ~30 % on the A/B model, stable per task",
+              150 < packs < 250 and 80 < abs_ < 160 and variant(dict(t1)) == variant(dict(t1)))
+        check("variant: risky -> risky model, light role -> light model (unless in the A/B share)",
+              variant(dict(id="0002-y", role="backend developer", risk="risky"))["model"] == "m-risky" and
+              all(v["model"] in ("m-light", "m-ab") for v in (variant(dict(id=f"{i:04d}-z", role="Tester", risk="routine")) for i in range(20)))
+              and variant(dict(id="0003-s", role="security tester", risk="routine"))["model"] in ("m-default", "m-ab")
+              and any(variant(dict(id=f"{i:04d}-z", role="tester", risk="routine"))["model"] == "m-light" for i in range(20)))
+        C.update(CONTEXT_PACK="off"); check("variant: CONTEXT_PACK=off never packs", not any(variant(dict(id=f"{i:04d}-q", role="x"))["pack"] for i in range(50)))
+        C.update(SHARED_FILES="tools.json")
+        check("own_files ignores shared registries", own_files(dict(files=["a.py", "test_a.py", "pkg/tools.json", "tools.json"])) == ["a.py", "test_a.py"])
+    finally:
+        C.update(saved)
+    # context pack: a throwaway git repository as "main"
+    global REPO
+    old_repo, old_fd = REPO, FD
+    d = tempfile.mkdtemp(prefix="forge-pack-")
+    try:
+        REPO, FD = os.path.join(d, "repo"), os.path.join(d, "fd")
+        os.makedirs(REPO); os.makedirs(FD)
+        open(os.path.join(REPO, "store.py"), "w").write('"""Contact storage: add/list contacts in a JSON file."""\n\ndef add(name: str) -> dict:\n'
+                                                         '    """Add a contact."""\n    return {"name": name}\n')
+        open(os.path.join(REPO, "birthdays.py"), "w").write('"""Birthday reminders."""\nimport store\n\ndef upcoming(days=7):\n    return []\n')
+        open(os.path.join(REPO, "test_birthdays.py"), "w").write('import birthdays\n\ndef test_up():\n    assert birthdays.upcoming() == []\n')
+        open(os.path.join(REPO, "other.py"), "w").write("def unrelated():\n    pass\n")
+        for c in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]):
+            sh(["git"] + c, cwd=REPO)
+        sh(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=REPO)
+        C.update(PROJECT_DIR="", CONTEXT_PACK_CHARS=60000)
+        cp = context_pack(dict(id="0003-b", files=["birthdays.py", "test_birthdays.py"], spec="Use store.add() for new contacts.", acceptance=[]))
+        check("context pack: own files in full, imported module's interface, one-line map of the rest, no bodies of others",
+              "def upcoming(days=7):" in cp and "def add(name: str) -> dict  # Add a contact." in cp and "`other.py`" in cp
+              and 'return {"name": name}' not in cp and "NO MODULE DOCSTRING" in cp)
+        cp2 = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[], attempts=1))
+        check("context pack: a rework does not resend main's version of the worker's own files", "def upcoming(days=7):\n" not in cp2 and "git diff origin/main" in cp2)
+        C.update(CONTEXT_PACK_CHARS=400)
+        check("context pack respects CONTEXT_PACK_CHARS", len(context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[]))) < 1100)
+    finally:
+        C.update(saved)
+        REPO, FD = old_repo, old_fd
+        CODEMAP.clear()
+        shutil.rmtree(d, ignore_errors=True)
+    # efficiency metrics: quota per merged task by model / pack
+    rs = {"r1": dict(task="0001-a", model="m1", variant="pack-default", reason="ok", tokens=100, tools=10, week=1.0, checks=[False, True]),
+          "r2": dict(task="0001-a", model="m1", variant="pack-default", reason="token-cap", tokens=300, tools=50, week=2.0, checks=[]),
+          "r3": dict(task="0002-b", model="m2", variant="nopack-default", reason="ok", tokens=200, tools=40, week=None, checks=[True])}
+    ts = [dict(id="0001-a", status="done", history=[dict(outcome="rework")]), dict(id="0002-b", status="done", history=[])]
+    ef = efficiency(ts, rs)
+    check("efficiency: per model and pack - runs, cap %, quota per run and per merged task, first pass, self-check fixes",
+          ef["model"]["m1"]["runs"] == 2 and ef["model"]["m1"]["cap_pct"] == 50 and ef["model"]["m1"]["week_per_run"] == 1.5
+          and ef["model"]["m1"]["week_per_done"] == 3.0 and ef["pack"]["bez packu"]["first_pass_pct"] == 100
+          and ef["pack"]["pack"]["first_pass_pct"] == 0 and ef["self_check"] == dict(runs=2, green_first=1, fixed=1, still_red=0))
     print("foreman selftest: " + ("ALL OK" if not bad else f"{bad} FAILED"))
     return 1 if bad else 0
 
@@ -1848,6 +2231,15 @@ def main():
             sys.exit("--lang: a language name such as English or Slovak")
         init_project(a[1], opt("--repo"), opt("--workers"), opt("--lang", "English"),
                      vision=sys.stdin.read()[:20000] if opt("--vision") == "-" else None)
+    elif a[:1] == ["pack"] and len(a) == 2:
+        t = next((x for x in tasks() if x["id"] == a[1]), None)
+        if not t:
+            sys.exit(f"no task {a[1]}")
+        refresh_repo()
+        cp = context_pack(t)
+        print(cp)
+        print(f"\n({len(cp):,} characters, ~{len(cp) // 4:,} tokens; variant: {variant(dict(t)).get('why')}, "
+              f"pack {'on' if variant(dict(t))['pack'] else 'off'} for this task)", file=sys.stderr)
     elif a[:1] == ["diff"] and len(a) == 2:
         print(task_diff(a[1]))
     elif a == ["ask"]:

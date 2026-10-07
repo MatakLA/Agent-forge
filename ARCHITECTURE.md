@@ -91,6 +91,13 @@ global limits (`etc/limits.conf`) and the egress proxy are shared.
 - Split: `SPLIT_AFTER_CAPS` cap hits → `step_split` asks the planner for 2-3 smaller tasks; dependents are re-pointed.
 - Continuation: the agy `conversation_id` of each run is kept; a rework on the same worker passes `--conversation` and a short prompt.
 - Lessons: reviews may return `lesson`; stored in `lessons.md` per project, shown to planner, reviewer and workers.
+- Context pack: `bin/lib/codemap.py` maps every module on main (purpose from its docstring, public signatures); each task gets
+  its own files, the interfaces it uses and a one-line map of the rest (`CONTEXT_PACK`, capped by `CONTEXT_PACK_CHARS`).
+- Self-check: `run-supervisor` runs the suite in the worker's clone after the run; on red it resumes the same agy conversation
+  with the output (`SELF_CHECK_ROUNDS`). After every run it commits + pushes what is left on the task branch.
+- Pre-split: tasks owning more than `MAX_TASK_FILES` files go to `step_split` before dispatch.
+- Plan ahead + maintenance: when the whole pool is under its quota floor, backlog goals are planned ahead and main is tested 3x
+  and mapped without any LLM. Details and the data behind all of this: docs/EFFICIENCY.md.
 
 ### Roles (roles/) and prompts (prompts/)
 Each role file is a playbook - mission, what it owns, how it works, what it never does, definition of done. The planner sees the
@@ -115,3 +122,4 @@ in a browser terminal. It is an admin console - see SECURITY.md.
 | `runs/ledger.jsonl`, `runs/ALERT` | run ledger, alerts |
 | `runs/KILLSWITCH`, `runs/projects/<name>/KILLSWITCH`, `runs/KILLSWITCH-ALL` | kill switch of the default project / a project / all projects |
 | `runs/agy-models.json` | the cached `agy models` list for the dashboard's model pickers |
+| `runs/foreman/codemap.json`, `run-stats.json` | code map of main (per commit); per-run model, variant, quota used (Metrics) |
