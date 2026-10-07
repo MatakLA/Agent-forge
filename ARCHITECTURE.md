@@ -60,6 +60,17 @@ behind), runs `agy-run` with the task prompt, and kills the run on timeout, toke
 transient network error on the final API call after a complete answer is not counted as a failure. After the run it checks the
 proxy log for that worker; any HIGH alarm trips the kill switch. `CONSEC_FAIL_TRIP` non-ok runs in a row trip it as well.
 
+### Worker runtimes (bin/lib/runtimes.py)
+A worker runs `agy` (subscription) or, with an API key, `claude` / `codex` / `gemini` (worker/Dockerfile.api, worker/af-agent).
+The runtime decides the command line and how the event stream is read (tokens, tool calls, conversation id, result, cost);
+everything else - dispatch, limits, self-check, salvage, gate, review - is the same. API workers are overflow by default and
+capped in USD per run and per day. docs/RUNTIMES.md.
+
+### Upstream (bin/lib/upstream.py, bin/upstream)
+With `FORGE_KIND=github|gitlab` the orchestrator pushes approved branches from Forgejo to the project's real repository, opens
+and merges pull / merge requests there (tasks wait in status `merging` while upstream checks run) and syncs upstream main back
+into Forgejo every minute. Workers and the gate keep using Forgejo only. docs/UPSTREAM.md.
+
 ### Worker containers (worker/)
 Ubuntu image with Python, git and `agy` (pinned version, SHA-512 verified, installed outside HOME). Non-root user, all
 capabilities dropped, `no-new-privileges`, CPU/memory/PID limits, only on the internal network. Each worker has its own HOME

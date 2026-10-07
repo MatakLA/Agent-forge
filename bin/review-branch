@@ -16,7 +16,12 @@ if not a or a[0].startswith("-"):
 branch = a[0]
 spec = json.load(open(a[a.index("--mutations") + 1])) if "--mutations" in a else []
 IMAGE = sbx.gate_image()                 # the project's GATE_IMAGE (default: the worker image, Python + pytest)
-TEST_CMD = sbx.test_cmd()                # the project's TEST_CMD (default: python3 -m pytest -q -p no:cacheprovider)
+TEST_CMD = sbx.test_cmd()
+SECRET_PATTERNS = ((r"sk-ant-[A-Za-z0-9_-]{20,}", "an Anthropic API key"), (r"\bsk-(proj-|svcacct-)?[A-Za-z0-9_-]{32,}", "an OpenAI API key"),
+                   (r"AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_-]{20,}", "a Google API key / token"),
+                   (r"\bgh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}", "a GitHub token"), (r"\bglpat-[A-Za-z0-9_-]{20,}", "a GitLab token"),
+                   (r"\bAKIA[0-9A-Z]{16}\b", "an AWS access key"), (r"\bxox[baprs]-[A-Za-z0-9-]{10,}", "a Slack token"),
+                   (r"BEGIN [A-Z ]*PRIVATE KEY", "a private key"))                # the project's TEST_CMD (default: python3 -m pytest -q -p no:cacheprovider)
 tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
 tmp = tempfile.mkdtemp(prefix="review-")
 warn = []
@@ -59,9 +64,13 @@ try:
         if path.startswith(".") and path not in (".gitignore",):
             warn.append(f"dot-file touched: {path}")
     added = sh("git", "diff", "--unified=0", f"{base}...HEAD", cwd=repo).stdout
-    for pat, what in ((r"\b[0-9a-f]{40}\b", "40-hex string (token-like)"), (r"BEGIN [A-Z ]*PRIVATE KEY", "private key"), (r"ya29\.|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{12,}", "cloud credential pattern")):
-        if any(re.search(pat, x) for x in added.splitlines() if x.startswith("+") and not x.startswith("+++")):
-            warn.append(f"added lines contain {what}")
+    plus = [x for x in added.splitlines() if x.startswith("+") and not x.startswith("+++")]
+    if any(re.search(r"\b[0-9a-f]{40}\b", x) for x in plus):
+        warn.append("added lines contain a 40-hex string (token-like)")
+    # real secrets are a hard stop, not a warning: API keys of the worker runtimes, forge tokens, cloud keys, private keys
+    secrets = [what for pat, what in SECRET_PATTERNS if any(re.search(pat, x) for x in plus)]
+    if secrets:
+        print("\n== SECRET: the branch adds " + ", ".join(secrets) + " - refused. Remove it from the branch's history.")
     # test-quality scan
     tests = [p.split("\t")[-1] for p in ns if re.search(r"(^|/)test_.*\.py$", p.split("\t")[-1])]
     ntests = 0
@@ -92,7 +101,7 @@ try:
             "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "PYTHONDONTWRITEBYTECODE=1"]
     t = sh(*dock, "-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=600)
     print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
-    fail = t.returncode != 0
+    fail = t.returncode != 0 or bool(secrets)
     if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
         fail = False                     # pytest found no tests at all: a branch without code tests (docs, design) is not red
         warn.append("the repository has no tests yet")

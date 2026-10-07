@@ -36,7 +36,13 @@ SAFE_ARG = __import__("re").compile(r"[A-Za-z0-9._/:-]{1,200}")
 SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
 DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=1500000, DAILY_TOKEN_BUDGET=3000000,
                 MAX_RUNS_PER_DAY=6, MAX_PARALLEL=2, QUOTA_MODEL_FILTER="Gemini", QUOTA_MIN_5H_PCT=25,
-                QUOTA_MIN_WEEK_PCT=15, CONSEC_FAIL_TRIP=3, POLL_SEC=2, WORKER_MODEL="gemini-3.8-flash-high")
+                QUOTA_MIN_WEEK_PCT=15, CONSEC_FAIL_TRIP=3, POLL_SEC=2, WORKER_MODEL="gemini-3.8-flash-high",
+                # API-key runtimes (claude / codex / gemini) cost real money: a hard cap per run (Claude Code enforces it
+                # itself with --max-budget-usd; codex/gemini are stopped by the token cap and RUN_MAX_TOOL_CALLS) and per day
+                API_RUN_BUDGET_USD=2.0, API_DAILY_BUDGET_USD=10.0, RUN_MAX_TOOL_CALLS=250,
+                # USD per million tokens "input,cached input,output" - for the cost estimate of codex / gemini runs (their CLIs
+                # report tokens, not money). Set them to your model's current prices.
+                PRICE_CODEX="1.25,0.125,10", PRICE_GEMINI="1.25,0.31,10")
 
 
 def now():
@@ -152,7 +158,7 @@ def gate_image(project=None):
 
 
 # ---- notifications (optional): NOTIFY_URL in etc/foreman.conf or projects/<name>/project.conf
-NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out"
+NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out,auth"
 
 
 def project_conf(project=None):
@@ -239,7 +245,7 @@ def append_ledger(entry):
 # Run outcomes that say nothing about whether the agent misbehaves: they neither count toward nor reset the kill switch's
 # consecutive-failure streak. (Before: a hard stop of 4 running runs wrote 4 "killswitch" entries and the next single failure
 # after "Continue" tripped the kill switch again; token caps - 22 % of all runs, productive since WIP is saved - tripped it too.)
-NEUTRAL_OUTCOMES = ("killswitch", "setup-failed", "egress-not-enforced", "quota", "orphaned", "token-cap", "timeout")
+NEUTRAL_OUTCOMES = ("killswitch", "setup-failed", "egress-not-enforced", "quota", "auth", "orphaned", "token-cap", "timeout")
 
 
 def consecutive_failures(ledger, project):
@@ -253,6 +259,19 @@ def consecutive_failures(ledger, project):
             break
         n += 1
     return n
+
+
+def worker_runtime(worker):
+    """The runtime of a worker container (label agent-forge.runtime set by bin/worker-up; none = agy, older workers)."""
+    r = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "agent-forge.runtime"}}', worker], capture_output=True, text=True)
+    v = r.stdout.strip()
+    return v if r.returncode == 0 and v in ("agy", "claude", "codex", "gemini") else "agy"
+
+
+def api_spent_today(ledger=None):
+    """USD spent today (UTC) by API-key runs, all projects (the budget is per install, like the other daily limits)."""
+    return round(sum(e.get("cost_usd") or 0 for e in (ledger if ledger is not None else read_ledger())
+                     if e.get("date") == today() and not e.get("test")), 4)
 
 
 def alive(pid):

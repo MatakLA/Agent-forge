@@ -43,3 +43,6 @@ etc/team-rules.md
 # Per-install projects (bin/foreman init-project) and their lessons
 projects/
 etc/lessons.md
+# per install: worker runtimes, the API runtimes' egress hosts
+etc/workers.conf
+egress/allowlist.local.txt

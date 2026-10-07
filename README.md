@@ -6,10 +6,12 @@ You write a goal ("add a contacts module with birthday reminders", "write the us
 An orchestrator splits it into small tasks, each with a role (backend developer, tester, security tester, technical writer,
 UX designer, translator, ... 19 playbooks in `roles/`). Worker agents build the tasks in parallel, each in its own locked-down
 container on its own branch. Every branch runs the full test suite in a fresh offline container, gets reviewed, and is merged
-through a pull request on your own Forgejo - or sent back with concrete feedback until it is right.
+through a pull request - on your GitHub or GitLab repository, or on the internal Forgejo - or sent back with concrete feedback
+until it is right.
 
-It is built to run on subscriptions you already pay for: **Claude Code** for the orchestrator and **Google Antigravity** (`agy`)
-for the workers. Paid per-token APIs are optional (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
+Workers run on what you have: **Google Antigravity** subscriptions, or **API keys** for **Claude Code**, **Codex** or **Gemini CLI**
+(pay per token, with hard caps per run and per day) - mixed in one team if you like ([docs/RUNTIMES.md](docs/RUNTIMES.md)). The
+orchestrator uses **Claude Code**, Claude or Gemini via Antigravity, or a paid API ([docs/PROVIDERS.md](docs/PROVIDERS.md)).
 
 > Status: alpha. Extracted from a setup that ran a 4-worker team on one owner's project for two weeks (~400 worker runs,
 > ~190 pull requests). Expect rough edges and read [SECURITY.md](SECURITY.md) before you run it.
@@ -27,7 +29,8 @@ assumes you are asleep:
 | What happens next | you decide | the orchestrator plans goals into role-tagged tasks; an optional autopilot picks the next goal from your vision file |
 | Verification | you read the diff | full test suite in a **fresh offline container** + an AI review + optional **mutation tests** before any merge |
 | Failures | you notice | automatic rework with the gate output, review retries that do not blame the worker, crash recovery, kill switch |
-| Capacity | one key or one subscription | several worker accounts; work goes to the account with the most quota left, exhausted accounts are skipped |
+| Capacity | one key or one subscription | subscriptions and API keys mixed; work goes where quota is left, paid keys only as overflow, with spend caps |
+| Your repository | the agent pushes from your machine | merged into your **GitHub / GitLab** repo through PRs under its branch protection - the workers never see GitHub or a token |
 | Team | coding agents | 19 roles incl. technical writer, translator, UX designer, product manager, data analyst |
 
 If you want an interactive cockpit for agents you watch, those tools are great. Agent-Forge is for a queue you leave running.
@@ -112,25 +115,27 @@ are per project too. The egress proxy is shared. The dashboard has a project sel
 
 ## Setup
 
-About an hour, most of it waiting for images. Full guide: **[docs/SETUP.md](docs/SETUP.md)**. In short:
+One command on a fresh Ubuntu machine (ideally a dedicated VM; `deploy/cloud-init.yaml` creates one), about 20 minutes:
 
 ```bash
-sudo bash scripts/vm-baseline-ubuntu.sh        # Docker + basics, ideally on a dedicated Ubuntu VM; log in again afterwards
-cp etc/limits.example.conf etc/limits.conf && cp etc/foreman.example.conf etc/foreman.conf
-bin/egress-up                                  # the allow-list proxy + the internal network
-scripts/forge-bootstrap                        # Forgejo, bot accounts, repository, branch protection
-bin/worker-add 1 && docker exec -it worker-1 agy-run    # one worker; log it in once with its own Google account
-bin/foreman --selftest && sudo scripts/install-services
-bin/foreman goal "..."
+git clone <this repository> agent-forge && cd agent-forge && scripts/install.sh --demo
 ```
+
+Then, in the dashboard: choose where the code lives (internal, GitHub or GitLab), add workers (an Antigravity account signed in
+from the browser, or an API key), enter a goal - or let the autopilot build the demo in `examples/demo`. Step by step and all
+options: **[docs/SETUP.md](docs/SETUP.md)**; `bin/doctor` checks the whole install.
 
 ## Read this before you add workers
 
-Each worker logs into Antigravity with its own Google account. Google's terms prohibit **bypassing system measures or
+API-key workers are billed by the provider per token - set the caps (`API_RUN_BUDGET_USD`, `API_DAILY_BUDGET_USD`) and a spend
+limit at the provider. An Antigravity worker logs into Antigravity with its own Google account. Google's terms prohibit **bypassing system measures or
 circumventing usage limits**, and Google has banned accounts for it. Running several accounts you pay for, for your own work,
 is your judgement and your risk - Agent-Forge does not encourage pooling accounts to get around limits, and you should not use
 it that way. The same goes for any provider whose CLI you automate: read its terms first.
 
 ## License
 
-Apache 2.0 - see [LICENSE](LICENSE).
+**Source-available, free to use - not for resale.** Agent-Forge is licensed under the Sustainable Use License
+([LICENSE](LICENSE)): use it and change it for free, for yourself and inside your company, and share it free of charge for
+non-commercial purposes. Selling it, offering it as a hosted or paid service, or otherwise making money from Agent-Forge
+itself needs a commercial license ([LICENSE_EE.md](LICENSE_EE.md)). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

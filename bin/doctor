@@ -156,6 +156,15 @@ for name, state in ws:
     if state != "running":
         warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}"); continue
     running += 1
+    rt = sbx.worker_runtime(name)
+    if rt != "agy":
+        import runtimes
+        key = runtimes.RUNTIMES[rt]["key"]
+        if not sbx.read(os.path.join(S, key)):
+            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}")
+        else:
+            ok(f"{name} runs {rt} with an API key")
+        continue
     if QUICK:
         ok(f"{name} running"); continue
     try:
@@ -169,6 +178,17 @@ for name, state in ws:
         fam = [r for r in rows if (lim or {}).get("QUOTA_MODEL_FILTER", "Gemini").lower() in r["model"].lower()]
         ok(f"{name} logged in; " + ", ".join(f"{r['label']} {r['pct']:.0f}%" for r in fam[:2])) if verdict[0] else \
             warn(f"{name}: {verdict[1]}")
+if lim:
+    spent = sbx.api_spent_today()
+    if spent:
+        (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
+    import runtimes
+    for rt, r in runtimes.RUNTIMES.items():
+        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws):
+            allowed = set(egress.allowlist()) if "egress" in sys.modules else set()
+            missing = [h for h in r["hosts"] if h not in allowed]
+            if missing:
+                bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")
 if lim and running > lim["MAX_PARALLEL"]:
     warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
 

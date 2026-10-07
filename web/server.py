@@ -89,16 +89,17 @@ def start_job(kind, fn):
     return JOBS[jid]
 
 
-def add_worker_job(job):
-    """Next free worker-N: Forgejo account + token, keyring password, HOME volume, container (bin/worker-add). The agy login is a
-    separate interactive step (LOGIN) because it needs the owner to open a URL with that worker's Google account."""
+def add_worker_job(job, runtime="agy"):
+    """Next free worker-N: Forgejo account + token, HOME volume, container (bin/worker-add). agy: the login is a separate
+    interactive step (LOGIN), the owner opens a URL with that worker's Google account. API runtimes: the key must already be
+    stored (POST /api/secret) - the worker works right away."""
     try:
         out = ssh_run("docker ps -a --format '{{.Names}}'", timeout=20)
         nums = [int(x.split("-")[1]) for x in out.split() if re.fullmatch(r"worker-\d+", x)]
         n = max(nums or [0]) + 1
         job["worker"] = f"worker-{n}"
         job["log"] += f"creating worker-{n}...\n"
-        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n} 2>&1", timeout=1500)
+        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n}" + (f" --runtime {runtime}" if runtime != "agy" else "") + " 2>&1", timeout=1800)
         job["log"] += ANSI.sub("", o + e)[-4000:]
         job["state"] = "done" if rc == 0 else "failed"
     except Exception as ex:
@@ -138,6 +139,26 @@ def create_project_job(job, name, repo, workers_, lang, vision):
                            f"sudo scripts/install-services --project {name}\n")
             job["state"] = "needs-sudo"
         PROJECTS["at"] = 0          # refresh the project list on the next loop
+    except Exception as ex:
+        job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
+
+
+def connect_upstream_job(job, pf, changes, upstream, force):
+    """Save where the code lives, check the token, and import upstream's main into Forgejo (bin/upstream import)."""
+    def step(label, cmd, inp=None, timeout=120):
+        job["log"] += f"==> {label}\n"
+        rc, o, e = ssh_run_full(cmd, timeout=timeout, inp=inp)
+        job["log"] += ANSI.sub("", o + e)[-2500:] + "\n"
+        return rc == 0
+    try:
+        if not step("settings", f"cd {FORGE_DIR} && bin/foreman{pf} settings apply", inp=json.dumps(changes)):
+            job["state"] = "failed"; return
+        if upstream:
+            if not step("access check", f"cd {FORGE_DIR} && bin/upstream{pf} check"):
+                job["state"] = "failed"; return
+            if not step("import main into the internal Forgejo", f"cd {FORGE_DIR} && bin/upstream{pf} import" + (" --force" if force else ""), timeout=600):
+                job["state"] = "failed"; return
+        job["state"] = "done"
     except Exception as ex:
         job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
 
@@ -263,6 +284,84 @@ def render_orchestrator_line(d, acc):
 
 
 def render_worker_line(d, acc):
+    """One event of a worker's stream, whatever its runtime (detected from the event's shape): agy has "event"; Claude Code has
+    type system/assistant/user/result; Codex has thread.* / turn.* / item.*; Gemini has init/message/tool_use/tool_result/result
+    with a "timestamp"."""
+    t = d.get("type")
+    if "event" not in d and isinstance(t, str):
+        if t.startswith(("thread.", "turn.", "item.")) or (t == "error" and "timestamp" not in d):
+            yield from _render_codex(d)
+        elif "timestamp" in d and t in ("init", "message", "tool_use", "tool_result", "result", "error"):
+            yield from _render_gemini(d, acc)
+        else:
+            yield from _render_claude(d)
+        return
+    yield from _render_agy(d, acc)
+
+
+def is_final(d):
+    """The event that ends a worker's run, for any runtime."""
+    t = d.get("type")
+    return d.get("event") == "result" or t == "result" or t in ("turn.completed", "turn.failed")
+
+
+def _render_claude(d):
+    if d.get("type") == "result":
+        ok = d.get("subtype") == "success" and not d.get("is_error")
+        cost = d.get("total_cost_usd")
+        yield "result", ("SUCCESS: " if ok else f"ERROR {d.get('subtype')}: ") + trunc(str(d.get("result") or "")) + \
+            (f"  (${cost:.2f})" if isinstance(cost, (int, float)) else "")
+        return
+    if d.get("type") == "system":
+        return
+    yield from render_orchestrator_line(d, {})
+
+
+def _render_codex(d):
+    t, it = d.get("type"), d.get("item") or {}
+    if t == "item.started" and it.get("type") == "command_execution":
+        yield "tool", trunc(f"shell: {it.get('command', '')}")
+    elif t == "item.completed":
+        k = it.get("type")
+        if k == "command_execution":
+            yield "tool_done", f"done (exit {it.get('exit_code')})"
+        elif k == "agent_message":
+            yield "assistant", trunc(it.get("text", ""))
+        elif k == "file_change":
+            yield "tool", trunc("files: " + ", ".join(str(c.get("path", "")) for c in it.get("changes") or [] if isinstance(c, dict)))
+        elif k == "error":
+            yield "tool_done", trunc("note: " + str(it.get("message", "")))
+    elif t == "turn.completed":
+        u = d.get("usage") or {}
+        yield "result", f"SUCCESS: turn completed ({u.get('input_tokens', 0)} in / {u.get('output_tokens', 0)} out tokens)"
+    elif t == "turn.failed":
+        err = d.get("error")
+        yield "result", "ERROR: " + trunc(str(err.get("message") if isinstance(err, dict) else err))
+
+
+def _render_gemini(d, acc):
+    t = d.get("type")
+    if t == "message" and d.get("role") == "user":
+        yield "user", trunc(str(d.get("content", "")))
+        yield "task", trunc(str(d.get("content", "")), 140)
+    elif t == "message":
+        acc["g"] = acc.get("g", "") + str(d.get("content", ""))
+    elif t == "tool_use":
+        if acc.get("g"):
+            yield "assistant", trunc(acc.pop("g"))
+        p = d.get("parameters") or {}
+        yield "tool", trunc(f"{d.get('tool_name')}: {p.get('command') or json.dumps(p, ensure_ascii=False)}")
+    elif t == "tool_result":
+        yield "tool_done", "done" if d.get("status") == "success" else trunc(f"{d.get('status')}: {d.get('output', '')}")
+    elif t == "result":
+        if acc.get("g"):
+            yield "assistant", trunc(acc.pop("g"))
+        yield "result", f"{'SUCCESS' if d.get('status') == 'success' else 'ERROR'}: {(d.get('stats') or {}).get('total_tokens', 0)} tokens"
+    elif t == "error":
+        yield "tool_done", trunc("error: " + str(d.get("message") or d))
+
+
+def _render_agy(d, acc):
     ev = d.get("event")
     su = d.get("step_update") or {}
     idx = su.get("step_index")
@@ -384,7 +483,7 @@ class Pane:
                         self.tool_calls += 1
             except Exception:
                 continue
-            if self.kind == "worker" and d.get("event") == "result":
+            if self.kind == "worker" and is_final(d):
                 self.state = "finished"
                 self.finished_at = time.time()
             ROSTER.touch(self.id, title=self.title, kind=self.kind, state=self.state,
@@ -692,6 +791,10 @@ PAGE = r"""<!DOCTYPE html>
   .blbtns .mini { padding:2px 8px; }
   .qrow .btnrow input { flex:1; min-width:180px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; }
   #goal-text { min-height:64px; }
+  .rt { font-size:11px; padding:1px 6px; border-radius:5px; background:var(--card2); color:var(--muted); }
+  .rt-claude { color:#d97757; } .rt-codex { color:var(--ok); } .rt-gemini { color:var(--accent); }
+  .addw { background:var(--card2); border-radius:10px; padding:8px 10px; margin-top:8px; }
+  .addw input[type=password], #key-form input, #key-form select { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; }
   .crit { margin-top:8px; font-size:13px; }
   .critrow { display:flex; gap:6px; align-items:flex-start; padding:2px 0; }
   .cm { width:16px; flex-shrink:0; text-align:center; font-weight:700; } .cm.ok { color:var(--ok); } .cm.no { color:var(--bad); } .cm.wait { color:var(--muted); }
@@ -833,6 +936,23 @@ PAGE = r"""<!DOCTYPE html>
   <div class="setrow"><label>Workeri pre tento projekt</label><div><div id="np-workers" class="muted">načítavam…</div><div class="seterr" id="np-e-workers"></div></div></div>
   <div class="btnrow"><button class="resume-btn" id="np-create">Vytvoriť projekt</button></div></div>
   <pre id="np-log" class="term" style="display:none"></pre></div></div>
+<div class="detail" id="setup"><div class="sheet"><button class="close" id="su-close">Zavrieť</button><h2>Kde je kód tohto projektu?</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">Workeri vždy pracujú v internom Forgejo vo svojom sandboxe. Ak má projekt domov na GitHube
+  alebo GitLabe, orchestrátor tam otvára a merguje pull requesty a odtiaľ si berie main. Workeri na GitHub/GitLab nikdy nevidia.</div>
+  <div id="su-form">
+  <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="forgejo"> Iba interné Forgejo</label>
+  <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="github"> GitHub</label>
+  <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="gitlab"> GitLab</label>
+  <div id="su-up">
+  <div class="setrow"><label>Server</label><div><input type="text" id="su-url" placeholder="https://github.com"><div class="seterr" id="su-e-url"></div></div></div>
+  <div class="setrow"><label>Repozitár (vlastník/repozitár)</label><div><input type="text" id="su-repo" placeholder="napr. acme/eshop"><div class="seterr" id="su-e-repo"></div></div></div>
+  <div class="setrow"><label>Token (prázdne = ponechať uložený)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
+    <div class="muted" id="su-help" style="font-size:12px;margin-top:4px"></div></div></div>
+  <div class="setrow" id="su-force-row" style="display:none"><label>Interný repozitár už má commity</label><div><label class="chk"><input type="checkbox" id="su-force">
+    nahradiť ich obsahom z GitHubu/GitLabu</label></div></div>
+  </div>
+  <div class="btnrow"><button class="resume-btn" id="su-go">Uložiť a pripojiť</button><button class="mini" id="su-later">Neskôr</button></div></div>
+  <pre id="su-log" class="term" style="display:none"></pre></div></div>
 <script>
 // every write carries X-Agent-Forge: the server refuses POSTs without it (a cross-site page cannot add it without CORS consent)
 const _fetch = window.fetch.bind(window);
@@ -928,6 +1048,26 @@ const EN = {
  'plánovanie': 'planning', 'plánovanie úloh': 'planning tasks', 'kontrola, či je cieľ splnený alebo treba opravu': 'checking whether the goal is met or needs a fix',
  'rebase na main': 'rebase onto main', 'testy v čistom kontajneri': 'tests in a clean container', 'review orchestrátorom': 'review by the orchestrator', 'roadmapa projektu': 'project roadmap',
  'autopilot vyberá ďalší cieľ z vízie': 'autopilot picks the next goal from the vision', 'údržba: testy na main 3x, mapa kódu (bez AI)': 'maintenance: tests on main 3×, code map (no AI)',
+ 'Merguje sa': 'Merging', 'API workeri': 'API workers', 'Kedy dostanú prácu': 'When they get work', 'iba keď predplatné nestačí': 'only when the subscription workers cannot',
+ 'vždy prednostne': 'always first', 'Model pre Claude Code (prázdne = predvolený)': 'Claude Code model (empty = default)', 'Model pre Codex (prázdne = predvolený)': 'Codex model (empty = default)',
+ 'Model pre Gemini CLI (prázdne = predvolený)': 'Gemini CLI model (empty = default)', 'Strop na jeden beh (USD)': 'Cap per run (USD)', 'Strop na deň, všetky projekty (USD)': 'Cap per day, all projects (USD)',
+ 'Max. volaní nástrojov na beh': 'Max. tool calls per run', 'Cena Codex: vstup, cache, výstup (USD / 1M tokenov)': 'Codex price: input, cached, output (USD / 1M tokens)',
+ 'Cena Gemini: vstup, cache, výstup (USD / 1M tokenov)': 'Gemini price: input, cached, output (USD / 1M tokens)', 'zmeniť kľúč…': 'change a key…', 'Uložiť kľúč': 'Save key',
+ 'nový kľúč': 'new key', 'kľúč uložený': 'key saved', 'Na čom bude nový worker pracovať?': 'What will the new worker run on?', 'Pridať': 'Add', 'Zrušiť': 'Cancel',
+ 'API kľúč (uloží sa iba na server, do tajných súborov)': 'API key (stored on the server only, in the secrets directory)',
+ '— Google účet s predplatným, prihlásiš ho v prehliadači': '— a Google account with a subscription, signed in from the browser',
+ '— Anthropic API kľúč, platí sa za tokeny': '— Anthropic API key, paid per token', '— OpenAI API kľúč, platí sa za tokeny': '— OpenAI API key, paid per token',
+ '— Gemini API kľúč, platí sa za tokeny': '— Gemini API key, paid per token', 'Kde je kód': 'Where the code lives', 'iba interné Forgejo': 'internal Forgejo only',
+ 'nevybrané': 'not chosen', 'zmeniť…': 'change…', 'Kde je kód tohto projektu?': "Where does this project's code live?",
+ 'Workeri vždy pracujú v internom Forgejo vo svojom sandboxe. Ak má projekt domov na GitHube alebo GitLabe, orchestrátor tam otvára a merguje pull requesty a odtiaľ si berie main. Workeri na GitHub/GitLab nikdy nevidia.':
+   "Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub or GitLab, the orchestrator opens and merges pull requests there and takes main from there. Workers never reach GitHub/GitLab.",
+ 'Iba interné Forgejo': 'Internal Forgejo only', 'Server': 'Server', 'Repozitár (vlastník/repozitár)': 'Repository (owner/repository)', 'Token (prázdne = ponechať uložený)': 'Token (empty = keep the stored one)',
+ 'Interný repozitár už má commity': 'The internal repository already has commits', 'nahradiť ich obsahom z GitHubu/GitLabu': 'replace them with the content from GitHub/GitLab',
+ 'Uložiť a pripojiť': 'Save and connect', 'Neskôr': 'Later', '✔ Hotovo — tím odteraz merguje cez tento repozitár.': '✔ Done — the team now merges through this repository.',
+ 'Token: GitHub → Settings → Developer settings → Fine-grained token len pre tento repozitár, oprávnenia Contents a Pull requests: Read and write.':
+   'Token: GitHub → Settings → Developer settings → Fine-grained token for this repository only, permissions Contents and Pull requests: Read and write.',
+ 'Token: GitLab → projekt → Settings → Access tokens, rola Developer, rozsahy api a write_repository.': 'Token: GitLab → project → Settings → Access tokens, role Developer, scopes api and write_repository.',
+ 'kľúč sa nepodarilo uložiť': 'the key could not be saved', 'token sa nepodarilo uložiť': 'the token could not be saved',
 };
 const PHASE_RX = '(plánovanie úloh|plánovanie|kontrola, či je cieľ splnený alebo treba opravu|rebase na main|testy v čistom kontajneri|review orchestrátorom|mutačné testy \\(\\d+\\)|merge|roadmapa projektu|autopilot vyberá ďalší cieľ z vízie|údržba: testy na main 3x, mapa kódu \\(bez AI\\)|kontrola)';
 const tw = s => EN[s] != null ? EN[s] : s.replace(/^mutačné testy \((\d+)\)$/, 'mutation tests ($1)');
@@ -939,7 +1079,7 @@ const EN_RX = [
  [/^Zastaviť (VŠETKY projekty|projekt „(.*)“)( NATVRDO \(zastaví aj kontajnery workerov\))?\?$/, (m, a, p, h) => (p != null ? 'Stop project “' + p + '”' : 'Stop ALL projects') + (h ? ' HARD (also stops the worker containers)' : '') + '?'],
  [/^Nastavenia nie sú dostupné: (.*)$/s, 'Settings are not available: $1'],
  [/^ZAPNUTÝ( pre všetky projekty| pre tento projekt)( \(natvrdo\))? — (.*)$/s, (m, a, h, r) => 'ON ' + (a.includes('všetky') ? 'for all projects' : 'for this project') + (h ? ' (hard)' : '') + ' — ' + r],
- [/^Zaškrtnutí patria projektu „(.*)“\. Nikto zaškrtnutý = všetci\. Každý worker je samostatný Antigravity účet\.$/, 'Ticked workers belong to project “$1”. None ticked = all. Each worker is its own Antigravity account.'],
+ [/^Zaškrtnutí patria projektu „(.*)“\. Nikto zaškrtnutý = všetci\. Každý worker je samostatný Antigravity účet( alebo API kľúč)?\.$/, (m, p, k) => 'Ticked workers belong to project “' + p + '”. None ticked = all. Each worker is its own Antigravity account' + (k ? ' or API key' : '') + '.'],
  [/^predvolený \((.*)\)$/, 'default ($1)'],
  [/^Workerov je viac \((\d+)\) ako MAX_PARALLEL — niektorí budú stáť\.$/, 'There are more workers ($1) than MAX_PARALLEL — some will idle.'],
  [/^uložené: (.*) — platí od najbližšieho kola \(do 20 s\)$/, 'saved: $1 — applies from the next round (within 20 s)'],
@@ -961,9 +1101,12 @@ const EN_RX = [
  [/^kontrola: (.*)$/, 'checked: $1'], [/^Hotové ciele \((\d+)\)$/, 'Finished goals ($1)'], [/^Otázky plánovača \((\d+)\)$/, "The planner's questions ($1)"],
  [/^\(nepodarilo sa načítať: (.*)\)$/s, '(could not load: $1)'], [/^\(chyba spojenia: (.*)\)$/s, '(connection error: $1)'],
  [/^(.*) · (\S+) · (\d+) min · (\d+)k tokenov$/, '$1 · $2 · $3 min · $4k tokens'], [/^Chyba stránky: (.*)$/s, 'Page error: $1'],
+ [/^(.*) vytvorený a pripravený$/, '$1 created and ready'], [/^API dnes (.*)$/, 'API today $1'],
+ [/^z \$(.*)\. Kľúče: (.*)$/, 'of $$$1. Keys: $2'], [/^kľúč neuložený: (.*)$/, 'key not saved: $1'],
+ [/^Workeri s API kľúčom platia za tokeny\. Dnes minuté:$/, 'Workers with an API key pay per token. Spent today:'],
 ];
 // text inside these elements is content, not interface - it stays as written
-const SKIP = '#grid, .term, pre, .diff, .answer, .goal-text, .bltext, .qtext, .goal-sum, .hist, .ev, .node-task, .card .t, .sheet > h2, .critrow > span:not(.cm), textarea';
+const SKIP = '#grid, .term, pre, .diff, .answer, .goal-text, .bltext, .qtext, .goal-sum, .hist, .ev, .node-task, .card .t, .task-title, .critrow > span:not(.cm), textarea';
 // interface text that mixes words with numbers inside one text node: word-level replacements by context
 const CTX = [
  ['.goal-meta', [[/^plánuje sa/, 'planning'], [/^beží/, 'running'], [/^hotový/, 'done'], [/^zaseknutý/, 'blocked'], [/ · úlohy /, ' · tasks '], [/ · kritériá /, ' · criteria '], [/ · kolo /, ' · round '], [/ riadkov/, ' lines']]],
@@ -1001,7 +1144,10 @@ const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const toda
   return today ? d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : d.toLocaleString('sk-SK', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now()/1000 - (typeof ts === 'number' ? ts : Date.parse(ts)/1000)));
   return s < 60 ? s + ' s' : s < 3600 ? Math.round(s/60) + ' min' : Math.round(s/3600) + ' h'; };
-const STATUS = {splitting:'Delí sa', pending:'Čaká', running:'Beží', gate:'Kontrola', review:'Kontrola', done:'Hotovo', blocked:'Zaseknuté', cancelled:'Zrušené'};
+const STATUS = {splitting:'Delí sa', pending:'Čaká', running:'Beží', gate:'Kontrola', review:'Kontrola', merging:'Merguje sa', done:'Hotovo', blocked:'Zaseknuté', cancelled:'Zrušené'};
+const RTNAME = {agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI'};
+const RTDESC = {agy: 'Google účet s predplatným, prihlásiš ho v prehliadači', claude: 'Anthropic API kľúč, platí sa za tokeny',
+                codex: 'OpenAI API kľúč, platí sa za tokeny', gemini: 'Gemini API kľúč, platí sa za tokeny'};
 const roleCls = r => /secur/i.test(r) ? 'sec' : (/test/i.test(r) && !/develop/i.test(r)) ? 'test' : '';
 let tab = 'overview', F = null, P = {roster:{}, panes:[]}, openTask = null, project = 'default';
 try { project = localStorage.getItem('af-project') || 'default'; } catch (e) {}
@@ -1096,7 +1242,12 @@ const LABEL = {PLAN_PROVIDERS: 'Kto plánuje (poradie)', REVIEW_PROVIDERS: 'Kto 
   AB_SHARE: 'A/B test: podiel úloh na ňom (%)', PLAN_AHEAD: 'Plánovať dopredu, keď workeri čakajú na kvótu',
   MAINTENANCE: 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)', TEST_CMD: 'Testovací príkaz (prázdne = pytest)',
   GATE_IMAGE: 'Image pre testy (prázdne = image workera)', NOTIFY_URL: 'Notifikácie: URL (ntfy téma, Slack/Discord webhook)',
-  NOTIFY_FORMAT: 'Notifikácie: formát', NOTIFY_EVENTS: 'Notifikácie: udalosti', RUNS_KEEP_DAYS: 'Komprimovať prepisy behov po (dňoch)'};
+  NOTIFY_FORMAT: 'Notifikácie: formát', NOTIFY_EVENTS: 'Notifikácie: udalosti', RUNS_KEEP_DAYS: 'Komprimovať prepisy behov po (dňoch)',
+  API_WORKERS_POLICY: 'Kedy dostanú prácu', WORKER_MODEL_CLAUDE: 'Model pre Claude Code (prázdne = predvolený)',
+  WORKER_MODEL_CODEX: 'Model pre Codex (prázdne = predvolený)', WORKER_MODEL_GEMINI: 'Model pre Gemini CLI (prázdne = predvolený)',
+  API_RUN_BUDGET_USD: 'Strop na jeden beh (USD)', API_DAILY_BUDGET_USD: 'Strop na deň, všetky projekty (USD)',
+  RUN_MAX_TOOL_CALLS: 'Max. volaní nástrojov na beh', PRICE_CODEX: 'Cena Codex: vstup, cache, výstup (USD / 1M tokenov)',
+  PRICE_GEMINI: 'Cena Gemini: vstup, cache, výstup (USD / 1M tokenov)'};
 const PROVLABEL = {'claude-cli': 'Claude Code (predplatné)', 'agy-claude': 'Claude cez Antigravity', 'agy-gemini': 'Gemini cez Antigravity',
   'anthropic-api': 'Anthropic API (platené)', 'openai-api': 'OpenAI API (platené)', 'gemini-api': 'Gemini API (platené)'};
 async function loadSettings(force) {
@@ -1134,11 +1285,29 @@ function settingsHtml() {
       '<button class="warnbtn" onclick="killswitch(\'on\')">Zastaviť projekt</button><button class="badbtn" onclick="killswitch(\'on\',{hard:true})">Zastaviť natvrdo</button>') +
     '<button class="badbtn" onclick="killswitch(\'on\',{all:true})">Zastaviť všetky projekty</button></div></div>';
   h += '<div class="setcard"><h3>Workeri tohto projektu</h3><div class="muted" style="font-size:12.5px">Zaškrtnutí patria projektu „' + esc(project) +
-    '“. Nikto zaškrtnutý = všetci. Každý worker je samostatný Antigravity účet.</div><div id="set-WORKERS" data-kind="pool" class="pool">' +
+    '“. Nikto zaškrtnutý = všetci. Každý worker je samostatný Antigravity účet alebo API kľúč.</div><div id="set-WORKERS" data-kind="pool" class="pool">' +
     (S.workers || []).map(w => '<div class="poolrow"><label><input type="checkbox" value="' + esc(w.name) + '"' + (pool.includes(w.name) ? ' checked' : '') + '> ' + esc(w.name) +
-      ' <span class="muted">(' + esc(w.state) + ')</span></label><button class="mini" data-login="' + esc(w.name) + '">prihlásiť do Antigravity</button></div>').join('') +
+      ' <span class="rt rt-' + esc(w.runtime || 'agy') + '">' + esc(RTNAME[w.runtime || 'agy'] || w.runtime) + '</span> <span class="muted">(' + esc(w.state) + ')</span></label>' +
+      ((w.runtime || 'agy') === 'agy' ? '<button class="mini" data-login="' + esc(w.name) + '">prihlásiť do Antigravity</button>' : '') + '</div>').join('') +
     '</div>' + (sErr.WORKERS ? '<div class="seterr">' + esc(sErr.WORKERS) + '</div>' : '') +
-    '<div class="btnrow"><button class="mini" id="add-worker">+ Pridať workera</button><span id="addw-status" class="muted" style="font-size:12.5px"></span></div></div>';
+    '<div class="btnrow"><button class="mini" id="add-worker">+ Pridať workera</button><span id="addw-status" class="muted" style="font-size:12.5px"></span></div>' +
+    '<div id="addw-form" style="display:none" class="addw"><div class="muted" style="font-size:12.5px;margin:8px 0 4px">Na čom bude nový worker pracovať?</div>' +
+    Object.entries(S.runtimes || {agy: {label: 'Antigravity'}}).map(([k, r], i) => '<label class="chk" style="display:flex"><input type="radio" name="addw-rt" value="' + esc(k) + '"' +
+      (i ? '' : ' checked') + '> ' + esc(RTNAME[k] || k) + ' <span class="muted">— ' + esc(RTDESC[k] || r.label) + '</span></label>').join('') +
+    '<div id="addw-key" style="display:none;margin-top:6px"><input type="password" id="addw-keyin" autocomplete="off" placeholder="API kľúč (uloží sa iba na server, do tajných súborov)" style="width:100%"></div>' +
+    '<div class="btnrow"><button class="resume-btn" id="addw-go">Pridať</button><button class="mini" id="addw-cancel">Zrušiť</button></div></div></div>';
+  const R = S.runtimes || {}, sec = S.secrets || {};
+  h += '<div class="setcard"><h3>API workeri</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Workeri s API kľúčom platia za tokeny. ' +
+    'Dnes minuté: <b>$' + Number(S.api_spent_today || 0).toFixed(2) + '</b> z $' + esc(V.API_DAILY_BUDGET_USD) + '. Kľúče: ' +
+    ['anthropic.key', 'openai.key', 'gemini.key'].map(k => esc(k.split('.')[0]) + ' ' + (sec[k] ? '✓' : '—')).join(', ') +
+    ' <button class="mini" id="key-change">zmeniť kľúč…</button></div>' +
+    '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option></select>' +
+    '<input type="password" id="key-val" autocomplete="off" placeholder="nový kľúč" style="flex:1;min-width:180px"><button class="mini" id="key-save">Uložiť kľúč</button></div>' +
+    field('API_WORKERS_POLICY', '<select id="set-API_WORKERS_POLICY">' + [['overflow', 'iba keď predplatné nestačí'], ['always', 'vždy prednostne']].map(([v, l]) =>
+      '<option value="' + v + '"' + (v === V.API_WORKERS_POLICY ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>') +
+    field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE')) + field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX')) + field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI')) +
+    field('API_RUN_BUDGET_USD', txt('API_RUN_BUDGET_USD')) + field('API_DAILY_BUDGET_USD', txt('API_DAILY_BUDGET_USD')) + field('RUN_MAX_TOOL_CALLS', num('RUN_MAX_TOOL_CALLS')) +
+    field('PRICE_CODEX', txt('PRICE_CODEX')) + field('PRICE_GEMINI', txt('PRICE_GEMINI')) + '</div>';
   h += '<div class="setcard"><h3>Orchestrátor</h3>' + field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS', V.PLAN_PROVIDERS)) +
     field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS', V.REVIEW_PROVIDERS)) +
     field('CLAUDE_MODEL', '<select id="set-CLAUDE_MODEL">' + ['sonnet', 'opus', 'haiku', 'fable'].concat(['sonnet', 'opus', 'haiku', 'fable'].includes(V.CLAUDE_MODEL) ? [] : [V.CLAUDE_MODEL])
@@ -1150,7 +1319,10 @@ function settingsHtml() {
   h += '<div class="setcard"><h3>Workeri — modely</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'predvolený (' + (S.limits_worker_model || '') + ')')) +
     field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'rovnaký ako bežné úlohy')) +
     '<div class="btnrow"><button class="mini" id="refresh-models">obnoviť zoznam modelov z Antigravity</button></div></div>';
+  const fk = V.FORGE_KIND || '';
   h += '<div class="setcard"><h3>Projekt</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako sa projekt testuje a kam ti tím píše.</div>' +
+    '<div class="setrow"><label>Kde je kód</label><div>' + (fk === 'github' || fk === 'gitlab' ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' + esc(V.UPSTREAM_REPO) + '</b>' :
+      fk === 'forgejo' ? 'iba interné Forgejo' : 'nevybrané') + ' <button class="mini" id="open-setup">zmeniť…</button></div></div>' +
     field('TEST_CMD', txt('TEST_CMD')) + field('GATE_IMAGE', txt('GATE_IMAGE')) + field('NOTIFY_URL', txt('NOTIFY_URL')) +
     field('NOTIFY_FORMAT', '<select id="set-NOTIFY_FORMAT">' + ['ntfy', 'slack', 'discord', 'json'].map(x => '<option' + (x === V.NOTIFY_FORMAT ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
     field('NOTIFY_EVENTS', txt('NOTIFY_EVENTS')) + field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS')) + '</div>';
@@ -1209,14 +1381,83 @@ document.addEventListener('click', async e => {
 
 // ---- add a worker, then log it in
 async function addWorker() {
-  if (!confirm('Vytvoriť nového workera (Forgejo účet, kontajner)? Potom ho prihlásiš jeho vlastným Google účtom.')) return;
-  const st = document.getElementById('addw-status');
-  let j = await (await fetch('/api/workers', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, action: 'add'})})).json();
+  const f = document.getElementById('addw-form'); f.style.display = f.style.display === 'none' ? '' : 'none'; addwRt();
+}
+function addwRt() {
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', R = (S && S.runtimes) || {};
+  const key = (R[rt] || {}).key, have = key && ((S.secrets || {})[key]);
+  document.getElementById('addw-key').style.display = key && !have ? '' : 'none';
+}
+async function addWorkerGo() {
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = document.getElementById('addw-status');
+  const key = ((S.runtimes || {})[rt] || {}).key, kin = document.getElementById('addw-keyin');
+  if (key && !(S.secrets || {})[key]) {
+    if (!kin.value.trim()) { kin.focus(); return; }
+    const r = await post('/api/secret', {name: key, value: kin.value.trim()}); kin.value = '';
+    if (!r.ok) { st.textContent = 'kľúč sa nepodarilo uložiť: ' + (r.message || r.error || ''); return; }
+  }
+  document.getElementById('addw-form').style.display = 'none';
+  let j = await post('/api/workers', {action: 'add', runtime: rt});
   while (j.state === 'running') { st.textContent = 'vytváram ' + (j.worker || '') + '… (prvý raz aj pár minút)'; await new Promise(r => setTimeout(r, 3000));
     j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
-  st.textContent = j.state === 'done' ? j.worker + ' vytvorený — teraz ho prihlás' : 'zlyhalo: ' + (j.log || '').slice(-300);
+  st.textContent = j.state !== 'done' ? 'zlyhalo: ' + (j.log || j.error || '').slice(-300) : rt === 'agy' ? j.worker + ' vytvorený — teraz ho prihlás' : j.worker + ' vytvorený a pripravený';
   await loadSettings(true);
-  if (j.state === 'done') openLogin(j.worker);
+  if (j.state === 'done' && rt === 'agy') openLogin(j.worker);
+}
+document.addEventListener('change', e => { if (e.target.name === 'addw-rt') addwRt(); });
+document.addEventListener('click', async e => {
+  if (e.target.id === 'addw-go') { addWorkerGo(); return; }
+  if (e.target.id === 'addw-cancel') { document.getElementById('addw-form').style.display = 'none'; return; }
+  if (e.target.id === 'key-change') { const f = document.getElementById('key-form'); f.style.display = f.style.display === 'none' ? '' : 'none'; return; }
+  if (e.target.id === 'key-save') { const v = document.getElementById('key-val');
+    if (!v.value.trim()) { v.focus(); return; }
+    const r = await post('/api/secret', {name: document.getElementById('key-name').value, value: v.value.trim()}); v.value = '';
+    sMsg = r.ok ? 'kľúč uložený' : 'kľúč neuložený: ' + (r.message || r.error || ''); loadSettings(true); return; }
+  if (e.target.id === 'open-setup') { openSetup(); return; }
+  if (e.target.id === 'su-close' || e.target.id === 'su-later') { document.getElementById('setup').classList.remove('on'); setupDismissed[project] = true; return; }
+  if (e.target.id === 'su-go') { setupGo(); return; }
+});
+
+// ---- where the code lives: internal Forgejo only, GitHub or GitLab (shown once for a new project, or from Settings → Project)
+const setupDismissed = {};
+const SU_URL = {github: 'https://github.com', gitlab: 'https://gitlab.com'};
+function suKind() { return (document.querySelector('input[name="su-kind"]:checked') || {}).value || 'forgejo'; }
+function suRefresh() {
+  const k = suKind(), up = k !== 'forgejo';
+  document.getElementById('su-up').style.display = up ? '' : 'none';
+  if (up) { const u = document.getElementById('su-url'); if (!u.value || Object.values(SU_URL).includes(u.value)) u.value = SU_URL[k];
+    document.getElementById('su-help').textContent = T(k === 'github'
+      ? 'Token: GitHub → Settings → Developer settings → Fine-grained token len pre tento repozitár, oprávnenia Contents a Pull requests: Read and write.'
+      : 'Token: GitLab → projekt → Settings → Access tokens, rola Developer, rozsahy api a write_repository.'); }
+}
+document.addEventListener('change', e => { if (e.target.name === 'su-kind') suRefresh(); });
+function openSetup() {
+  const V = (S && S.values) || {}, m = document.getElementById('setup');
+  const k = V.FORGE_KIND || (F && F.forge && F.forge.kind) || 'forgejo';
+  document.querySelectorAll('input[name="su-kind"]').forEach(r => r.checked = r.value === (k || 'forgejo'));
+  document.getElementById('su-repo').value = V.UPSTREAM_REPO || (F && F.forge && F.forge.repo) || '';
+  document.getElementById('su-url').value = V.UPSTREAM_URL || (F && F.forge && F.forge.url) || '';
+  document.getElementById('su-form').style.display = ''; document.getElementById('su-log').style.display = 'none';
+  document.getElementById('su-force-row').style.display = 'none';
+  suRefresh(); m.classList.add('on');
+}
+async function setupGo() {
+  const k = suKind(), log = document.getElementById('su-log'), tok = document.getElementById('su-token');
+  for (const x of ['repo', 'url', 'token']) document.getElementById('su-e-' + x).textContent = '';
+  if (k !== 'forgejo' && tok.value.trim()) {
+    const r = await post('/api/secret', {name: k + '.token', value: tok.value.trim()}); tok.value = '';
+    if (!r.ok) { document.getElementById('su-e-token').textContent = r.message || r.error || 'token sa nepodarilo uložiť'; return; }
+  }
+  let j = await post('/api/upstream', {action: 'connect', kind: k, repo: document.getElementById('su-repo').value.trim(),
+                                       url: document.getElementById('su-url').value.trim(), force: document.getElementById('su-force').checked});
+  if (j.errors) { for (const x in j.errors) { const el = document.getElementById('su-e-' + x); if (el) el.textContent = j.errors[x]; } return; }
+  document.getElementById('su-form').style.display = 'none'; log.style.display = '';
+  while (j.state === 'running') { log.textContent = (j.log || '') + '\n' + T('… pracujem'); await new Promise(r => setTimeout(r, 2000));
+    j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
+  log.textContent = (j.log || '') + '\n' + T(j.state === 'done' ? '✔ Hotovo — tím odteraz merguje cez tento repozitár.' : '✘ Zlyhalo — pozri výpis vyššie.');
+  if (j.state !== 'done' && /already has \d+ commits/.test(j.log || '')) {
+    document.getElementById('su-form').style.display = ''; document.getElementById('su-force-row').style.display = ''; }
+  S = null; loadSettings(true); setTimeout(poll, 1000);
 }
 let loginW = null, loginTimer = null;
 async function openLogin(w) {
@@ -1267,6 +1508,8 @@ function pills() {
   const agyDown = Object.keys(F.agy_cooldown || {}).length;
   if (agyDown) p.push('<span class="pill warn">' + agyDown + ' worker(y) dočasne bez náhradného orchestrátora</span>');
   p.push('<span class="pill">autopilot ' + (F.autopilot ? 'zap' : 'vyp') + '</span>');
+  if (F.forge && (F.forge.kind === 'github' || F.forge.kind === 'gitlab')) p.push('<span class="pill">' + (F.forge.kind === 'github' ? 'GitHub' : 'GitLab') + ': ' + esc(F.forge.repo) + '</span>');
+  if (F.api && (F.api.workers || []).length) p.push('<span class="pill' + (F.api.spent_today >= F.api.budget ? ' bad' : '') + '">API dnes $' + Number(F.api.spent_today).toFixed(2) + ' / $' + Number(F.api.budget).toFixed(0) + '</span>');
   if (F.old) p.push('<span class="pill warn">stará verzia foremana — menej detailov</span>');
   return p.join(' ');
 }
@@ -1310,7 +1553,9 @@ function team() {
       esc(t.title) + '</div><div class="node-sub">' + esc(t.id) + ' · pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · beží ' + ago(t.dispatched) +
       (e.tool_calls ? ' · ' + e.tool_calls + ' nástrojov' : '') + '</div>'
       : '<div class="node-sub">' + (cool ? 'pauza do ' + tfmt(cool.until) + ': ' + esc(cool.reason || 'neznámy dôvod') : (live.reserved || []).includes(w) ? 'požičaný orchestrátorovi (Claude cez Antigravity)' : 'voľný') + '</div>';
-    return '<div class="node"><div class="node-title"><span class="dot ' + state + '"></span>' + esc(w) + '</div>' + task + quota + '</div>';
+    const rt = (F && F.api && (F.api.workers || []).includes(w)) ? ((ts.find(x => x.worker === w && x.runtime) || {}).runtime || 'API') : '';
+    return '<div class="node"><div class="node-title"><span class="dot ' + state + '"></span>' + esc(w) + (rt ? ' <span class="rt rt-' + esc(rt) + '">' + esc(RTNAME[rt] || rt) + '</span>' : '') +
+      '</div>' + task + quota + '</div>';
   }).join('');
   return orch + (ws ? '<div class="branch"></div><div class="workers">' + ws + '</div>' : '');
 }
@@ -1358,8 +1603,9 @@ function boardHtml() {
   if (!F) return '';
   const ts = F.tasks || [];
   const cols = [['pending', 'Čaká'], ['running', 'Beží'], ['gate', 'Kontrola (testy + review)'], ['done', 'Hotovo'], ['blocked', 'Zaseknuté / zrušené']];
+  const inCol = (t, s) => t.status === s || (s === 'gate' && (t.status === 'review' || t.status === 'merging')) || (s === 'pending' && t.status === 'splitting');
   return cols.map(([s, lab]) => {
-    let items = ts.filter(t => t.status === s || (s === 'gate' && t.status === 'review') || (s === 'blocked' && t.status === 'cancelled'));
+    let items = ts.filter(t => inCol(t, s) || (s === 'blocked' && t.status === 'cancelled'));
     if (s === 'done') items = items.slice().sort((a, b) => (b.finished || '').localeCompare(a.finished || '')).slice(0, 15);
     const phase = id => { const st = ((F.live || {}).steps || []).find(x => x.key === 'task:' + id); return st ? st.phase : ''; };
     return '<div class="col"><h4>' + lab + '<span class="muted">' + items.length + '</span></h4>' + (items.map(t => {
@@ -1382,10 +1628,11 @@ function renderDetail() {
   const sheet = document.getElementById('sheet'), keep = sheet.scrollTop;
   const hist = (t.history || []).map(h => '<div class="hist"><b>' + esc(dfmt(h.at)) + ' · ' + esc(h.outcome) + '</b>' +
     (h.reviewer ? ' (' + esc(h.reviewer) + ')' : '') + '<br>' + esc(h.feedback || h.why || h.what || '') + '</div>').join('');
-  const html = '<button class="close">Zavrieť</button><h2>' + esc(t.title) + '</h2>' +
+  const html = '<button class="close">Zavrieť</button><h2 class="task-title">' + esc(t.title) + '</h2>' +
     '<div class="muted" style="font-size:12.5px">' + esc(t.id) + ' · <span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span> · ' +
     esc(STATUS[t.status] || t.status) + ' · pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + (t.worker ? ' · ' + esc(t.worker) : '') +
-    (t.pr ? ' · PR #' + t.pr : '') + (t.risk ? ' · riziko: ' + esc(t.risk) : '') + (t.run_tokens ? ' · ' + (t.run_tokens/1000).toFixed(0) + 'k tokenov' : '') +
+    (t.pr_url ? ' · <a href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">PR #' + esc(t.pr || '') + '</a>' : t.pr ? ' · PR #' + t.pr : '') +
+    (t.runtime && t.runtime !== 'agy' ? ' · ' + esc(RTNAME[t.runtime] || t.runtime) : '') + (t.risk ? ' · riziko: ' + esc(t.risk) : '') + (t.run_tokens ? ' · ' + (t.run_tokens/1000).toFixed(0) + 'k tokenov' : '') +
     (t.diff ? ' · <span style="color:var(--ok)">+' + t.diff.added + '</span> <span style="color:var(--bad)">-' + t.diff.removed + '</span> riadkov' : '') +
     (t.total_lines != null ? ' · súbor(y) spolu ' + t.total_lines + ' riadkov' : '') + '</div>' +
     (g ? '<h3>Cieľ</h3><div style="font-size:13px">' + esc(g.text) + '</div>' : '') +
@@ -1679,6 +1926,8 @@ async function poll() {
   await loadProjects();
   try { const r = await (await fetch('/api/foreman?project=' + encodeURIComponent(project))).json(); F = r.foreman; window._ferr = r.error; foremanFetchedAt = r.fetched_at || 0; } catch (e) {}
   try { P = await (await fetch('/api/panes')).json(); } catch (e) {}
+  if (F && F.forge && F.forge.setup_needed && !setupDismissed[project] && !document.getElementById('setup').classList.contains('on')) {
+    setupDismissed[project] = true; if (!S) await loadSettings(true); openSetup(); }
   render();
 }
 function showJsError(msg) {
@@ -1890,9 +2139,32 @@ class Handler(BaseHTTPRequestHandler):
                                         inp=str(body.get("answer", ""))[:4000])
             self._json({"ok": rc == 0, "message": (out or err).strip()[-300:]})
         elif self.path == "/api/workers":
-            if body.get("action") != "add":
-                self._json({"error": "unknown action"}, 400); return
-            self._json(start_job("add-worker", add_worker_job))
+            rt = str(body.get("runtime") or "agy")
+            if body.get("action") != "add" or rt not in ("agy", "claude", "codex", "gemini"):
+                self._json({"error": "action add, runtime agy|claude|codex|gemini"}, 400); return
+            self._json(start_job("add-worker", lambda job: add_worker_job(job, rt)))
+        elif self.path == "/api/secret":
+            # an API key or forge token typed by the owner: goes to bin/secret-set on stdin, never into a command line or a log
+            name, value = str(body.get("name", "")), str(body.get("value", "")).strip()
+            if name not in ("anthropic.key", "openai.key", "gemini.key", "github.token", "gitlab.token", "notify.token") or not value:
+                self._json({"error": "unknown secret name or empty value"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/secret-set {name}", timeout=30, inp=value)
+            self._json({"ok": rc == 0, "message": (out or err).strip()[-200:]})
+        elif self.path == "/api/upstream":
+            # where the project's code lives: internal Forgejo only, or GitHub / GitLab (bin/upstream, bin/lib/upstream.py)
+            act, kind = str(body.get("action", "")), str(body.get("kind", ""))
+            if act == "check":
+                rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/upstream{pf} check", timeout=60)
+                self._json({"ok": rc == 0, "message": (out + err).strip()[-400:]}); return
+            if act != "connect" or kind not in ("forgejo", "github", "gitlab"):
+                self._json({"error": "action check | connect, kind forgejo | github | gitlab"}, 400); return
+            repo, url = str(body.get("repo", "")).strip(), str(body.get("url", "")).strip().rstrip("/")
+            if kind != "forgejo" and (not re.fullmatch(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){1,4}", repo)
+                                      or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?", url)):
+                self._json({"ok": False, "errors": {"repo": "owner/repository (GitLab: group/project)", "url": "https://github.com, https://gitlab.com or your server"}}); return
+            changes = {"FORGE_KIND": kind} if kind == "forgejo" else {"FORGE_KIND": kind, "UPSTREAM_REPO": repo, "UPSTREAM_URL": url}
+            self._json(start_job("connect-upstream", lambda job: connect_upstream_job(job, pf, changes, kind != "forgejo",
+                                                                                         bool(body.get("force")))))
         elif self.path == "/api/login":
             w, act = str(body.get("worker", "")), str(body.get("action", ""))
             if not re.fullmatch(r"worker-\d+", w):

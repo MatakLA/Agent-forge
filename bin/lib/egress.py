@@ -6,6 +6,7 @@ import sbx
 IMAGE = "sandbox-worker:1.2.11"          # any image with `sh`+`cat`; used to read the log volume even when the proxy is stopped
 VOLUME = "egress_logs"
 ALLOWLIST = os.path.join(sbx.ROOT, "egress", "allowlist.txt")
+ALLOWLIST_LOCAL = os.path.join(sbx.ROOT, "egress", "allowlist.local.txt")       # API-key runtimes' hosts (bin/worker-add)
 BASELINE = os.path.join(sbx.ROOT, "etc", "egress-baseline.txt")
 STATE = os.path.join(sbx.RUNS, "egress-state.json")
 ROTATE_BYTES = 5 * 1024 * 1024
@@ -30,7 +31,7 @@ def _lines(path):
 
 
 def allowlist():
-    return _lines(ALLOWLIST)
+    return _lines(ALLOWLIST) + _lines(ALLOWLIST_LOCAL)
 
 
 def baseline():

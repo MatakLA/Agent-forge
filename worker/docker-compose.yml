@@ -29,6 +29,8 @@ services:
     pids_limit: 1024
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    labels:
+      agent-forge.runtime: agy
     environment:
       - FORGEJO_USER=worker-${WORKER_N}
       - FORGE_REPO=${FORGE_REPO:-sandbox/playground}
