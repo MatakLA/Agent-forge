@@ -11,7 +11,10 @@ routing and A/B tests with quota-per-merged-task metrics, planning ahead and LLM
 `decisions.md` and bind later plans); per-project kill switch and `--all`; settings, workers (with browser login) and new
 projects from the dashboard; notifications via ntfy / Slack / Discord / webhook; `bin/doctor`.
 
-**Any language** - `TEST_CMD` and `GATE_IMAGE` per project.
+**Any language** - `TEST_CMD` and `GATE_IMAGE` per project (also editable in the dashboard's Settings → Project).
+
+**English and Slovak dashboard** - English by default, Slovak for Slovak browsers, switchable (EN/SK button); content such as
+goals, specs and transcripts is never translated.
 
 **Security** - dashboard Host check (DNS rebinding), CSRF header, no framing, CSP, optional `DASHBOARD_TOKEN`; Forgejo tokens
 no longer on git command lines; nothing is pushed from a run with a HIGH egress alarm.
@@ -29,3 +32,5 @@ no longer on git command lines; nothing is pushed from a run with a HIGH egress 
 - Claude Code failures that were not usage limits were retried every tick; LLM call kinds were mislabelled under parallel calls.
 - Maintenance reported "main is red" for a project without tests or when Docker failed.
 - Timeline mixed the runs of all projects; the remote dashboard assumed the user `dev`.
+- A worker out of weekly quota logged the same event every 3 minutes for days and re-read its quota each time (now once per
+  change, re-checked every 30 min when the reset is far; ISO reset times were never parsed).

@@ -1410,6 +1410,14 @@ INFLIGHT = {}             # key -> future
 SINCE = {}                # key -> epoch second the step started
 PHASE = {}                # task id -> human-readable phase of its gate/review/merge step (for the dashboard)
 COOLDOWN = {}             # worker -> (epoch second, human-readable reason)
+LAST_QUOTA_MSG = {}       # worker -> the last "quota low" message logged (events only when it changes)
+
+
+def _iso_ts(s):
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def submit(key, fn, *a):
@@ -1467,16 +1475,24 @@ def dispatch_ready():
         ok, msg = sbx.quota_verdict(rows, lim)
         if not ok:
             cd_sec = 180
+            resets = []
             for r in rows:
                 if str(lim.get("QUOTA_MODEL_FILTER", "")).lower() in r.get("model", "").lower():
-                    rst = parse_limit(str(r.get("reset", "")))
-                    if rst and 0 < rst - time.time() <= 600:
-                        cd_sec = max(30, int(rst - time.time()) + 15)
-                        break
+                    rst = parse_limit(str(r.get("reset", ""))) or _iso_ts(r.get("reset"))
+                    if rst and rst > time.time():
+                        resets.append(rst)
+            soonest = min(resets) if resets else None
+            if soonest and soonest - time.time() <= 600:
+                cd_sec = max(30, int(soonest - time.time()) + 15)
+            elif soonest and soonest - time.time() > 3600:
+                cd_sec = 1800                       # a weekly limit days away: look again every 30 min, not every 3
             COOLDOWN[w] = (time.time() + cd_sec, msg)
             free.remove(w)
-            event(f"{w}: {msg} - checking quota again in {cd_sec}s")
+            if LAST_QUOTA_MSG.get(w) != msg:        # say it once per change, not every few minutes for days
+                LAST_QUOTA_MSG[w] = msg
+                event(f"{w}: {msg} - checking quota again every {cd_sec // 60 or 1} min")
             continue
+        LAST_QUOTA_MSG.pop(w, None)
         lr = t.get("last_run") or {}
         continuing = bool(C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and lr.get("conversation") and lr.get("reason") == "ok"
                           and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
@@ -1923,7 +1939,7 @@ def efficiency(ts, rs):
     tmodel = {t["id"]: (t.get("variant") or {}) for t in ts}
     for r in rs.values():
         v = tmodel.get(r["task"], {})
-        pack = "pack" if r["variant"].startswith("pack") else "bez packu" if r["variant"].startswith("nopack") else "pred meraním"
+        pack = "pack" if r["variant"].startswith("pack") else "no pack" if r["variant"].startswith("nopack") else "not measured"
         for dim, key in (("model", r["model"]), ("pack", pack)):
             g = groups.setdefault(dim, {}).setdefault(key, dict(runs=0, ok=0, caps=0, week=0.0, week_n=0, tok=[], tools=[], tasks=set()))
             g["runs"] += 1; g["ok"] += r["reason"] == "ok"; g["caps"] += r["reason"] in ("token-cap", "timeout")
@@ -2445,7 +2461,7 @@ def selftest():
     ef = efficiency(ts, rs)
     check("efficiency: per model and pack - runs, cap %, quota per run and per merged task, first pass, self-check fixes",
           ef["model"]["m1"]["runs"] == 2 and ef["model"]["m1"]["cap_pct"] == 50 and ef["model"]["m1"]["week_per_run"] == 1.5
-          and ef["model"]["m1"]["week_per_done"] == 3.0 and ef["pack"]["bez packu"]["first_pass_pct"] == 100
+          and ef["model"]["m1"]["week_per_done"] == 3.0 and ef["pack"]["no pack"]["first_pass_pct"] == 100
           and ef["pack"]["pack"]["first_pass_pct"] == 0 and ef["self_check"] == dict(runs=2, green_first=1, fixed=1, still_red=0))
     # planner output normalisation: garbage never raises, keys are unique, dependencies resolve by key or slug
     nt = norm_tasks({"tasks": [{"key": "a", "title": "A", "files": ["x.py", "../etc/passwd", 5], "depends_on": "b"},
