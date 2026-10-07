@@ -777,7 +777,8 @@ PAGE = r"""<!DOCTYPE html>
 </style></head>
 <body>
 <header>
-  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="projekt"></select><span id="pills"></span></div>
+  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="projekt"></select><span id="pills"></span>
+    <button id="lang" class="mini" style="margin-left:auto" title="English / slovenčina"></button></div>
   <div id="jserr" style="display:none; margin-top:8px; font-size:12.5px; color:var(--bad);"></div>
   <div id="resume-result" style="display:none; margin-top:8px; font-size:12.5px;"></div>
   <div class="stats" id="stats"></div>
@@ -800,7 +801,7 @@ PAGE = r"""<!DOCTYPE html>
         <span id="goal-msg" class="muted" style="font-size:12.5px"></span></div></div>
     <div id="questions"></div>
     <h3>Spýtaj sa tímu</h3>
-    <div class="ask"><textarea id="ask-q" placeholder="Napr. Ako funguje nexus_food a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)"></textarea>
+    <div class="ask"><textarea id="ask-q" placeholder="Napr. Ako funguje modul X a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)"></textarea>
       <button id="ask-btn">Spýtať sa</button><div id="ask-a"></div></div>
     <h3>Tím</h3><div id="team" class="team"><div class="empty">načítavam…</div></div>
     <h3>Ciele</h3><div id="goals"></div>
@@ -836,6 +837,164 @@ PAGE = r"""<!DOCTYPE html>
 // every write carries X-Agent-Forge: the server refuses POSTs without it (a cross-site page cannot add it without CORS consent)
 const _fetch = window.fetch.bind(window);
 window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() === 'POST') o.headers = Object.assign({'X-Agent-Forge': '1'}, o.headers || {}); return _fetch(u, o); };
+
+// ---- language: the page is written in Slovak; in English every rendered text node is translated through EN / EN_RX (exact
+// phrases first, then patterns for text with numbers and names). Content is never translated: goals, task titles, specs,
+// transcripts, diffs, events, answers (SKIP). Choice: the EN/SK button, else the browser language.
+const LANG = (() => { try { const v = localStorage.getItem('af-lang'); if (v === 'en' || v === 'sk') return v; } catch (e) {}
+  return /^sk\b/i.test(navigator.language || '') ? 'sk' : 'en'; })();
+const EN = {
+ 'Prehľad': 'Overview', 'Fronta': 'Queue', 'Časová os': 'Timeline', 'Metriky': 'Metrics', 'Nastavenia': 'Settings', 'Udalosti': 'Events',
+ 'Nový cieľ': 'New goal', 'Začať hneď': 'Start now', 'Do backlogu': 'Add to backlog', 'Veľký projekt → roadmapa': 'Big project → roadmap',
+ 'Spýtaj sa tímu': 'Ask the team', 'Spýtať sa': 'Ask', 'Tím': 'Team', 'Ciele': 'Goals', 'načítavam…': 'loading…', 'načítavam': 'loading',
+ 'Čo má tím urobiť? Napr.: Pridaj export výdavkov do CSV, s testami.': 'What should the team do? E.g.: Add a CSV export of expenses, with tests.',
+ 'Veľkú požiadavku rozdelí plánovač na sériu menších cieľov v backlogu': 'The planner splits a big request into a series of smaller goals in the backlog',
+ 'Napr. Ako funguje modul X a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)':
+   'E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses Claude usage)',
+ 'Zavrieť': 'Close', 'Prihlásenie': 'Sign-in', 'Poslať': 'Send', 'Hotovo — overiť prihlásenie': 'Done — check the sign-in', 'kód alebo odpoveď': 'code or answer',
+ 'Toto je terminál workera. Otvor odkaz, prihlás sa Google účtom určeným pre tohto workera, skopíruj kód a pošli ho sem. Ak sa agy na niečo pýta, odpovedz tu.':
+   "This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the code and send it here. If agy asks anything, answer here.",
+ 'Nový projekt': 'New project', 'Vytvoriť projekt': 'Create project', '+ Nový projekt…': '+ New project…',
+ 'Vytvorí projekt s vlastným orchestrátorom, repozitárom na Forgejo a skupinou workerov. Každý worker by mal patriť len jednému projektu.':
+   'Creates a project with its own orchestrator, a repository on Forgejo and a group of workers. Each worker should belong to one project only.',
+ 'Názov (malé písmená, pomlčky)': 'Name (lowercase letters, dashes)', 'Repozitár (organizácia/repozitár)': 'Repository (organisation/repository)',
+ 'Jazyk, v ktorom sa ťa tím pýta': 'Language the team uses with you', 'Vízia — čo má projekt robiť (z toho plánuje autopilot)': 'Vision — what the project should do (the autopilot plans from it)',
+ 'Workeri pre tento projekt': 'Workers for this project', 'napr. eshop': 'e.g. shop', 'napr. acme/eshop': 'e.g. acme/shop',
+ 'default — všetci': 'default — all', 'žiadni workeri — pridaj ich v Nastaveniach': 'no workers — add them in Settings',
+ 'Delí sa': 'Splitting', 'Čaká': 'Waiting', 'Beží': 'Running', 'Kontrola': 'Checking', 'Hotovo': 'Done', 'Zaseknuté': 'Blocked', 'Zrušené': 'Cancelled',
+ 'Kontrola (testy + review)': 'Checking (tests + review)', 'Zaseknuté / zrušené': 'Blocked / cancelled',
+ 'odosielam…': 'sending…', 'Cieľ zaradený — plánovač ho rozdelí na úlohy do pol minúty.': 'Goal queued — the planner splits it into tasks within half a minute.',
+ 'Pridané do backlogu.': 'Added to the backlog.', 'Plánovač pripravuje roadmapu — ciele sa objavia v backlogu.': 'The planner is preparing a roadmap — its goals will appear in the backlog.',
+ 'Zahodiť tento cieľ z backlogu?': 'Remove this goal from the backlog?', 'Kill switch je v tvrdom režime. Spustiť workerov znova a pokračovať?': 'The kill switch is in hard mode. Start the workers again and continue?',
+ 'zastavujem…': 'stopping…', 'pokračujem…': 'continuing…',
+ 'Kto plánuje (poradie)': 'Who plans (in order)', 'Kto robí review (poradie)': 'Who reviews (in order)', 'Antigravity model pre plánovanie': 'Antigravity model for planning',
+ 'Antigravity model pre review': 'Antigravity model for reviews', 'Antigravity záložný (Gemini)': 'Antigravity fallback (Gemini)', 'Model workerov': 'Worker model',
+ 'Model workerov pre rizikové úlohy': 'Worker model for risky tasks', 'Anthropic API model (platené)': 'Anthropic API model (paid)', 'OpenAI-compatible model (platené)': 'OpenAI-compatible model (paid)',
+ 'Gemini API model (platené)': 'Gemini API model (paid)', 'Jazyk pre teba': 'Your language', 'Autopilot (sám vyberá ďalšie ciele)': 'Autopilot (picks the next goals itself)',
+ 'Automatický merge': 'Automatic merge', 'Pokračovať v konverzácii pri oprave': 'Continue the conversation on a rework', 'Max. vrátení na úlohu': 'Max. reworks per task',
+ 'Max. aktívnych cieľov': 'Max. active goals', 'Rozdeliť úlohu po N stropoch tokenov': 'Split a task after N token caps', 'Cieľová veľkosť úlohy (tokeny)': 'Target task size (tokens)',
+ 'Max. súbežných behov': 'Max. parallel runs', 'Strop tokenov na beh': 'Token cap per run', 'Časový limit behu (min)': 'Run time limit (min)',
+ 'Minimálna 5h kvóta workera (%)': "Worker's minimum 5-hour quota (%)", 'Minimálna týždenná kvóta (%)': 'Minimum weekly quota (%)', 'Kill switch po N zlyhaniach za sebou': 'Kill switch after N failures in a row',
+ 'Balík kontextu v zadaní (on / off / ab = polovica úloh, na meranie)': 'Context pack in each task (on / off / ab = half the tasks, to measure)',
+ 'Max. veľkosť balíka (znaky)': 'Max. pack size (characters)', 'Oprava testov v tom istom behu (max. kôl)': 'Fix failing tests in the same run (max. rounds)',
+ 'Max. súborov na úlohu (viac = rozdeliť vopred)': 'Max. files per task (more = split up front)', 'Model pre ľahké roly': 'Model for light roles', 'Ľahké roly (čiarkou)': 'Light roles (comma-separated)',
+ 'A/B test: alternatívny model workerov': 'A/B test: alternative worker model', 'A/B test: podiel úloh na ňom (%)': 'A/B test: share of tasks on it (%)',
+ 'Plánovať dopredu, keď workeri čakajú na kvótu': 'Plan ahead while the workers wait for quota', 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)': 'LLM-free maintenance of main while idle (tests 3×, docstrings)',
+ 'Testovací príkaz (prázdne = pytest)': 'Test command (empty = pytest)', 'Image pre testy (prázdne = image workera)': 'Test image (empty = the worker image)',
+ 'Notifikácie: URL (ntfy téma, Slack/Discord webhook)': 'Notifications: URL (ntfy topic, Slack/Discord webhook)', 'Notifikácie: formát': 'Notifications: format',
+ 'Notifikácie: udalosti': 'Notifications: events', 'Komprimovať prepisy behov po (dňoch)': 'Compress run transcripts after (days)', 'Projekt': 'Project',
+ 'Ako sa projekt testuje a kam ti tím píše.': 'How the project is tested and where the team notifies you.',
+ 'Claude Code (predplatné)': 'Claude Code (subscription)', 'Claude cez Antigravity': 'Claude via Antigravity', 'Gemini cez Antigravity': 'Gemini via Antigravity',
+ 'Anthropic API (platené)': 'Anthropic API (paid)', 'OpenAI API (platené)': 'OpenAI API (paid)', 'Gemini API (platené)': 'Gemini API (paid)',
+ 'vypnutý — projekt beží': 'off — the project is running', 'Pokračovať': 'Continue', 'Zastaviť projekt': 'Stop project', 'Zastaviť natvrdo': 'Stop hard',
+ 'Zastaviť všetky projekty': 'Stop all projects', 'Workeri tohto projektu': "This project's workers", 'prihlásiť do Antigravity': 'sign in to Antigravity',
+ '+ Pridať workera': '+ Add worker', 'Orchestrátor': 'Orchestrator', 'Platené API (len ak sú vyššie zaškrtnuté a máš kľúč)': 'Paid APIs (only if ticked above and you have a key)',
+ 'rovnaký ako bežné úlohy': 'same as routine tasks', 'bez A/B testu': 'no A/B test', 'obnoviť zoznam modelov z Antigravity': 'refresh the model list from Antigravity',
+ 'Workeri — modely': 'Workers — models', 'Efektivita': 'Efficiency', 'Ako tím šetrí kvótu. Výsledky meraní sú v záložke Metriky.': 'How the team saves quota. The measurements are in the Metrics tab.',
+ 'Správanie': 'Behaviour', 'Limity': 'Limits', 'platia pre VŠETKY projekty': 'apply to ALL projects', 'Uložiť zmeny': 'Save changes', 'nič sa nezmenilo': 'nothing changed',
+ 'Vytvoriť nového workera (Forgejo účet, kontajner)? Potom ho prihlásiš jeho vlastným Google účtom.': 'Create a new worker (Forgejo account, container)? Then you sign it in with its own Google account.',
+ 'spúšťam…': 'starting…', '(čakám na výstup…)': '(waiting for output…)', 'Otvor a prihlás sa': 'Open it and sign in with', 'overujem prihlásenie…': 'checking the sign-in…',
+ 'foreman nebeží': 'foreman not running', 'všetky projekty': 'all projects', 'natvrdo — workeri zastavení': 'hard — workers stopped', 'foreman pozastavený': 'foreman paused',
+ 'foreman beží': 'foreman running', 'orchestrátor: Claude Code': 'orchestrator: Claude Code', 'stará verzia foremana — menej detailov': 'old foreman version — fewer details',
+ 'autopilot zap': 'autopilot on', 'autopilot vyp': 'autopilot off',
+ 'beží': 'running', 'čaká': 'waiting', 'kontrola': 'checking', 'hotovo dnes': 'done today', 'zaseknuté': 'blocked', 'tokeny dnes': 'tokens today', 'orchestrátor dnes': 'orchestrator today',
+ 'Orchestrátor (šéf)': 'Orchestrator (lead)', 'nič nerieši — čaká na workerov': 'idle — waiting for the workers', 'voľný': 'free', 'neznámy dôvod': 'unknown reason',
+ 'požičaný orchestrátorovi (Claude cez Antigravity)': 'lent to the orchestrator (Claude via Antigravity)',
+ 'ešte nekontrolované': 'not checked yet', 'skryť graf závislostí': 'hide dependency graph', 'graf závislostí': 'dependency graph',
+ 'Žiadne ciele — zadaj prvý hore v „Nový cieľ“.': 'No goals yet — enter the first one above under “New goal”.', 'Nič nebeží.': 'Nothing is running.',
+ 'Cieľ': 'Goal', 'Prečo zaseknuté': 'Why blocked', 'Posledná spätná väzba workerovi': 'Latest feedback to the worker', 'História': 'History',
+ 'Akceptačné kritériá': 'Acceptance criteria', 'Súbory': 'Files', 'Mutačné testy': 'Mutation tests', 'Zmeny (diff)': 'Changes (diff)', 'zobraziť diff': 'show diff', 'Zadanie': 'Spec',
+ 'Zatiaľ nič.': 'Nothing yet.', 'zatiaľ nič': 'nothing yet', 'Žiadne AI momentálne nebežia — prepis sa zjaví, keď niečo pobeží.': 'No AI is running right now — the transcript appears when one runs.',
+ 'Časová os potrebuje novšiu verziu foremana.': 'The timeline needs a newer foreman.', 'Za posledných 24 h žiadne behy.': 'No runs in the last 24 h.',
+ 'hotové': 'done', 'strop tokenov / čas': 'token cap / time', 'zlyhalo': 'failed', 'času pracoval': 'of the time working', 'Posledných 24 hodín': 'Last 24 hours',
+ 'Medzery v pruhu = worker stál. Klik na blok otvorí úlohu.': 'Gaps = the worker was idle. Click a block to open its task.',
+ 'Metriky potrebujú novšiu verziu foremana.': 'Metrics need a newer foreman.', 'hotových úloh': 'tasks done', 'schválené na 1. pokus': 'approved first time',
+ 'vrátení na opravu': 'sent back', 'zaseknutých': 'blocked', 'tokenov na hotovú úlohu': 'tokens per done task', 'Hotové úlohy za deň': 'Tasks done per day', 'Podľa roly': 'By role',
+ 'rola': 'role', 'úloh': 'tasks', 'hotovo': 'done', '1. pokus': '1st try', 'vrátení': 'sent back', 'tokeny/úloha': 'tokens/task', 'riadky': 'lines',
+ 'behov': 'runs', 'strop': 'cap', 'kvóta/beh': 'quota/run', 'kvóta/hotová úloha': 'quota/done task', 'nástroje/beh': 'tools/run', 'tokeny/beh': 'tokens/run',
+ 'Efektivita podľa modelu workerov': 'Efficiency by worker model', 'kvóta = % týždenného limitu jedného účtu (agy /usage pred a po behu); nižšie je lepšie':
+   "quota = % of one account's weekly limit (agy /usage before and after the run); lower is better", 'Balík kontextu — A/B': 'Context pack — A/B',
+ 'pri CONTEXT_PACK=ab dostane balík polovica úloh; porovnaj kvótu na hotovú úlohu a počet nástrojov na beh': 'with CONTEXT_PACK=ab half the tasks get the pack; compare quota per done task and tools per run',
+ 'Kontrola testov v behu': 'Self-check in the run', 'behov s kontrolou': 'runs with a self-check', 'zelené hneď': 'green at once', 'opravené v tom istom behu': 'fixed in the same run',
+ 'ostali červené': 'stayed red', 'Údržba main (bez AI)': 'Maintenance of main (no AI)', 'Orchestrátor za 7 dní (kto plánoval a robil review)': 'Orchestrator, last 7 days (who planned and reviewed)',
+ 'poskytovateľ': 'provider', 'volaní': 'calls', 'priemer': 'average', 'Orchestrátor premýšľa… (aj 1–2 min)': 'The orchestrator is thinking… (1–2 min)', '(bez odpovede)': '(no answer)',
+ 'vyššie': 'up', 'nižšie': 'down', 'zahodiť': 'remove', 'Prázdny.': 'Empty.', 'Prázdny — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie.': 'Empty — when a worker is free, the autopilot picks the next goal from the vision.',
+ 'tvoja odpoveď (plánovač sa ňou bude riadiť)': 'your answer (the planner will follow it)', 'Odpovedať': 'Answer', 'Zahodiť': 'Dismiss', 'otázka nie je dôležitá': 'the question does not matter',
+ '… pracujem': '… working', '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.': '✔ The project is ready — pick it at the top and enter its first goal.',
+ '⚠ Projekt je vytvorený, len jeho služba potrebuje root — spusti príkaz vyššie.': '⚠ The project exists; only its service needs root — run the command above.',
+ '✘ Zlyhalo — pozri výpis vyššie.': '✘ Failed — see the output above.', 'neznáma': 'unknown', 'projekt už existuje': 'the project already exists',
+ "malé písmená, číslice a pomlčky (nie 'default')": "lowercase letters, digits and dashes (not 'default')", 'organizácia/repozitár, napr. acme/shop': 'organisation/repository, e.g. acme/shop',
+ 'neplatný worker': 'invalid worker', 'názov jazyka, napr. Slovak': 'a language name, e.g. English',
+ 'plánovanie': 'planning', 'plánovanie úloh': 'planning tasks', 'kontrola, či je cieľ splnený alebo treba opravu': 'checking whether the goal is met or needs a fix',
+ 'rebase na main': 'rebase onto main', 'testy v čistom kontajneri': 'tests in a clean container', 'review orchestrátorom': 'review by the orchestrator', 'roadmapa projektu': 'project roadmap',
+ 'autopilot vyberá ďalší cieľ z vízie': 'autopilot picks the next goal from the vision', 'údržba: testy na main 3x, mapa kódu (bez AI)': 'maintenance: tests on main 3×, code map (no AI)',
+};
+const PHASE_RX = '(plánovanie úloh|plánovanie|kontrola, či je cieľ splnený alebo treba opravu|rebase na main|testy v čistom kontajneri|review orchestrátorom|mutačné testy \\(\\d+\\)|merge|roadmapa projektu|autopilot vyberá ďalší cieľ z vízie|údržba: testy na main 3x, mapa kódu \\(bez AI\\)|kontrola)';
+const tw = s => EN[s] != null ? EN[s] : s.replace(/^mutačné testy \((\d+)\)$/, 'mutation tests ($1)');
+const STATUS_EN = {'Delí sa': 'Splitting', 'Čaká': 'Waiting', 'Beží': 'Running', 'Kontrola': 'Checking', 'Hotovo': 'Done', 'Zaseknuté': 'Blocked', 'Zrušené': 'Cancelled'};
+const EN_RX = [
+ [/^(Delí sa|Čaká|Beží|Kontrola|Hotovo|Zaseknuté|Zrušené) · (.*)$/, (m, a, b) => STATUS_EN[a] + ' · ' + b],
+ [new RegExp('^' + PHASE_RX + '( — .*)?$'), (m, a, b) => tw(a) + (b || '')],
+ [/^Nepodarilo sa: (.*)$/s, 'Failed: $1'],
+ [/^Zastaviť (VŠETKY projekty|projekt „(.*)“)( NATVRDO \(zastaví aj kontajnery workerov\))?\?$/, (m, a, p, h) => (p != null ? 'Stop project “' + p + '”' : 'Stop ALL projects') + (h ? ' HARD (also stops the worker containers)' : '') + '?'],
+ [/^Nastavenia nie sú dostupné: (.*)$/s, 'Settings are not available: $1'],
+ [/^ZAPNUTÝ( pre všetky projekty| pre tento projekt)( \(natvrdo\))? — (.*)$/s, (m, a, h, r) => 'ON ' + (a.includes('všetky') ? 'for all projects' : 'for this project') + (h ? ' (hard)' : '') + ' — ' + r],
+ [/^Zaškrtnutí patria projektu „(.*)“\. Nikto zaškrtnutý = všetci\. Každý worker je samostatný Antigravity účet\.$/, 'Ticked workers belong to project “$1”. None ticked = all. Each worker is its own Antigravity account.'],
+ [/^predvolený \((.*)\)$/, 'default ($1)'],
+ [/^Workerov je viac \((\d+)\) ako MAX_PARALLEL — niektorí budú stáť\.$/, 'There are more workers ($1) than MAX_PARALLEL — some will idle.'],
+ [/^uložené: (.*) — platí od najbližšieho kola \(do 20 s\)$/, 'saved: $1 — applies from the next round (within 20 s)'],
+ [/^neuložené — oprav označené polia(.*)$/s, 'not saved — fix the marked fields$1'],
+ [/^vytváram (.*)… \(prvý raz aj pár minút\)$/, 'creating $1… (the first time takes a few minutes)'],
+ [/^(.*) vytvorený — teraz ho prihlás$/, '$1 created — now sign it in'], [/^zlyhalo: (.*)$/s, 'failed: $1'],
+ [/^Prihlásenie (\S+) do Antigravity$/, 'Sign $1 in to Antigravity'], [/^účtom pre (.*)$/, 'the account for $1'],
+ [/^(.*) je prihlásený a vidí svoju kvótu\. Zaškrtni ho v projekte a ulož\.$/, '$1 is signed in and sees its quota. Tick it in the project and save.'],
+ [/^(.*) zatiaľ nie je prihlásený — skús to znova\.$/, '$1 is not signed in yet — try again.'],
+ [/^foreman: načítavam$/, 'foreman: loading'],
+ [/^dashboard nemá čerstvé dáta \((\d+) min staré\) - nedôveruj stavu nižšie(?: · príčina: (.*))?$/s, (m, n, c) => 'the dashboard has no fresh data (' + n + ' min old) - do not trust the state below' + (c ? ' · cause: ' + c : '')],
+ [/^kill switch ZAP — (.*)$/s, 'kill switch ON — $1'],
+ [/^orchestrátor: Claude cez Antigravity \(Claude Code späť (.*)\)$/, 'orchestrator: Claude via Antigravity (Claude Code back $1)'],
+ [/^(\d+) worker\(y\) dočasne bez náhradného orchestrátora$/, '$1 worker(s) temporarily without a substitute orchestrator'],
+ [/^(.*) · plánuje, kontroluje, merguje$/, (m, a) => (a === 'Claude cez Antigravity (náhradník)' ? 'Claude via Antigravity (substitute)' : a) + ' · plans, reviews, merges'],
+ [/^čaká: (.*)$/s, 'waiting: $1'], [/^čaká na (.*)$/, 'waits for $1'], [/^pokus (\d+\/\d+)$/, 'attempt $1'],
+ [/^(\S+) · pokus (\d+\/\d+) · beží (.+?)(?: · (\d+) nástrojov)?$/, (m, id, a, t, n) => id + ' · attempt ' + a + ' · running ' + t + (n ? ' · ' + n + ' tools' : '')],
+ [/^pauza do ([\d:]+): (.*)$/s, (m, t, r) => 'paused until ' + t + ': ' + (r === 'neznámy dôvod' ? 'unknown reason' : r)],
+ [/^kontrola: (.*)$/, 'checked: $1'], [/^Hotové ciele \((\d+)\)$/, 'Finished goals ($1)'], [/^Otázky plánovača \((\d+)\)$/, "The planner's questions ($1)"],
+ [/^\(nepodarilo sa načítať: (.*)\)$/s, '(could not load: $1)'], [/^\(chyba spojenia: (.*)\)$/s, '(connection error: $1)'],
+ [/^(.*) · (\S+) · (\d+) min · (\d+)k tokenov$/, '$1 · $2 · $3 min · $4k tokens'], [/^Chyba stránky: (.*)$/s, 'Page error: $1'],
+];
+// text inside these elements is content, not interface - it stays as written
+const SKIP = '#grid, .term, pre, .diff, .answer, .goal-text, .bltext, .qtext, .goal-sum, .hist, .ev, .node-task, .card .t, .sheet > h2, .critrow > span:not(.cm), textarea';
+// interface text that mixes words with numbers inside one text node: word-level replacements by context
+const CTX = [
+ ['.goal-meta', [[/^plánuje sa/, 'planning'], [/^beží/, 'running'], [/^hotový/, 'done'], [/^zaseknutý/, 'blocked'], [/ · úlohy /, ' · tasks '], [/ · kritériá /, ' · criteria '], [/ · kolo /, ' · round '], [/ riadkov/, ' lines']]],
+ ['.sheet > .muted', [[/ · pokus /, ' · attempt '], [/riziko: /, 'risk: '], [/k tokenov/, 'k tokens'], [/ riadkov/, ' lines'], [/súbor\(y\) spolu/, 'file(s) total'],
+                       [/ · (Delí sa|Čaká|Beží|Kontrola|Hotovo|Zaseknuté|Zrušené) · /, (m, a) => ' · ' + STATUS_EN[a] + ' · ']]],
+ ['.maint', [[/testy: /, 'tests: '], [/modulov bez docstringu: /, 'modules without a docstring: ']]],
+];
+function trText(s, el) {
+  if (LANG === 'sk' || !s || !/[A-Za-zÀ-ž]/.test(s)) return s;
+  const k = s.trim().replace(/\s+/g, ' ');
+  if (!k) return s;
+  if (EN[k] != null) return s.replace(s.trim(), EN[k]);
+  for (const [rx, f] of EN_RX) if (rx.test(k)) return s.replace(s.trim(), k.replace(rx, f));
+  if (el) for (const [sel, reps] of CTX) if (el.closest(sel)) { let v = s; for (const [rx, f] of reps) v = v.replace(rx, f); return v; }
+  return s;
+}
+const T = s => trText(String(s), null);
+function translate(root) {
+  if (LANG === 'sk' || !root) return;
+  if (root.nodeType === 3) { const p = root.parentElement; if (p && !p.closest(SKIP)) { const v = trText(root.nodeValue, p); if (v !== root.nodeValue) root.nodeValue = v; } return; }
+  if (root.nodeType !== 1 || root.closest(SKIP)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const n of nodes) { const p = n.parentElement; if (!p || p.closest(SKIP)) continue; const v = trText(n.nodeValue, p); if (v !== n.nodeValue) n.nodeValue = v; }
+  for (const el of [root, ...root.querySelectorAll('[placeholder],[title]')]) for (const a of ['placeholder', 'title']) {
+    const v = el.getAttribute && el.getAttribute(a); if (v) { const t = trText(v, el); if (t !== v) el.setAttribute(a, t); } }
+}
+if (LANG !== 'sk') {
+  const _confirm = window.confirm.bind(window), _alert = window.alert.bind(window);
+  window.confirm = m => _confirm(T(m)); window.alert = m => _alert(T(m));
+}
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit'}); };
 const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
@@ -935,7 +1094,9 @@ const LABEL = {PLAN_PROVIDERS: 'Kto plánuje (poradie)', REVIEW_PROVIDERS: 'Kto 
   SELF_CHECK_ROUNDS: 'Oprava testov v tom istom behu (max. kôl)', MAX_TASK_FILES: 'Max. súborov na úlohu (viac = rozdeliť vopred)',
   WORKER_MODEL_LIGHT: 'Model pre ľahké roly', LIGHT_ROLES: 'Ľahké roly (čiarkou)', AB_MODEL: 'A/B test: alternatívny model workerov',
   AB_SHARE: 'A/B test: podiel úloh na ňom (%)', PLAN_AHEAD: 'Plánovať dopredu, keď workeri čakajú na kvótu',
-  MAINTENANCE: 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)'};
+  MAINTENANCE: 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)', TEST_CMD: 'Testovací príkaz (prázdne = pytest)',
+  GATE_IMAGE: 'Image pre testy (prázdne = image workera)', NOTIFY_URL: 'Notifikácie: URL (ntfy téma, Slack/Discord webhook)',
+  NOTIFY_FORMAT: 'Notifikácie: formát', NOTIFY_EVENTS: 'Notifikácie: udalosti', RUNS_KEEP_DAYS: 'Komprimovať prepisy behov po (dňoch)'};
 const PROVLABEL = {'claude-cli': 'Claude Code (predplatné)', 'agy-claude': 'Claude cez Antigravity', 'agy-gemini': 'Gemini cez Antigravity',
   'anthropic-api': 'Anthropic API (platené)', 'openai-api': 'OpenAI API (platené)', 'gemini-api': 'Gemini API (platené)'};
 async function loadSettings(force) {
@@ -989,6 +1150,10 @@ function settingsHtml() {
   h += '<div class="setcard"><h3>Workeri — modely</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'predvolený (' + (S.limits_worker_model || '') + ')')) +
     field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'rovnaký ako bežné úlohy')) +
     '<div class="btnrow"><button class="mini" id="refresh-models">obnoviť zoznam modelov z Antigravity</button></div></div>';
+  h += '<div class="setcard"><h3>Projekt</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako sa projekt testuje a kam ti tím píše.</div>' +
+    field('TEST_CMD', txt('TEST_CMD')) + field('GATE_IMAGE', txt('GATE_IMAGE')) + field('NOTIFY_URL', txt('NOTIFY_URL')) +
+    field('NOTIFY_FORMAT', '<select id="set-NOTIFY_FORMAT">' + ['ntfy', 'slack', 'discord', 'json'].map(x => '<option' + (x === V.NOTIFY_FORMAT ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
+    field('NOTIFY_EVENTS', txt('NOTIFY_EVENTS')) + field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS')) + '</div>';
   h += '<div class="setcard"><h3>Efektivita</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako tím šetrí kvótu. Výsledky meraní sú v záložke Metriky.</div>' +
     field('CONTEXT_PACK', '<select id="set-CONTEXT_PACK">' + ['on', 'ab', 'off'].map(x => '<option' + (x === V.CONTEXT_PACK ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
     field('CONTEXT_PACK_CHARS', num('CONTEXT_PACK_CHARS')) + field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS')) + field('MAX_TASK_FILES', num('MAX_TASK_FILES')) +
@@ -1180,7 +1345,7 @@ function goalsHtml() {
   if (!F) return '';
   const ts = F.tasks || [];
   const gs = (F.goals || []).filter(g => g.status !== 'cancelled').slice().reverse();
-  if (!gs.length) return '<div class="empty">Žiadne ciele. Zadaj: bin/foreman goal "…" (alebo cez Remote Control „devbox“).</div>';
+  if (!gs.length) return '<div class="empty">Žiadne ciele — zadaj prvý hore v „Nový cieľ“.</div>';
   const open = gs.filter(g => g.status === 'new' || g.status === 'active' || g.status === 'blocked'), fin = gs.filter(g => !open.includes(g));
   return (open.map(g => goalCard(g, ts)).join('') || '<div class="empty">Nič nebeží.</div>') +
     (fin.length ? '<details' + (openFin ? ' open' : '') + ' id="fin-goals"><summary class="muted">Hotové ciele (' + fin.length + ')</summary>' +
@@ -1405,7 +1570,7 @@ function metricsHtml() {
   if (SC && SC.runs) h += '<h3>Kontrola testov v behu</h3><div class="stats">' + box(SC.runs, 'behov s kontrolou') + box(SC.green_first, 'zelené hneď') +
     box(SC.fixed, 'opravené v tom istom behu') + box(SC.still_red, 'ostali červené') + '</div>';
   const MT = F.maintenance;
-  if (MT) h += '<h3>Údržba main (bez AI)</h3><div class="muted" style="font-size:13px">' + esc(dfmt(MT.at)) + ' · ' + esc(MT.sha || '') + ' · testy: ' +
+  if (MT) h += '<h3>Údržba main (bez AI)</h3><div class="muted maint" style="font-size:13px">' + esc(dfmt(MT.at)) + ' · ' + esc(MT.sha || '') + ' · testy: ' +
     (MT.suite || []).map(r => (r.rc === 0 ? '✓ ' : '✗ ') + esc(r.summary)).join(' / ') + (MT.nodoc ? ' · modulov bez docstringu: ' + MT.nodoc : '') + '</div>';
   const prov = Object.entries(M.providers || {}).sort((a, b) => b[1].calls - a[1].calls);
   h += '<h3>Orchestrátor za 7 dní (kto plánoval a robil review)</h3><div class="tablewrap"><table class="m"><tr><th>poskytovateľ</th><th class="num">volaní</th><th class="num">zlyhalo</th><th class="num">priemer</th></tr>' +
@@ -1441,7 +1606,7 @@ function render(force) {
       : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie.' : '.') + '</div>', force);
     const qs = (F && F.owner_questions) || [];
     if (!document.getElementById('questions').contains(document.activeElement))
-      setHTML('questions', qs.length ? '<h3>Otázky plánovača (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div>' + esc(q) +
+      setHTML('questions', qs.length ? '<h3>Otázky plánovača (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div class="qtext">' + esc(q) +
         '</div><div class="btnrow"><input type="text" class="qin" data-qn="' + (i + 1) + '" placeholder="tvoja odpoveď (plánovač sa ňou bude riadiť)">' +
         '<button class="mini" data-qa="' + (i + 1) + '">Odpovedať</button><button class="mini" data-qd="' + (i + 1) + '" title="otázka nie je dôležitá">Zahodiť</button></div></div>').join('') : '', force);
   } else if (tab === 'queue') setHTML('board', boardHtml(), force);
@@ -1492,9 +1657,9 @@ async function createProject() {
   if (j.errors) { for (const k in j.errors) { const el = document.getElementById('np-e-' + k); if (el) el.textContent = j.errors[k]; } return; }
   document.getElementById('np-form').style.display = 'none';
   const log = document.getElementById('np-log'); log.style.display = '';
-  while (j.state === 'running') { log.textContent = (j.log || '') + '\n… pracujem'; await new Promise(r => setTimeout(r, 2500));
+  while (j.state === 'running') { log.textContent = (j.log || '') + '\n' + T('… pracujem'); await new Promise(r => setTimeout(r, 2500));
     j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
-  log.textContent = (j.log || '') + '\n' + ({done: '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.',
+  log.textContent = (j.log || '') + '\n' + T({done: '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.',
     'needs-sudo': '⚠ Projekt je vytvorený, len jeho služba potrebuje root — spusti príkaz vyššie.'}[j.state] || '✘ Zlyhalo — pozri výpis vyššie.');
   projAt = 0; await loadProjects();
   if (j.state !== 'failed') { project = body.name; try { localStorage.setItem('af-project', project); } catch (e) {} }
@@ -1522,6 +1687,16 @@ function showJsError(msg) {
 }
 window.addEventListener('error', e => showJsError((e.message || 'neznáma') + ' (' + (e.lineno || '?') + ')'));
 window.addEventListener('unhandledrejection', e => showJsError(String(e.reason && e.reason.message || e.reason)));
+// translate the static page once, then everything rendered later as it appears
+if (LANG !== 'sk') {
+  document.documentElement.lang = 'en';
+  translate(document.body);
+  new MutationObserver(ms => { for (const m of ms) { if (m.type === 'characterData') translate(m.target);
+    else m.addedNodes.forEach(translate); } }).observe(document.body, {childList: true, subtree: true, characterData: true});
+}
+const langBtn = document.getElementById('lang');
+langBtn.textContent = LANG === 'sk' ? 'EN' : 'SK';
+langBtn.addEventListener('click', () => { try { localStorage.setItem('af-lang', LANG === 'sk' ? 'en' : 'sk'); } catch (e) {} location.reload(); });
 setTab(tab);
 let busyPoll = false;
 async function tickPoll() { if (document.hidden || busyPoll) return; busyPoll = true; try { await poll(); } finally { busyPoll = false; } }

@@ -69,7 +69,7 @@ roadmap), reorder the backlog and answer the planner's questions there; answers 
 Optional notifications (ntfy, Slack, Discord, any webhook) tell you when a goal is done, a task is blocked, the kill switch
 tripped or all accounts are out of quota. Its **Settings** tab stops/continues a project (soft or hard, or all projects), picks the
 orchestrator providers and models and the worker models (from the live `agy models` list), assigns workers to the project, edits
-behaviour and the global limits, and adds a worker including its Antigravity login in a browser terminal.
+behaviour and the global limits, and adds a worker including its Antigravity login in a browser terminal. The dashboard speaks English and Slovak.
 
 ## Several projects at once
 
