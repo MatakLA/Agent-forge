@@ -675,6 +675,9 @@ PAGE = r"""<!DOCTYPE html>
   .goal-meta { font-size:11.5px; color:var(--muted); white-space:nowrap; }
   .bar { height:6px; border-radius:3px; background:var(--card2); margin-top:8px; overflow:hidden; display:flex; }
   .bar i { display:block; height:100%; }
+  .crit { margin-top:8px; font-size:13px; }
+  .critrow { display:flex; gap:6px; align-items:flex-start; padding:2px 0; }
+  .cm { width:16px; flex-shrink:0; text-align:center; font-weight:700; } .cm.ok { color:var(--ok); } .cm.no { color:var(--bad); } .cm.wait { color:var(--muted); }
   .goal-sum { font-size:12.5px; color:var(--muted); margin-top:6px; }
   .chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
   .chip { font-size:11.5px; padding:2px 7px; border-radius:6px; background:var(--card2); cursor:pointer; }
@@ -872,7 +875,12 @@ const LABEL = {PLAN_PROVIDERS: 'Kto plánuje (poradie)', REVIEW_PROVIDERS: 'Kto 
   MAX_REWORK: 'Max. vrátení na úlohu', MAX_ACTIVE_GOALS: 'Max. aktívnych cieľov', SPLIT_AFTER_CAPS: 'Rozdeliť úlohu po N stropoch tokenov',
   TASK_TOKEN_BUDGET: 'Cieľová veľkosť úlohy (tokeny)', MAX_PARALLEL: 'Max. súbežných behov', RUN_TOKEN_CAP: 'Strop tokenov na beh',
   RUN_TIMEOUT_MIN: 'Časový limit behu (min)', QUOTA_MIN_5H_PCT: 'Minimálna 5h kvóta workera (%)', QUOTA_MIN_WEEK_PCT: 'Minimálna týždenná kvóta (%)',
-  CONSEC_FAIL_TRIP: 'Kill switch po N zlyhaniach za sebou'};
+  CONSEC_FAIL_TRIP: 'Kill switch po N zlyhaniach za sebou',
+  CONTEXT_PACK: 'Balík kontextu v zadaní (on / off / ab = polovica úloh, na meranie)', CONTEXT_PACK_CHARS: 'Max. veľkosť balíka (znaky)',
+  SELF_CHECK_ROUNDS: 'Oprava testov v tom istom behu (max. kôl)', MAX_TASK_FILES: 'Max. súborov na úlohu (viac = rozdeliť vopred)',
+  WORKER_MODEL_LIGHT: 'Model pre ľahké roly', LIGHT_ROLES: 'Ľahké roly (čiarkou)', AB_MODEL: 'A/B test: alternatívny model workerov',
+  AB_SHARE: 'A/B test: podiel úloh na ňom (%)', PLAN_AHEAD: 'Plánovať dopredu, keď workeri čakajú na kvótu',
+  MAINTENANCE: 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)'};
 const PROVLABEL = {'claude-cli': 'Claude Code (predplatné)', 'agy-claude': 'Claude cez Antigravity', 'agy-gemini': 'Gemini cez Antigravity',
   'anthropic-api': 'Anthropic API (platené)', 'openai-api': 'OpenAI API (platené)', 'gemini-api': 'Gemini API (platené)'};
 async function loadSettings(force) {
@@ -926,6 +934,12 @@ function settingsHtml() {
   h += '<div class="setcard"><h3>Workeri — modely</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'predvolený (' + (S.limits_worker_model || '') + ')')) +
     field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'rovnaký ako bežné úlohy')) +
     '<div class="btnrow"><button class="mini" id="refresh-models">obnoviť zoznam modelov z Antigravity</button></div></div>';
+  h += '<div class="setcard"><h3>Efektivita</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako tím šetrí kvótu. Výsledky meraní sú v záložke Metriky.</div>' +
+    field('CONTEXT_PACK', '<select id="set-CONTEXT_PACK">' + ['on', 'ab', 'off'].map(x => '<option' + (x === V.CONTEXT_PACK ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
+    field('CONTEXT_PACK_CHARS', num('CONTEXT_PACK_CHARS')) + field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS')) + field('MAX_TASK_FILES', num('MAX_TASK_FILES')) +
+    field('WORKER_MODEL_LIGHT', modelSel('WORKER_MODEL_LIGHT', V.WORKER_MODEL_LIGHT, true, 'rovnaký ako bežné úlohy')) + field('LIGHT_ROLES', txt('LIGHT_ROLES')) +
+    field('AB_MODEL', modelSel('AB_MODEL', V.AB_MODEL, true, 'bez A/B testu')) + field('AB_SHARE', num('AB_SHARE')) +
+    field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) + '</div>';
   h += '<div class="setcard"><h3>Správanie</h3>' + field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) +
     field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) + field('OWNER_LANG', txt('OWNER_LANG')) + field('MAX_REWORK', num('MAX_REWORK')) +
     field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS')) + field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET')) + '</div>';
@@ -1081,27 +1095,44 @@ function team() {
   return orch + (ws ? '<div class="branch"></div><div class="workers">' + ws + '</div>' : '');
 }
 
+function goalCard(g, ts) {
+  const col = {done:'var(--ok)', gate:'var(--accent)', review:'var(--accent)', running:'var(--tool)', blocked:'var(--bad)'};
+  const mine = ts.filter(t => t.goal === g.id && t.status !== 'cancelled'), n = mine.length || 1;
+  const seg = ['done','gate','review','running','blocked'].map(s => { const k = mine.filter(t => t.status === s).length;
+    return k ? '<i style="width:' + (100*k/n) + '%;background:' + col[s] + '"></i>' : ''; }).join('');
+  const done = mine.filter(t => t.status === 'done').length;
+  const lines = mine.reduce((a, t) => a + (t.status === 'done' && t.diff ? t.diff.added + t.diff.removed : 0), 0);
+  const st = {new:'plánuje sa', active:'beží', done:'hotový', blocked:'zaseknutý'}[g.status] || g.status;
+  // acceptance criteria of the whole goal, checked by the orchestrator when all its tasks finished (B4)
+  const acc = g.acceptance || [], cr = g.criteria || [];
+  const crit = acc.length ? '<div class="crit">' + acc.map((a, i) => {
+      const c = cr[i] || cr.find(x => x.criterion && x.criterion.slice(0, 40) === String(a).slice(0, 40));
+      const mark = !c ? '<span class="cm wait" title="ešte nekontrolované">○</span>' : c.met ? '<span class="cm ok">✓</span>' : '<span class="cm no">✗</span>';
+      return '<div class="critrow">' + mark + '<span>' + esc(a) + (c && c.evidence ? '<span class="muted"> — ' + esc(c.evidence) + '</span>' : '') + '</span></div>';
+    }).join('') + (g.criteria_at ? '<div class="muted" style="font-size:11.5px">kontrola: ' + esc(dfmt(g.criteria_at)) + '</div>' : '') + '</div>' : '';
+  const metCount = cr.filter(c => c.met).length;
+  return '<div class="goal"><div class="goal-head"><div class="goal-text">' + esc(g.text) + '</div><div class="goal-meta">' + esc(st) +
+    (mine.length ? ' · úlohy ' + done + '/' + mine.length + ' (' + Math.round(100 * done / n) + ' %)' : '') +
+    (acc.length ? ' · kritériá ' + metCount + '/' + acc.length : '') + (g.rounds > 1 ? ' · kolo ' + g.rounds : '') +
+    (lines ? ' · ' + lines + ' riadkov' : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div></div>' +
+    '<div class="bar">' + seg + '</div>' + ((g.summary || g.notes) ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') + crit +
+    '<div class="chips">' + mine.map(t => '<span class="chip" data-task="' + esc(t.id) + '">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) +
+      (t.diff ? ' · +' + t.diff.added + '/-' + t.diff.removed : '') + '</span>').join('') + '</div>' +
+    (mine.length > 1 ? '<button class="linkbtn" data-dag="' + esc(g.id) + '">' + (openDags.has(g.id) ? 'skryť graf závislostí' : 'graf závislostí') + '</button>' +
+      (openDags.has(g.id) ? dagSvg(mine, ts) : '') : '') + '</div>';
+}
 function goalsHtml() {
   if (!F) return '';
   const ts = F.tasks || [];
   const gs = (F.goals || []).filter(g => g.status !== 'cancelled').slice().reverse();
   if (!gs.length) return '<div class="empty">Žiadne ciele. Zadaj: bin/foreman goal "…" (alebo cez Remote Control „devbox“).</div>';
-  const col = {done:'var(--ok)', gate:'var(--accent)', review:'var(--accent)', running:'var(--tool)', blocked:'var(--bad)'};
-  return gs.map(g => {
-    const mine = ts.filter(t => t.goal === g.id), n = mine.length || 1;
-    const seg = ['done','gate','review','running','blocked'].map(s => { const k = mine.filter(t => t.status === s).length;
-      return k ? '<i style="width:' + (100*k/n) + '%;background:' + col[s] + '"></i>' : ''; }).join('');
-    const done = mine.filter(t => t.status === 'done').length;
-    const st = {new:'plánuje sa', active:'beží', done:'hotový', blocked:'zaseknutý'}[g.status] || g.status;
-    return '<div class="goal"><div class="goal-head"><div class="goal-text">' + esc(g.text) + '</div><div class="goal-meta">' + esc(st) +
-      (mine.length ? ' · ' + done + '/' + mine.length : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div></div>' +
-      '<div class="bar">' + seg + '</div>' + ((g.summary || g.notes) ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') +
-      '<div class="chips">' + mine.map(t => '<span class="chip" data-task="' + esc(t.id) + '">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) +
-        (t.diff ? ' · +' + t.diff.added + '/-' + t.diff.removed : '') + '</span>').join('') + '</div>' +
-      (mine.length > 1 ? '<button class="linkbtn" data-dag="' + esc(g.id) + '">' + (openDags.has(g.id) ? 'skryť graf závislostí' : 'graf závislostí') + '</button>' +
-        (openDags.has(g.id) ? dagSvg(mine, ts) : '') : '') + '</div>';
-  }).join('');
+  const open = gs.filter(g => g.status === 'new' || g.status === 'active' || g.status === 'blocked'), fin = gs.filter(g => !open.includes(g));
+  return (open.map(g => goalCard(g, ts)).join('') || '<div class="empty">Nič nebeží.</div>') +
+    (fin.length ? '<details' + (openFin ? ' open' : '') + ' id="fin-goals"><summary class="muted">Hotové ciele (' + fin.length + ')</summary>' +
+      fin.slice(0, 30).map(g => goalCard(g, ts)).join('') + '</details>' : '');
 }
+let openFin = false;
+document.addEventListener('toggle', e => { if (e.target.id === 'fin-goals') openFin = e.target.open; }, true);
 
 function boardHtml() {
   if (!F) return '';
@@ -1303,6 +1334,24 @@ function metricsHtml() {
   h += '<h3>Podľa roly</h3><div class="tablewrap"><table class="m"><tr><th>rola</th><th class="num">úloh</th><th class="num">hotovo</th><th class="num">1. pokus</th><th class="num">vrátení</th><th class="num">zaseknuté</th><th class="num">tokeny/úloha</th><th class="num">riadky</th></tr>' +
        roles.map(([r, v]) => '<tr><td>' + esc(r) + '</td><td class="num">' + v.tasks + '</td><td class="num">' + v.done + '</td><td class="num">' + (v.first_pass_pct == null ? '–' : v.first_pass_pct + ' %') +
          '</td><td class="num">' + v.reworks + '</td><td class="num">' + v.blocked + '</td><td class="num">' + (v.tokens_per_done ? Math.round(v.tokens_per_done / 1000) + 'k' : '–') + '</td><td class="num">' + v.lines_done + '</td></tr>').join('') + '</table></div>';
+  const E = M.efficiency || {};
+  const effTable = (title, rows, note) => rows.length ? '<h3>' + title + '</h3>' + (note ? '<div class="muted" style="font-size:12.5px">' + note + '</div>' : '') +
+    '<div class="tablewrap"><table class="m"><tr><th></th><th class="num">behov</th><th class="num">ok</th><th class="num">strop</th><th class="num">kvóta/beh</th><th class="num">kvóta/hotová úloha</th>' +
+    '<th class="num">nástroje/beh</th><th class="num">tokeny/beh</th><th class="num">hotovo</th><th class="num">1. pokus</th></tr>' +
+    rows.map(([k, v]) => '<tr><td>' + esc(k) + '</td><td class="num">' + v.runs + '</td><td class="num">' + v.ok_pct + ' %</td><td class="num">' + v.cap_pct + ' %</td><td class="num">' +
+      (v.week_per_run == null ? '–' : v.week_per_run + ' %') + '</td><td class="num"><b>' + (v.week_per_done == null ? '–' : v.week_per_done + ' %') + '</b></td><td class="num">' +
+      (v.tools_median == null ? '–' : v.tools_median) + '</td><td class="num">' + (v.tokens_median ? Math.round(v.tokens_median / 1000) + 'k' : '–') + '</td><td class="num">' + v.done +
+      '</td><td class="num">' + (v.first_pass_pct == null ? '–' : v.first_pass_pct + ' %') + '</td></tr>').join('') + '</table></div>' : '';
+  h += effTable('Efektivita podľa modelu workerov', Object.entries(E.model || {}).sort((a, b) => b[1].runs - a[1].runs),
+                'kvóta = % týždenného limitu jedného účtu (agy /usage pred a po behu); nižšie je lepšie');
+  h += effTable('Balík kontextu — A/B', Object.entries(E.pack || {}).sort((a, b) => b[1].runs - a[1].runs),
+                'pri CONTEXT_PACK=ab dostane balík polovica úloh; porovnaj kvótu na hotovú úlohu a počet nástrojov na beh');
+  const SC = E.self_check;
+  if (SC && SC.runs) h += '<h3>Kontrola testov v behu</h3><div class="stats">' + box(SC.runs, 'behov s kontrolou') + box(SC.green_first, 'zelené hneď') +
+    box(SC.fixed, 'opravené v tom istom behu') + box(SC.still_red, 'ostali červené') + '</div>';
+  const MT = F.maintenance;
+  if (MT) h += '<h3>Údržba main (bez AI)</h3><div class="muted" style="font-size:13px">' + esc(dfmt(MT.at)) + ' · ' + esc(MT.sha || '') + ' · testy: ' +
+    (MT.suite || []).map(r => (r.rc === 0 ? '✓ ' : '✗ ') + esc(r.summary)).join(' / ') + (MT.nodoc ? ' · modulov bez docstringu: ' + MT.nodoc : '') + '</div>';
   const prov = Object.entries(M.providers || {}).sort((a, b) => b[1].calls - a[1].calls);
   h += '<h3>Orchestrátor za 7 dní (kto plánoval a robil review)</h3><div class="tablewrap"><table class="m"><tr><th>poskytovateľ</th><th class="num">volaní</th><th class="num">zlyhalo</th><th class="num">priemer</th></tr>' +
        prov.map(([p, v]) => '<tr><td>' + esc(p) + '</td><td class="num">' + v.calls + '</td><td class="num">' + v.failed + '</td><td class="num">' + (v.calls ? Math.round(v.secs / v.calls) + ' s' : '–') + '</td></tr>').join('') + '</table></div>';

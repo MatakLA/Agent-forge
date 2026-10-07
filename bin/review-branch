@@ -71,6 +71,15 @@ try:
                 has = any(isinstance(n, (ast.Assert,)) or (isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("raises", "fail")) for n in ast.walk(node))
                 if not has:
                     warn.append(f"{t}::{node.name} has no assertion")
+    # documentation: every new module says what it is for (the code map and the workers' context packs are built from it)
+    for l in ns:
+        st, path = l.split("\t", 1)[0], l.split("\t")[-1]
+        if st.startswith("A") and path.endswith(".py") and not re.search(r"(^|/)(test_[^/]*|conftest)\.py$", path):
+            try:
+                if not ast.get_docstring(ast.parse(open(os.path.join(repo, path)).read())):
+                    warn.append(f"{path}: new module without a module docstring (purpose, interface, invariants)")
+            except (OSError, SyntaxError):
+                pass
     print(f"\ntest files: {tests or 'none'}, test functions: {ntests}")
     if not tests:
         warn.append("no test file in the diff")
