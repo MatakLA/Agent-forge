@@ -15,7 +15,8 @@ if not a or a[0].startswith("-"):
     print(__doc__); sys.exit(2)
 branch = a[0]
 spec = json.load(open(a[a.index("--mutations") + 1])) if "--mutations" in a else []
-IMAGE = "sandbox-worker:1.2.11"
+IMAGE = sbx.gate_image()                 # the project's GATE_IMAGE (default: the worker image, Python + pytest)
+TEST_CMD = sbx.test_cmd()                # the project's TEST_CMD (default: python3 -m pytest -q -p no:cacheprovider)
 tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
 tmp = tempfile.mkdtemp(prefix="review-")
 warn = []
@@ -25,13 +26,17 @@ def sh(*c, cwd=None, timeout=300):
     return subprocess.run(list(c), capture_output=True, text=True, cwd=cwd, timeout=timeout)
 
 
+# the token goes to git through the environment, never argv (argv is world-readable in /proc/*/cmdline)
+os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: token {tok}")
+
+
 def git(*c):
-    return sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", *c, cwd=repo)
+    return sh("git", *c, cwd=repo)
 
 
 try:
     repo = os.path.join(tmp, "repo")
-    r = sh("git", "-c", f"http.extraHeader=Authorization: token {tok}", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", repo)
+    r = sh("git", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", repo)
     if r.returncode or git("fetch", "-q", "origin", branch).returncode:
         print("could not fetch the branch from Forgejo:", r.stderr.strip()[:200]); sys.exit(2)
     sh("git", "checkout", "-q", "origin/" + branch, cwd=repo)
@@ -85,9 +90,12 @@ try:
         warn.append("no test file in the diff")
     dock = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "PYTHONDONTWRITEBYTECODE=1"]
-    t = sh(*dock, "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "python3", IMAGE, "-m", "pytest", "-q", "-p", "no:cacheprovider", timeout=300)
-    print("\n== full test suite in a fresh container: " + (t.stdout.strip().splitlines() or ["(no output)"])[-1])
+    t = sh(*dock, "-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=600)
+    print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0
+    if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
+        fail = False                     # pytest found no tests at all: a branch without code tests (docs, design) is not red
+        warn.append("the repository has no tests yet")
     if re.search(r"\b(skipped|xfailed|xpassed)\b", t.stdout.strip().splitlines()[-1] if t.stdout.strip() else ""):
         warn.append("test run reports skipped/xfailed tests: " + t.stdout.strip().splitlines()[-1])
     if fail:
@@ -103,12 +111,13 @@ for m in spec:
     if m["old"] not in s:
         print(json.dumps(dict(name=m["name"], result="BAD-SPEC", note="pattern not found"))); continue
     open(p, "w").write(s.replace(m["old"], m["new"], 1))
-    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"], cwd="/tmp/m", capture_output=True, text=True)
+    cmd = os.environ["TEST_CMD"] + (" -x" if "pytest" in os.environ["TEST_CMD"] else "")     # stop at the first failure
+    r = subprocess.run(["sh", "-c", cmd], cwd="/tmp/m", capture_output=True, text=True)
     print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
 ''')
         json.dump(spec, open(os.path.join(tmp, "spec.json"), "w"))
-        m = sh(*dock, "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro", "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro",
-               "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
+        m = sh(*dock, "-e", "HOME=/tmp", "-e", f"TEST_CMD={TEST_CMD}", "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro",
+               "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro", "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
         print(f"\n== mutation check ({len(spec)} mutants)")
         for l in m.stdout.splitlines():
             try:

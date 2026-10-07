@@ -96,6 +96,9 @@ global limits (`etc/limits.conf`) and the egress proxy are shared.
 - Self-check: `run-supervisor` runs the suite in the worker's clone after the run; on red it resumes the same agy conversation
   with the output (`SELF_CHECK_ROUNDS`). After every run it commits + pushes what is left on the task branch.
 - Pre-split: tasks owning more than `MAX_TASK_FILES` files go to `step_split` before dispatch.
+- Robustness: shared state files are changed under a thread + file lock (`locked()`); runs whose supervisor died are closed and
+  re-queued (`orphaned()`); quota stops mid-run re-queue without an attempt; gate infrastructure failures (Forgejo, Docker) are
+  retried, not blamed on the worker; the rebase clone is used by one step at a time.
 - Plan ahead + maintenance: when the whole pool is under its quota floor, backlog goals are planned ahead and main is tested 3x
   and mapped without any LLM. Details and the data behind all of this: docs/EFFICIENCY.md.
 
@@ -105,15 +108,16 @@ catalogue; the worker gets its role's full playbook in the task; the reviewer ge
 
 ### Dashboard (web/)
 One file, standard library. Reads `bin/foreman status --dashboard`, run logs and `agy /usage` locally (or over ssh), serves a
-single page on 127.0.0.1. Write actions: stop/continue a project (or all), edit settings (a fixed list of keys, validated by
-`bin/foreman settings apply`; the loop reloads its config on the next tick), add a worker (`bin/worker-add`) and run its agy login
-in a browser terminal. It is an admin console - see SECURITY.md.
+single page on 127.0.0.1. Write actions: queue goals / roadmaps, reorder the backlog, answer the planner's questions, stop/continue
+a project (or all), edit settings (a fixed list of keys, validated by `bin/foreman settings apply`; the loop reloads its config on
+the next tick), add a worker (`bin/worker-add`) and run its agy login in a browser terminal, create a project. Owner text reaches
+`bin/foreman` on stdin. Access control (Host check, CSRF header, optional token) - see SECURITY.md.
 
 ## State on disk
 
 | path | what |
 |---|---|
-| `projects/<name>/` | per-project config: project.conf, team-rules.md, vision.md, lessons.md |
+| `projects/<name>/` | per-project config: project.conf, team-rules.md, vision.md, lessons.md, decisions.md (owner answers) |
 | `runs/foreman/` or `runs/projects/<name>/foreman/` | the foreman state of the default / a named project (the rows below) |
 | `runs/foreman/goals/*.json`, `tasks/*.json`, `*.md` | goals, tasks (spec, history, diff stats), the exact prompt each worker got |
 | `runs/foreman/diffs/<task>.diff` | the diff each review saw (dashboard diff viewer) |

@@ -59,11 +59,15 @@ bin/foreman questions         # what the planner needs you to decide
 bin/foreman pause | resume
 bin/foreman retry <task> | cancel <goal>
 bin/killswitch on [--hard]    # stop this project now (--all: every project)
+bin/doctor                    # is everything healthy? says how to fix what is not
 ```
 
 The web dashboard (`web/server.py`, installed by `scripts/install-services`) shows the team, the task board with each task's
 spec, history and diff, a 24-hour timeline per worker, dependency graphs, team metrics and live worker transcripts, and lets you
-ask the team questions about the code. Its **Settings** tab stops/continues a project (soft or hard, or all projects), picks the
+ask the team questions about the code. You queue goals (now, into the backlog, or as a big project the planner turns into a
+roadmap), reorder the backlog and answer the planner's questions there; answers become binding decisions for later plans.
+Optional notifications (ntfy, Slack, Discord, any webhook) tell you when a goal is done, a task is blocked, the kill switch
+tripped or all accounts are out of quota. Its **Settings** tab stops/continues a project (soft or hard, or all projects), picks the
 orchestrator providers and models and the worker models (from the live `agy models` list), assigns workers to the project, edits
 behaviour and the global limits, and adds a worker including its Antigravity login in a browser terminal.
 
@@ -84,6 +88,12 @@ With 8 workers that is e.g. workers 1-4 on the default project and 5-8 on `shop`
 are per project too. The egress proxy is shared. The dashboard has a project selector.
 
 ## What the loop does so you do not have to
+
+- **Works with your stack.** The gate, the workers' self-check and maintenance run your project's `TEST_CMD` in your
+  `GATE_IMAGE` - pytest by default, `npm test`, `go test ./...` or anything else with a command-line runner.
+- **Survives crashes and reboots.** Runs whose supervisor died are closed and re-queued without costing an attempt; a merge that
+  Forgejo was still checking is retried instead of being reported as a conflict; Forgejo or Docker outages are not blamed on
+  the worker.
 
 - **Rebases for the worker.** Before a branch is tested it is rebased onto main by the orchestrator bot; append-conflicts in shared
   registries (`SHARED_FILES` with .jsonl/.md/.txt/.csv) are merged keeping both sides. Only real conflicts go back to the worker.

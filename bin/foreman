@@ -5,7 +5,9 @@
        bin/foreman retry <task-id>                  put a blocked task back into the queue (attempt counter reset)
        bin/foreman cancel <goal-id>                 drop a goal and its unfinished tasks
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
-       bin/foreman questions                        things the roadmap could not decide without the owner
+       bin/foreman questions [--json]               things the roadmap could not decide without the owner
+       echo "<answer>" | bin/foreman answer <n>     answer question n (goes to decisions.md, read by every later plan)
+       (goal / project / backlog add accept "-" to read the text from stdin)
        bin/foreman diff <task-id>                   the diff the reviewer saw (or the merged PR's diff)
        bin/foreman projects [--json]                every project on this install (default + projects/<name>/)
        bin/foreman settings [--refresh-models]      editable settings, worker containers and Antigravity models as JSON
@@ -14,7 +16,7 @@
        bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak] [--vision -  (vision.md from stdin)]
        --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
-       bin/foreman backlog [add "<goal>" | drop <n>] goals waiting for a free worker (taken in order when a worker would idle)
+       bin/foreman backlog [add "<goal>" | drop <n> | move <n> <to>]   goals waiting for a free worker (taken in order)
        bin/foreman autopilot on|off                 when a worker would idle and the backlog is empty, the orchestrator proposes
                                                     the next goal from the vision file (VISION_FILE, default on)
        bin/foreman run                              the loop itself (systemd: scripts/install-services)
@@ -31,7 +33,7 @@ Claude Code, Claude or Gemini via Antigravity in a worker container (the worker 
 accounts are skipped), and optional paid APIs. A provider out of quota is retried after its printed reset.
 Worker runs go through bin/dispatch (all guards of etc/limits.conf apply), every branch through bin/review-branch (tests in a clean
 container) before any LLM looks at it; merges through bin/open-pr + bin/merge-pr. State: runs/foreman/ (files only)."""
-import concurrent.futures as cf, datetime as dt, hashlib, json, os, re, signal, subprocess, sys, time, traceback
+import concurrent.futures as cf, contextlib, datetime as dt, fcntl, hashlib, json, os, re, signal, subprocess, sys, threading, time, traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
 
@@ -85,12 +87,19 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # cheaper model for light roles; A/B: AB_SHARE % of routine tasks use AB_MODEL (compare in Metrics)
             WORKER_MODEL_LIGHT="", LIGHT_ROLES="tester,technical-writer,translator", AB_MODEL="", AB_SHARE=0,
             # while every worker waits for quota: plan backlog goals ahead (orchestrator only) and check main without any LLM
-            PLAN_AHEAD=1, MAINTENANCE=1)
+            PLAN_AHEAD=1, MAINTENANCE=1,
+            # how the project is tested (gate, self-check, maintenance) and in which image; any language with a CLI test runner
+            TEST_CMD="", GATE_IMAGE="",
+            # owner notifications: an ntfy topic, a Slack / Discord webhook or any JSON endpoint ("" = off)
+            NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out",
+            # finished runs older than this are compressed by maintenance (their transcripts are the bulk of runs/)
+            RUNS_KEEP_DAYS=14)
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
 def load_conf():
-    """etc/foreman.conf (shared defaults), then projects/<name>/project.conf (per project) on top."""
+    """etc/foreman.conf (shared defaults), then projects/<name>/project.conf (per project) on top. A value that does not fit the
+    key's type (e.g. an empty number) keeps the default and is reported, instead of stopping the foreman at start."""
     c = dict(CONF)
     for path in [os.path.join(ROOT, "etc", "foreman.conf")] + ([os.path.join(PDIR, "project.conf")] if PDIR else []):
         try:
@@ -99,7 +108,10 @@ def load_conf():
                 if "=" in line:
                     k, v = (x.strip() for x in line.split("=", 1))
                     if k in c:
-                        c[k] = type(CONF[k])(v.strip('"'))
+                        try:
+                            c[k] = type(CONF[k])(v.strip('"'))
+                        except ValueError:
+                            print(f"{path}: {k}={v!r} is not a valid {type(CONF[k]).__name__} - using {CONF[k]!r}", file=sys.stderr)
         except FileNotFoundError:
             pass
     return c
@@ -138,6 +150,39 @@ def gsave(s):
     jsave(os.path.join(FD, "state.json"), s)
 
 
+STATE_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def locked():
+    """Exclusive access to this project's mutable shared files (state.json, backlog.json, owner_questions.json) for a
+    read-modify-write: across the loop's threads (RLock) and across processes - the daemon and a CLI command such as
+    `bin/foreman backlog add` (flock). Without it, two writers silently lost each other's update."""
+    with STATE_LOCK:
+        os.makedirs(FD, exist_ok=True)
+        with open(os.path.join(FD, ".state.lock"), "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            yield
+
+
+@contextlib.contextmanager
+def state_tx():
+    """`with state_tx() as st:` - read state.json, change it, saved on exit (under locked())."""
+    with locked():
+        st = gstate()
+        yield st
+        gsave(st)
+
+
+def new_goal_id(suffix=""):
+    """G<UTC timestamp>[suffix], unique even when several goals are created in the same second."""
+    base = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + suffix
+    gid, n = base, 1
+    while os.path.exists(os.path.join(FD, "goals", gid + ".json")):
+        gid, n = f"{base}-{n}", n + 1
+    return gid
+
+
 def goals():
     d = os.path.join(FD, "goals")
     return [jload(os.path.join(d, f)) for f in sorted(os.listdir(d))] if os.path.isdir(d) else []
@@ -171,7 +216,8 @@ def save_task(t):
 
 def next_task_number():
     n = 0
-    for name in os.listdir(os.path.join(ROOT, "tasks")) + [t["id"] for t in tasks()]:
+    legacy = os.path.join(ROOT, "tasks")             # hand-written task files of older installs; absent on a fresh checkout
+    for name in (os.listdir(legacy) if os.path.isdir(legacy) else []) + [t["id"] for t in tasks()]:
         m = re.match(r"^(\d{4})-", name)
         if m:
             n = max(n, int(m.group(1)))
@@ -296,7 +342,16 @@ def sh(args, timeout=600, cwd=None, inp=None, env=None):
                            env=dict(os.environ, **env) if env else None)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:
-        return 124, (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
+        return 124, (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "timeout"
+    except OSError as e:
+        # missing program, missing cwd, or an argument over the kernel's 128 KiB limit (E2BIG): a failed call, not a crashed step
+        return 127, "", f"{type(e).__name__}: {e}"
+
+
+def git_auth_env(token_file):
+    """Forgejo auth for git through the environment (GIT_CONFIG_*), not argv: argv is world-readable in /proc/*/cmdline."""
+    tok = open(os.path.join(sbx.SECRETS, token_file)).read().strip()
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": f"Authorization: token {tok}"}
 
 
 def workers():
@@ -310,13 +365,19 @@ def worker_busy(w):
     return any(d.endswith("-" + w) and sbx.is_running(d) for d in sbx.run_dirs())
 
 
+REPO_LOCK = threading.Lock()
+
+
 def refresh_repo():
-    tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
-    auth = ["-c", f"http.extraHeader=Authorization: token {tok}"]
-    if not os.path.isdir(os.path.join(REPO, ".git")):
-        sh(["git", *auth, "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", REPO], timeout=120)
-    sh(["git", *auth, "fetch", "-q", "origin"], cwd=REPO, timeout=120)
-    sh(["git", "checkout", "-q", "--detach", "origin/main"], cwd=REPO)
+    """Bring the foreman's read-only clone of main up to date. Serialized: several steps run in parallel threads and two
+    concurrent fetch/checkout runs in one repository fail on git's index.lock."""
+    env = git_auth_env("monitor.token")
+    with REPO_LOCK:
+        if not os.path.isdir(os.path.join(REPO, ".git")):
+            os.makedirs(os.path.dirname(REPO), exist_ok=True)
+            sh(["git", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", REPO], timeout=120, env=env)
+        sh(["git", "fetch", "-q", "origin"], cwd=REPO, timeout=120, env=env)
+        sh(["git", "checkout", "-q", "--detach", "origin/main"], cwd=REPO)
 
 
 def repo_tree():
@@ -344,9 +405,10 @@ def codemap_main():
     p = os.path.join(FD, "codemap.json")
     d = jload(p, {})
     if d.get("sha") != sha:
-        rc, head, _ = sh(["git", "rev-parse", "HEAD"], cwd=REPO)
-        m = codemap.build(REPO, C["PROJECT_DIR"].strip("/"))
-        if head.strip() != sha:              # checkout not at origin/main yet (a refresh is running): use it, do not cache it
+        with REPO_LOCK:                      # never read the working tree while refresh_repo() checks out
+            rc, head, _ = sh(["git", "rev-parse", "HEAD"], cwd=REPO)
+            m = codemap.build(REPO, C["PROJECT_DIR"].strip("/"))
+        if head.strip() != sha:              # checkout not at origin/main yet: use it, do not cache it
             return m
         d = dict(sha=sha, map=m)
         jsave(p, d)
@@ -419,7 +481,7 @@ def context_pack(t):
         return ""
     return ("## Context pack (generated from main for this task)\nThis already contains the files and interfaces you need. Do not open "
             "them again with tools; read further files only when something you need is really missing here.\n"
-            f"Tests: `python3 -m pytest -q` from the repository root{f' (project code in `{pd}/`)' if pd else ''}.\n\n" + "\n".join(out))
+            f"Tests: `{sbx.test_cmd()}` from the repository root{f' (project code in `{pd}/`)' if pd else ''}.\n\n" + "\n".join(out))
 
 
 def _bucket(key, n):
@@ -570,12 +632,16 @@ def _agy(w, prompt, model, schema=None):
         if e and e.get("event") == "result":
             res = e.get("result") or {}
     text = res.get("response") or ""
-    log_llm(KIND.get("k", "?"), f"agy:{model}@{w}", rc, time.time() - t0w, None, res.get("usage"), text[:300] or err[:300])
+    log_llm(KIND.k, f"agy:{model}@{w}", rc, time.time() - t0w, None, res.get("usage"), text[:300] or err[:300])
     ok = res.get("status") == "SUCCESS" and bool(text.strip())
     return ok, text, parse_limit(text + "\n" + out[-2000:] + "\n" + err[-2000:]) if not ok else None, (text or err)[:160]
 
 
-KIND = {}
+class _Kind(threading.local):
+    k = "?"
+
+
+KIND = _Kind()           # the decision kind (plan/review/...) of the LLM call running in THIS thread - steps run in parallel
 LAST_LLM = {}
 
 
@@ -596,9 +662,8 @@ def _via_agy(kind, prompt, family):
             RESERVED.discard(w)
         if ok:
             return text
-        st = gstate(); c2 = st.setdefault("agy_cooldown", {})
-        c2[w] = reset_ts if reset_ts else time.time() + 90
-        gsave(st)
+        with state_tx() as st:
+            st.setdefault("agy_cooldown", {})[w] = reset_ts if reset_ts else time.time() + 90
         event(f"{w}: {family} via Antigravity " + (f"out of quota until {fmt_ts(reset_ts)}" if reset_ts else f"failed ({why})") +
               " - trying the next worker")
     return None
@@ -613,18 +678,27 @@ def _via_claude_cli(prompt, system):
     rc, out, err = sh(args, timeout=1200, cwd=REPO, inp=prompt)
     res = extract_json(out) or {}
     text = res.get("result") or ""
-    log_llm(KIND.get("k", "?"), "claude", rc, time.time() - t0, res.get("total_cost_usd"), res.get("usage"), text[:300] or err[:300])
+    log_llm(KIND.k, "claude", rc, time.time() - t0, res.get("total_cost_usd"), res.get("usage"), text[:300] or err[:300])
     if rc == 0 and not res.get("is_error") and text:
-        if st.get("claude_until"):
-            st.pop("claude_until", None); gsave(st)
+        if st.get("claude_until") or st.get("claude_fails"):
+            with state_tx() as s2:
+                s2.pop("claude_until", None); s2.pop("claude_fails", None)
             event("orchestrator Claude Code is available again")
         return text
     until = parse_limit(text + "\n" + out[-2000:] + "\n" + err[-2000:])
+    with state_tx() as s2:
+        if until:
+            s2["claude_until"] = until
+        else:
+            # not a usage limit (not logged in, CLI missing, crash): back off 2, 4, 8 ... 60 min instead of retrying every tick
+            n = s2.get("claude_fails", 0) + 1
+            s2["claude_fails"] = n
+            s2["claude_until"] = time.time() + min(60, 2 ** n) * 60
     if until:
-        st["claude_until"] = until; gsave(st)
         event(f"orchestrator Claude Code is out of usage until {fmt_ts(until)} - next provider substitutes")
     else:
-        event(f"orchestrator Claude Code call failed (rc {rc}): {(text or err)[:200]} - next provider substitutes")
+        event(f"orchestrator Claude Code call failed (rc {rc}): {(text or err)[:200]} - next provider substitutes; "
+              f"Claude Code paused for {min(60, 2 ** s2['claude_fails'])} min")
     return None
 
 
@@ -641,14 +715,14 @@ def _via_paid_api(name, prompt, system):
             return None
     except ValueError:          # no key configured
         return None
-    log_llm(KIND.get("k", "?"), f"{name}:{r.get('model')}", 1 if r["is_error"] else 0, r["duration_s"], None, r.get("usage"), r["text"][:300])
+    log_llm(KIND.k, f"{name}:{r.get('model')}", 1 if r["is_error"] else 0, r["duration_s"], None, r.get("usage"), r["text"][:300])
     return r["text"] if not r["is_error"] and r["text"].strip() else None
 
 
 def llm(kind, prompt):
     """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
     tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code)."""
-    KIND["k"] = kind
+    KIND.k = kind
     system = load_system_prompt()
     for p in providers_for(kind):
         if p == "claude-cli":
@@ -662,6 +736,22 @@ def llm(kind, prompt):
         if text:
             return text, p
     raise Unavailable(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})")
+
+
+def notify(kind, obj=None, text=""):
+    """Owner notifications (NOTIFY_URL, see etc/foreman.example.conf) - sent in the background, never blocks the loop."""
+    obj = obj or {}
+    if kind == "goal_done":
+        title, msg = "Goal done", f"{str(obj.get('text', ''))[:300]}\n\n{obj.get('summary', '')}"
+    elif kind == "task_blocked":
+        title, msg = f"Task blocked: {obj.get('id')}", f"{obj.get('title', '')}\n\n{str(obj.get('blocked_why', ''))[:800]}"
+    elif kind == "questions":
+        title, msg = "The planner has questions for you", text
+    elif kind == "quota_out":
+        title, msg = "All workers are out of quota", text
+    else:
+        title, msg = kind, text
+    threading.Thread(target=sbx.notify, args=(kind, title, msg), daemon=True).start()
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
@@ -740,7 +830,9 @@ def context_bundle():
     tests = [p for p in sorted(cm) if cm[p]["test"]]
     mods += f"\n\nTest files: {', '.join(tests)}" if tests else ""
     agents = read_repo((pd + "/AGENTS.md") if pd else "AGENTS.md", 8000) or "(none)"
-    return (f"## Owner's vision ({C['VISION_FILE']})\n{vision}\n\n## AGENTS.md (every worker reads it)\n{agents}\n\n"
+    dec = decisions()
+    return (f"## Owner's vision ({C['VISION_FILE']})\n{vision}\n\n" + (f"## Owner's decisions (binding)\n{dec}\n\n" if dec else "") +
+            f"## AGENTS.md (every worker reads it)\n{agents}\n\n"
             f"## Repository files on main\n{tree}\n\n## Code map (purpose + interface of every module on main)\n{mods}\n## Goals in progress (do not duplicate them)\n{active}\n\n"
             f"## Tasks so far\n{hist}\n")
 
@@ -826,12 +918,12 @@ def rules_block(t):
 - Budget: about {C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
   (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`). Do not re-read large files you already read.
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
-- Trial and error until the FULL suite passes: run `python3 -m pytest -q` from the repo root, read failures, fix, repeat.
+- Trial and error until the FULL suite passes: run `{sbx.test_cmd()}` from the repo root, read failures, fix, repeat.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
 - Never push `main`, never open a PR.
-- Final reply: what you did, the final pytest summary line, and anything you could not do and why.
+- Final reply: what you did, the final test summary line, and anything you could not do and why.
 """ + ("\n## Team lessons (from earlier reworks - avoid repeating them)\n" + "\n".join(f"- {l}" for l in ls) + "\n" if ls else ""))
 
 
@@ -869,6 +961,36 @@ def worker_spec(t, continuing=False):
 
 
 # ---------------------------------------------------------------- steps (run in worker threads, return a function applied in the main loop)
+def _strs(v):
+    return [str(x) for x in v if isinstance(x, (str, int, float))] if isinstance(v, list) else ([str(v)] if isinstance(v, str) and v else [])
+
+
+def norm_tasks(d, start, limit=8):
+    """The planner's task list made safe to use, whatever the model returned: only objects, every field coerced to the
+    expected type, unique ids. Returns [(task_id, fields, [depends_on task ids])]. Malformed output used to raise in the
+    main loop - the goal stayed "new" and was re-planned (and re-paid) every tick."""
+    raw = d.get("tasks") if isinstance(d, dict) and isinstance(d.get("tasks"), list) else []
+    items = [x for x in raw if isinstance(x, dict)][:limit]
+    ids, tids, out = {}, [], []
+    for i, x in enumerate(items):
+        orig = str(x.get("key") or "").strip()
+        slug = slugify(orig or str(x.get("title") or "task"))
+        tid = f"{start + i:04d}-{slug}"          # the number makes it unique
+        tids.append(tid)
+        ids.setdefault(orig or str(i), tid)       # a duplicate key points at its first task
+        ids.setdefault(slug, tid)
+    for i, x in enumerate(items):
+        tid = tids[i]
+        deps = [ids[str(k)] for k in _strs(x.get("depends_on")) if str(k) in ids and ids[str(k)] != tid]
+        fields = dict(title=str(x.get("title") or tid)[:150], role=str(x.get("role") or "developer")[:60],
+                      risk="risky" if str(x.get("risk", "")).lower() == "risky" else "routine",
+                      files=[f for f in (x.get("files") if isinstance(x.get("files"), list) else [])
+                             if isinstance(f, str) and FILES_LINE.match(f) and ".." not in f.split("/") and not f.startswith("/")][:20],
+                      spec=str(x.get("spec") or "")[:20000], acceptance=[a[:500] for a in _strs(x.get("acceptance"))][:12])
+        out.append((tid, fields, deps))
+    return out
+
+
 def step_plan(g, followup=None):
     refresh_repo()
     text, who = llm("check" if followup else "plan", plan_prompt(g, followup))
@@ -876,7 +998,9 @@ def step_plan(g, followup=None):
 
     def apply():
         g2 = jload(os.path.join(FD, "goals", g["id"] + ".json"))
-        if not d:
+        if not g2:
+            return                                  # the goal file was removed while the planner was thinking
+        if not d or (not d.get("done") and not norm_tasks(d, 0) and followup is None):
             g2["plan_errors"] = g2.get("plan_errors", 0) + 1
             event(f"goal {g['id']}: {who} replied without valid JSON (attempt {g2['plan_errors']})", goal=g["id"])
             if g2["plan_errors"] >= 3:
@@ -886,36 +1010,30 @@ def step_plan(g, followup=None):
             g2["criteria"] = [dict(criterion=str(c.get("criterion", ""))[:300], met=bool(c.get("met")), evidence=str(c.get("evidence", ""))[:300])
                               for c in d["criteria"][:8] if isinstance(c, dict)]
             g2["criteria_at"] = sbx.now()
-        if d.get("done"):
-            g2.update(status="done", summary=d.get("summary", ""), finished=sbx.now()); save_goal(g2)
+        if d.get("done") is True:
+            g2.update(status="done", summary=str(d.get("summary") or "")[:2000], finished=sbx.now()); save_goal(g2)
             for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending")]:
                 ot["status"] = "cancelled"; ot["cancelled_why"] = "goal completed via replacement task"; save_task(ot)
-            event(f"goal {g['id']} DONE ({who}): {d.get('summary', '')}", goal=g["id"]); return
+            event(f"goal {g['id']} DONE ({who}): {str(d.get('summary') or '')[:500]}", goal=g["id"]); notify("goal_done", g2); return
         for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending")]:
             ot["status"] = "cancelled"; ot["cancelled_why"] = f"superseded by round {g2.get('rounds', 0) + 1}"; save_task(ot)
-        keys, n = {}, next_task_number()
-        for i, x in enumerate(d.get("tasks", [])[:8]):
-            keys[x.get("key") or str(i)] = f"{n + i:04d}-{slugify(x.get('key') or x.get('title', 'task'))}"
+        planned = norm_tasks(d, next_task_number())
         presplit = []
-        for i, x in enumerate(d.get("tasks", [])[:8]):
-            tid = keys[x.get("key") or str(i)]
-            role = str(x.get("role", "developer"))
-            prefix = "test" if "test" in role.lower() and "developer" not in role.lower() else "feat"
-            nt = dict(id=tid, goal=g["id"], title=str(x.get("title", tid))[:150], role=role, risk=x.get("risk", "routine"),
-                      branch=f"{prefix}/{tid}", files=[f for f in x.get("files", []) if FILES_LINE.match(f)],
-                      depends_on=[keys[k] for k in x.get("depends_on", []) if k in keys], spec=str(x.get("spec", "")),
-                      acceptance=[str(a) for a in x.get("acceptance", [])], status="pending", attempts=0, history=[],
-                      created=sbx.now(), planned_by=who)
+        for tid, x, deps in planned:
+            prefix = "test" if "test" in x["role"].lower() and "developer" not in x["role"].lower() else "feat"
+            nt = dict(id=tid, goal=g["id"], branch=f"{prefix}/{tid}", depends_on=deps, status="pending", attempts=0, history=[],
+                      created=sbx.now(), planned_by=who, **x)
             if len(own_files(nt)) > int(C["MAX_TASK_FILES"]):
                 nt.update(status="splitting", presplit=True); presplit.append(tid)
             save_task(nt)
         if presplit:
             event(f"goal {g['id']}: {', '.join(presplit)} own more than {C['MAX_TASK_FILES']} files - splitting before dispatch", goal=g["id"])
-        g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=d.get("notes", ""))
+        g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=str(d.get("notes") or "")[:1000])
         if d.get("goal_acceptance") and not g2.get("acceptance"):
-            g2["acceptance"] = [str(a)[:300] for a in d["goal_acceptance"]][:6]
+            g2["acceptance"] = [a[:300] for a in _strs(d["goal_acceptance"])][:6]
         save_goal(g2)
-        event(f"goal {g['id']} planned by {who}: {len(keys)} task(s) - {d.get('notes', '')}", goal=g["id"], tasks=list(keys.values()))
+        event(f"goal {g['id']} planned by {who}: {len(planned)} task(s) - {str(d.get('notes') or '')[:300]}", goal=g["id"],
+              tasks=[p[0] for p in planned])
     return apply
 
 
@@ -937,26 +1055,21 @@ def step_split(t):
 
     def apply():
         t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
-        new = d.get("tasks") or []
+        new = norm_tasks(d, next_task_number(), limit=3)
         if not new:
             if t2.get("presplit") and not t2.get("caps"):
                 t2.update(status="pending", presplit=False); save_task(t2)
                 event(f"task {t['id']}: {who} could not split it - dispatching it as planned", task=t["id"]); return
             t2.update(status="gate"); save_task(t2)
             event(f"task {t['id']}: {who} could not split it - reviewing what exists", task=t["id"]); return
-        keys, n = {}, next_task_number()
-        for i, x in enumerate(new[:3]):
-            keys[x.get("key") or str(i)] = f"{n + i:04d}-{slugify(x.get('key') or x.get('title', 'part'))}"
         ids = []
-        for i, x in enumerate(new[:3]):
-            tid = keys[x.get("key") or str(i)]
+        for i, (tid, x, deps) in enumerate(new):
             ids.append(tid)
-            save_task(dict(id=tid, goal=t["goal"], title=str(x.get("title", tid))[:150], role=str(x.get("role", t["role"])),
-                           risk=x.get("risk", t.get("risk", "routine")), branch=t["branch"] if i == 0 else f"{t['branch'].split('/')[0]}/{tid}",
-                           files=[f for f in x.get("files", []) if FILES_LINE.match(f)],
-                           depends_on=list(t.get("depends_on", [])) + [keys[k] for k in x.get("depends_on", []) if k in keys],
-                           spec=str(x.get("spec", "")), acceptance=[str(a) for a in x.get("acceptance", [])], status="pending",
-                           attempts=0, history=[], created=sbx.now(), planned_by=who, split_from=t["id"]))
+            if t.get("risk") == "risky":
+                x["risk"] = "risky"                    # a part of risky work stays risky
+            save_task(dict(id=tid, goal=t["goal"], branch=t["branch"] if i == 0 else f"{t['branch'].split('/')[0]}/{tid}",
+                           depends_on=list(t.get("depends_on", [])) + deps, status="pending", attempts=0, history=[],
+                           created=sbx.now(), planned_by=who, split_from=t["id"], **x))
         t2.update(status="cancelled", cancelled_why=f"split into {', '.join(ids)}"); save_task(t2)
         for ot in tasks():
             if t["id"] in ot.get("depends_on", []):
@@ -982,15 +1095,14 @@ def step_next():
     d = extract_json(text) or {}
 
     def apply():
-        st = gstate()
-        if d.get("goal"):
-            gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime())
+        if d.get("goal") and str(d["goal"]).strip():
+            gid = new_goal_id()
             save_goal(dict(id=gid, text=str(d["goal"])[:4000], status="new", created=sbx.now(), source="autopilot"))
-            event(f"autopilot ({who}): new goal {gid}: {d['goal'][:200]} - {d.get('why', '')[:200]}", goal=gid)
+            event(f"autopilot ({who}): new goal {gid}: {str(d['goal'])[:200]} - {str(d.get('why', ''))[:200]}", goal=gid)
         else:
-            st["autopilot_quiet_until"] = time.time() + 6 * 3600
-            gsave(st)
-            event(f"autopilot ({who}): nothing sensible left to start ({d.get('why', '')[:200]}); quiet for 6 h")
+            with state_tx() as st:
+                st["autopilot_quiet_until"] = time.time() + 6 * 3600
+            event(f"autopilot ({who}): nothing sensible left to start ({str(d.get('why', ''))[:200]}); quiet for 6 h")
     return apply
 
 
@@ -1012,40 +1124,52 @@ def step_roadmap(text):
     d = extract_json(out) or {}
 
     def apply():
-        st = gstate()
-        st.pop("roadmap_request", None)
-        gsave(st)
-        new = [str(x)[:4000] for x in d.get("goals", []) if str(x).strip()][:40]
+        goals_ = d.get("goals") if isinstance(d.get("goals"), list) else []
+        new = [str(x)[:4000] for x in goals_ if str(x).strip()][:40]
+        qs = [str(q)[:300] for q in (d.get("owner_questions") if isinstance(d.get("owner_questions"), list) else [])][:10]
+        with locked():
+            st = gstate(); st.pop("roadmap_request", None); gsave(st)
+            if new:
+                p = os.path.join(FD, "backlog.json")
+                jsave(p, jload(p, []) + new)
+            if qs:
+                jsave(os.path.join(FD, "owner_questions.json"), jload(os.path.join(FD, "owner_questions.json"), []) + qs)
+        if qs:
+            notify("questions", text="\n".join(f"- {q}" for q in qs))
         if not new:
             event(f"roadmap ({who}): no usable goals in the reply - nothing queued")
             return
-        p = os.path.join(FD, "backlog.json")
-        jsave(p, jload(p, []) + new)
-        qs = [str(q)[:300] for q in d.get("owner_questions", [])][:10]
-        if qs:
-            jsave(os.path.join(FD, "owner_questions.json"), jload(os.path.join(FD, "owner_questions.json"), []) + qs)
         event(f"roadmap ({who}): {len(new)} goal(s) queued in the backlog" + (f", {len(qs)} question(s) for the owner" if qs else "") +
-              f" - {d.get('notes', '')[:200]}")
+              f" - {str(d.get('notes', ''))[:200]}")
     return apply
 
 
 UNION_EXT = (".jsonl", ".md", ".txt", ".csv")
 
 
+REBASE_LOCK = threading.Lock()
+
+
 def auto_rebase(branch):
     """Rebase a task branch onto main without bothering the worker. Conflicts in SHARED_FILES that are line-based (.jsonl, .md,
     .txt, .csv - registries every task appends to) are resolved by keeping both sides (git merge-file --union); any other
-    conflict aborts. Returns uptodate | rebased | conflict | missing | push-failed."""
+    conflict aborts. Returns uptodate | rebased | conflict | missing | push-failed.
+    Serialized: all gate steps share one rebase clone, and two interleaved rebases there could push one branch's result to
+    another branch."""
+    with REBASE_LOCK:
+        return _auto_rebase(branch)
+
+
+def _auto_rebase(branch):
     if not sbx.SAFE_ARG.fullmatch(branch or "") or branch in ("main", "master"):
         return "missing"
-    tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
-    auth = ["-c", f"http.extraHeader=Authorization: token {tok}"]
+    auth = git_auth_env("orchestrator.token")
     who = ["-c", "user.name=orchestrator", "-c", "user.email=orchestrator@agent-forge.local"]
     d = os.path.join(FD, "rebase")
     if not os.path.isdir(os.path.join(d, ".git")):
-        sh(["git", *auth, "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", d], timeout=180)
+        sh(["git", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", d], timeout=180, env=auth)
     g = lambda *a, **kw: sh(["git", *a], cwd=d, timeout=kw.get("timeout", 120), env={"GIT_EDITOR": "true"})
-    sh(["git", *auth, "fetch", "-q", "--prune", "origin"], cwd=d, timeout=180)
+    sh(["git", "fetch", "-q", "--prune", "origin"], cwd=d, timeout=180, env=auth)
     g("rebase", "--abort")
     if g("checkout", "-q", "-B", "_af_rebase", f"origin/{branch}")[0] != 0:
         return "missing"
@@ -1074,14 +1198,21 @@ def auto_rebase(branch):
     if rc != 0:
         g("rebase", "--abort")
         return "conflict"
-    r = sh(["git", *auth, "push", "-q", f"--force-with-lease={branch}:origin/{branch}", "origin", f"HEAD:{branch}"], cwd=d, timeout=180)
+    r = sh(["git", "push", "-q", f"--force-with-lease={branch}:origin/{branch}", "origin", f"HEAD:{branch}"], cwd=d, timeout=180, env=auth)
     return "rebased" if r[0] == 0 else "push-failed"
 
 
 def requeue_gate(t, why):
+    """Test + review again (main moved, merge check pending). Each round costs a review call, so after 4 in a row the task is
+    blocked for the owner instead of looping."""
     t = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
-    t["status"] = "gate"
+    t["regates"] = t.get("regates", 0) + 1
     t["history"].append(dict(at=sbx.now(), outcome="regate", why=why))
+    if t["regates"] > 4:
+        save_task(t)
+        return block(t, f"approved but could not be merged after {t['regates'] - 1} tries (last: {why})")
+    t["status"] = "gate"
+    t["not_before"] = time.time() + 30 * t["regates"]
     save_task(t)
     event(f"task {t['id']}: {why} - testing + review again", task=t["id"])
 
@@ -1117,6 +1248,12 @@ def step_gate_review_merge(t):
     rc, out, err = sh([os.path.join(BIN, "review-branch"), t["branch"]], timeout=900)
     gate = (out + err)[-8000:]
     if rc == 2:
+        # infrastructure trouble is not the worker's fault and must not burn one of its attempts
+        if "could not fetch the branch" in gate and sh(["git", "ls-remote", "--heads", "origin"], cwd=REPO, timeout=60,
+                                                       env=git_auth_env("monitor.token"))[0] != 0:
+            return lambda: requeue_gate(t, "Forgejo did not answer while the gate fetched the branch")
+        if re.search(r"Cannot connect to the Docker daemon|Unable to find image|docker: Error response from daemon|No space left on device", gate):
+            return lambda: requeue_gate(t, "the gate could not start its test container (Docker problem)")
         why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
         return lambda: rework(t, f"Gate failed: {why}. Fix it (see the gate output) and push again.", gate)
     _, diff, _ = sh(["git", "diff", f"origin/main...origin/{t['branch']}"], cwd=REPO)
@@ -1162,7 +1299,7 @@ def step_gate_review_merge(t):
     PHASE[t["id"]] = "merge"
     body = os.path.join(FD, "tasks", t["id"] + ".pr.md")
     open(body, "w").write(f"Task {t['id']} ({t['role']}), goal {t['goal']}.\n\nReview by {who}: {fb}\n\nGate:\n```\n{gate[-2500:]}\n```\n"
-                          f"\nMerged automatically by bin/foreman (owner-approved 2026-10-02).\n")
+                          f"\nMerged automatically by Agent-Forge (AUTO_MERGE=1) after the gate and the review passed.\n")
     rc, out, err = sh([os.path.join(BIN, "open-pr"), t["branch"], f"{t['id']}: {t['title']}"[:120], body], timeout=60)
     m = re.search(r"opened PR #(\d+)", out)
     if not m:
@@ -1176,10 +1313,16 @@ def step_gate_review_merge(t):
         num = m2[0]
     else:
         num = int(m.group(1))
-    rc, out, err = sh([os.path.join(BIN, "merge-pr"), str(num)], timeout=90)
+    rc, out, err = sh([os.path.join(BIN, "merge-pr"), str(num)], timeout=150)
     if rc != 0:
-        if "not mergeable" in out + err and auto_rebase(t["branch"]) == "rebased":
+        rb2 = auto_rebase(t["branch"]) if "not mergeable" in out + err else None
+        if rb2 == "rebased":
             return lambda: requeue_gate(t, "main moved while it was reviewed - auto-rebased")
+        if rb2 == "uptodate":
+            # the branch already contains main, so this is no conflict - Forgejo's check was not done yet; try again later
+            return lambda: requeue_gate(t, "merge check of the PR was still running - trying again")
+        if rb2 in ("push-failed", "missing"):
+            return lambda: requeue_gate(t, f"could not update the branch before merging ({rb2}) - trying again")
         if "not mergeable" in out + err:
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, rerun "
                                      "the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
@@ -1209,7 +1352,7 @@ def rework(t, feedback, gate_tail, count=True):
     t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500]))
     if t["attempts"] > C["MAX_REWORK"]:
         return block(t, f"still failing after {t['attempts']} attempts: {feedback[:300]}")
-    t.update(status="pending", feedback=feedback, gate_tail=gate_tail)
+    t.update(status="pending", feedback=feedback, gate_tail=gate_tail, review_fails=0, regates=0, not_before=0)
     save_task(t)
     event(f"task {t['id']} back to the worker (attempt {t['attempts'] + 1}): {feedback[:200]}", task=t["id"])
 
@@ -1221,12 +1364,14 @@ def block(t, why):
     save_task(t)
     sbx.alert(f"foreman: task {t['id']} blocked: {why[:200]}")
     event(f"task {t['id']} BLOCKED - needs the owner: {why[:300]}", task=t["id"])
+    notify("task_blocked", t)
 
 
 def finish(t, what, who, fb, pr):
     t = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
     t["history"].append(dict(at=sbx.now(), outcome="done", what=what, reviewer=who, feedback=fb[:800]))
-    t.update(status="done", pr=pr, finished=sbx.now(), feedback="", gate_tail="", total_lines=total_lines_after_merge(t.get("files", [])))
+    t.update(status="done", pr=pr, finished=sbx.now(), feedback="", gate_tail="", review_fails=0, regates=0, not_before=0,
+             total_lines=total_lines_after_merge(t.get("files", [])))
     save_task(t)
     event(f"task {t['id']} done: {what} (review: {who})", task=t["id"])
 
@@ -1291,9 +1436,10 @@ def collect():
         try:
             fut.result()()
         except Unavailable as e:
-            st = gstate()
-            if st.get("unavail_msg") != str(e):
-                st["unavail_msg"] = str(e); gsave(st)
+            with state_tx() as st:
+                changed = st.get("unavail_msg") != str(e)
+                st["unavail_msg"] = str(e)
+            if changed:
                 event(f"waiting: {e}")
         except Exception:
             event(f"{key}: internal error, will retry: {traceback.format_exc()[-600:]}")
@@ -1363,12 +1509,52 @@ def dispatch_ready():
               (" (continuing its conversation)" if continuing else "") + (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
 
 
+def orphaned(run):
+    """A run whose supervisor died without finishing it (machine restart, OOM, killed by hand). Checked in this order on
+    purpose: a supervisor writes `finished` and then exits, so 'pid dead' first, then 'still not finished'."""
+    pid = sbx.read(os.path.join(run, "pid"))
+    if not pid.isdigit():
+        return False
+    if sbx.alive(pid):
+        try:                                   # after a reboot the number may belong to an unrelated process
+            if b"run-supervisor" in open(f"/proc/{pid}/cmdline", "rb").read():
+                return False
+        except OSError:
+            return False
+    return not os.path.exists(os.path.join(run, "finished"))
+
+
+def recover_orphan(t):
+    """Close an orphaned run (stop whatever it left running in the worker, mark it finished) and re-queue its task without
+    counting an attempt - before this, such a task stayed "running" forever and blocked its files and its goal."""
+    run, w = t["run"], t.get("worker", "")
+    if re.fullmatch(r"worker-\d+", w):
+        sh(["docker", "exec", w, "bash", "-c", 'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pkill -TERM -s "$sid"; exit 0'], timeout=30)
+    m = sbx.meta(run)
+    m.update(reason="orphaned", finished=sbx.now())
+    try:
+        json.dump(m, open(os.path.join(run, "meta.json"), "w"), indent=1)
+        open(os.path.join(run, "exitcode"), "w").write("128\n")
+        open(os.path.join(run, "finished"), "w").write(sbx.now() + "\n")
+    except OSError:
+        pass
+    sbx.append_ledger(dict(run_id=os.path.basename(run), date=sbx.today(), at=sbx.now(), worker=w, task=m.get("task", ""), test=False,
+                           reason="orphaned", exit_code=128, tokens=sbx.stream_tokens(os.path.join(run, "stream.jsonl")), duration_s=0,
+                           tool_calls=0, egress_alarms=0))
+    t.update(status="pending")
+    save_task(t)
+    event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
+          task=t["id"])
+
+
 def advance():
     cancelled = {g["id"] for g in goals() if g["status"] == "cancelled"}
     can_think = llm_available()
     for t in tasks():
         if t["goal"] in cancelled and t["status"] not in ("done", "cancelled") and not (t["status"] == "running" and not os.path.exists(os.path.join(t.get("run", ""), "finished"))):
             t["status"] = "cancelled"; save_task(t); continue
+        if t["status"] == "running" and t.get("run") and orphaned(t["run"]):
+            recover_orphan(t); continue
         if t["status"] == "running" and t.get("run") and os.path.exists(os.path.join(t["run"], "finished")):
             m = sbx.meta(t["run"])
             reason = m.get("reason")
@@ -1376,8 +1562,18 @@ def advance():
                 sh(["docker", "exec", "-w", sbx.WORKER_CLONE, t["worker"], "git", "stash", "-u"], timeout=60)
                 t.update(status="pending"); save_task(t)
                 event(f"task {t['id']}: {t['worker']} clone was not clean - stashed it, task re-queued", task=t["id"]); continue
-            if reason == "killswitch":
+            if reason in ("killswitch", "orphaned"):
                 t.update(status="pending"); save_task(t); continue
+            if reason == "quota":
+                # the account ran out mid-run: not the task's fault - re-queue without an attempt, rest that worker
+                until = time.time() + 1800
+                COOLDOWN[t["worker"]] = (until, "quota low: the account ran out during a run")
+                QUOTA_CACHE.pop(t["worker"], None)
+                t.update(status="pending", last_run=dict(worker=t["worker"], reason="quota", tokens=m.get("tokens", 0),
+                                                         salvage=m.get("salvage")))
+                save_task(t)
+                event(f"task {t['id']}: {t['worker']} ran out of quota during the run - re-queued (no attempt counted); "
+                      f"{t['worker']} rests 30 min", task=t["id"]); continue
             t["last_run"] = dict(worker=t["worker"], conversation=m.get("conversation_id"), tokens=m.get("tokens", 0), reason=reason,
                                  salvage=m.get("salvage"))
             if reason in ("token-cap", "timeout"):
@@ -1389,7 +1585,7 @@ def advance():
             else:
                 t.update(status="gate", run_reason=reason, run_tokens=m.get("tokens")); save_task(t)
                 event(f"task {t['id']}: {t['worker']} finished ({reason}, {m.get('tokens', 0):,} tokens){saved} - testing + review", task=t["id"])
-        if t["status"] in ("gate", "review") and can_think:
+        if t["status"] in ("gate", "review") and can_think and t.get("not_before", 0) <= time.time():
             submit("task:" + t["id"], step_gate_review_merge, t)
         if t["status"] == "splitting" and can_think:
             submit("split:" + t["id"], step_split, t)
@@ -1441,6 +1637,15 @@ def feed_idle_workers():
         if not (C["PLAN_AHEAD"] and not any(t["status"] == "running" for t in ts) and pool_quota_out()):
             return
         ahead = True
+        if not gstate().get("quota_out_since"):
+            with state_tx() as st:
+                st["quota_out_since"] = time.time()
+            resets = sorted({str(u[1]).split("(resets ")[-1].rstrip(")") for u in COOLDOWN.values() if "resets" in str(u[1])})
+            notify("quota_out", text="The team waits for the quota reset" + (f" ({', '.join(resets[:4])})" if resets else "") +
+                   ". Backlog goals are planned ahead meanwhile.")
+    elif gstate().get("quota_out_since"):
+        with state_tx() as st:
+            st.pop("quota_out_since", None)
     running_files = set(f for t in ts if t["status"] == "running" for f in t.get("files", []))
     planning = [g for g in goals() if g["status"] == "new"] + [k for k in INFLIGHT if k.startswith("roadmap")]
     if ahead:
@@ -1453,17 +1658,19 @@ def feed_idle_workers():
     live = [g for g in goals() if g["status"] == "new" or (g["status"] == "active" and g["id"] in unfinished)]
     cap = max(int(C["MAX_ACTIVE_GOALS"]), 2 * len(workers()))
     started = []
-    bl = jload(os.path.join(FD, "backlog.json"), [])
-    while bl and slots > coming and len(live) + len(started) < cap:
-        text = bl.pop(0)
-        gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + (f"-{len(started)}" if started else "")
-        save_goal(dict(id=gid, text=text, status="new", created=sbx.now(), source="backlog"))
-        started.append(gid)
-        coming += 2
-        event((f"all workers wait for quota - planning ahead: goal {gid}" if ahead else f"{len(free)} idle worker(s) - started goal {gid}") +
-              f" from the backlog: {text[:200]}", goal=gid)
+    with locked():                                   # the owner may add to the backlog (CLI / dashboard) at the same moment
+        bl = jload(os.path.join(FD, "backlog.json"), [])
+        while bl and slots > coming and len(live) + len(started) < cap:
+            text = bl.pop(0)
+            gid = new_goal_id()
+            save_goal(dict(id=gid, text=text, status="new", created=sbx.now(), source="backlog"))
+            started.append(gid)
+            coming += 2
+            event((f"all workers wait for quota - planning ahead: goal {gid}" if ahead else f"{len(free)} idle worker(s) - started goal {gid}") +
+                  f" from the backlog: {text[:200]}", goal=gid)
+        if started:
+            jsave(os.path.join(FD, "backlog.json"), bl)
     if started:
-        jsave(os.path.join(FD, "backlog.json"), bl)
         return
     if slots <= coming or "next:autopilot" in INFLIGHT:
         return
@@ -1473,18 +1680,22 @@ def feed_idle_workers():
         submit("next:autopilot", step_next)
 
 
-GATE_IMAGE = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
 MAINT_PREFIX = "[maintenance]"
 
 
 def run_suite_on_main():
-    """The full test suite on main exactly like the gate runs it (fresh offline container, read-only source). (rc, summary line)."""
-    rc, out, err = sh(["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
-                       "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256",
-                       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{REPO}:/src:ro", "-w", "/src", "--entrypoint", "python3", GATE_IMAGE,
-                       "-m", "pytest", "-q", "-p", "no:cacheprovider"], timeout=600)
-    lines = (out or err).strip().splitlines()
+    """The full test suite on main exactly like the gate runs it (fresh offline container, read-only source, the project's
+    TEST_CMD in its GATE_IMAGE). (rc, summary line, failing tests). pytest's "no tests" (5) is reported as 0."""
+    cmd = sbx.test_cmd()
+    with REPO_LOCK:
+        rc, out, err = sh(["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
+                           "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256",
+                           "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp", "-v", f"{REPO}:/src:ro", "-w", "/src", "--entrypoint", "sh",
+                           sbx.gate_image(), "-c", cmd], timeout=600)
+    lines = (out + err).strip().splitlines()
     fails = [l for l in lines if l.startswith(("FAILED ", "ERROR "))]
+    if rc == 5 and sbx.is_pytest(cmd):
+        rc = 0
     return rc, (lines[-1] if lines else "(no output)")[:200], fails[:10]
 
 
@@ -1509,7 +1720,34 @@ def maybe_maintenance():
     submit("maint:main", step_maintenance)
 
 
+def compress_old_runs(days):
+    """gzip the transcripts (stream.jsonl) of finished runs older than `days`; meta.json, the ledger and run-stats keep all
+    the numbers the dashboard needs. Transcripts are most of runs/ (several MB per run). Returns (runs, bytes saved)."""
+    import gzip, shutil
+    cutoff, n, saved = time.time() - days * 86400, 0, 0
+    for d in sbx.run_dirs():
+        s = os.path.join(d, "stream.jsonl")
+        if not os.path.exists(os.path.join(d, "finished")) or not os.path.exists(s) or os.path.getmtime(s) > cutoff:
+            continue
+        try:
+            size = os.path.getsize(s)
+            with open(s, "rb") as fi, gzip.open(s + ".gz", "wb") as fo:
+                shutil.copyfileobj(fi, fo)
+            saved += size - os.path.getsize(s + ".gz")
+            os.remove(s)
+            n += 1
+        except OSError:
+            pass
+    return n, saved
+
+
 def step_maintenance():
+    try:
+        n, saved = compress_old_runs(int(C["RUNS_KEEP_DAYS"]))
+        if n:
+            event(f"maintenance: compressed the transcripts of {n} run(s) older than {C['RUNS_KEEP_DAYS']} days ({saved / 2**20:.0f} MB saved)")
+    except Exception as e:
+        event(f"maintenance: compressing old runs failed: {e}")
     refresh_repo()
     rc, sha, _ = sh(["git", "rev-parse", "origin/main"], cwd=REPO)
     runs = [run_suite_on_main() for _ in range(3)]
@@ -1517,33 +1755,45 @@ def step_maintenance():
     nodoc = [p for p, e in sorted(cm.items()) if not e["test"] and p.endswith(".py") and not e["purpose"]]
 
     def apply():
-        st = gstate()
-        st.update(maint_at=time.time(), maint_sha=sha.strip(),
-                  maint=dict(at=sbx.now(), sha=sha.strip()[:10], suite=[dict(rc=r[0], summary=r[1]) for r in runs], nodoc=len(nodoc)))
-        gsave(st)
-        bl = jload(os.path.join(FD, "backlog.json"), [])
-        open_goals = " ".join(g["text"] for g in goals() if g["status"] in ("new", "active"))
-        found = []
-        if all(r[0] != 0 for r in runs) and f"{MAINT_PREFIX} main is red" not in open_goals:
-            fails = sorted({f for r in runs for f in r[2]})
-            gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime()) + "-m"
-            save_goal(dict(id=gid, text=f"{MAINT_PREFIX} main is red: the full test suite fails on main ({runs[0][1]}). Make it green "
-                           f"again without weakening tests. Failing: {'; '.join(fails)[:800] or 'see the test output'}",
-                           status="new", created=sbx.now(), source="maintenance"))
-            found.append("main is red - goal " + gid)
-        elif len({r[0] == 0 for r in runs}) > 1:
-            flaky = sorted({f for r in runs for f in r[2]})
-            text = f"{MAINT_PREFIX} flaky tests: the same main passed and failed in 3 runs. Make them deterministic: {'; '.join(flaky)[:600]}"
-            if not any(b.startswith(f"{MAINT_PREFIX} flaky tests") for b in bl):
-                bl.insert(0, text); found.append("flaky tests")
-        if nodoc and not any(b.startswith(f"{MAINT_PREFIX} module docstrings") for b in bl):
-            bl.append(f"{MAINT_PREFIX} module docstrings: give every module a docstring (purpose, public interface, invariants; 3-8 lines, "
-                      f"no code changes) - the team's code map and context packs are built from them. Modules: {', '.join(nodoc[:30])}")
-            found.append(f"{len(nodoc)} module(s) without a docstring")
-        jsave(os.path.join(FD, "backlog.json"), bl)
-        event("maintenance on main " + sha.strip()[:10] + ": suite " + " / ".join(r[1] for r in runs)[:200] +
-              (" - " + "; ".join(found) if found else " - nothing to do"))
+        with state_tx() as st:
+            st.update(maint_at=time.time(), maint_sha=sha.strip(),
+                      maint=dict(at=sbx.now(), sha=sha.strip()[:10], suite=[dict(rc=r[0], summary=r[1]) for r in runs], nodoc=len(nodoc)))
+        with locked():
+            _maintenance_findings(runs, nodoc, sha)
     return apply
+
+
+def _maintenance_findings(runs, nodoc, sha):
+    """Turn the maintenance results into work (call under locked()). Pure enough to selftest with fake runs."""
+    bl = jload(os.path.join(FD, "backlog.json"), [])
+    open_goals = " ".join(g["text"] for g in goals() if g["status"] in ("new", "active"))
+    found = []
+    # pytest exit codes: 0 passed, 1 tests failed, 2 collection/usage error. 5 = no tests at all (a new project) and 125-127 =
+    # docker/image trouble say nothing about main, so they never count as red and never as "flaky".
+    real = [r for r in runs if r[0] in (0, 1, 2)]
+    red = [r for r in real if r[0] != 0]
+    if real and len(red) == len(runs) and f"{MAINT_PREFIX} main is red" not in open_goals:
+        fails = sorted({f for r in runs for f in r[2]})
+        gid = new_goal_id("-m")
+        save_goal(dict(id=gid, text=f"{MAINT_PREFIX} main is red: the full test suite fails on main ({runs[0][1]}). Make it green "
+                       f"again without weakening tests. Failing: {'; '.join(fails)[:800] or 'see the test output'}",
+                       status="new", created=sbx.now(), source="maintenance"))
+        found.append("main is red - goal " + gid)
+    elif red and len(red) < len(real):
+        flaky = sorted({f for r in runs for f in r[2]})
+        text = f"{MAINT_PREFIX} flaky tests: the same main passed and failed in 3 runs. Make them deterministic: {'; '.join(flaky)[:600]}"
+        if not any(b.startswith(f"{MAINT_PREFIX} flaky tests") for b in bl):
+            bl.insert(0, text); found.append("flaky tests")
+    if len(real) < len(runs):
+        found.append(f"{len(runs) - len(real)} suite run(s) could not run (exit {', '.join(str(r[0]) for r in runs if r not in real)})")
+    if nodoc and not any(b.startswith(f"{MAINT_PREFIX} module docstrings") for b in bl):
+        bl.append(f"{MAINT_PREFIX} module docstrings: give every module a docstring (purpose, public interface, invariants; 3-8 lines, "
+                  f"no code changes) - the team's code map and context packs are built from them. Modules: {', '.join(nodoc[:30])}")
+        found.append(f"{len(nodoc)} module(s) without a docstring")
+    jsave(os.path.join(FD, "backlog.json"), bl)
+    event("maintenance on main " + sha.strip()[:10] + ": suite " + " / ".join(r[1] for r in runs)[:200] +
+          (" - " + "; ".join(found) if found else " - nothing to do"))
+    return found
 
 
 CONF_MTIME = {}
@@ -1609,7 +1859,7 @@ def timeline(hours=24):
     now, since = time.time(), time.time() - hours * 3600
     out = []
     for e in sbx.read_ledger():
-        if e.get("test"):
+        if e.get("test") or e.get("project", "") != sbx.PROJECT:      # this project's runs only
             continue
         try:
             end = dt.datetime.fromisoformat(e["at"].replace("Z", "+00:00")).timestamp()
@@ -1622,6 +1872,8 @@ def timeline(hours=24):
     for d in sbx.run_dirs():
         if sbx.is_running(d):
             m = sbx.meta(d)
+            if m.get("test") or m.get("project", "") != sbx.PROJECT:
+                continue
             try:
                 start = dt.datetime.fromisoformat(sbx.read(d + "/started").replace("Z", "+00:00")).timestamp()
             except Exception:
@@ -1791,6 +2043,10 @@ EDITABLE = {
     "MAX_TASK_FILES": ((1, 20), "project"), "WORKER_MODEL_LIGHT": ("|" + MODEL_RE, "project"),
     "LIGHT_ROLES": (r"|[a-z][a-z-]{1,40}(,[a-z][a-z-]{1,40})*", "project"), "AB_MODEL": ("|" + MODEL_RE, "project"),
     "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),
+    "TEST_CMD": ("|" + sbx.TEST_CMD_RE.pattern, "project"), "GATE_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
+    "NOTIFY_URL": (r"|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf "NOTIFY_FORMAT": (r"ntfy|slack|discord|json", "project"),
+    "NOTIFY_EVENTS": (r"|(goal_done|task_blocked|killswitch|questions|quota_out)(,(goal_done|task_blocked|killswitch|questions|quota_out))*", "project"),
+    "RUNS_KEEP_DAYS": ((1, 3650), "project"),
     "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
     "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
 }
@@ -2191,24 +2447,111 @@ def selftest():
           ef["model"]["m1"]["runs"] == 2 and ef["model"]["m1"]["cap_pct"] == 50 and ef["model"]["m1"]["week_per_run"] == 1.5
           and ef["model"]["m1"]["week_per_done"] == 3.0 and ef["pack"]["bez packu"]["first_pass_pct"] == 100
           and ef["pack"]["pack"]["first_pass_pct"] == 0 and ef["self_check"] == dict(runs=2, green_first=1, fixed=1, still_red=0))
+    # planner output normalisation: garbage never raises, keys are unique, dependencies resolve by key or slug
+    nt = norm_tasks({"tasks": [{"key": "a", "title": "A", "files": ["x.py", "../etc/passwd", 5], "depends_on": "b"},
+                               "garbage", {"key": "a", "title": "A again", "risk": "RISKY", "acceptance": "one"},
+                               {"key": "b", "depends_on": ["a", "zzz"], "spec": {"not": "text"}}]}, 10)
+    check("norm_tasks: objects only, unique ids, safe files, coerced fields, deps by key",
+          [x[0] for x in nt] == ["0010-a", "0011-a", "0012-b"] and nt[0][1]["files"] == ["x.py"] and nt[0][2] == ["0012-b"]
+          and nt[1][1]["risk"] == "risky" and nt[1][1]["acceptance"] == ["one"] and nt[2][2] == ["0010-a"] and isinstance(nt[2][1]["spec"], str))
+    check("norm_tasks: a reply that is not a plan gives no tasks", norm_tasks({"tasks": "x"}, 1) == [] and norm_tasks(None, 1) == [])
+    # kill switch streak: neutral outcomes neither count nor reset; ok resets; other projects are ignored
+    L = [dict(reason=r, project=p) for r, p in (("ok", ""), ("failed", ""), ("killswitch", ""), ("token-cap", ""), ("failed", "other"),
+                                                 ("quota", ""), ("failed", ""))]
+    check("consecutive_failures: skips killswitch/token-cap/quota, ignores other projects, stops at ok",
+          sbx.consecutive_failures(L, "") == 2 and sbx.consecutive_failures(L + [dict(reason="ok", project="")], "") == 0
+          and sbx.consecutive_failures(L, "other") == 1)
+    # notifications payloads
+    b, h = sbx.notify_payload("ntfy", "goal_done", "Cieľ hotový", "text")
+    b2, _ = sbx.notify_payload("slack", "goal_done", "T", "m")
+    check("notify_payload: ntfy encodes a non-ASCII title (RFC 2047), slack sends text",
+          b == b"text" and h["Title"].startswith("=?UTF-8?B?") and json.loads(b2)["text"] == "*T*\nm")
+    # maintenance findings, unique goal ids, orphaned runs - on a throwaway state dir
+    old_fd = FD
+    d = tempfile.mkdtemp(prefix="forge-maint-")
+    try:
+        FD = d
+        os.makedirs(os.path.join(d, "goals"))
+        f1 = _maintenance_findings([(5, "no tests ran", []), (5, "no tests ran", []), (125, "docker error", [])], [], "abc")
+        check("maintenance: 'no tests' and docker errors are not a red main", not goals() and not any("red" in x for x in f1))
+        f2 = _maintenance_findings([(1, "1 failed", ["FAILED t.py::x"])] * 3, ["a.py"], "abc")
+        f3 = _maintenance_findings([(0, "ok", []), (1, "1 failed", ["FAILED t.py::y"]), (0, "ok", [])], [], "abc")
+        bl = jload(os.path.join(d, "backlog.json"), [])
+        check("maintenance: red main -> one goal, flaky -> backlog first, missing docstrings -> backlog once",
+              len(goals()) == 1 and "main is red" in goals()[0]["text"] and any("flaky" in x for x in f3)
+              and bl[0].startswith(MAINT_PREFIX + " flaky") and sum(x.startswith(MAINT_PREFIX + " module docstrings") for x in bl) == 1)
+        a1 = new_goal_id(); save_goal(dict(id=a1, text="x", status="new")); a2 = new_goal_id()
+        check("new_goal_id: unique within the same second", a1 != a2)
+        run = os.path.join(d, "20260101T000000Z-worker-9")
+        os.makedirs(run)
+        open(os.path.join(run, "pid"), "w").write("999999999")
+        check("orphaned: dead supervisor + not finished = orphan; finished = not", orphaned(run))
+        open(os.path.join(run, "finished"), "w").write("x")
+        check("orphaned: a finished run is never an orphan", not orphaned(run))
+    finally:
+        FD = old_fd
+        shutil.rmtree(d, ignore_errors=True)
     print("foreman selftest: " + ("ALL OK" if not bad else f"{bad} FAILED"))
     return 1 if bad else 0
+
+
+def answer_question(n, answer):
+    """The owner answers the planner's question n: it leaves the open list and goes into decisions.md, which every later
+    plan and roadmap reads - so the team does not ask again and builds on the decision."""
+    with locked():
+        p = os.path.join(FD, "owner_questions.json")
+        qs = jload(p, [])
+        if not 1 <= n <= len(qs):
+            return None
+        q = qs.pop(n - 1)
+        jsave(p, qs)
+        if answer.strip():
+            dp = os.path.join(CFG_DIR, "decisions.md")
+            new = not os.path.exists(dp)
+            with open(dp, "a") as f:
+                if new:
+                    f.write("# Owner decisions (answers to the planner's questions; read by every plan)\n\n")
+                f.write(f"- Q: {q}\n  A: {' '.join(answer.split())[:2000]}  ({sbx.today()})\n")
+    event(f"owner answered: {q[:120]}" if answer.strip() else f"owner dismissed the question: {q[:120]}")
+    return q
+
+
+def decisions():
+    try:
+        return open(os.path.join(CFG_DIR, "decisions.md")).read()[-12000:]
+    except FileNotFoundError:
+        return ""
 
 
 def main():
     a = sys.argv[1:]
     if a[:1] == ["--selftest"]:
         sys.exit(selftest())
+    if a[:1] == ["--version"]:
+        print(open(os.path.join(ROOT, "VERSION")).read().strip() if os.path.exists(os.path.join(ROOT, "VERSION")) else "unknown"); return
+    # `-` instead of the text: read it from stdin (the dashboard never puts owner text into a command line)
+    if (a[:1] in (["goal"], ["project"]) and a[1:2] == ["-"]) or (a[:2] == ["backlog", "add"] and a[2:3] == ["-"]):
+        a[a.index("-")] = sys.stdin.read()
+    if a[:1] == ["answer"] and len(a) == 2 and a[1].isdigit():
+        q = answer_question(int(a[1]), sys.stdin.read())
+        if q is None:
+            print("no such question", file=sys.stderr); sys.exit(2)
+        print(f"answered: {q}"); return
+    if a[:2] == ["questions", "--json"]:
+        print(json.dumps(jload(os.path.join(FD, "owner_questions.json"), []), ensure_ascii=False)); return
     if a[:1] == ["goal"] and len(a) == 2 and a[1].strip():
-        gid = time.strftime("G%Y%m%d-%H%M%S", time.gmtime())
-        save_goal(dict(id=gid, text=a[1].strip()[:4000], status="new", created=sbx.now()))
+        with locked():
+            gid = new_goal_id()
+            save_goal(dict(id=gid, text=a[1].strip()[:4000], status="new", created=sbx.now()))
         event(f"goal {gid} queued: {a[1].strip()[:200]}", goal=gid)
         print(f"queued {gid}; the foreman plans it within ~{int(C['LOOP_SEC'])} s (bin/foreman status)")
     elif a[:1] == ["project"] and len(a) == 2 and a[1].strip():
-        st = gstate()
-        if st.get("roadmap_request"):
+        with state_tx() as st:
+            busy = bool(st.get("roadmap_request"))
+            if not busy:
+                st["roadmap_request"] = a[1].strip()[:6000]
+        if busy:
             print("a roadmap is already being prepared; wait for it (bin/foreman status)", file=sys.stderr); sys.exit(3)
-        st["roadmap_request"] = a[1].strip()[:6000]; gsave(st)
         event(f"project queued for a roadmap: {a[1].strip()[:200]}")
         print("queued; the orchestrator turns it into a roadmap of goals in the backlog (bin/foreman backlog)")
     elif a == ["questions"]:
@@ -2262,13 +2605,17 @@ def main():
         status("--json" in a)
     elif a[:1] == ["backlog"]:
         p = os.path.join(FD, "backlog.json")
-        bl = jload(p, [])
-        if a[1:2] == ["add"] and len(a) == 3 and a[2].strip():
-            bl.append(a[2].strip()[:4000]); jsave(p, bl); event(f"backlog +{len(bl)}: {a[2].strip()[:200]}")
-        elif a[1:2] == ["drop"] and len(a) == 3 and a[2].isdigit() and 1 <= int(a[2]) <= len(bl):
-            x = bl.pop(int(a[2]) - 1); jsave(p, bl); event(f"backlog dropped: {x[:200]}")
-        elif len(a) != 1:
-            print(__doc__, file=sys.stderr); sys.exit(2)
+        with locked():
+            bl = jload(p, [])
+            if a[1:2] == ["add"] and len(a) == 3 and a[2].strip():
+                bl.append(a[2].strip()[:4000]); jsave(p, bl); event(f"backlog +{len(bl)}: {a[2].strip()[:200]}")
+            elif a[1:2] == ["drop"] and len(a) == 3 and a[2].isdigit() and 1 <= int(a[2]) <= len(bl):
+                x = bl.pop(int(a[2]) - 1); jsave(p, bl); event(f"backlog dropped: {x[:200]}")
+            elif a[1:2] == ["move"] and len(a) == 4 and a[2].isdigit() and a[3].isdigit() and 1 <= int(a[2]) <= len(bl) \
+                    and 1 <= int(a[3]) <= len(bl):
+                x = bl.pop(int(a[2]) - 1); bl.insert(int(a[3]) - 1, x); jsave(p, bl); event(f"backlog: moved to {a[3]}: {x[:200]}")
+            elif len(a) != 1:
+                print(__doc__, file=sys.stderr); sys.exit(2)
         for i, x in enumerate(bl, 1):
             print(f"{i}. {x}")
         if not bl:
@@ -2279,7 +2626,8 @@ def main():
             open(f, "w").write(sbx.now())
         elif os.path.exists(f):
             os.remove(f)
-        st = gstate(); st.pop("autopilot_quiet_until", None); gsave(st)
+        with state_tx() as st:
+            st.pop("autopilot_quiet_until", None)
         event(f"autopilot {a[1]}")
     elif a == ["pause"]:
         os.makedirs(FD, exist_ok=True); open(os.path.join(FD, "PAUSED"), "w").write(sbx.now()); event("paused by " + os.environ.get("USER", "?"))
@@ -2291,7 +2639,8 @@ def main():
         t = jload(os.path.join(FD, "tasks", a[1] + ".json"))
         if not t or t["status"] != "blocked":
             print("no blocked task with that id", file=sys.stderr); sys.exit(2)
-        t.update(status="pending", attempts=0, blocked_why=""); save_task(t); event(f"task {a[1]} re-queued by the owner", task=a[1])
+        t.update(status="pending", attempts=0, caps=0, review_fails=0, blocked_why=""); save_task(t)
+        event(f"task {a[1]} re-queued by the owner", task=a[1])
     elif a[:1] == ["cancel"] and len(a) == 2:
         g = jload(os.path.join(FD, "goals", a[1] + ".json"))
         if not g:

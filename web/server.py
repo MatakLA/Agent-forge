@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Agent-Forge web dashboard: a live view of the team - orchestrator, every worker, goals, the task board with details, events
-and daily stats - plus one action button ("Continue" after a soft kill-switch trip).
+"""Agent-Forge web dashboard and admin console: the team live (orchestrator, every worker), goals with their acceptance criteria,
+the task board, timeline, dependency graphs, diffs, metrics, events; and the owner's controls - new goals and backlog, answers to
+the planner's questions, kill switch per project or for all, settings (models, providers, worker pools, limits), new workers with
+their Antigravity login in a browser terminal, and new projects.
 
 Python standard library only, one file. Runs next to bin/foreman (LOCAL mode, default) or on another machine reading it over ssh
 (REMOTE mode: set VM_IP, VM_USER, VM_KEY, VM_KNOWN_HOSTS, and FORGE_DIR if Agent-Forge is not in ~/sandbox there). Binds 127.0.0.1
-only - publish it with a reverse proxy / Tailscale serve if you want it on your phone.
+only - publish it with Tailscale serve or a reverse proxy (then list its host name in DASHBOARD_HOSTS) and keep it private: it
+is an admin console. Every write goes through bin/foreman / bin/killswitch / bin/worker-add, which validate their input.
 
-Everything it does is read-only (tail of run logs, `bin/foreman status --dashboard`, `agy /usage`) except POST /api/resume, which
-runs the same recovery a human would after a SOFT kill-switch trip: `bin/egress-report --ack`, `bin/killswitch off --start`, and a
-foreman restart if it is not running. It refuses on a HARD kill switch (containers stopped - that needs a real look).
-
-Config (environment): BIND_PORT (8171), FORGE_DIR, VM_IP / VM_USER / VM_KEY / VM_KNOWN_HOSTS for remote mode.
+Config (environment): BIND_PORT (8171), FORGE_DIR, VM_IP / VM_USER / VM_KEY / VM_KNOWN_HOSTS for remote mode, DASHBOARD_HOSTS,
+DASHBOARD_TOKEN (optional sign-in), FOREMAN_SERVICE / FOREMAN_SERVICE_PROJECT (systemd unit names), CLAUDE_PROJECT.
 """
 import atexit
 import collections
@@ -44,7 +44,11 @@ if VM_IP:
 else:
     SSH_BASE = ["bash", "-c"]
 # Claude Code keeps a project's transcripts under ~/.claude/projects/<the project path with / replaced by ->
-CLAUDE_PROJECT = "-" + os.path.expanduser(FORGE_DIR).strip("/").replace("/", "-") if not VM_IP else "-home-dev-sandbox"
+if VM_IP:
+    _remote_dir = FORGE_DIR.replace("~", f"/home/{VM_USER}", 1) if FORGE_DIR.startswith("~") else FORGE_DIR
+    CLAUDE_PROJECT = os.environ.get("CLAUDE_PROJECT", "-" + _remote_dir.strip("/").replace("/", "-"))
+else:
+    CLAUDE_PROJECT = "-" + os.path.expanduser(FORGE_DIR).strip("/").replace("/", "-")
 
 
 LAST_ERR = {"msg": ""}           # why the last ssh_run failed, shown on the page instead of a vague "unavailable"
@@ -77,6 +81,8 @@ JOBS = {}
 
 
 def start_job(kind, fn):
+    for k in [k for k, j in JOBS.items() if j["state"] != "running" and time.time() - j["started"] > 86400]:
+        del JOBS[k]                                  # finished jobs are kept a day for the page, then dropped
     jid = f"{kind}-{int(time.time() * 1000)}"
     JOBS[jid] = {"id": jid, "kind": kind, "state": "running", "log": "", "started": time.time()}
     threading.Thread(target=fn, args=(JOBS[jid],), daemon=True).start()
@@ -408,6 +414,10 @@ def reap(proc):
     ALL_PROCS.discard(proc)
 PANES = {}
 PANES_LOCK = threading.Lock()
+# pane id -> path of the finished run whose pane was dropped. Without it the next scan (5 s later) found the same latest run,
+# started a new `tail -F` for it, saw "finished" again, dropped it 90 s later, and so on - a new ssh process per worker every
+# ~95 s for as long as the worker was idle.
+RETIRED = {}
 
 
 def discover_devbox_orchestrator():
@@ -565,6 +575,8 @@ def _discover_once():
     with PANES_LOCK:
         for pane_id, (title, kind, path, renderer, alive, tail_argv) in wanted.items():
             existing = PANES.get(pane_id)
+            if existing is None and RETIRED.get(pane_id) == path:
+                continue        # this run already finished and its pane was retired - do not start a new tail for it
             if existing is None or existing.remote_path != path:
                 if existing:
                     existing.stop()
@@ -585,6 +597,7 @@ def _discover_once():
             p = PANES[pane_id]
             if p.kind == "worker" and p.state == "finished" and p.finished_at and now - p.finished_at > FINISHED_GRACE:
                 ROSTER.touch(pane_id, state="idle")   # keep the roster row, drop the live pane
+                RETIRED[pane_id] = p.remote_path
                 p.stop()
                 del PANES[pane_id]
 
@@ -675,6 +688,10 @@ PAGE = r"""<!DOCTYPE html>
   .goal-meta { font-size:11.5px; color:var(--muted); white-space:nowrap; }
   .bar { height:6px; border-radius:3px; background:var(--card2); margin-top:8px; overflow:hidden; display:flex; }
   .bar i { display:block; height:100%; }
+  .blrow { display:flex; gap:8px; align-items:flex-start; } .bltext { flex:1; } .blbtns { display:flex; gap:4px; flex-shrink:0; }
+  .blbtns .mini { padding:2px 8px; }
+  .qrow .btnrow input { flex:1; min-width:180px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font:inherit; }
+  #goal-text { min-height:64px; }
   .crit { margin-top:8px; font-size:13px; }
   .critrow { display:flex; gap:6px; align-items:flex-start; padding:2px 0; }
   .cm { width:16px; flex-shrink:0; text-align:center; font-weight:700; } .cm.ok { color:var(--ok); } .cm.no { color:var(--bad); } .cm.wait { color:var(--muted); }
@@ -776,6 +793,12 @@ PAGE = r"""<!DOCTYPE html>
 </header>
 <main>
   <section id="t-overview">
+    <h3>Nový cieľ</h3>
+    <div class="ask"><textarea id="goal-text" placeholder="Čo má tím urobiť? Napr.: Pridaj export výdavkov do CSV, s testami."></textarea>
+      <div class="btnrow"><button id="goal-now">Začať hneď</button><button class="mini" id="goal-backlog">Do backlogu</button>
+        <button class="mini" id="goal-roadmap" title="Veľkú požiadavku rozdelí plánovač na sériu menších cieľov v backlogu">Veľký projekt → roadmapa</button>
+        <span id="goal-msg" class="muted" style="font-size:12.5px"></span></div></div>
+    <div id="questions"></div>
     <h3>Spýtaj sa tímu</h3>
     <div class="ask"><textarea id="ask-q" placeholder="Napr. Ako funguje nexus_food a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)"></textarea>
       <button id="ask-btn">Spýtať sa</button><div id="ask-a"></div></div>
@@ -810,6 +833,9 @@ PAGE = r"""<!DOCTYPE html>
   <div class="btnrow"><button class="resume-btn" id="np-create">Vytvoriť projekt</button></div></div>
   <pre id="np-log" class="term" style="display:none"></pre></div></div>
 <script>
+// every write carries X-Agent-Forge: the server refuses POSTs without it (a cross-site page cannot add it without CORS consent)
+const _fetch = window.fetch.bind(window);
+window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() === 'POST') o.headers = Object.assign({'X-Agent-Forge': '1'}, o.headers || {}); return _fetch(u, o); };
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit'}); };
 const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
@@ -842,6 +868,35 @@ document.addEventListener('click', e => {
   if (c) { openTask = c.dataset.task; renderDetail(); }
 });
 document.getElementById('ask-btn').addEventListener('click', askTeam);
+
+// ---- the owner's input: new goals, backlog order, answers to the planner's questions
+const post = async (url, body) => { try { return await (await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify(Object.assign({project}, body))})).json(); } catch (e) { return {ok: false, message: String(e)}; } };
+async function addGoal(mode) {
+  const ta = document.getElementById('goal-text'), msg = document.getElementById('goal-msg'), text = ta.value.trim();
+  if (!text) { ta.focus(); return; }
+  msg.textContent = 'odosielam…';
+  const r = await post('/api/goal', {text, mode});
+  msg.textContent = r.ok ? {now: 'Cieľ zaradený — plánovač ho rozdelí na úlohy do pol minúty.', backlog: 'Pridané do backlogu.',
+    roadmap: 'Plánovač pripravuje roadmapu — ciele sa objavia v backlogu.'}[mode] : 'Nepodarilo sa: ' + (r.message || r.error || '');
+  if (r.ok) ta.value = '';
+  setTimeout(poll, 1500);
+}
+document.getElementById('goal-now').addEventListener('click', () => addGoal('now'));
+document.getElementById('goal-backlog').addEventListener('click', () => addGoal('backlog'));
+document.getElementById('goal-roadmap').addEventListener('click', () => addGoal('roadmap'));
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-bl]');
+  if (b) { if (b.dataset.bl === 'drop' && !confirm('Zahodiť tento cieľ z backlogu?')) return;
+    await post('/api/backlog', {action: b.dataset.bl, n: b.dataset.n, to: b.dataset.to || ''}); setTimeout(poll, 800); return; }
+  const qa = e.target.closest('[data-qa]'), qd = e.target.closest('[data-qd]');
+  if (qa || qd) {
+    const n = (qa || qd).dataset[qa ? 'qa' : 'qd'], inp = document.querySelector('.qin[data-qn="' + n + '"]');
+    if (qa && !inp.value.trim()) { inp.focus(); return; }
+    await post('/api/answer', {n, answer: qa ? inp.value.trim() : ''});
+    document.activeElement && document.activeElement.blur(); setTimeout(poll, 800);
+  }
+});
 
 // ---- kill switch (per project; "all" = every project)
 let ksBusy = false;
@@ -1379,8 +1434,16 @@ function render(force) {
     setHTML('team', team(), force);
     setHTML('goals', goalsHtml(), force);
     const bl = (F && F.backlog) || [];
-    setHTML('backlog', bl.length ? bl.map((b, i) => '<div class="goal"><span class="muted">' + (i + 1) + '.</span> ' + esc(b) + '</div>').join('')
-      : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie appky.' : '.') + '</div>', force);
+    setHTML('backlog', bl.length ? bl.map((b, i) => '<div class="goal blrow"><span class="muted">' + (i + 1) + '.</span> <span class="bltext">' + esc(b) +
+        '</span><span class="blbtns">' + (i ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + i + '" title="vyššie">↑</button>' : '') +
+        (i < bl.length - 1 ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + (i + 2) + '" title="nižšie">↓</button>' : '') +
+        '<button class="mini" data-bl="drop" data-n="' + (i + 1) + '" title="zahodiť">✕</button></span></div>').join('')
+      : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie.' : '.') + '</div>', force);
+    const qs = (F && F.owner_questions) || [];
+    if (!document.getElementById('questions').contains(document.activeElement))
+      setHTML('questions', qs.length ? '<h3>Otázky plánovača (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div>' + esc(q) +
+        '</div><div class="btnrow"><input type="text" class="qin" data-qn="' + (i + 1) + '" placeholder="tvoja odpoveď (plánovač sa ňou bude riadiť)">' +
+        '<button class="mini" data-qa="' + (i + 1) + '">Odpovedať</button><button class="mini" data-qd="' + (i + 1) + '" title="otázka nie je dôležitá">Zahodiť</button></div></div>').join('') : '', force);
   } else if (tab === 'queue') setHTML('board', boardHtml(), force);
   else if (tab === 'events') setHTML('events', eventsHtml(), force);
   else if (tab === 'timeline') setHTML('timeline', timelineHtml(), force);
@@ -1468,9 +1531,68 @@ tickPoll(); setInterval(tickPoll, 2500);
 </body></html>"""
 
 
+# ---- access control. The dashboard can stop projects, change settings and drive a worker's login, so:
+#  - Host must be this machine (127.0.0.1 / localhost), a Tailscale name (*.ts.net) or one listed in DASHBOARD_HOSTS - this
+#    defeats DNS rebinding (a web page whose domain suddenly resolves to 127.0.0.1);
+#  - every POST must carry the header X-Agent-Forge (the page's own fetch adds it). A custom header makes the browser ask
+#    permission first (CORS preflight), which this server never grants - so no other web site can POST here (CSRF);
+#  - the page cannot be framed by another site (clickjacking);
+#  - optional DASHBOARD_TOKEN: open the page once as /?token=<token>; a SameSite=Strict, HttpOnly cookie keeps you signed in.
+DASHBOARD_HOSTS = {h.strip().lower() for h in os.environ.get("DASHBOARD_HOSTS", "").split(",") if h.strip()}
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
+SEC_HEADERS = {"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+               "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                                          "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}
+
+
+def host_allowed(host):
+    host = (host or "").strip().lower()
+    name = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]
+    return name in ("127.0.0.1", "localhost", "[::1]") or name.endswith(".ts.net") or name in DASHBOARD_HOSTS
+
+
+def token_ok(cookie_header, query_token=""):
+    if not DASHBOARD_TOKEN:
+        return True
+    import hmac
+    if query_token and hmac.compare_digest(query_token, DASHBOARD_TOKEN):
+        return True
+    for part in (cookie_header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == "af_token" and hmac.compare_digest(v, DASHBOARD_TOKEN):
+            return True
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def end_headers(self):
+        for k, v in SEC_HEADERS.items():
+            self.send_header(k, v)
+        if self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def _deny(self, code, msg):
+        raw = msg.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _allowed(self, post=False):
+        import urllib.parse
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return False
+        qtok = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("token", [""])[0]
+        if not token_ok(self.headers.get("Cookie"), qtok):
+            self._deny(401, "sign in: open this page as /?token=<DASHBOARD_TOKEN>"); return False
+        if post and self.headers.get("X-Agent-Forge") != "1":
+            self._deny(403, "missing X-Agent-Forge header"); return False
+        return True
 
     def _json(self, obj, code=200):
         raw = json.dumps(obj).encode()
@@ -1488,6 +1610,8 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_POST(self):
+        if not self._allowed(post=True):
+            return
         body = self._body()
         proj = str(body.get("project", "default"))
         try:
@@ -1531,7 +1655,11 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/settings":
             if body.get("refresh_models"):
                 rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} settings --refresh-models", timeout=200)
-                self._json(json.loads(out) if rc == 0 else {"error": err[-300:]}); return
+                try:
+                    self._json(json.loads(out) if rc == 0 else {"error": err[-300:]})
+                except ValueError:
+                    self._json({"error": (err or out)[-300:]})
+                return
             changes = body.get("changes") or {}
             if not isinstance(changes, dict) or not all(isinstance(k, str) and isinstance(v, (str, int)) for k, v in changes.items()):
                 self._json({"error": "changes must be an object of strings"}, 400); return
@@ -1562,6 +1690,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "errors": errs}); return
             vision = str(body.get("vision", ""))[:20000]
             self._json(start_job("create-project", lambda job: create_project_job(job, name, repo, ws, lang, vision)))
+        elif self.path == "/api/goal":
+            # the owner's text goes to bin/foreman on stdin, never into the command line
+            text, mode = str(body.get("text", "")).strip()[:6000], str(body.get("mode", "now"))
+            if not text:
+                self._json({"error": "empty goal"}, 400); return
+            cmd = {"now": "goal -", "backlog": "backlog add -", "roadmap": "project -"}.get(mode)
+            if not cmd:
+                self._json({"error": "mode must be now, backlog or roadmap"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} {cmd}", timeout=30, inp=text)
+            self._json({"ok": rc == 0, "message": (out or err).strip()[-400:]})
+        elif self.path == "/api/backlog":
+            act, n, to = str(body.get("action", "")), str(body.get("n", "")), str(body.get("to", ""))
+            if act not in ("drop", "move") or not n.isdigit() or (act == "move" and not to.isdigit()):
+                self._json({"error": "action drop <n> | move <n> <to>"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} backlog {act} {int(n)}" + (f" {int(to)}" if act == "move" else ""),
+                                        timeout=30)
+            self._json({"ok": rc == 0, "message": (err or "").strip()[-300:]})
+        elif self.path == "/api/answer":
+            n = str(body.get("n", ""))
+            if not n.isdigit():
+                self._json({"error": "bad question number"}, 400); return
+            rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} answer {int(n)}", timeout=30,
+                                        inp=str(body.get("answer", ""))[:4000])
+            self._json({"ok": rc == 0, "message": (out or err).strip()[-300:]})
         elif self.path == "/api/workers":
             if body.get("action") != "add":
                 self._json({"error": "unknown action"}, 400); return
@@ -1582,6 +1734,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
     def do_GET(self):
+        if self.path == "/healthz":
+            self._json({"ok": True}); return
+        if not self._allowed():
+            return
+        if DASHBOARD_TOKEN and self.path.split("?")[0] in ("/", "/index.html") and "token=" in self.path:
+            # signed in with ?token=: keep it in a cookie and drop it from the address bar (and from history)
+            self.send_response(303)
+            self.send_header("Set-Cookie", f"af_token={DASHBOARD_TOKEN}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000"
+                             + ("; Secure" if (self.headers.get("X-Forwarded-Proto") == "https" or ".ts.net" in (self.headers.get("Host") or "")) else ""))
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path == "/api/panes":
             with PANES_LOCK:
                 order = {"orchestrator": 0, "worker": 1}
@@ -1632,7 +1797,7 @@ class Handler(BaseHTTPRequestHandler):
             proj = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", ["default"])[0]
             e = FOREMAN_BY.get(proj) or {"data": None, "at": 0, "error": "unknown project or not loaded yet"}
             self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
-        elif self.path in ("/", "/index.html"):
+        elif self.path.split("?")[0] in ("/", "/index.html"):
             raw = PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
