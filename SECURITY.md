@@ -32,9 +32,15 @@ as a finding until you know why it happened.
 
 ### The dashboard is an admin console - keep it private
 Besides showing state, the dashboard can stop/continue projects, change settings (models, worker pools, behaviour and the
-global limits such as the token cap), create workers and run a worker's interactive agy login. Anyone who can reach it can do
-all of that. It binds to 127.0.0.1; publish it only to yourself (SSH tunnel, Tailscale serve - never `funnel`, never a public
-reverse proxy). Values are validated server-side against a fixed list of keys and formats before anything is written.
+global limits such as the token cap), queue goals, create workers and projects, and run a worker's interactive agy login.
+Anyone who can reach it can do all of that. It binds to 127.0.0.1; publish it only to yourself (SSH tunnel, Tailscale serve -
+never `funnel`, never a public reverse proxy). Built-in protections:
+- **Host check** against DNS rebinding: only 127.0.0.1 / localhost / `*.ts.net` / names in `DASHBOARD_HOSTS`.
+- **CSRF**: every write needs the `X-Agent-Forge` header, which a foreign web page cannot send without a CORS grant (never given).
+- **Clickjacking**: `X-Frame-Options: DENY` and `frame-ancestors 'none'`; a strict Content-Security-Policy.
+- **Optional sign-in**: `DASHBOARD_TOKEN` (HttpOnly, SameSite=Strict cookie). Use it whenever more than you can reach the port.
+- Values are validated server-side against a fixed list of keys and formats; owner text (goals, answers) reaches `bin/foreman`
+  on stdin, never in a command line.
 
 ### The orchestrator cannot be steered by the code it reviews
 Review and planning calls are fresh sessions **without tools** (`claude -p --tools ""`; agy without
@@ -43,11 +49,19 @@ worst produce a wrong verdict, which the gate and the next review still constrai
 
 ### Secrets
 Tokens, passwords and keyring passwords live in `~/.config/sandbox/secrets/` (directory 0700, files 0600) - never in the repo,
-the images or the logs. Workers get their own Forgejo token and keyring password as read-only mounts. Optional paid API keys are
+the images or the logs. Git gets Forgejo tokens through `GIT_CONFIG_*` environment variables, not the command line (command
+lines are readable by every local user in `/proc`). Workers get their own Forgejo token and keyring password as read-only mounts. Optional paid API keys are
 read by the foreman on the host and sent in headers only (never in URLs, so they cannot appear in proxy logs); worker
 containers never see them.
 
+### Work from a suspicious run is never pushed
+After every run the supervisor pushes what the worker left on its task branch - but only after the egress check: a run that
+raised a HIGH egress alarm has nothing pushed, and the kill switch trips. Kill-switch counting is about misbehaviour only:
+quota stops, token caps, timeouts and stops by the kill switch itself neither count nor reset the `CONSEC_FAIL_TRIP` streak.
+
 ## Honest limits
+- Worker accounts share the `workers` team: a worker can push to (or delete) another worker's task branch. The gate checks
+  that commits come from worker bots, not which one.
 - The egress proxy is shared by all projects; an alarm acknowledged with `bin/egress-report --ack` is acknowledged for everyone.
 - The audit logs are protected against silent truncation by size high-water marks, not cryptographically. Someone with your
   user account on the machine can change them.

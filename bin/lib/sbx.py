@@ -126,6 +126,78 @@ def killswitch_on(reason, by="orchestrator", hard=False, all_projects=False):
         json.dump({"at": now(), "reason": reason, "by": by, "hard": hard, "project": "ALL" if all_projects else (PROJECT or "default")},
                   open(path, "w"))
         alert(f"KILLSWITCH ON{' (all projects)' if all_projects else ''} by {by}: {reason}")
+        if by not in ("killswitch-cli", "dashboard"):           # automatic trips only - the owner knows about their own
+            notify("killswitch","Kill switch ON" + (" (all projects)" if all_projects else ""), f"{reason}\n(by {by})")
+
+
+# ---- how a project is tested (TEST_CMD / GATE_IMAGE in its config): the gate, the self-check and maintenance all use it
+DEFAULT_TEST_CMD = "python3 -m pytest -q -p no:cacheprovider"
+DEFAULT_GATE_IMAGE = "sandbox-worker:1.2.11"
+TEST_CMD_RE = __import__("re").compile(r"[A-Za-z0-9 ._/=:,+@%-]{1,200}")       # a plain command line: no shell syntax
+IMAGE_RE = __import__("re").compile(r"[a-z0-9][a-z0-9._/:@-]{0,200}")
+
+
+def test_cmd(project=None):
+    v = project_conf(project).get("TEST_CMD", "").strip()
+    return v if v and TEST_CMD_RE.fullmatch(v) else DEFAULT_TEST_CMD
+
+
+def is_pytest(cmd):
+    return "pytest" in cmd
+
+
+def gate_image(project=None):
+    v = project_conf(project).get("GATE_IMAGE", "").strip() or os.environ.get("GATE_IMAGE", "")
+    return v if v and IMAGE_RE.fullmatch(v) else DEFAULT_GATE_IMAGE
+
+
+# ---- notifications (optional): NOTIFY_URL in etc/foreman.conf or projects/<name>/project.conf
+NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out"
+
+
+def project_conf(project=None):
+    """etc/foreman.conf with the project's project.conf on top (plain key=value, no defaults)."""
+    p = PROJECT if project is None else project
+    c = _kv(os.path.join(ROOT, "etc", "foreman.conf"))
+    if p:
+        c.update(_kv(os.path.join(ROOT, "projects", p, "project.conf")))
+    return c
+
+
+def notify_payload(fmt, event, title, message):
+    """(body bytes, headers) for a notification in the given format: ntfy | slack | discord | json."""
+    if fmt == "ntfy":
+        import base64
+        t = title if title.isascii() else "=?UTF-8?B?" + base64.b64encode(title.encode()).decode() + "?="
+        return message.encode(), {"Title": t, "Tags": event, "Content-Type": "text/plain; charset=utf-8"}
+    if fmt == "slack":
+        return json.dumps({"text": f"*{title}*\n{message}"}).encode(), {"Content-Type": "application/json"}
+    if fmt == "discord":
+        return json.dumps({"content": f"**{title}**\n{message}"[:1900]}).encode(), {"Content-Type": "application/json"}
+    return json.dumps({"event": event, "project": PROJECT or "default", "title": title, "message": message, "at": now()}).encode(), \
+        {"Content-Type": "application/json"}
+
+
+def notify(event, title, message):
+    """Send one notification if NOTIFY_URL is set and the event is in NOTIFY_EVENTS. Never raises, never takes > ~8 s.
+    An optional bearer token (ntfy access token, ...) is read from the secrets file `notify.token`."""
+    try:
+        c = project_conf()
+        url = c.get("NOTIFY_URL", "").strip()
+        if not url.startswith(("https://", "http://")):
+            return False
+        if event not in {e.strip() for e in c.get("NOTIFY_EVENTS", NOTIFY_DEFAULT_EVENTS).split(",")}:
+            return False
+        body, headers = notify_payload(c.get("NOTIFY_FORMAT", "ntfy").strip() or "ntfy", event,
+                                       f"[{PROJECT or 'default'}] {title}"[:200], str(message)[:3500])
+        tok = read(os.path.join(SECRETS, "notify.token"))
+        if tok:
+            headers["Authorization"] = "Bearer " + tok
+        import urllib.request
+        urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers, method="POST"), timeout=8).read()
+        return True
+    except Exception:
+        return False
 
 
 def killswitch_off(all_projects=False):
@@ -164,6 +236,25 @@ def append_ledger(entry):
         f.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
+# Run outcomes that say nothing about whether the agent misbehaves: they neither count toward nor reset the kill switch's
+# consecutive-failure streak. (Before: a hard stop of 4 running runs wrote 4 "killswitch" entries and the next single failure
+# after "Continue" tripped the kill switch again; token caps - 22 % of all runs, productive since WIP is saved - tripped it too.)
+NEUTRAL_OUTCOMES = ("killswitch", "setup-failed", "egress-not-enforced", "quota", "orphaned", "token-cap", "timeout")
+
+
+def consecutive_failures(ledger, project):
+    """How many of this project's runs failed in a row, newest first, skipping neutral outcomes; an ok run ends the streak."""
+    n = 0
+    for e in reversed([e for e in ledger if not e.get("test") and e.get("project", "") == project]):
+        r = e.get("reason")
+        if r in NEUTRAL_OUTCOMES:
+            continue
+        if r != "failed":
+            break
+        n += 1
+    return n
+
+
 def alive(pid):
     try:
         os.kill(int(pid), 0)
@@ -187,7 +278,17 @@ def run_dirs():
 
 
 def is_running(d):
-    return not os.path.exists(d + "/finished") and os.path.exists(d + "/pid") and alive(read(d + "/pid"))
+    """The run's supervisor is alive. After a reboot a recorded pid can belong to an unrelated process, so on Linux the
+    process must really be a run-supervisor (otherwise a worker would look busy forever)."""
+    if os.path.exists(d + "/finished") or not os.path.exists(d + "/pid"):
+        return False
+    pid = read(d + "/pid")
+    if not alive(pid):
+        return False
+    try:
+        return b"run-supervisor" in open(f"/proc/{int(pid)}/cmdline", "rb").read()
+    except (OSError, ValueError):
+        return not os.path.isdir("/proc/self")      # no procfs (not Linux): trust the pid
 
 
 def meta(d):

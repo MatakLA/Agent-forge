@@ -25,6 +25,10 @@ cp etc/forge.example.conf etc/forge.conf          # only if you want another org
 ```
 Write your product vision to the file `VISION_FILE` points at (default `docs/vision.md`; see `docs/vision.example.md`).
 
+Not a Python project? Set `TEST_CMD` (e.g. `npm test --silent`, `go test ./...`) and a `GATE_IMAGE` that has your toolchain and
+dependencies - the gate runs offline. Want to be told when something needs you? Set `NOTIFY_URL` (ntfy topic, Slack or Discord
+webhook). Both are in `etc/foreman.example.conf`.
+
 ## 3. Network and forge
 ```bash
 bin/egress-up                 # builds the proxy, creates the internal network workers_internal (no route out)
@@ -45,12 +49,17 @@ Repeat for workers 2..N. Set `MAX_PARALLEL` in `etc/limits.conf` to the number o
 
 ## 5. Check and start
 ```bash
-bin/foreman --selftest                 # pure-function tests, spends nothing
-bin/status                             # proxy, forge, workers, limits, kill switch
+bin/doctor                             # checks everything end to end and says how to fix what is wrong
+make check                             # selftests (no Docker, no model calls); make test adds the supervisor integration test
 sudo scripts/install-services          # agent-forge-foreman + agent-forge-web (dashboard on 127.0.0.1:8171)
 bin/foreman goal "Create a hello module with one function and a test"
 ```
 Watch `bin/foreman status` or the dashboard. The first goal takes a few minutes: plan → run → gate → review → merge.
+Goals, the backlog and the planner's questions can also be handled in the dashboard (Overview).
+
+The dashboard listens on 127.0.0.1 only. To use it from your phone, publish it with `tailscale serve` (names `*.ts.net` are
+accepted) or a reverse proxy - then add its host name to `DASHBOARD_HOSTS` and set `DASHBOARD_TOKEN` (open the page once as
+`/?token=<token>`). It is an admin console; see SECURITY.md.
 
 ## 6. More projects (optional)
 ```bash
@@ -68,7 +77,10 @@ its own pool. `bin/worker-add N` puts a new worker into the `workers` team of ev
 - Decisions only you can make end up in `bin/foreman questions`.
 - After a soft kill-switch trip: read `bin/egress-report`, then `bin/egress-report --ack && bin/killswitch off --start`
   (or the dashboard's "Continue").
-- Updating Agent-Forge: `git pull`, `bin/foreman --selftest`, `sudo systemctl restart agent-forge-foreman agent-forge-web`.
+- Answer them in the dashboard or with `echo "…" | bin/foreman answer <n>`: answers go to `decisions.md`, which every later
+  plan reads.
+- Updating Agent-Forge: `git pull`, `make check`, `bin/doctor`, `sudo systemctl restart agent-forge-foreman agent-forge-web`
+  (see CHANGELOG.md).
 
 ## Troubleshooting
 | symptom | cause / fix |
@@ -78,3 +90,5 @@ its own pool. `bin/worker-add N` puts a new worker into the `workers` team of ev
 | `setup-failed` runs | the worker's clone is dirty; the next dispatch aborts stuck rebases/merges automatically |
 | tasks wait although workers are idle | they depend on unfinished tasks or share files with running ones (`bin/foreman status`); add registries to `SHARED_FILES` |
 | `no orchestrator provider could answer` | Claude Code out of usage and every worker account's Claude/Gemini quota exhausted - it resumes after the resets |
+| anything else | `bin/doctor` - it checks tools, config, secrets, Forgejo, proxy, image, every worker's login and the loop |
+| a task stays "running" after a reboot | it is recovered automatically within a tick (re-queued, no attempt counted) |

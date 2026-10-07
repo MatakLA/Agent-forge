@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Integration test of bin/run-supervisor without any model: a throwaway container from the worker image whose agy-run is a
+# fake. The fake commits a bug (not pushed) with a test that catches it; the supervisor's self-check must see the red suite,
+# resume the SAME conversation with the output, the fake fixes the bug, and the branch must end up pushed - without the
+# database file the "tests" left in the clone. Needs Docker and the worker image (bin/worker-add builds it). ~30 s.
+# Run: tests/test_supervisor.sh
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMG="${GATE_IMAGE:-sandbox-worker:1.2.11}"
+C="af-suptest-$$"
+docker image inspect "$IMG" >/dev/null 2>&1 || { echo "SKIP: image $IMG not built"; exit 0; }
+T="$(mktemp -d)"; trap 'docker rm -f "$C" >/dev/null 2>&1; rm -rf "$T"' EXIT
+cp -r "$ROOT/bin" "$T/"; mkdir -p "$T/etc" "$T/runs/20260101T000000Z-$C"
+printf 'RUN_TIMEOUT_MIN=30\nRUN_TOKEN_CAP=1500000\nMAX_PARALLEL=4\nPOLL_SEC=1\nQUOTA_MIN_5H_PCT=0\nQUOTA_MIN_WEEK_PCT=0\n' > "$T/etc/limits.conf"
+cat > "$T/fake-agy-run" <<'EOF'
+#!/bin/bash
+conv=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--conversation" ] && { j=$((i+1)); conv="${!j}"; }; done
+step() { echo '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":1000}}}'; }
+if [ -z "$conv" ]; then
+  echo '{"event":"init","init":{"conversation_id":"conv-123"}}'
+  git checkout -q -b feat/0001-x origin/main
+  printf '"""Adds numbers."""\ndef add(a, b):\n    return a - b\n' > calc.py
+  printf 'import calc\n\ndef test_add():\n    assert calc.add(2, 2) == 4\n' > test_calc.py
+  git add -A && git -c user.name=worker-9 -c user.email=w@w commit -qm "add calc"
+  printf 'db' > gym.db
+  step; step; echo '{"event":"result","result":{"status":"SUCCESS","response":"done"}}'
+else
+  echo "$conv" > /tmp/fix-called-with
+  printf '"""Adds numbers."""\ndef add(a, b):\n    return a + b\n' > calc.py
+  git -c user.name=worker-9 -c user.email=w@w commit -qam "fix add"
+  step; echo '{"event":"result","result":{"status":"SUCCESS","response":"fixed"}}'
+fi
+EOF
+docker run -d --name "$C" --network none --entrypoint sleep "$IMG" infinity >/dev/null
+docker cp "$T/fake-agy-run" "$C:/tmp/agy-run"
+docker exec -u root "$C" bash -c 'install -m 755 /tmp/agy-run "$(command -v agy-run)"'
+docker exec "$C" bash -c 'set -e; git init -q --bare -b main /tmp/origin.git; git clone -q /tmp/origin.git /home/worker/playground 2>/dev/null
+  cd /home/worker/playground; printf "\"\"\"Base.\"\"\"\n" > base.py; git add -A; git -c user.name=o -c user.email=o@o commit -qm init; git push -q origin HEAD:main'
+R="$T/runs/20260101T000000Z-$C"
+echo "# Task 0001-x" > "$R/prompt.md"
+cat > "$R/meta.json" <<J
+{"run_id": "20260101T000000Z-$C", "worker": "$C", "task": "0001-x.md", "test": false, "runner": null, "model": "fake", "project": "",
+ "repo": "sandbox/playground", "branch": "feat/0001-x", "conversation": "", "variant": "pack-default", "self_check": 1,
+ "limits": {"timeout_min": 30, "token_cap": 1500000}, "quota_before": [], "dispatched": "x"}
+J
+python3 "$T/bin/run-supervisor" "$R" || true
+fail=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+M="$(cat "$R/meta.json")"
+check "run ended ok with 3000 tokens over both invocations" '[[ "$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m[\"reason\"], m[\"tokens\"])" "$M")" == "ok 3000" ]]'
+check "self-check: red, then green after the fix" '[[ "$(python3 -c "import json,sys; print([c[\"ok\"] for c in json.loads(sys.argv[1])[\"self_checks\"]])" "$M")" == "[False, True]" ]]'
+check "the fix resumed the same conversation" '[[ "$(docker exec "$C" cat /tmp/fix-called-with)" == "conv-123" ]]'
+check "the fixed branch was pushed" '[[ "$(docker exec "$C" git -C /tmp/origin.git show feat/0001-x:calc.py | tail -1)" == "    return a + b" ]]'
+check "the test database was not committed" '! docker exec "$C" git -C /tmp/origin.git ls-tree -r --name-only feat/0001-x | grep -q gym.db'
+echo "supervisor test: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
+exit $fail
