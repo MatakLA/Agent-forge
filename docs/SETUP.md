@@ -3,9 +3,14 @@
 Target: a dedicated Ubuntu 22.04+ VM (4+ vCPU, 8+ GB RAM, 40+ GB disk) with test data only. Everything below runs inside it as
 your normal user unless it says `sudo`.
 
+## The short way
+`scripts/install.sh [--demo]` does steps 1-5 below on Ubuntu/Debian, safely re-runnable, and prints what to do in the dashboard.
+The rest of this page is the same by hand, and the options.
+
 ## 0. What you need
 - **Claude Code** logged in on the VM (`claude` → `/login`) - the default orchestrator. Optional but recommended.
-- **One Google account per worker** with Antigravity access. Read the terms note in the README first.
+- Workers: **one Google account per worker** with Antigravity access (read the terms note in the README first), and/or **API keys**
+  for Claude Code, Codex or Gemini CLI ([RUNTIMES.md](RUNTIMES.md)).
 - Python 3.10+, git (installed in step 1).
 
 ## 1. Base system
@@ -38,8 +43,13 @@ Passwords and tokens are written to `~/.config/sandbox/secrets/` (0600). Forgejo
 (`ssh -L 3000:127.0.0.1:3000 <vm>` from your laptop; log in as `forge-admin` with the password from the secrets directory).
 
 ## 4. Workers
-Easiest: dashboard → Settings → "+ Pridať workera" creates the next worker and opens a terminal for its Antigravity login (open
-the link with that worker's Google account, paste the code). By hand:
+Easiest: dashboard → Settings → "+ Add worker" → pick Antigravity (it opens a terminal for the login: open the link with that
+worker's Google account, paste the code) or an API runtime (it asks for the key once). API workers by hand:
+```bash
+printf '%s' "$ANTHROPIC_API_KEY" | bin/secret-set anthropic.key     # openai.key / gemini.key
+bin/worker-add 5 --runtime claude                                    # codex / gemini
+```
+Antigravity workers by hand:
 ```bash
 bin/worker-add 1                       # Forgejo user + token, keyring password, HOME volume, container (builds the image once)
 docker exec -it worker-1 agy-run       # once per worker: log in with THAT worker's Google account (URL + code), then /exit
@@ -60,6 +70,10 @@ Goals, the backlog and the planner's questions can also be handled in the dashbo
 The dashboard listens on 127.0.0.1 only. To use it from your phone, publish it with `tailscale serve` (names `*.ts.net` are
 accepted) or a reverse proxy - then add its host name to `DASHBOARD_HOSTS` and set `DASHBOARD_TOKEN` (open the page once as
 `/?token=<token>`). It is an admin console; see SECURITY.md.
+
+## 5b. GitHub or GitLab (optional)
+The dashboard asks where a new project's code lives. By hand: [UPSTREAM.md](UPSTREAM.md) (`FORGE_KIND`, `UPSTREAM_REPO`, a token
+for that repository only, `bin/upstream import`).
 
 ## 6. More projects (optional)
 ```bash

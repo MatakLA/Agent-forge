@@ -1,0 +1,34 @@
+#!/bin/bash
+# af-agent <runtime> <cli arguments...>  -- runs an API-key agent CLI (claude | codex | gemini) inside a worker container.
+# The key comes from the read-only mount /run/secrets/api-key and is put into THIS process's environment only: it never
+# appears in a command line (visible in /proc) or in the run's logs. Telemetry, update checks and every network call the
+# run does not need are switched off, so the egress proxy only ever sees the provider's API host.
+# AF_BASE_URL (set by bin/run-supervisor only in test mode) points the CLI at a fake API server.
+set -euo pipefail
+rt="${1:?usage: af-agent claude|codex|gemini args...}"; shift
+key="$(cat /run/secrets/api-key 2>/dev/null || true)"
+[ -n "$key" ] || { echo "af-agent: no API key at /run/secrets/api-key (bin/secret-set <provider>.key, then bin/worker-up N)" >&2; exit 78; }
+case "$rt" in
+  claude)
+    export ANTHROPIC_API_KEY="$key" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 \
+           DISABLE_ERROR_REPORTING=1 DISABLE_BUG_COMMAND=1
+    if [ -n "${AF_BASE_URL:-}" ]; then export ANTHROPIC_BASE_URL="$AF_BASE_URL"; fi
+    exec claude "$@" ;;
+  codex)
+    export OPENAI_API_KEY="$key" CODEX_API_KEY="$key"
+    if [ -n "${AF_BASE_URL:-}" ] && [ "${1:-}" = "exec" ]; then
+      shift
+      exec codex exec -c model_provider=af -c "model_providers.af={name=\"af\", base_url=\"${AF_BASE_URL}/v1\", env_key=\"OPENAI_API_KEY\", wire_api=\"responses\"}" "$@"
+    fi
+    exec codex "$@" ;;
+  gemini)
+    export GEMINI_API_KEY="$key"
+    if [ -n "${AF_BASE_URL:-}" ]; then export GOOGLE_GEMINI_BASE_URL="$AF_BASE_URL"; fi
+    mkdir -p "$HOME/.gemini"
+    # API-key auth, no usage statistics (they would be a denied, alarming egress), no self-update
+    [ -f "$HOME/.gemini/settings.json" ] || printf '%s\n' \
+      '{"security":{"auth":{"selectedType":"gemini-api-key"}},"privacy":{"usageStatisticsEnabled":false},"general":{"disableAutoUpdate":true,"disableUpdateNag":true}}' \
+      > "$HOME/.gemini/settings.json"
+    exec gemini "$@" ;;
+  *) echo "af-agent: unknown runtime $rt" >&2; exit 2 ;;
+esac

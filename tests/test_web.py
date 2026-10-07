@@ -63,6 +63,20 @@ s, _, out = req("POST", "/api/answer", {"n": "1", "answer": "use PostgreSQL"}, {
 check("answer: number in the command, text on stdin", s == 200 and calls[-1][0].endswith("bin/foreman answer 1") and calls[-1][1] == "use PostgreSQL")
 s, _, out = req("POST", "/api/goal", {"text": "x", "mode": "now", "project": "../etc"}, {"X-Agent-Forge": "1"})
 check("a bad project name is refused", s == 400)
+s, _, out = req("POST", "/api/secret", {"name": "anthropic.key", "value": "sk-ant-secret-value"}, {"X-Agent-Forge": "1"})
+check("secret: the value goes to bin/secret-set on stdin, never into the command",
+      s == 200 and calls[-1][0].endswith("bin/secret-set anthropic.key") and calls[-1][1] == "sk-ant-secret-value"
+      and "sk-ant" not in calls[-1][0])
+n = len(calls)
+s, _, out = req("POST", "/api/secret", {"name": "../../.ssh/authorized_keys", "value": "x"}, {"X-Agent-Forge": "1"})
+check("secret: only the known names are accepted", s == 400 and len(calls) == n)
+s, _, out = req("POST", "/api/workers", {"action": "add", "runtime": "claude; rm -rf /"}, {"X-Agent-Forge": "1"})
+check("workers: an unknown runtime is refused", s == 400)
+s, _, out = req("POST", "/api/upstream", {"action": "connect", "kind": "github", "repo": "acme/shop; reboot", "url": "https://github.com"},
+                {"X-Agent-Forge": "1"})
+check("upstream: a bad repository name is refused before anything runs", s == 200 and json.loads(out).get("errors", {}).get("repo") and len(calls) == n)
+s, _, out = req("POST", "/api/upstream", {"action": "connect", "kind": "svn"}, {"X-Agent-Forge": "1"})
+check("upstream: only forgejo / github / gitlab", s == 400)
 httpd.shutdown()
 print("web tests: " + ("ALL OK" if not bad else f"{bad} FAILED"))
 sys.exit(1 if bad else 0)

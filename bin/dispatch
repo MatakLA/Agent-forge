@@ -2,8 +2,9 @@
 """Usage: bin/dispatch <worker> <task-file> [minutes]     dispatch a task (background) with guards
        bin/dispatch --check <worker>                     preflight only: print the verdict, start nothing
 
-Guards (etc/limits.conf): kill switch, one run per worker, max parallel runs, runs/day, daily token budget, quota floor via
-`agy /usage` (fail closed), per-run timeout and token cap (enforced by bin/run-supervisor). Returns immediately.
+Guards (etc/limits.conf): kill switch, one run per worker, max parallel runs, runs/day, daily token budget, for Antigravity
+workers the quota floor via `agy /usage` (fail closed), for API-key workers the daily USD budget; per-run timeout, token cap,
+tool-call cap and USD cap are enforced by bin/run-supervisor. Returns immediately.
 Exit codes: 0 dispatched/ok, 2 usage error, 3 refused by a guard."""
 import json, os, re, subprocess, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
@@ -58,7 +59,8 @@ def preflight(worker, lim, runner):
         if high:
             refuse(f"{len(high)} unacknowledged HIGH egress alarm(s), e.g. {high[0]} - review with bin/egress-report, then bin/egress-report --ack", alert=True)
     quota = None
-    if not runner:
+    rt = sbx.worker_runtime(worker)
+    if not runner and rt == "agy":
         try:
             rows = sbx.read_quota(worker)
         except Exception as e:
@@ -67,8 +69,14 @@ def preflight(worker, lim, runner):
         if not ok:
             refuse(msg, alert=True)
         quota = rows
+    elif not runner:
+        # an API-key runtime has no subscription quota - it has a money budget per day (all projects) and per run
+        spent = sbx.api_spent_today()
+        if spent + float(lim["API_RUN_BUDGET_USD"]) > float(lim["API_DAILY_BUDGET_USD"]) + 1e-9:
+            refuse(f"API budget for today used: ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f} "
+                   f"(a run may cost up to ${float(lim['API_RUN_BUDGET_USD']):.2f}; API_*_BUDGET_USD in etc/limits.conf)", alert=True)
     return dict(token_cap=min(lim["RUN_TOKEN_CAP"], remaining), tokens_used_today=used, runs_today=len(led) + len(real_running),
-                running=len(running), quota_before=quota)
+                running=len(running), quota_before=quota, runtime=rt)
 
 
 def main():
@@ -95,7 +103,8 @@ def main():
         open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
         open(run + "/task", "w").write(os.path.realpath(task) + "\n")
         json.dump(dict(run_id=os.path.basename(run), worker=worker, task=os.path.basename(task), test=bool(runner) and not os.environ.get('DISPATCH_RUNNER_COUNTS'), runner=runner,
-                       model=_opt("DISPATCH_MODEL") or lim["WORKER_MODEL"], project=sbx.PROJECT, repo=sbx.FORGE_REPO,
+                       runtime=info["runtime"], budget_usd=float(lim["API_RUN_BUDGET_USD"]) if info["runtime"] != "agy" else 0,
+                       model=_opt("DISPATCH_MODEL") or (lim["WORKER_MODEL"] if info["runtime"] == "agy" else ""), project=sbx.PROJECT, repo=sbx.FORGE_REPO,
                        branch=_opt("DISPATCH_BRANCH"), conversation=_opt("DISPATCH_CONVERSATION"), variant=_opt("DISPATCH_VARIANT"),
                        self_check=min(3, int(_opt("DISPATCH_SELF_CHECK") or 0)) if (_opt("DISPATCH_SELF_CHECK") or "0").isdigit() else 0,
                        limits=dict(timeout_min=minutes, token_cap=info["token_cap"], daily_budget=lim["DAILY_TOKEN_BUDGET"],

@@ -54,6 +54,14 @@ lines are readable by every local user in `/proc`). Workers get their own Forgej
 read by the foreman on the host and sent in headers only (never in URLs, so they cannot appear in proxy logs); worker
 containers never see them.
 
+### API keys and upstream tokens
+- API keys for the worker runtimes are file mounts used only by `worker/af-agent`; the worker can reach only that provider's API
+  host, and the gate refuses branches that add key- or token-like strings. Use keys with a spend limit at the provider.
+  Details: docs/RUNTIMES.md.
+- GitHub / GitLab tokens never reach a worker: only the orchestrator on the Agent-Forge machine pushes approved branches there
+  and opens / merges pull requests, under the repository's own branch protection. Give the token access to that one
+  repository only. Details: docs/UPSTREAM.md.
+
 ### Work from a suspicious run is never pushed
 After every run the supervisor pushes what the worker left on its task branch - but only after the egress check: a run that
 raised a HIGH egress alarm has nothing pushed, and the kill switch trips. Kill-switch counting is about misbehaviour only:

@@ -1,0 +1,18 @@
+#cloud-config
+# A fresh Ubuntu 24.04+ VM that installs Agent-Forge on first boot (4+ vCPU, 8+ GB RAM, 40+ GB disk). Use it with any cloud or
+# local hypervisor that accepts cloud-init user data. Replace REPOSITORY_URL and your SSH key below. The dashboard listens on
+# 127.0.0.1 only: reach it with `ssh -L 8171:127.0.0.1:8171 forge@<vm>` (or Tailscale serve - see SECURITY.md).
+users:
+  - name: forge
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAA...your-key... you@laptop
+ssh_pwauth: false
+package_update: true
+packages: [git, python3, curl]
+runcmd:
+  - [su, -, forge, -c, "git clone REPOSITORY_URL agent-forge"]
+  - [su, -, forge, -c, "cd agent-forge && scripts/install.sh --demo > install.log 2>&1"]
+final_message: "Agent-Forge installed - see /home/forge/agent-forge/install.log, then open the dashboard through an SSH tunnel."

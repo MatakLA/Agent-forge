@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0 - 2026-10-08
+**Workers with API keys.** Besides Antigravity subscriptions, a worker can now run Claude Code, Codex or Gemini CLI with an API
+key (`bin/worker-add N --runtime claude|codex|gemini`, or the dashboard). Keys stay in the secrets directory and reach only the
+agent's environment; each runtime may reach only its provider's API host (the CLIs' update checks, telemetry and discovery
+calls are switched off - measured with a logging proxy). Hard caps: USD per run (Claude Code's own `--max-budget-usd`), USD per
+day for all projects, tool calls per run. API workers are overflow by default. A rejected key re-queues the task and pauses the
+worker. Event formats, resume and cost were verified with the real CLIs against a fake API (`tests/test_runtimes.sh`).
+
+**GitHub and GitLab.** A project can live on GitHub or GitLab (cloud or self-hosted): approved branches are pushed there and
+merged through pull / merge requests under the repository's own protection, upstream main is synced back every minute. Workers
+never reach GitHub/GitLab or the token. The dashboard asks where a new project's code lives. `bin/upstream`, docs/UPSTREAM.md,
+`tests/test_upstream.py`.
+
+**Install in one command.** `scripts/install.sh [--demo]`, `deploy/cloud-init.yaml`, a demo project in `examples/demo`.
+
+**License.** Source-available under the Sustainable Use License: free to use and change for yourself and inside your company;
+selling it or offering it as a paid / hosted service needs a commercial license (`LICENSE`, `LICENSE_EE.md`, `CONTRIBUTING.md`
+with a contributor license agreement).
+
+**Security.** The gate refuses branches that add API keys, tokens or private keys (was: a warning for some patterns).
+`bin/worker-add` no longer passes the Forgejo admin token on curl's command line.
+
 ## 0.9.0 - 2026-10-07
 First versioned release. Highlights since the extraction from a private setup:
 

@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Runs one dispatched task and enforces the limits: wall-clock timeout, token cap, kill switch. Started by bin/dispatch.
-Writes started/finished/exitcode/meta.json, appends to runs/ledger.jsonl, trips the kill switch after repeated failures."""
-import json, os, re, subprocess, sys, time
+"""Runs one dispatched task and enforces the limits: wall-clock timeout, token cap, tool-call cap, USD cap (API runtimes),
+kill switch. Started by bin/dispatch. Writes started/finished/exitcode/meta.json, appends to runs/ledger.jsonl, trips the kill
+switch after repeated failures. The worker's runtime (agy / claude / codex / gemini, bin/lib/runtimes.py) decides the command
+and how the event stream is read."""
+import json, os, re, subprocess, sys, threading, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-import sbx, egress
+import sbx, egress, runtimes
 
 run = sys.argv[1]
 m = sbx.meta(run)
 W, test, runner = m["worker"], m.get("test", False), m.get("runner")
+RT = m.get("runtime") or "agy"
 lim = sbx.load_limits()
+PRICES = lim.get("PRICE_CODEX") if RT == "codex" else lim.get("PRICE_GEMINI") if RT == "gemini" else None
+
+
+def stats():
+    return runtimes.scan_file(RT, run + "/stream.jsonl", PRICES)
 timeout_s, cap = m["limits"]["timeout_min"] * 60, m["limits"]["token_cap"]
 t0 = time.time()
 open(run + "/started", "w").write(sbx.now() + "\n")
@@ -64,38 +72,23 @@ def salvage(reason):
 
 
 def conversation_id():
-    """The agy conversation this run used (bin/foreman can resume it for a rework on the same worker)."""
-    try:
-        for line in open(run + "/stream.jsonl"):
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            for part in (e.get("init"), e.get("result"), e.get("step_update")):
-                if isinstance(part, dict) and part.get("conversation_id"):
-                    return part["conversation_id"]
-    except OSError:
-        pass
-    return None
+    """The agent conversation this run used (agy conversation / Claude session / Codex thread / Gemini session): the foreman
+    resumes it for a rework on the same worker."""
+    return stats()["conversation_id"]
 
 
-QUOTA_RE = re.compile(r"quota (reached|exceeded|exhausted)|RESOURCE_EXHAUSTED|usage limit|rate limit|hit your [\w ]*limit|"
-                      r"out of (extra )?usage|limit reached", re.I)
+QUOTA_RE = re.compile(r"quota (reached|exceeded|exhausted)|RESOURCE_EXHAUSTED|usage limit|rate.?limit|hit your [\w ]*limit|"
+                      r"out of (extra )?usage|limit reached|\b429\b|insufficient_quota|overloaded", re.I)
+# an API key that does not work (wrong, revoked, no credit): not the task's fault and not misbehaviour
+AUTH_RE = re.compile(r"\b401\b|authentication_error|invalid x-api-key|incorrect api key|invalid api key|api key not valid|"
+                     r"API_KEY_INVALID|permission_denied|credit balance is too low|billing", re.I)
+
+
 def finish(reason, rc):
-    tokens = sbx.stream_tokens(run + "/stream.jsonl")
-    res, tools = None, 0
-    try:
-        for line in open(run + "/stream.jsonl"):
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            if e.get("event") == "result":
-                res = e["result"]
-            if e.get("event") == "step_update" and e["step_update"].get("step_type") == "tool" and e["step_update"].get("state") == "DONE":
-                tools += 1
-    except FileNotFoundError:
-        pass
+    stt = stats()
+    tokens, tools, res = stt["tokens"], stt["tools"], stt["result"]
+    if reason is None and RT == "claude" and res and res.get("subtype") == "error_max_budget_usd":
+        reason = "token-cap"                       # the run hit API_RUN_BUDGET_USD: like a token cap (work is saved, then gated)
     if reason is None:
         ok = rc == 0 if runner else (rc == 0 and res is not None and res.get("status") == "SUCCESS")
         # agy sometimes reports status ERROR purely because the LAST streaming call back to Google's API dropped
@@ -119,16 +112,19 @@ def finish(reason, rc):
                 tail += open(run + "/stderr.log").read()[-2000:]
             except OSError:
                 pass
-            if QUOTA_RE.search(tail):
+            if runtimes.is_api(RT) and AUTH_RE.search(tail):
+                reason = "auth"
+            elif QUOTA_RE.search(tail):
                 reason = "quota"
     ks = sbx.killswitch_active()
     if ks and reason not in ("ok",) and reason != "killswitch":
         reason = "killswitch"
     code = {"ok": 0, "timeout": 124, "token-cap": 125, "killswitch": 126, "egress-not-enforced": 127, "setup-failed": 90,
-            "quota": 75}.get(reason, rc if rc else 1)
+            "quota": 75, "auth": 77}.get(reason, rc if rc else 1)
+    cost = (res or {}).get("cost_usd")
     dur = int(time.time() - t0)
     quota_after = None
-    if not runner and container_ok():
+    if not runner and RT == "agy" and container_ok():
         try:
             quota_after = sbx.read_quota(W)
         except Exception:
@@ -150,7 +146,7 @@ def finish(reason, rc):
     m2["conversation_id"] = conversation_id()
     m2.update(started=open(run + "/started").read().strip(), finished=sbx.now(), duration_s=dur, reason=reason, exit_code=code,
               tokens=tokens, tool_calls=tools, agy_status=(res or {}).get("status"), result_usage=(res or {}).get("usage"),
-              quota_after=quota_after)
+              quota_after=quota_after, cost_usd=cost, result_error=str((res or {}).get("error") or "")[:500])
     json.dump(m2, open(run + "/meta.json", "w"), indent=1)
     with sbx.lock():
         if egress_high:
@@ -159,7 +155,8 @@ def finish(reason, rc):
             if not test:
                 sbx.killswitch_on(f"egress alarm during run {m['run_id']}: {egress_high[0][1][:120]}", by="run-supervisor")
         sbx.append_ledger(dict(run_id=m["run_id"], date=sbx.today(), at=sbx.now(), worker=W, task=m["task"], test=test,
-                               reason=reason, exit_code=code, tokens=tokens, duration_s=dur, tool_calls=tools, egress_alarms=len(egress_high)))
+                               reason=reason, exit_code=code, tokens=tokens, duration_s=dur, tool_calls=tools, egress_alarms=len(egress_high),
+                               runtime=RT, cost_usd=cost))
         if not test:
             n = int(lim["CONSEC_FAIL_TRIP"])
             if reason != "ok":
@@ -214,20 +211,8 @@ print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200
 
 
 def last_result_ok():
-    """The last agy invocation of this run ended with status SUCCESS (not an API error / quota stop)."""
-    st = None
-    try:
-        for line in open(run + "/stream.jsonl"):
-            if '"result"' in line:
-                try:
-                    e = json.loads(line)
-                except ValueError:
-                    continue
-                if e.get("event") == "result":
-                    st = (e.get("result") or {}).get("status")
-    except OSError:
-        pass
-    return st == "SUCCESS"
+    """The last agent invocation of this run ended successfully (not an API error / quota or budget stop)."""
+    return (stats()["result"] or {}).get("status") == "SUCCESS"
 
 
 def self_check():
@@ -253,29 +238,49 @@ def fix_prompt(chk):
             f"summary line.\n")
 
 
-def agy_cmd(prompt, conversation=None):
+def agent_cmd(prompt, conversation=None):
+    """(docker exec argv, stdin text) for one agent invocation of this worker's runtime. The budget of a later invocation (the
+    self-check's fix round) is what is left of the run's USD cap."""
     left_min = max(1, int((timeout_s - (time.time() - t0)) // 60) + 1)
-    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_', 'agy-run', '-p', prompt,
-             '--model', m.get("model") or lim["WORKER_MODEL"],
-             '--dangerously-skip-permissions', '--output-format', 'stream-json', '--print-timeout', f"{left_min}m"]
-    if conversation:
-        inner += ['--conversation', conversation]
-    return ["docker", "exec", "-i", "-w", sbx.WORKER_CLONE, W] + inner
+    budget = float(m.get("budget_usd") or 0)
+    if budget:
+        budget = max(0.05, round(budget - ((stats()["result"] or {}).get("cost_usd") or 0), 2))
+    model = m.get("model") or (lim["WORKER_MODEL"] if RT == "agy" else "")
+    argv, stdin_text = runtimes.command(RT, prompt, model, conversation, left_min, budget)
+    env = []
+    if sbx.TEST_MODE and os.environ.get("AF_TEST_BASE_URL"):           # tests only: a fake model API instead of the real one
+        env = ["-e", "AF_BASE_URL=" + os.environ["AF_TEST_BASE_URL"]]
+    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_'] + argv
+    return ["docker", "exec", "-i"] + env + ["-w", sbx.WORKER_CLONE, W] + inner, stdin_text
+
+
+def _over_cap():
+    st = stats()
+    return st["tokens"] >= cap or st["tools"] >= int(lim["RUN_MAX_TOOL_CALLS"])
 
 
 def watch(cmd, mode):
-    """Run one agy invocation (stream appended to the run's stream.jsonl) under the run's limits. Returns (reason, rc): reason is
-    None unless a limit stopped it. The token cap and the timeout count for the whole run, not per invocation."""
+    """Run one agent invocation (stream appended to the run's stream.jsonl) under the run's limits. Returns (reason, rc): reason
+    is None unless a limit stopped it. Timeout, token cap, tool-call cap and USD cap count for the whole run."""
     global next_egress_check
+    cmd, stdin_text = cmd
     reason = None
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=open(run + "/stream.jsonl", mode), stderr=open(run + "/stderr.log", mode))
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                            stdout=open(run + "/stream.jsonl", mode), stderr=open(run + "/stderr.log", mode))
+    if stdin_text is not None:
+        def feed():
+            try:
+                proc.stdin.write(stdin_text.encode()); proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        threading.Thread(target=feed, daemon=True).start()
     while proc.poll() is None:
         time.sleep(lim["POLL_SEC"])
         if proc.poll() is not None:
             break
         if time.time() - t0 > timeout_s:
             reason = "timeout"
-        elif sbx.stream_tokens(run + "/stream.jsonl") >= cap:
+        elif _over_cap():
             reason = "token-cap"
         elif sbx.killswitch_active():
             reason = "killswitch"
@@ -324,14 +329,14 @@ if not runner:
     if r.returncode != 0:
         open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")
         finish("setup-failed", 90)
-    cmd = agy_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
+    cmd = agent_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
-    cmd = ["docker", "exec", "-i", W] + inner
+    cmd = (["docker", "exec", "-i", W] + inner, None)
 reason, rc = watch(cmd, "w")
 
 # ---- self-check: the gate's test run, in the worker's own clone, before the run ends. A red suite is sent back by the gate
-# anyway - fixing it now, in the same agy conversation that still has the context, is far cheaper than a new attempt.
+# anyway - fixing it now, in the same agent conversation that still has the context, is far cheaper than a new attempt.
 if not runner and reason is None and rc == 0 and last_result_ok():
     for i in range(int(m.get("self_check") or 0)):
         chk = self_check()
@@ -339,14 +344,14 @@ if not runner and reason is None and rc == 0 and last_result_ok():
         if chk.get("ok"):
             break
         conv = conversation_id()
-        left_s, used = timeout_s - (time.time() - t0), sbx.stream_tokens(run + "/stream.jsonl")
+        left_s, used = timeout_s - (time.time() - t0), stats()["tokens"]
         if not conv or left_s < 8 * 60 or used > 0.8 * cap:
             # not enough time / tokens left for a fix round: end the run as it is, the gate gives the feedback instead
             SELF_CHECKS[-1]["skipped_fix"] = "no conversation" if not conv else f"{int(left_s // 60)} min / {100 * used // max(cap, 1)} % tokens used"
             break
         with open(run + "/supervisor.log", "a") as f:
             f.write(f"{sbx.now()} self-check {i + 1} failed ({chk.get('summary', '')}); continuing the conversation to fix it\n")
-        reason, rc = watch(agy_cmd(fix_prompt(chk), conv), "a")
+        reason, rc = watch(agent_cmd(fix_prompt(chk), conv), "a")
         if reason is not None or rc != 0 or not last_result_ok():
             break
     else:

@@ -65,6 +65,7 @@ def _early_project():
 PROJECT, PDIR = _early_project()
 import sbx
 import codemap
+import runtimes
 
 ROOT, BIN = sbx.ROOT, os.path.dirname(os.path.abspath(__file__))
 FD = os.path.join(sbx.RUNS, "projects", PROJECT, "foreman") if PROJECT else os.path.join(sbx.RUNS, "foreman")
@@ -91,9 +92,15 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # how the project is tested (gate, self-check, maintenance) and in which image; any language with a CLI test runner
             TEST_CMD="", GATE_IMAGE="",
             # owner notifications: an ntfy topic, a Slack / Discord webhook or any JSON endpoint ("" = off)
-            NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out",
+            NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out,auth",
             # finished runs older than this are compressed by maintenance (their transcripts are the bulk of runs/)
-            RUNS_KEEP_DAYS=14)
+            RUNS_KEEP_DAYS=14,
+            # API-key worker runtimes (bin/worker-add N --runtime claude|codex|gemini): their models ("" = the CLI's default),
+            # and when they get work: "overflow" = only when no subscription (agy) worker can take it, "always" = first
+            WORKER_MODEL_CLAUDE="sonnet", WORKER_MODEL_CODEX="", WORKER_MODEL_GEMINI="", API_WORKERS_POLICY="overflow",
+            # where the code lives (bin/lib/upstream.py): "" = not chosen yet (the dashboard asks), forgejo = internal only,
+            # github / gitlab = merged there through pull / merge requests, main synced back
+            FORGE_KIND="", UPSTREAM_REPO="", UPSTREAM_URL="", UPSTREAM_BRANCH="main", UPSTREAM_MERGE="merge")
 FILES_LINE = re.compile(r"^[\w./-]+$")
 
 
@@ -354,11 +361,29 @@ def git_auth_env(token_file):
     return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": f"Authorization: token {tok}"}
 
 
+WORKER_RT = {}           # worker -> runtime (agy | claude | codex | gemini), refreshed by workers()
+
+
 def workers():
     """This project's worker pool: the running worker containers, limited to WORKERS when the project sets one."""
-    rc, out, _ = sh(["docker", "ps", "--format", "{{.Names}}"], timeout=30)
+    rc, out, _ = sh(["docker", "ps", "--format", '{{.Names}}|{{.Label "agent-forge.runtime"}}'], timeout=30)
     pool = {w.strip() for w in str(C["WORKERS"]).split(",") if w.strip()}
-    return sorted(n for n in out.split() if re.fullmatch(r"worker-\d+", n) and (not pool or n in pool))
+    found = []
+    for line in out.splitlines():
+        name, _, rt = line.partition("|")
+        if re.fullmatch(r"worker-\d+", name) and (not pool or name in pool):
+            WORKER_RT[name] = rt if rt in runtimes.RUNTIMES else "agy"
+            found.append(name)
+    return sorted(found)
+
+
+def runtime_of(w):
+    return WORKER_RT.get(w) or "agy"
+
+
+def api_budget_left():
+    lim = sbx.load_limits()
+    return sbx.api_spent_today() + float(lim["API_RUN_BUDGET_USD"]) <= float(lim["API_DAILY_BUDGET_USD"]) + 1e-9
 
 
 def worker_busy(w):
@@ -552,7 +577,9 @@ def pool_quota_out():
     ws, lim, now = workers(), sbx.load_limits(), time.time()
     if not ws:
         return False
-    for w in ws:
+    if any(runtimes.is_api(runtime_of(w)) for w in ws) and api_budget_left():
+        return False
+    for w in [w for w in ws if not runtimes.is_api(runtime_of(w))]:
         until, why = COOLDOWN.get(w, (0, ""))
         if until > now and why.startswith("quota low"):
             continue
@@ -576,7 +603,7 @@ def llm_available():
     for p in providers_for("plan") + providers_for("review"):
         if p == "claude-cli" and st.get("claude_until", 0) <= now:
             return True
-        if p.startswith("agy-") and any(st.get("agy_cooldown", {}).get(w, 0) <= now for w in workers()):
+        if p.startswith("agy-") and any(st.get("agy_cooldown", {}).get(w, 0) <= now for w in workers() if runtime_of(w) == "agy"):
             return True
         if p in ("anthropic-api", "openai-api", "gemini-api"):
             return True
@@ -649,7 +676,7 @@ def _via_agy(kind, prompt, family):
     model = (C["AGY_REVIEW_MODEL"] if kind == "review" else C["AGY_PLAN_MODEL"]) if family == "claude" else C["AGY_FALLBACK_MODEL"]
     st, now = gstate(), time.time()
     cd = st.get("agy_cooldown", {})
-    cand = [w for w in workers() if cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
+    cand = [w for w in workers() if runtime_of(w) == "agy" and cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
     cand = order_by_quota(cand, lambda w: quota_pct(quota_rows(w), family), LAST_LLM)
     for w in cand:
         idle = not worker_busy(w)
@@ -749,6 +776,8 @@ def notify(kind, obj=None, text=""):
         title, msg = "The planner has questions for you", text
     elif kind == "quota_out":
         title, msg = "All workers are out of quota", text
+    elif kind == "auth":
+        title, msg = "An API key was rejected", text
     else:
         title, msg = kind, text
     threading.Thread(target=sbx.notify, args=(kind, title, msg), daemon=True).start()
@@ -1217,10 +1246,122 @@ def requeue_gate(t, why):
     event(f"task {t['id']}: {why} - testing + review again", task=t["id"])
 
 
+# ---------------------------------------------------------------- upstream (GitHub / GitLab): see bin/lib/upstream.py
+def upstream_obj():
+    """The project's GitHub/GitLab connection when FORGE_KIND says so, else None (merges stay on the internal Forgejo)."""
+    import upstream
+    if not upstream.enabled():
+        return None
+    try:
+        return upstream.Upstream()
+    except upstream.UpstreamError as e:
+        event(f"upstream not usable: {e}")
+        return None
+
+
+def merge_upstream(t, up, who, fb, gate):
+    """Approved branch -> pushed to upstream -> PR/MR -> merged (AUTO_MERGE) -> upstream main synced into Forgejo. When upstream
+    needs more (required checks or reviews, a human merge with AUTO_MERGE=0) the task waits in status "merging"."""
+    import upstream
+    PHASE[t["id"]] = f"PR na {up.kind}"
+    body = (f"Task {t['id']} ({t['role']}), goal {t['goal']}.\n\nReview by {who}: {fb}\n\nGate (full test suite in a clean "
+            f"container):\n```\n{gate[-2500:]}\n```\n\nOpened by Agent-Forge.\n")
+    try:
+        upstream.push_branch(up, FD, t["branch"])
+        pr = up.open_pr(t["branch"], f"{t['id']}: {t['title']}"[:120], body)
+    except upstream.UpstreamError as e:
+        return lambda: requeue_gate(t, f"{up.kind} not reachable / refused: {str(e)[:200]}")
+    if not C["AUTO_MERGE"]:
+        return lambda: await_merge(t, pr, f"PR open on {up.kind} - waiting for you to merge it", who, fb)
+    return lambda: await_merge(t, pr, f"PR opened on {up.kind}", who, fb, now=True)
+
+
+def await_merge(t, pr, why, who="", fb="", now=False):
+    t = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
+    t.update(status="merging", upstream_pr=pr, not_before=0 if now else time.time() + 60, merge_reviewer=who, merge_feedback=fb[:800])
+    save_task(t)
+    event(f"task {t['id']}: {why}: {pr.get('url') or '#' + str(pr.get('number'))}", task=t["id"])
+
+
+def step_upstream_merge(t):
+    """A task in "merging": merge its upstream PR/MR when possible, or notice that it was merged / closed upstream."""
+    import upstream
+    up = upstream_obj()
+    if not up:
+        return lambda: None
+    n = (t.get("upstream_pr") or {}).get("number")
+    try:
+        st = {}
+        for _ in range(10):                     # GitHub computes mergeability asynchronously
+            st = up.pr_state(n)
+            if st["state"] != "open" or st["mergeable"] is not None:
+                break
+            time.sleep(3)
+        if st["state"] == "open" and C["AUTO_MERGE"] and st["mergeable"]:
+            ok, msg = up.merge(n)
+            st = up.pr_state(n) if ok else dict(st, why=msg)
+        if st["state"] == "merged":
+            upstream.sync_main(up, FD)
+            return lambda: finish(t, f"merged {up.kind} PR #{n}", t.get("merge_reviewer") or "foreman", t.get("merge_feedback") or "", n)
+        if st["state"] == "closed":
+            return lambda: block(t, f"its {up.kind} PR #{n} was closed without merging")
+        if st["mergeable"] is False and re.search(r"dirty|conflict|need_rebase|behind", str(st.get("why")), re.I):
+            upstream.sync_main(up, FD)
+            rb = auto_rebase(t["branch"])
+            if rb in ("rebased", "uptodate"):
+                return lambda: requeue_gate(t, f"main moved on {up.kind} - auto-rebased, testing again before the merge")
+            return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, "
+                                     "rerun the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
+    except upstream.UpstreamError as e:
+        st = dict(why=str(e))
+    why = str(st.get("why") or "")
+
+    def wait():
+        t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
+        if t2.get("merge_wait_why") != why:
+            event(f"task {t['id']}: {up.kind} PR #{n} not merged yet ({why or 'waiting'}) - checking every 2 min", task=t["id"])
+        t2.update(not_before=time.time() + 120, merge_wait_why=why)
+        save_task(t2)
+    return wait
+
+
+def maybe_upstream_sync():
+    """Every minute while connected: upstream main -> Forgejo main (fast-forward), so new tasks and the gate build on it."""
+    import upstream
+    if "upstream:sync" in INFLIGHT or not upstream.enabled() or time.time() - SYNC.get("at", 0) < 60:
+        return
+    SYNC["at"] = time.time()
+
+    def step():
+        up = upstream_obj()
+        r = upstream.sync_main(up, FD) if up else "off"
+
+        def apply():
+            if r == "synced":
+                event(f"main synced from {up.kind}")
+            if r == "diverged" and SYNC.get("last") != "diverged":
+                msg = f"Forgejo's main has commits that {up.kind}'s main does not have - not overwriting; run bin/upstream status"
+                event(msg); sbx.alert(msg)
+            SYNC["last"] = r
+        return apply
+    submit("upstream:sync", step)
+
+
+SYNC = {}
+
+
 def already_merged_pr(branch):
     """The number of an already-merged PR for `branch`, or None - used for crash recovery: a merge can succeed and
     then the process dies before the task file is marked done (next tick would otherwise re-run the whole
-    gate+review on a now-empty diff and get confused by it)."""
+    gate+review on a now-empty diff and get confused by it). With an upstream: its PR/MR."""
+    up = upstream_obj()
+    if up:
+        import upstream
+        try:
+            p = up.find_pr(branch, "merged")
+            return p["number"] if p else None
+        except upstream.UpstreamError:
+            return None
     rc, out, err = sh([os.path.join(BIN, "forgejo-api"), "GET", f"/repos/{sbx.FORGE_REPO}/pulls?state=closed&limit=50"], timeout=30)
     if rc != 0:
         return None
@@ -1254,6 +1395,10 @@ def step_gate_review_merge(t):
             return lambda: requeue_gate(t, "Forgejo did not answer while the gate fetched the branch")
         if re.search(r"Cannot connect to the Docker daemon|Unable to find image|docker: Error response from daemon|No space left on device", gate):
             return lambda: requeue_gate(t, "the gate could not start its test container (Docker problem)")
+        if "== SECRET:" in gate:
+            return lambda: rework(t, "Gate failed: your branch adds a secret (" + gate.split("== SECRET: the branch adds ", 1)[1].split(" - refused")[0] +
+                                     "). Never put keys or tokens into the repository. Remove it from every commit of the branch (rewrite the "
+                                     "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate)
         why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
         return lambda: rework(t, f"Gate failed: {why}. Fix it (see the gate output) and push again.", gate)
     _, diff, _ = sh(["git", "diff", f"origin/main...origin/{t['branch']}"], cwd=REPO)
@@ -1294,6 +1439,9 @@ def step_gate_review_merge(t):
             return lambda: rework(t, "Your tests do not catch these deliberate bugs in your code (mutation check); add tests that fail for "
                                      "each of them:\n" + "\n".join(f"- {m['name']}: in {m['file']} replace `{m['old']}` with `{m['new']}`"
                                                                    for m in muts if any(m['name'] in l for l in surv if l.startswith('SURVIVED'))), out2[-3000:])
+    up = upstream_obj()
+    if up:
+        return merge_upstream(t, up, who, fb, gate)
     if not C["AUTO_MERGE"]:
         return lambda: finish(t, "approved (auto-merge off: merge by hand)", who, fb, None)
     PHASE[t["id"]] = "merge"
@@ -1370,7 +1518,8 @@ def block(t, why):
 def finish(t, what, who, fb, pr):
     t = jload(os.path.join(FD, "tasks", t["id"] + ".json"))
     t["history"].append(dict(at=sbx.now(), outcome="done", what=what, reviewer=who, feedback=fb[:800]))
-    t.update(status="done", pr=pr, finished=sbx.now(), feedback="", gate_tail="", review_fails=0, regates=0, not_before=0,
+    t.update(status="done", pr=pr, pr_url=(t.get("upstream_pr") or {}).get("url"), finished=sbx.now(), feedback="", gate_tail="",
+             review_fails=0, regates=0, not_before=0,
              total_lines=total_lines_after_merge(t.get("files", [])))
     save_task(t)
     event(f"task {t['id']} done: {what} (review: {who})", task=t["id"])
@@ -1464,15 +1613,31 @@ def dispatch_ready():
     # Each worker is its own account with its own quota: give work to the one with the most remaining worker-model quota, so
     # all accounts drain evenly (overnight 2026-10-04 "least recently dispatched" still left worker-4 with zero runs).
     fam = str(lim.get("QUOTA_MODEL_FILTER", "gemini"))
-    by_quota = lambda ws: order_by_quota(ws, lambda w: quota_pct(quota_rows(w, 120), fam), LAST_DISPATCHED)
+    # API-key workers cost money per token: by default they come last ("overflow" - only when no subscription worker can take
+    # the task); API_WORKERS_POLICY=always puts them first
+    api_rank = 1000 if C["API_WORKERS_POLICY"] == "always" else -5
+    pct = lambda w: api_rank if runtimes.is_api(runtime_of(w)) else quota_pct(quota_rows(w, 120), fam)
+    by_quota = lambda ws: order_by_quota(ws, pct, LAST_DISPATCHED)
     free = by_quota(free)
     for t in ready_tasks(ts, busy_files):
         if not free:
             return
         prev = (t.get("last_run") or {}).get("worker")
         w = prev if t.get("feedback") and prev in free and C["CONTINUE_CONVERSATIONS"] else free[0]
-        rows = quota_rows(w, 60)
-        ok, msg = sbx.quota_verdict(rows, lim)
+        rt = runtime_of(w)
+        if runtimes.is_api(rt):
+            rows = []
+            ok, msg = (True, "") if api_budget_left() else (False, "quota low: API budget for today used (API_DAILY_BUDGET_USD)")
+        else:
+            rows = quota_rows(w, 60)
+            ok, msg = sbx.quota_verdict(rows, lim)
+        if not ok and runtimes.is_api(rt):
+            COOLDOWN[w] = (time.time() + 3600, msg)
+            free.remove(w)
+            if LAST_QUOTA_MSG.get(w) != msg:
+                LAST_QUOTA_MSG[w] = msg
+                event(f"{w}: {msg} - checking again every 60 min")
+            continue
         if not ok:
             cd_sec = 180
             resets = []
@@ -1499,8 +1664,9 @@ def dispatch_ready():
         spec = os.path.join(FD, "tasks", t["id"] + ".md")
         open(spec, "w").write(worker_spec(t, continuing))
         v = variant(t)
+        model = C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"]
         env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
-               "DISPATCH_MODEL": v["model"], "DISPATCH_SELF_CHECK": str(int(C["SELF_CHECK_ROUNDS"])),
+               "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(C["SELF_CHECK_ROUNDS"])),
                "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"]}
         rc, out, err = sh([os.path.join(BIN, "dispatch"), w, spec], timeout=300, env=env)
         if rc != 0:
@@ -1522,7 +1688,8 @@ def dispatch_ready():
         free = by_quota(free)
         busy_files |= set(t.get("files", []))
         event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else "") +
-              (" (continuing its conversation)" if continuing else "") + (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
+              (" (continuing its conversation)" if continuing else "") + (f" ({rt})" if rt != "agy" else "") +
+              (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
 
 
 def orphaned(run):
@@ -1580,6 +1747,13 @@ def advance():
                 event(f"task {t['id']}: {t['worker']} clone was not clean - stashed it, task re-queued", task=t["id"]); continue
             if reason in ("killswitch", "orphaned"):
                 t.update(status="pending"); save_task(t); continue
+            if reason == "auth":
+                COOLDOWN[t["worker"]] = (time.time() + 3600, "API key rejected (wrong, revoked or no credit)")
+                t.update(status="pending", last_run=dict(worker=t["worker"], reason="auth", tokens=m.get("tokens", 0)))
+                save_task(t)
+                msg = f"{t['worker']}: the provider rejected its API key ({str(m.get('result_error') or '')[:160]}) - task re-queued, worker paused 60 min"
+                event(msg, task=t["id"]); sbx.alert(msg); notify("auth", text=msg)
+                continue
             if reason == "quota":
                 # the account ran out mid-run: not the task's fault - re-queue without an attempt, rest that worker
                 until = time.time() + 1800
@@ -1605,6 +1779,8 @@ def advance():
             submit("task:" + t["id"], step_gate_review_merge, t)
         if t["status"] == "splitting" and can_think:
             submit("split:" + t["id"], step_split, t)
+        if t["status"] == "merging" and t.get("not_before", 0) <= time.time():
+            submit("merge:" + t["id"], step_upstream_merge, t)
     if not can_think:
         return
     for g in goals():
@@ -1834,6 +2010,7 @@ def tick():
         advance()
         dispatch_ready()
         maybe_maintenance()
+        maybe_upstream_sync()
     finally:
         write_live()
 
@@ -1922,7 +2099,9 @@ def run_stats():
         if m.get("test") or m.get("project", "") != sbx.PROJECT:
             cache[rid] = 0; changed = True; continue
         wb, wa = week(m.get("quota_before")), week(m.get("quota_after"))
-        cache[rid] = dict(task=str(m.get("task", "")).removesuffix(".md"), model=m.get("model") or "?", variant=m.get("variant") or "",
+        rt = m.get("runtime") or "agy"
+        cache[rid] = dict(task=str(m.get("task", "")).removesuffix(".md"), runtime=rt, cost=m.get("cost_usd"),
+                          model=(m.get("model") or "?") if rt == "agy" else f"{rt}:{m.get('model') or 'default'}", variant=m.get("variant") or "",
                           reason=m.get("reason"), tokens=m.get("tokens") or 0, tools=m.get("tool_calls") or 0,
                           week=round(wb - wa, 2) if wb is not None and wa is not None and wb >= wa else None,
                           checks=[c.get("ok") for c in m.get("self_checks") or []])
@@ -1941,8 +2120,9 @@ def efficiency(ts, rs):
         v = tmodel.get(r["task"], {})
         pack = "pack" if r["variant"].startswith("pack") else "no pack" if r["variant"].startswith("nopack") else "not measured"
         for dim, key in (("model", r["model"]), ("pack", pack)):
-            g = groups.setdefault(dim, {}).setdefault(key, dict(runs=0, ok=0, caps=0, week=0.0, week_n=0, tok=[], tools=[], tasks=set()))
+            g = groups.setdefault(dim, {}).setdefault(key, dict(runs=0, ok=0, caps=0, week=0.0, week_n=0, tok=[], tools=[], tasks=set(), cost=0.0))
             g["runs"] += 1; g["ok"] += r["reason"] == "ok"; g["caps"] += r["reason"] in ("token-cap", "timeout")
+            g["cost"] += r.get("cost") or 0
             if r["week"] is not None:
                 g["week"] += r["week"]; g["week_n"] += 1
             g["tok"].append(r["tokens"]); g["tools"].append(r["tools"]); g["tasks"].add(r["task"])
@@ -1957,6 +2137,8 @@ def efficiency(ts, rs):
                                  week_per_run=round(g["week"] / g["week_n"], 2) if g["week_n"] else None,
                                  week_per_done=round(g["week"] * g["runs"] / max(g["week_n"], 1) / len(done), 2) if done and g["week_n"] else None,
                                  tokens_median=med(g["tok"]), tools_median=med(g["tools"]), done=len(done),
+                                 cost_usd=round(g["cost"], 2) if g["cost"] else None,
+                                 cost_per_done=round(g["cost"] / len(done), 2) if g["cost"] and done else None,
                                  first_pass_pct=round(100 * fp / len(done)) if done else None)
     chk = [r["checks"] for r in rs.values() if r["checks"]]
     out["self_check"] = dict(runs=len(chk), green_first=sum(1 for c in chk if c[0]),
@@ -2061,7 +2243,16 @@ EDITABLE = {
     "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),
     "TEST_CMD": ("|" + sbx.TEST_CMD_RE.pattern, "project"), "GATE_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
     "NOTIFY_URL": (r"|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf "NOTIFY_FORMAT": (r"ntfy|slack|discord|json", "project"),
-    "NOTIFY_EVENTS": (r"|(goal_done|task_blocked|killswitch|questions|quota_out)(,(goal_done|task_blocked|killswitch|questions|quota_out))*", "project"),
+    "NOTIFY_EVENTS": (r"|(goal_done|task_blocked|killswitch|questions|quota_out|auth)(,(goal_done|task_blocked|killswitch|questions|quota_out|auth))*", "project"),
+    "WORKER_MODEL_CLAUDE": ("|" + MODEL_RE, "project"), "WORKER_MODEL_CODEX": ("|" + MODEL_RE, "project"),
+    "WORKER_MODEL_GEMINI": ("|" + MODEL_RE, "project"), "API_WORKERS_POLICY": (r"overflow|always", "project"),
+    "API_RUN_BUDGET_USD": (r"\d{1,4}(\.\d{1,2})?", "limits"), "API_DAILY_BUDGET_USD": (r"\d{1,5}(\.\d{1,2})?", "limits"),
+    "RUN_MAX_TOOL_CALLS": ((10, 5000), "limits"),
+    "FORGE_KIND": (r"forgejo|github|gitlab", "project"), "UPSTREAM_REPO": (r"|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){1,4}", "project"),
+    "UPSTREAM_URL": (r"|https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?", "project"), "UPSTREAM_BRANCH": (r"[A-Za-z0-9._/-]{1,100}", "project"),
+    "UPSTREAM_MERGE": (r"merge|squash|rebase", "project"),
+    "PRICE_CODEX": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
+    "PRICE_GEMINI": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
     "RUNS_KEEP_DAYS": ((1, 3650), "project"),
     "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
     "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
@@ -2091,11 +2282,16 @@ def write_conf(path, values):
 def settings_get():
     lim = sbx.load_limits()
     vals = {k: (lim[k] if sc == "limits" else C[k]) for k, (_, sc) in EDITABLE.items()}
-    rc, out, _ = sh(["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"], timeout=30)
-    allw = sorted((x.split() for x in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", x)), key=lambda x: int(x[0].split("-")[1]))
+    rc, out, _ = sh(["docker", "ps", "-a", "--format", '{{.Names}} {{.State}} {{.Label "agent-forge.runtime"}}'], timeout=30)
+    allw = sorted((x.split() + ["agy"])[:3] for x in out.splitlines() if re.match(r"worker-\d+ \w+", x))
+    allw.sort(key=lambda x: int(x[0].split("-")[1]))
+    keys = {n: os.path.exists(os.path.join(sbx.SECRETS, n)) and os.path.getsize(os.path.join(sbx.SECRETS, n)) > 0
+            for n in ("anthropic.key", "openai.key", "gemini.key", "github.token", "gitlab.token")}
     return dict(project=PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
                 limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
-                workers=[dict(name=n, state=st) for n, st in allw])
+                workers=[dict(name=n, state=st, runtime=rt if rt in runtimes.RUNTIMES else "agy") for n, st, rt in allw],
+                runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"]) for k, v in runtimes.RUNTIMES.items()},
+                secrets=keys, api_spent_today=sbx.api_spent_today())
 
 
 def settings_apply(changes):
@@ -2218,7 +2414,8 @@ def dashboard_json():
                              acceptance=t.get("acceptance", []), blocked_why=t.get("blocked_why", ""), feedback=t.get("feedback", "")[:1500],
                              history=t.get("history", [])[-6:], dispatched=t.get("dispatched"), finished=t.get("finished"),
                              updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines"),
-                             mutations=t.get("mutations", [])))
+                             mutations=t.get("mutations", []), pr_url=t.get("pr_url") or (t.get("upstream_pr") or {}).get("url"),
+                             runtime=WORKER_RT.get(t.get("worker") or "", "")))
     return dict(project=PROJECT or "default", repo=sbx.FORGE_REPO, pool=workers(), now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
                 autopilot=bool(C["AUTOPILOT"]) and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
@@ -2229,7 +2426,11 @@ def dashboard_json():
                             notes=g.get("notes", ""), created=g.get("created"), finished=g.get("finished"), rounds=g.get("rounds", 0),
                             acceptance=g.get("acceptance", []), criteria=g.get("criteria", []), criteria_at=g.get("criteria_at"))
                        for g in goals()],
-                maintenance=st.get("maint"),
+                forge=dict(kind=C["FORGE_KIND"] or "", repo=C["UPSTREAM_REPO"], url=C["UPSTREAM_URL"],
+                           setup_needed=not C["FORGE_KIND"] and not goals()),
+                maintenance=st.get("maint"), api=dict(spent_today=sbx.api_spent_today(),
+                                                      budget=float(lim.get("API_DAILY_BUDGET_USD", 0)),
+                                                      workers=sorted(w for w, r in WORKER_RT.items() if runtimes.is_api(r))),
                 tasks=task_out, events=evs, llm_today=llm_today, timeline=timeline(), metrics=team_metrics(ts),
                 today=dict(runs=len(led), runs_max=lim["MAX_RUNS_PER_DAY"], tokens=sum(e.get("tokens", 0) for e in led),
                            tokens_max=lim["DAILY_TOKEN_BUDGET"], ok=sum(1 for e in led if e.get("reason") == "ok"),
@@ -2463,6 +2664,49 @@ def selftest():
           ef["model"]["m1"]["runs"] == 2 and ef["model"]["m1"]["cap_pct"] == 50 and ef["model"]["m1"]["week_per_run"] == 1.5
           and ef["model"]["m1"]["week_per_done"] == 3.0 and ef["pack"]["no pack"]["first_pass_pct"] == 100
           and ef["pack"]["pack"]["first_pass_pct"] == 0 and ef["self_check"] == dict(runs=2, green_first=1, fixed=1, still_red=0))
+    # runtimes: the event streams as the real CLIs print them (claude 2.1, codex 0.161, gemini 0.63; agy 1.2)
+    cl = ['{"type":"system","subtype":"init","session_id":"S1","tools":["Bash"]}',
+          '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}],'
+          '"usage":{"input_tokens":1000,"output_tokens":1,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}},"session_id":"S1"}',
+          '{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"x"}]},"session_id":"S1"}',
+          '{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"S1","total_cost_usd":0.0089,'
+          '"usage":{"input_tokens":2000,"cache_creation_input_tokens":400,"cache_read_input_tokens":600,"output_tokens":84}}']
+    a = runtimes.scan("claude", cl)
+    check("runtimes: claude - session, tool calls, tokens without cache reads, cost, success",
+          a["conversation_id"] == "S1" and a["tools"] == 1 and a["tokens"] == 2484 and a["result"]["status"] == "SUCCESS"
+          and a["result"]["cost_usd"] == 0.0089)
+    b = runtimes.scan("claude", cl[:3] + ['{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"S1"}'])
+    check("runtimes: claude - a budget stop is an error with its subtype", b["result"]["status"] == "ERROR" and b["result"]["subtype"] == "error_max_budget_usd")
+    cx = ['{"type":"thread.started","thread_id":"TH1"}', '{"type":"turn.started"}',
+          '{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"ls","status":"in_progress"}}',
+          '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"ls","exit_code":0,"status":"completed"}}',
+          '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Done."}}',
+          '{"type":"turn.completed","usage":{"input_tokens":3000,"cached_input_tokens":1000,"output_tokens":120}}']
+    c = runtimes.scan("codex", cx, "1.25,0.125,10")
+    check("runtimes: codex - thread id, one tool, tokens minus cache, estimated cost, success",
+          c["conversation_id"] == "TH1" and c["tools"] == 1 and c["tokens"] == 2120 and c["result"]["status"] == "SUCCESS"
+          and abs(c["result"]["cost_usd"] - (2000 * 1.25 + 1000 * 0.125 + 120 * 10) / 1e6) < 1e-9)
+    check("runtimes: codex - turn.failed is an error with its message",
+          runtimes.scan("codex", cx[:2] + ['{"type":"turn.failed","error":{"message":"Missing environment variable"}}'])["result"]["error"] == "Missing environment variable")
+    gm = ['{"type":"init","timestamp":"t","session_id":"G1","model":"m"}', '{"type":"message","timestamp":"t","role":"user","content":"do it"}',
+          '{"type":"tool_use","timestamp":"t","tool_name":"run_shell_command","tool_id":"x","parameters":{"command":"ls"}}',
+          '{"type":"tool_result","timestamp":"t","tool_id":"x","status":"success","output":""}',
+          '{"type":"message","timestamp":"t","role":"assistant","content":"Do","delta":true}',
+          '{"type":"message","timestamp":"t","role":"assistant","content":"ne.","delta":true}',
+          '{"type":"result","timestamp":"t","status":"success","stats":{"total_tokens":2460,"input_tokens":2400,"output_tokens":60,"cached":0}}']
+    g = runtimes.scan("gemini", gm, "1,0,10")
+    check("runtimes: gemini - session, tool, tokens, streamed answer joined, success",
+          g["conversation_id"] == "G1" and g["tools"] == 1 and g["tokens"] == 2460 and g["result"]["response"] == "Done." and g["result"]["status"] == "SUCCESS")
+    ag = ['{"event":"init","init":{"conversation_id":"A1"}}', '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":500}}}',
+          '{"event":"result","result":{"status":"SUCCESS","response":"ok"}}', 'not json', '[1,2]']
+    d_ = runtimes.scan("agy", ag)
+    check("runtimes: agy unchanged; garbage lines are ignored", d_["conversation_id"] == "A1" and d_["tools"] == 1 and d_["tokens"] == 500
+          and d_["result"]["status"] == "SUCCESS")
+    argv, stdin_text = runtimes.command("codex", "PROMPT", "gpt-x", "TH1", 10, 1.0)
+    check("runtimes: API prompts go on stdin, resume flags per CLI, codex quiet flags",
+          stdin_text == "PROMPT" and "PROMPT" not in argv and argv[-3:] == ["resume", "TH1", "-"] and "check_for_update_on_startup=false" in argv
+          and runtimes.command("claude", "P", "sonnet", "S1", 10, 2.0)[0][-4:] == ["--max-budget-usd", "2", "--resume", "S1"]
+          and runtimes.command("agy", "P", "m", None, 10)[1] is None)
     # planner output normalisation: garbage never raises, keys are unique, dependencies resolve by key or slug
     nt = norm_tasks({"tasks": [{"key": "a", "title": "A", "files": ["x.py", "../etc/passwd", 5], "depends_on": "b"},
                                "garbage", {"key": "a", "title": "A again", "risk": "RISKY", "acceptance": "one"},

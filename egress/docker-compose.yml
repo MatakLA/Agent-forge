@@ -32,6 +32,7 @@ services:
     volumes:
       - egress-logs:/var/log/squid
       - ./allowlist.txt:/etc/squid/allowlist.txt:ro
+      - ./allowlist.local.txt:/etc/squid/allowlist.local.txt:ro
     tmpfs:
       - /tmp
       - /var/spool/squid
