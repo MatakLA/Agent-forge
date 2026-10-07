@@ -519,8 +519,8 @@ PANES_LOCK = threading.Lock()
 RETIRED = {}
 
 
-def discover_devbox_orchestrator():
-    """The most recently modified transcript directly under -home-dev-sandbox (not memory/, not tool-results/)."""
+def discover_orchestrator():
+    """The orchestrator's Claude Code session (if one runs next to Agent-Forge): the newest transcript of CLAUDE_PROJECT."""
     out = ssh_run(f"ls -t ~/.claude/projects/{CLAUDE_PROJECT}/*.jsonl 2>/dev/null | head -1").strip()
     if not out:
         return None
@@ -537,25 +537,35 @@ def discover_workers():
     """Latest run directory per worker under ~/sandbox/runs/, and the full set of worker names ever seen.
     Older, differently-named directories (e.g. task-numbered dirs from early V4 runs like 0001-wordcount) are
     not dispatch runs and are skipped — matched strictly against bin/dispatch's own <timestamp>-<worker> format."""
-    out = ssh_run(f"ls -1dt {FORGE_DIR}/runs/*/ 2>/dev/null | grep -vE '/(audit|unattended)/$'")
+    # newest 200 run directories with the age of their "finished" marker (-1 = still running) in one call
+    out = ssh_run(f"cd {FORGE_DIR}/runs 2>/dev/null && now=$(date +%s) && ls -1dt */ 2>/dev/null | head -200 | while read d; do "
+                  f"f=-1; [ -e \"$d/finished\" ] && f=$(( now - $(stat -c %Y \"$d/finished\") )); echo \"$d $f\"; done")
     latest_per_worker, all_workers = {}, set()
     for line in out.splitlines():
-        base = os.path.basename(line.strip().rstrip("/"))
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        base = parts[0].rstrip("/")
         m = RUN_DIR_RE.match(base)
         if not m:
             continue
         worker = m.group(1)
         all_workers.add(worker)
         if worker not in latest_per_worker:
-            latest_per_worker[worker] = (base, line.strip().rstrip("/"))
-    return latest_per_worker, all_workers
+            # a live pane only for a run that is running or finished a moment ago - an old finished run (or one that
+            # never wrote a transcript, e.g. a failed setup) must not show up as a "running" empty pane
+            if parts[1].lstrip("-").isdigit() and (int(parts[1]) < 0 or int(parts[1]) < FINISHED_GRACE):
+                latest_per_worker[worker] = (base, f"{FORGE_DIR}/runs/{base}")
+            else:
+                latest_per_worker.setdefault(worker, None)
+    return {w: v for w, v in latest_per_worker.items() if v}, all_workers
 
 
 QUOTA_POLL_INTERVAL = 60   # seconds; agy /usage is metadata, not a model call, but no need to hammer it
 
 
 def parse_usage(text):
-    """Exact copy of bin/lib/sbx.py's parse_usage on devbox: tab-separated model / label / pct% / reset."""
+    """Same as bin/lib/sbx.py's parse_usage: tab-separated model / label / pct% / reset."""
     rows = []
     for line in text.splitlines():
         p = [x.strip() for x in line.split("\t")]
@@ -656,10 +666,10 @@ def discover_loop():
 
 def _discover_once():
     wanted = {}
-    orch = discover_devbox_orchestrator()
+    orch = discover_orchestrator()
     if orch:
         sid, path, running, tail_argv = orch
-        wanted["orchestrator"] = ("Orchestrator (devbox)", "orchestrator", path, render_orchestrator_line, running, tail_argv)
+        wanted["orchestrator"] = ("Orchestrator (Claude Code)", "orchestrator", path, render_orchestrator_line, running, tail_argv)
 
     latest, all_workers = discover_workers()
     for worker, (run_name, run_dir) in latest.items():
@@ -715,7 +725,7 @@ def shutdown(*_a):
 
 # ---- HTTP -----------------------------------------------------------------------------------------------------
 PAGE = r"""<!DOCTYPE html>
-<html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent-Forge</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --card2:#22262f; --text:#e8e9ec; --muted:#8b8f99; --accent:#5b8def; --ok:#3ecf8e; --idle:#5a5f6b;
@@ -880,34 +890,33 @@ PAGE = r"""<!DOCTYPE html>
 </style></head>
 <body>
 <header>
-  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="projekt"></select><span id="pills"></span>
-    <button id="lang" class="mini" style="margin-left:auto" title="English / slovenčina"></button></div>
+  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="project"></select><span id="pills"></span></div>
   <div id="jserr" style="display:none; margin-top:8px; font-size:12.5px; color:var(--bad);"></div>
   <div id="resume-result" style="display:none; margin-top:8px; font-size:12.5px;"></div>
   <div class="stats" id="stats"></div>
   <nav id="nav">
-    <button data-t="overview">Prehľad</button>
-    <button data-t="queue">Fronta <span class="cnt" id="c-queue">0</span></button>
-    <button data-t="timeline">Časová os</button>
+    <button data-t="overview">Overview</button>
+    <button data-t="queue">Queue <span class="cnt" id="c-queue">0</span></button>
+    <button data-t="timeline">Timeline</button>
     <button data-t="live">Live <span class="cnt" id="c-live">0</span></button>
-    <button data-t="metrics">Metriky</button>
-    <button data-t="settings">Nastavenia</button>
-    <button data-t="events">Udalosti</button>
+    <button data-t="metrics">Metrics</button>
+    <button data-t="settings">Settings</button>
+    <button data-t="events">Events</button>
   </nav>
 </header>
 <main>
   <section id="t-overview">
-    <h3>Nový cieľ</h3>
-    <div class="ask"><textarea id="goal-text" placeholder="Čo má tím urobiť? Napr.: Pridaj export výdavkov do CSV, s testami."></textarea>
-      <div class="btnrow"><button id="goal-now">Začať hneď</button><button class="mini" id="goal-backlog">Do backlogu</button>
-        <button class="mini" id="goal-roadmap" title="Veľkú požiadavku rozdelí plánovač na sériu menších cieľov v backlogu">Veľký projekt → roadmapa</button>
+    <h3>New goal</h3>
+    <div class="ask"><textarea id="goal-text" placeholder="What should the team do? E.g.: Add a CSV export of expenses, with tests."></textarea>
+      <div class="btnrow"><button id="goal-now">Start now</button><button class="mini" id="goal-backlog">Add to backlog</button>
+        <button class="mini" id="goal-roadmap" title="The planner splits a big request into a series of smaller goals in the backlog">Big project → roadmap</button>
         <span id="goal-msg" class="muted" style="font-size:12.5px"></span></div></div>
     <div id="questions"></div>
-    <h3>Spýtaj sa tímu</h3>
-    <div class="ask"><textarea id="ask-q" placeholder="Napr. Ako funguje modul X a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)"></textarea>
-      <button id="ask-btn">Spýtať sa</button><div id="ask-a"></div></div>
-    <h3>Tím</h3><div id="team" class="team"><div class="empty">načítavam…</div></div>
-    <h3>Ciele</h3><div id="goals"></div>
+    <h3>Ask the team</h3>
+    <div class="ask"><textarea id="ask-q" placeholder="E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses Claude usage)"></textarea>
+      <button id="ask-btn">Ask</button><div id="ask-a"></div></div>
+    <h3>Team</h3><div id="team" class="team"><div class="empty">loading…</div></div>
+    <h3>Goals</h3><div id="goals"></div>
     <h3>Backlog</h3><div id="backlog"></div>
   </section>
   <section id="t-queue"><div id="board" class="board"></div></section>
@@ -918,246 +927,70 @@ PAGE = r"""<!DOCTYPE html>
   <section id="t-events"><div id="events"></div></section>
 </main>
 <div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
-<div class="detail" id="login"><div class="sheet"><button class="close" id="login-close">Zavrieť</button><h2 id="login-title">Prihlásenie</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">Toto je terminál workera. Otvor odkaz, prihlás sa Google účtom určeným pre tohto workera, skopíruj kód
-  a pošli ho sem. Ak sa agy na niečo pýta, odpovedz tu.</div>
+<div class="detail" id="login"><div class="sheet"><button class="close" id="login-close">Close</button><h2 id="login-title">Sign-in</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the
+  code and send it here. If agy asks anything, answer here.</div>
   <div id="login-url" style="font-size:13px;margin:6px 0"></div>
   <pre id="login-out" class="term"></pre>
-  <div class="btnrow"><input type="text" id="login-in" placeholder="kód alebo odpoveď" style="flex:1"><button class="mini" id="login-send">Poslať</button></div>
-  <div class="btnrow"><button class="resume-btn" id="login-done">Hotovo — overiť prihlásenie</button></div></div></div>
-<div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close">Zavrieť</button><h2>Nový projekt</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">Vytvorí projekt s vlastným orchestrátorom, repozitárom na Forgejo a skupinou workerov.
-  Každý worker by mal patriť len jednému projektu.</div>
+  <div class="btnrow"><input type="text" id="login-in" placeholder="code or answer" style="flex:1"><button class="mini" id="login-send">Send</button></div>
+  <div class="btnrow"><button class="resume-btn" id="login-done">Done — check the sign-in</button></div></div></div>
+<div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close">Close</button><h2>New project</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">Creates a project with its own orchestrator, a repository on Forgejo and a group of workers.
+  Each worker should belong to one project only.</div>
   <div id="np-form">
-  <div class="setrow"><label>Názov (malé písmená, pomlčky)</label><div><input type="text" id="np-name" placeholder="napr. eshop"><div class="seterr" id="np-e-name"></div></div></div>
-  <div class="setrow"><label>Repozitár (organizácia/repozitár)</label><div><input type="text" id="np-repo" placeholder="napr. acme/eshop"><div class="seterr" id="np-e-repo"></div></div></div>
-  <div class="setrow"><label>Jazyk, v ktorom sa ťa tím pýta</label><div><input type="text" id="np-lang" value="Slovak"><div class="seterr" id="np-e-lang"></div></div></div>
-  <div class="setrow"><label>Vízia — čo má projekt robiť (z toho plánuje autopilot)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
-  <div class="setrow"><label>Workeri pre tento projekt</label><div><div id="np-workers" class="muted">načítavam…</div><div class="seterr" id="np-e-workers"></div></div></div>
-  <div class="btnrow"><button class="resume-btn" id="np-create">Vytvoriť projekt</button></div></div>
+  <div class="setrow"><label>Name (lowercase letters, dashes)</label><div><input type="text" id="np-name" placeholder="e.g. shop"><div class="seterr" id="np-e-name"></div></div></div>
+  <div class="setrow"><label>Repository (organisation/repository)</label><div><input type="text" id="np-repo" placeholder="e.g. acme/shop"><div class="seterr" id="np-e-repo"></div></div></div>
+  <div class="setrow"><label>Language the team uses with you</label><div><input type="text" id="np-lang" value="English"><div class="seterr" id="np-e-lang"></div></div></div>
+  <div class="setrow"><label>Vision — what the project should do (the autopilot plans from it)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
+  <div class="setrow"><label>Workers for this project</label><div><div id="np-workers" class="muted">loading…</div><div class="seterr" id="np-e-workers"></div></div></div>
+  <div class="btnrow"><button class="resume-btn" id="np-create">Create project</button></div></div>
   <pre id="np-log" class="term" style="display:none"></pre></div></div>
-<div class="detail" id="setup"><div class="sheet"><button class="close" id="su-close">Zavrieť</button><h2>Kde je kód tohto projektu?</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">Workeri vždy pracujú v internom Forgejo vo svojom sandboxe. Ak má projekt domov na GitHube
-  alebo GitLabe, orchestrátor tam otvára a merguje pull requesty a odtiaľ si berie main. Workeri na GitHub/GitLab nikdy nevidia.</div>
+<div class="detail" id="setup"><div class="sheet"><button class="close" id="su-close">Close</button><h2>Where does this project's code live?</h2>
+  <div class="muted" style="font-size:12.5px;margin:6px 0">Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub
+  or GitLab, the orchestrator opens and merges pull requests there and takes main from there. Workers never reach GitHub/GitLab.</div>
   <div id="su-form">
-  <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="forgejo"> Iba interné Forgejo</label>
+  <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="forgejo"> Internal Forgejo only</label>
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="github"> GitHub</label>
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="gitlab"> GitLab</label>
   <div id="su-up">
   <div class="setrow"><label>Server</label><div><input type="text" id="su-url" placeholder="https://github.com"><div class="seterr" id="su-e-url"></div></div></div>
-  <div class="setrow"><label>Repozitár (vlastník/repozitár)</label><div><input type="text" id="su-repo" placeholder="napr. acme/eshop"><div class="seterr" id="su-e-repo"></div></div></div>
-  <div class="setrow"><label>Token (prázdne = ponechať uložený)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
+  <div class="setrow"><label>Repository (owner/repository)</label><div><input type="text" id="su-repo" placeholder="e.g. acme/shop"><div class="seterr" id="su-e-repo"></div></div></div>
+  <div class="setrow"><label>Token (empty = keep the stored one)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
     <div class="muted" id="su-help" style="font-size:12px;margin-top:4px"></div></div></div>
-  <div class="setrow" id="su-force-row" style="display:none"><label>Interný repozitár už má commity</label><div><label class="chk"><input type="checkbox" id="su-force">
-    nahradiť ich obsahom z GitHubu/GitLabu</label></div></div>
+  <div class="setrow" id="su-force-row" style="display:none"><label>The internal repository already has commits</label><div><label class="chk"><input type="checkbox" id="su-force">
+    replace them with the content from GitHub/GitLab</label></div></div>
   </div>
-  <div class="btnrow"><button class="resume-btn" id="su-go">Uložiť a pripojiť</button><button class="mini" id="su-later">Neskôr</button></div></div>
+  <div class="btnrow"><button class="resume-btn" id="su-go">Save and connect</button><button class="mini" id="su-later">Later</button></div></div>
   <pre id="su-log" class="term" style="display:none"></pre></div></div>
 <script>
 // every write carries X-Agent-Forge: the server refuses POSTs without it (a cross-site page cannot add it without CORS consent)
 const _fetch = window.fetch.bind(window);
 window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() === 'POST') o.headers = Object.assign({'X-Agent-Forge': '1'}, o.headers || {}); return _fetch(u, o); };
 
-// ---- language: the page is written in Slovak; in English every rendered text node is translated through EN / EN_RX (exact
-// phrases first, then patterns for text with numbers and names). Content is never translated: goals, task titles, specs,
-// transcripts, diffs, events, answers (SKIP). Choice: the EN/SK button, else the browser language.
-const LANG = (() => { try { const v = localStorage.getItem('af-lang'); if (v === 'en' || v === 'sk') return v; } catch (e) {}
-  return /^sk\b/i.test(navigator.language || '') ? 'sk' : 'en'; })();
-const EN = {
- 'Prehľad': 'Overview', 'Fronta': 'Queue', 'Časová os': 'Timeline', 'Metriky': 'Metrics', 'Nastavenia': 'Settings', 'Udalosti': 'Events',
- 'Nový cieľ': 'New goal', 'Začať hneď': 'Start now', 'Do backlogu': 'Add to backlog', 'Veľký projekt → roadmapa': 'Big project → roadmap',
- 'Spýtaj sa tímu': 'Ask the team', 'Spýtať sa': 'Ask', 'Tím': 'Team', 'Ciele': 'Goals', 'načítavam…': 'loading…', 'načítavam': 'loading',
- 'Čo má tím urobiť? Napr.: Pridaj export výdavkov do CSV, s testami.': 'What should the team do? E.g.: Add a CSV export of expenses, with tests.',
- 'Veľkú požiadavku rozdelí plánovač na sériu menších cieľov v backlogu': 'The planner splits a big request into a series of smaller goals in the backlog',
- 'Napr. Ako funguje modul X a čo ešte chýba? (odpovedá orchestrátor z kódu v repe, stojí Claude usage)':
-   'E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses Claude usage)',
- 'Zavrieť': 'Close', 'Prihlásenie': 'Sign-in', 'Poslať': 'Send', 'Hotovo — overiť prihlásenie': 'Done — check the sign-in', 'kód alebo odpoveď': 'code or answer',
- 'Toto je terminál workera. Otvor odkaz, prihlás sa Google účtom určeným pre tohto workera, skopíruj kód a pošli ho sem. Ak sa agy na niečo pýta, odpovedz tu.':
-   "This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the code and send it here. If agy asks anything, answer here.",
- 'Nový projekt': 'New project', 'Vytvoriť projekt': 'Create project', '+ Nový projekt…': '+ New project…',
- 'Vytvorí projekt s vlastným orchestrátorom, repozitárom na Forgejo a skupinou workerov. Každý worker by mal patriť len jednému projektu.':
-   'Creates a project with its own orchestrator, a repository on Forgejo and a group of workers. Each worker should belong to one project only.',
- 'Názov (malé písmená, pomlčky)': 'Name (lowercase letters, dashes)', 'Repozitár (organizácia/repozitár)': 'Repository (organisation/repository)',
- 'Jazyk, v ktorom sa ťa tím pýta': 'Language the team uses with you', 'Vízia — čo má projekt robiť (z toho plánuje autopilot)': 'Vision — what the project should do (the autopilot plans from it)',
- 'Workeri pre tento projekt': 'Workers for this project', 'napr. eshop': 'e.g. shop', 'napr. acme/eshop': 'e.g. acme/shop',
- 'default — všetci': 'default — all', 'žiadni workeri — pridaj ich v Nastaveniach': 'no workers — add them in Settings',
- 'Delí sa': 'Splitting', 'Čaká': 'Waiting', 'Beží': 'Running', 'Kontrola': 'Checking', 'Hotovo': 'Done', 'Zaseknuté': 'Blocked', 'Zrušené': 'Cancelled',
- 'Kontrola (testy + review)': 'Checking (tests + review)', 'Zaseknuté / zrušené': 'Blocked / cancelled',
- 'odosielam…': 'sending…', 'Cieľ zaradený — plánovač ho rozdelí na úlohy do pol minúty.': 'Goal queued — the planner splits it into tasks within half a minute.',
- 'Pridané do backlogu.': 'Added to the backlog.', 'Plánovač pripravuje roadmapu — ciele sa objavia v backlogu.': 'The planner is preparing a roadmap — its goals will appear in the backlog.',
- 'Zahodiť tento cieľ z backlogu?': 'Remove this goal from the backlog?', 'Kill switch je v tvrdom režime. Spustiť workerov znova a pokračovať?': 'The kill switch is in hard mode. Start the workers again and continue?',
- 'zastavujem…': 'stopping…', 'pokračujem…': 'continuing…',
- 'Kto plánuje (poradie)': 'Who plans (in order)', 'Kto robí review (poradie)': 'Who reviews (in order)', 'Antigravity model pre plánovanie': 'Antigravity model for planning',
- 'Antigravity model pre review': 'Antigravity model for reviews', 'Antigravity záložný (Gemini)': 'Antigravity fallback (Gemini)', 'Model workerov': 'Worker model',
- 'Model workerov pre rizikové úlohy': 'Worker model for risky tasks', 'Anthropic API model (platené)': 'Anthropic API model (paid)', 'OpenAI-compatible model (platené)': 'OpenAI-compatible model (paid)',
- 'Gemini API model (platené)': 'Gemini API model (paid)', 'Jazyk pre teba': 'Your language', 'Autopilot (sám vyberá ďalšie ciele)': 'Autopilot (picks the next goals itself)',
- 'Automatický merge': 'Automatic merge', 'Pokračovať v konverzácii pri oprave': 'Continue the conversation on a rework', 'Max. vrátení na úlohu': 'Max. reworks per task',
- 'Max. aktívnych cieľov': 'Max. active goals', 'Rozdeliť úlohu po N stropoch tokenov': 'Split a task after N token caps', 'Cieľová veľkosť úlohy (tokeny)': 'Target task size (tokens)',
- 'Max. súbežných behov': 'Max. parallel runs', 'Strop tokenov na beh': 'Token cap per run', 'Časový limit behu (min)': 'Run time limit (min)',
- 'Minimálna 5h kvóta workera (%)': "Worker's minimum 5-hour quota (%)", 'Minimálna týždenná kvóta (%)': 'Minimum weekly quota (%)', 'Kill switch po N zlyhaniach za sebou': 'Kill switch after N failures in a row',
- 'Balík kontextu v zadaní (on / off / ab = polovica úloh, na meranie)': 'Context pack in each task (on / off / ab = half the tasks, to measure)',
- 'Max. veľkosť balíka (znaky)': 'Max. pack size (characters)', 'Oprava testov v tom istom behu (max. kôl)': 'Fix failing tests in the same run (max. rounds)',
- 'Max. súborov na úlohu (viac = rozdeliť vopred)': 'Max. files per task (more = split up front)', 'Model pre ľahké roly': 'Model for light roles', 'Ľahké roly (čiarkou)': 'Light roles (comma-separated)',
- 'A/B test: alternatívny model workerov': 'A/B test: alternative worker model', 'A/B test: podiel úloh na ňom (%)': 'A/B test: share of tasks on it (%)',
- 'Plánovať dopredu, keď workeri čakajú na kvótu': 'Plan ahead while the workers wait for quota', 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)': 'LLM-free maintenance of main while idle (tests 3×, docstrings)',
- 'Testovací príkaz (prázdne = pytest)': 'Test command (empty = pytest)', 'Image pre testy (prázdne = image workera)': 'Test image (empty = the worker image)',
- 'Notifikácie: URL (ntfy téma, Slack/Discord webhook)': 'Notifications: URL (ntfy topic, Slack/Discord webhook)', 'Notifikácie: formát': 'Notifications: format',
- 'Notifikácie: udalosti': 'Notifications: events', 'Komprimovať prepisy behov po (dňoch)': 'Compress run transcripts after (days)', 'Projekt': 'Project',
- 'Ako sa projekt testuje a kam ti tím píše.': 'How the project is tested and where the team notifies you.',
- 'Claude Code (predplatné)': 'Claude Code (subscription)', 'Claude cez Antigravity': 'Claude via Antigravity', 'Gemini cez Antigravity': 'Gemini via Antigravity',
- 'Anthropic API (platené)': 'Anthropic API (paid)', 'OpenAI API (platené)': 'OpenAI API (paid)', 'Gemini API (platené)': 'Gemini API (paid)',
- 'vypnutý — projekt beží': 'off — the project is running', 'Pokračovať': 'Continue', 'Zastaviť projekt': 'Stop project', 'Zastaviť natvrdo': 'Stop hard',
- 'Zastaviť všetky projekty': 'Stop all projects', 'Workeri tohto projektu': "This project's workers", 'prihlásiť do Antigravity': 'sign in to Antigravity',
- '+ Pridať workera': '+ Add worker', 'Orchestrátor': 'Orchestrator', 'Platené API (len ak sú vyššie zaškrtnuté a máš kľúč)': 'Paid APIs (only if ticked above and you have a key)',
- 'rovnaký ako bežné úlohy': 'same as routine tasks', 'bez A/B testu': 'no A/B test', 'obnoviť zoznam modelov z Antigravity': 'refresh the model list from Antigravity',
- 'Workeri — modely': 'Workers — models', 'Efektivita': 'Efficiency', 'Ako tím šetrí kvótu. Výsledky meraní sú v záložke Metriky.': 'How the team saves quota. The measurements are in the Metrics tab.',
- 'Správanie': 'Behaviour', 'Limity': 'Limits', 'platia pre VŠETKY projekty': 'apply to ALL projects', 'Uložiť zmeny': 'Save changes', 'nič sa nezmenilo': 'nothing changed',
- 'Vytvoriť nového workera (Forgejo účet, kontajner)? Potom ho prihlásiš jeho vlastným Google účtom.': 'Create a new worker (Forgejo account, container)? Then you sign it in with its own Google account.',
- 'spúšťam…': 'starting…', '(čakám na výstup…)': '(waiting for output…)', 'Otvor a prihlás sa': 'Open it and sign in with', 'overujem prihlásenie…': 'checking the sign-in…',
- 'foreman nebeží': 'foreman not running', 'všetky projekty': 'all projects', 'natvrdo — workeri zastavení': 'hard — workers stopped', 'foreman pozastavený': 'foreman paused',
- 'foreman beží': 'foreman running', 'orchestrátor: Claude Code': 'orchestrator: Claude Code', 'stará verzia foremana — menej detailov': 'old foreman version — fewer details',
- 'autopilot zap': 'autopilot on', 'autopilot vyp': 'autopilot off',
- 'beží': 'running', 'čaká': 'waiting', 'kontrola': 'checking', 'hotovo dnes': 'done today', 'zaseknuté': 'blocked', 'tokeny dnes': 'tokens today', 'orchestrátor dnes': 'orchestrator today',
- 'Orchestrátor (šéf)': 'Orchestrator (lead)', 'nič nerieši — čaká na workerov': 'idle — waiting for the workers', 'voľný': 'free', 'neznámy dôvod': 'unknown reason',
- 'požičaný orchestrátorovi (Claude cez Antigravity)': 'lent to the orchestrator (Claude via Antigravity)',
- 'ešte nekontrolované': 'not checked yet', 'skryť graf závislostí': 'hide dependency graph', 'graf závislostí': 'dependency graph',
- 'Žiadne ciele — zadaj prvý hore v „Nový cieľ“.': 'No goals yet — enter the first one above under “New goal”.', 'Nič nebeží.': 'Nothing is running.',
- 'Cieľ': 'Goal', 'Prečo zaseknuté': 'Why blocked', 'Posledná spätná väzba workerovi': 'Latest feedback to the worker', 'História': 'History',
- 'Akceptačné kritériá': 'Acceptance criteria', 'Súbory': 'Files', 'Mutačné testy': 'Mutation tests', 'Zmeny (diff)': 'Changes (diff)', 'zobraziť diff': 'show diff', 'Zadanie': 'Spec',
- 'Zatiaľ nič.': 'Nothing yet.', 'zatiaľ nič': 'nothing yet', 'Žiadne AI momentálne nebežia — prepis sa zjaví, keď niečo pobeží.': 'No AI is running right now — the transcript appears when one runs.',
- 'Časová os potrebuje novšiu verziu foremana.': 'The timeline needs a newer foreman.', 'Za posledných 24 h žiadne behy.': 'No runs in the last 24 h.',
- 'hotové': 'done', 'strop tokenov / čas': 'token cap / time', 'zlyhalo': 'failed', 'času pracoval': 'of the time working', 'Posledných 24 hodín': 'Last 24 hours',
- 'Medzery v pruhu = worker stál. Klik na blok otvorí úlohu.': 'Gaps = the worker was idle. Click a block to open its task.',
- 'Metriky potrebujú novšiu verziu foremana.': 'Metrics need a newer foreman.', 'hotových úloh': 'tasks done', 'schválené na 1. pokus': 'approved first time',
- 'vrátení na opravu': 'sent back', 'zaseknutých': 'blocked', 'tokenov na hotovú úlohu': 'tokens per done task', 'Hotové úlohy za deň': 'Tasks done per day', 'Podľa roly': 'By role',
- 'rola': 'role', 'úloh': 'tasks', 'hotovo': 'done', '1. pokus': '1st try', 'vrátení': 'sent back', 'tokeny/úloha': 'tokens/task', 'riadky': 'lines',
- 'behov': 'runs', 'strop': 'cap', 'kvóta/beh': 'quota/run', 'kvóta/hotová úloha': 'quota/done task', 'nástroje/beh': 'tools/run', 'tokeny/beh': 'tokens/run',
- 'Efektivita podľa modelu workerov': 'Efficiency by worker model', 'kvóta = % týždenného limitu jedného účtu (agy /usage pred a po behu); nižšie je lepšie':
-   "quota = % of one account's weekly limit (agy /usage before and after the run); lower is better", 'Balík kontextu — A/B': 'Context pack — A/B',
- 'pri CONTEXT_PACK=ab dostane balík polovica úloh; porovnaj kvótu na hotovú úlohu a počet nástrojov na beh': 'with CONTEXT_PACK=ab half the tasks get the pack; compare quota per done task and tools per run',
- 'Kontrola testov v behu': 'Self-check in the run', 'behov s kontrolou': 'runs with a self-check', 'zelené hneď': 'green at once', 'opravené v tom istom behu': 'fixed in the same run',
- 'ostali červené': 'stayed red', 'Údržba main (bez AI)': 'Maintenance of main (no AI)', 'Orchestrátor za 7 dní (kto plánoval a robil review)': 'Orchestrator, last 7 days (who planned and reviewed)',
- 'poskytovateľ': 'provider', 'volaní': 'calls', 'priemer': 'average', 'Orchestrátor premýšľa… (aj 1–2 min)': 'The orchestrator is thinking… (1–2 min)', '(bez odpovede)': '(no answer)',
- 'vyššie': 'up', 'nižšie': 'down', 'zahodiť': 'remove', 'Prázdny.': 'Empty.', 'Prázdny — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie.': 'Empty — when a worker is free, the autopilot picks the next goal from the vision.',
- 'tvoja odpoveď (plánovač sa ňou bude riadiť)': 'your answer (the planner will follow it)', 'Odpovedať': 'Answer', 'Zahodiť': 'Dismiss', 'otázka nie je dôležitá': 'the question does not matter',
- '… pracujem': '… working', '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.': '✔ The project is ready — pick it at the top and enter its first goal.',
- '⚠ Projekt je vytvorený, len jeho služba potrebuje root — spusti príkaz vyššie.': '⚠ The project exists; only its service needs root — run the command above.',
- '✘ Zlyhalo — pozri výpis vyššie.': '✘ Failed — see the output above.', 'neznáma': 'unknown', 'projekt už existuje': 'the project already exists',
- "malé písmená, číslice a pomlčky (nie 'default')": "lowercase letters, digits and dashes (not 'default')", 'organizácia/repozitár, napr. acme/shop': 'organisation/repository, e.g. acme/shop',
- 'neplatný worker': 'invalid worker', 'názov jazyka, napr. Slovak': 'a language name, e.g. English',
- 'plánovanie': 'planning', 'plánovanie úloh': 'planning tasks', 'kontrola, či je cieľ splnený alebo treba opravu': 'checking whether the goal is met or needs a fix',
- 'rebase na main': 'rebase onto main', 'testy v čistom kontajneri': 'tests in a clean container', 'review orchestrátorom': 'review by the orchestrator', 'roadmapa projektu': 'project roadmap',
- 'autopilot vyberá ďalší cieľ z vízie': 'autopilot picks the next goal from the vision', 'údržba: testy na main 3x, mapa kódu (bez AI)': 'maintenance: tests on main 3×, code map (no AI)',
- 'Merguje sa': 'Merging', 'API workeri': 'API workers', 'Kedy dostanú prácu': 'When they get work', 'iba keď predplatné nestačí': 'only when the subscription workers cannot',
- 'vždy prednostne': 'always first', 'Model pre Claude Code (prázdne = predvolený)': 'Claude Code model (empty = default)', 'Model pre Codex (prázdne = predvolený)': 'Codex model (empty = default)',
- 'Model pre Gemini CLI (prázdne = predvolený)': 'Gemini CLI model (empty = default)', 'Strop na jeden beh (USD)': 'Cap per run (USD)', 'Strop na deň, všetky projekty (USD)': 'Cap per day, all projects (USD)',
- 'Max. volaní nástrojov na beh': 'Max. tool calls per run', 'Cena Codex: vstup, cache, výstup (USD / 1M tokenov)': 'Codex price: input, cached, output (USD / 1M tokens)',
- 'Cena Gemini: vstup, cache, výstup (USD / 1M tokenov)': 'Gemini price: input, cached, output (USD / 1M tokens)', 'zmeniť kľúč…': 'change a key…', 'Uložiť kľúč': 'Save key',
- 'nový kľúč': 'new key', 'kľúč uložený': 'key saved', 'Na čom bude nový worker pracovať?': 'What will the new worker run on?', 'Pridať': 'Add', 'Zrušiť': 'Cancel',
- 'API kľúč (uloží sa iba na server, do tajných súborov)': 'API key (stored on the server only, in the secrets directory)',
- '— Google účet s predplatným, prihlásiš ho v prehliadači': '— a Google account with a subscription, signed in from the browser',
- '— Anthropic API kľúč, platí sa za tokeny': '— Anthropic API key, paid per token', '— OpenAI API kľúč, platí sa za tokeny': '— OpenAI API key, paid per token',
- '— Gemini API kľúč, platí sa za tokeny': '— Gemini API key, paid per token', 'Kde je kód': 'Where the code lives', 'iba interné Forgejo': 'internal Forgejo only',
- 'nevybrané': 'not chosen', 'zmeniť…': 'change…', 'Kde je kód tohto projektu?': "Where does this project's code live?",
- 'Workeri vždy pracujú v internom Forgejo vo svojom sandboxe. Ak má projekt domov na GitHube alebo GitLabe, orchestrátor tam otvára a merguje pull requesty a odtiaľ si berie main. Workeri na GitHub/GitLab nikdy nevidia.':
-   "Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub or GitLab, the orchestrator opens and merges pull requests there and takes main from there. Workers never reach GitHub/GitLab.",
- 'Iba interné Forgejo': 'Internal Forgejo only', 'Server': 'Server', 'Repozitár (vlastník/repozitár)': 'Repository (owner/repository)', 'Token (prázdne = ponechať uložený)': 'Token (empty = keep the stored one)',
- 'Interný repozitár už má commity': 'The internal repository already has commits', 'nahradiť ich obsahom z GitHubu/GitLabu': 'replace them with the content from GitHub/GitLab',
- 'Uložiť a pripojiť': 'Save and connect', 'Neskôr': 'Later', '✔ Hotovo — tím odteraz merguje cez tento repozitár.': '✔ Done — the team now merges through this repository.',
- 'Token: GitHub → Settings → Developer settings → Fine-grained token len pre tento repozitár, oprávnenia Contents a Pull requests: Read and write.':
-   'Token: GitHub → Settings → Developer settings → Fine-grained token for this repository only, permissions Contents and Pull requests: Read and write.',
- 'Token: GitLab → projekt → Settings → Access tokens, rola Developer, rozsahy api a write_repository.': 'Token: GitLab → project → Settings → Access tokens, role Developer, scopes api and write_repository.',
- 'kľúč sa nepodarilo uložiť': 'the key could not be saved', 'token sa nepodarilo uložiť': 'the token could not be saved',
-};
-const PHASE_RX = '(plánovanie úloh|plánovanie|kontrola, či je cieľ splnený alebo treba opravu|rebase na main|testy v čistom kontajneri|review orchestrátorom|mutačné testy \\(\\d+\\)|merge|roadmapa projektu|autopilot vyberá ďalší cieľ z vízie|údržba: testy na main 3x, mapa kódu \\(bez AI\\)|kontrola)';
-const tw = s => EN[s] != null ? EN[s] : s.replace(/^mutačné testy \((\d+)\)$/, 'mutation tests ($1)');
-const STATUS_EN = {'Delí sa': 'Splitting', 'Čaká': 'Waiting', 'Beží': 'Running', 'Kontrola': 'Checking', 'Hotovo': 'Done', 'Zaseknuté': 'Blocked', 'Zrušené': 'Cancelled'};
-const EN_RX = [
- [/^(Delí sa|Čaká|Beží|Kontrola|Hotovo|Zaseknuté|Zrušené) · (.*)$/, (m, a, b) => STATUS_EN[a] + ' · ' + b],
- [new RegExp('^' + PHASE_RX + '( — .*)?$'), (m, a, b) => tw(a) + (b || '')],
- [/^Nepodarilo sa: (.*)$/s, 'Failed: $1'],
- [/^Zastaviť (VŠETKY projekty|projekt „(.*)“)( NATVRDO \(zastaví aj kontajnery workerov\))?\?$/, (m, a, p, h) => (p != null ? 'Stop project “' + p + '”' : 'Stop ALL projects') + (h ? ' HARD (also stops the worker containers)' : '') + '?'],
- [/^Nastavenia nie sú dostupné: (.*)$/s, 'Settings are not available: $1'],
- [/^ZAPNUTÝ( pre všetky projekty| pre tento projekt)( \(natvrdo\))? — (.*)$/s, (m, a, h, r) => 'ON ' + (a.includes('všetky') ? 'for all projects' : 'for this project') + (h ? ' (hard)' : '') + ' — ' + r],
- [/^Zaškrtnutí patria projektu „(.*)“\. Nikto zaškrtnutý = všetci\. Každý worker je samostatný Antigravity účet( alebo API kľúč)?\.$/, (m, p, k) => 'Ticked workers belong to project “' + p + '”. None ticked = all. Each worker is its own Antigravity account' + (k ? ' or API key' : '') + '.'],
- [/^predvolený \((.*)\)$/, 'default ($1)'],
- [/^Workerov je viac \((\d+)\) ako MAX_PARALLEL — niektorí budú stáť\.$/, 'There are more workers ($1) than MAX_PARALLEL — some will idle.'],
- [/^uložené: (.*) — platí od najbližšieho kola \(do 20 s\)$/, 'saved: $1 — applies from the next round (within 20 s)'],
- [/^neuložené — oprav označené polia(.*)$/s, 'not saved — fix the marked fields$1'],
- [/^vytváram (.*)… \(prvý raz aj pár minút\)$/, 'creating $1… (the first time takes a few minutes)'],
- [/^(.*) vytvorený — teraz ho prihlás$/, '$1 created — now sign it in'], [/^zlyhalo: (.*)$/s, 'failed: $1'],
- [/^Prihlásenie (\S+) do Antigravity$/, 'Sign $1 in to Antigravity'], [/^účtom pre (.*)$/, 'the account for $1'],
- [/^(.*) je prihlásený a vidí svoju kvótu\. Zaškrtni ho v projekte a ulož\.$/, '$1 is signed in and sees its quota. Tick it in the project and save.'],
- [/^(.*) zatiaľ nie je prihlásený — skús to znova\.$/, '$1 is not signed in yet — try again.'],
- [/^foreman: načítavam$/, 'foreman: loading'],
- [/^dashboard nemá čerstvé dáta \((\d+) min staré\) - nedôveruj stavu nižšie(?: · príčina: (.*))?$/s, (m, n, c) => 'the dashboard has no fresh data (' + n + ' min old) - do not trust the state below' + (c ? ' · cause: ' + c : '')],
- [/^kill switch ZAP — (.*)$/s, 'kill switch ON — $1'],
- [/^orchestrátor: Claude cez Antigravity \(Claude Code späť (.*)\)$/, 'orchestrator: Claude via Antigravity (Claude Code back $1)'],
- [/^(\d+) worker\(y\) dočasne bez náhradného orchestrátora$/, '$1 worker(s) temporarily without a substitute orchestrator'],
- [/^(.*) · plánuje, kontroluje, merguje$/, (m, a) => (a === 'Claude cez Antigravity (náhradník)' ? 'Claude via Antigravity (substitute)' : a) + ' · plans, reviews, merges'],
- [/^čaká: (.*)$/s, 'waiting: $1'], [/^čaká na (.*)$/, 'waits for $1'], [/^pokus (\d+\/\d+)$/, 'attempt $1'],
- [/^(\S+) · pokus (\d+\/\d+) · beží (.+?)(?: · (\d+) nástrojov)?$/, (m, id, a, t, n) => id + ' · attempt ' + a + ' · running ' + t + (n ? ' · ' + n + ' tools' : '')],
- [/^pauza do ([\d:]+): (.*)$/s, (m, t, r) => 'paused until ' + t + ': ' + (r === 'neznámy dôvod' ? 'unknown reason' : r)],
- [/^kontrola: (.*)$/, 'checked: $1'], [/^Hotové ciele \((\d+)\)$/, 'Finished goals ($1)'], [/^Otázky plánovača \((\d+)\)$/, "The planner's questions ($1)"],
- [/^\(nepodarilo sa načítať: (.*)\)$/s, '(could not load: $1)'], [/^\(chyba spojenia: (.*)\)$/s, '(connection error: $1)'],
- [/^(.*) · (\S+) · (\d+) min · (\d+)k tokenov$/, '$1 · $2 · $3 min · $4k tokens'], [/^Chyba stránky: (.*)$/s, 'Page error: $1'],
- [/^(.*) vytvorený a pripravený$/, '$1 created and ready'], [/^API dnes (.*)$/, 'API today $1'],
- [/^z \$(.*)\. Kľúče: (.*)$/, 'of $$$1. Keys: $2'], [/^kľúč neuložený: (.*)$/, 'key not saved: $1'],
- [/^Workeri s API kľúčom platia za tokeny\. Dnes minuté:$/, 'Workers with an API key pay per token. Spent today:'],
-];
-// text inside these elements is content, not interface - it stays as written
-const SKIP = '#grid, .term, pre, .diff, .answer, .goal-text, .bltext, .qtext, .goal-sum, .hist, .ev, .node-task, .card .t, .task-title, .critrow > span:not(.cm), textarea';
-// interface text that mixes words with numbers inside one text node: word-level replacements by context
-const CTX = [
- ['.goal-meta', [[/^plánuje sa/, 'planning'], [/^beží/, 'running'], [/^hotový/, 'done'], [/^zaseknutý/, 'blocked'], [/ · úlohy /, ' · tasks '], [/ · kritériá /, ' · criteria '], [/ · kolo /, ' · round '], [/ riadkov/, ' lines']]],
- ['.sheet > .muted', [[/ · pokus /, ' · attempt '], [/riziko: /, 'risk: '], [/k tokenov/, 'k tokens'], [/ riadkov/, ' lines'], [/súbor\(y\) spolu/, 'file(s) total'],
-                       [/ · (Delí sa|Čaká|Beží|Kontrola|Hotovo|Zaseknuté|Zrušené) · /, (m, a) => ' · ' + STATUS_EN[a] + ' · ']]],
- ['.maint', [[/testy: /, 'tests: '], [/modulov bez docstringu: /, 'modules without a docstring: ']]],
-];
-function trText(s, el) {
-  if (LANG === 'sk' || !s || !/[A-Za-zÀ-ž]/.test(s)) return s;
-  const k = s.trim().replace(/\s+/g, ' ');
-  if (!k) return s;
-  if (EN[k] != null) return s.replace(s.trim(), EN[k]);
-  for (const [rx, f] of EN_RX) if (rx.test(k)) return s.replace(s.trim(), k.replace(rx, f));
-  if (el) for (const [sel, reps] of CTX) if (el.closest(sel)) { let v = s; for (const [rx, f] of reps) v = v.replace(rx, f); return v; }
-  return s;
-}
-const T = s => trText(String(s), null);
-function translate(root) {
-  if (LANG === 'sk' || !root) return;
-  if (root.nodeType === 3) { const p = root.parentElement; if (p && !p.closest(SKIP)) { const v = trText(root.nodeValue, p); if (v !== root.nodeValue) root.nodeValue = v; } return; }
-  if (root.nodeType !== 1 || root.closest(SKIP)) return;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
-  for (const n of nodes) { const p = n.parentElement; if (!p || p.closest(SKIP)) continue; const v = trText(n.nodeValue, p); if (v !== n.nodeValue) n.nodeValue = v; }
-  for (const el of [root, ...root.querySelectorAll('[placeholder],[title]')]) for (const a of ['placeholder', 'title']) {
-    const v = el.getAttribute && el.getAttribute(a); if (v) { const t = trText(v, el); if (t !== v) el.setAttribute(a, t); } }
-}
-if (LANG !== 'sk') {
-  const _confirm = window.confirm.bind(window), _alert = window.alert.bind(window);
-  window.confirm = m => _confirm(T(m)); window.alert = m => _alert(T(m));
-}
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit'}); };
+const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
 const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
-  return today ? d.toLocaleTimeString('sk-SK', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : d.toLocaleString('sk-SK', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}); };
+  return today ? d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : d.toLocaleString([], {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now()/1000 - (typeof ts === 'number' ? ts : Date.parse(ts)/1000)));
   return s < 60 ? s + ' s' : s < 3600 ? Math.round(s/60) + ' min' : Math.round(s/3600) + ' h'; };
-const STATUS = {splitting:'Delí sa', pending:'Čaká', running:'Beží', gate:'Kontrola', review:'Kontrola', merging:'Merguje sa', done:'Hotovo', blocked:'Zaseknuté', cancelled:'Zrušené'};
+const STATUS = {splitting:'Splitting', pending:'Waiting', running:'Running', gate:'Checking', review:'Checking', merging:'Merging', done:'Done', blocked:'Blocked', cancelled:'Cancelled'};
 const RTNAME = {agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI'};
-const RTDESC = {agy: 'Google účet s predplatným, prihlásiš ho v prehliadači', claude: 'Anthropic API kľúč, platí sa za tokeny',
-                codex: 'OpenAI API kľúč, platí sa za tokeny', gemini: 'Gemini API kľúč, platí sa za tokeny'};
+const RTDESC = {agy: 'a Google account with a subscription, signed in from the browser', claude: 'Anthropic API key, paid per token',
+                codex: 'OpenAI API key, paid per token', gemini: 'Gemini API key, paid per token'};
 const roleCls = r => /secur/i.test(r) ? 'sec' : (/test/i.test(r) && !/develop/i.test(r)) ? 'test' : '';
 let tab = 'overview', F = null, P = {roster:{}, panes:[]}, openTask = null, project = 'default';
 try { project = localStorage.getItem('af-project') || 'default'; } catch (e) {}
 const inPool = w => !F || !(F.pool || []).length || F.pool.includes(w);
-try { tab = localStorage.getItem('nexus-tab') || 'overview'; } catch (e) {}
+try { tab = localStorage.getItem('af-tab') || 'overview'; } catch (e) {}
+// deep links: #tab=queue, #task=0012-store, #project=shop (bookmarks, links in notifications)
+const HASH = Object.fromEntries((location.hash || '').replace(/^#/, '').split('&').filter(Boolean).map(kv => kv.split('=').map(decodeURIComponent)));
+if (['overview', 'queue', 'timeline', 'live', 'metrics', 'settings', 'events'].includes(HASH.tab)) tab = HASH.tab;
+if (HASH.project && /^[a-z0-9][a-z0-9-]{0,39}$/.test(HASH.project)) project = HASH.project;
 
 function setTab(t) {
   tab = t;
   for (const k in lastHTML) delete lastHTML[k];
-  try { localStorage.setItem('nexus-tab', t); } catch (e) {}
+  try { localStorage.setItem('af-tab', t); } catch (e) {}
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
   document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 't-' + t));
   render();
@@ -1180,10 +1013,10 @@ const post = async (url, body) => { try { return await (await fetch(url, {method
 async function addGoal(mode) {
   const ta = document.getElementById('goal-text'), msg = document.getElementById('goal-msg'), text = ta.value.trim();
   if (!text) { ta.focus(); return; }
-  msg.textContent = 'odosielam…';
+  msg.textContent = 'sending…';
   const r = await post('/api/goal', {text, mode});
-  msg.textContent = r.ok ? {now: 'Cieľ zaradený — plánovač ho rozdelí na úlohy do pol minúty.', backlog: 'Pridané do backlogu.',
-    roadmap: 'Plánovač pripravuje roadmapu — ciele sa objavia v backlogu.'}[mode] : 'Nepodarilo sa: ' + (r.message || r.error || '');
+  msg.textContent = r.ok ? {now: 'Goal queued — the planner splits it into tasks within half a minute.', backlog: 'Added to the backlog.',
+    roadmap: 'The planner is preparing a roadmap — its goals will appear in the backlog.'}[mode] : 'Nepodarilo sa: ' + (r.message || r.error || '');
   if (r.ok) ta.value = '';
   setTimeout(poll, 1500);
 }
@@ -1192,7 +1025,7 @@ document.getElementById('goal-backlog').addEventListener('click', () => addGoal(
 document.getElementById('goal-roadmap').addEventListener('click', () => addGoal('roadmap'));
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-bl]');
-  if (b) { if (b.dataset.bl === 'drop' && !confirm('Zahodiť tento cieľ z backlogu?')) return;
+  if (b) { if (b.dataset.bl === 'drop' && !confirm('Remove this goal from the backlog?')) return;
     await post('/api/backlog', {action: b.dataset.bl, n: b.dataset.n, to: b.dataset.to || ''}); setTimeout(poll, 800); return; }
   const qa = e.target.closest('[data-qa]'), qd = e.target.closest('[data-qd]');
   if (qa || qd) {
@@ -1209,11 +1042,11 @@ async function killswitch(action, opts) {
   opts = opts || {};
   if (ksBusy) return;
   const hard = !!opts.hard, all = !!opts.all;
-  if (action === 'on' && !confirm((all ? 'Zastaviť VŠETKY projekty' : 'Zastaviť projekt „' + project + '“') + (hard ? ' NATVRDO (zastaví aj kontajnery workerov)' : '') + '?')) return;
-  if (action === 'off' && F && F.killswitch && F.killswitch.hard && !confirm('Kill switch je v tvrdom režime. Spustiť workerov znova a pokračovať?')) return;
+  if (action === 'on' && !confirm((all ? 'Stop ALL projects' : 'Stop project “' + project + '”') + (hard ? ' HARD (also stops the worker containers)' : '') + '?')) return;
+  if (action === 'off' && F && F.killswitch && F.killswitch.hard && !confirm('The kill switch is in hard mode. Start the workers again and continue?')) return;
   ksBusy = true;
   const box = document.getElementById('resume-result');
-  box.style.display = 'block'; box.innerHTML = '<div class="ev">' + (action === 'on' ? 'zastavujem…' : 'pokračujem…') + '</div>';
+  box.style.display = 'block'; box.innerHTML = '<div class="ev">' + (action === 'on' ? 'stopping…' : 'continuing…') + '</div>';
   let res;
   try { res = await (await fetch('/api/killswitch', {method: 'POST', headers: {'Content-Type': 'application/json'},
                        body: JSON.stringify({project, action, hard, all})})).json(); }
@@ -1227,29 +1060,29 @@ function resumeDev() { killswitch('off', {all: !!(F && F.killswitch && F.killswi
 
 // ---- settings tab
 let S = null, sLoadedFor = null, sErr = {}, sMsg = '';
-const LABEL = {PLAN_PROVIDERS: 'Kto plánuje (poradie)', REVIEW_PROVIDERS: 'Kto robí review (poradie)', CLAUDE_MODEL: 'Claude Code model',
-  AGY_PLAN_MODEL: 'Antigravity model pre plánovanie', AGY_REVIEW_MODEL: 'Antigravity model pre review', AGY_FALLBACK_MODEL: 'Antigravity záložný (Gemini)',
-  WORKER_MODEL: 'Model workerov', WORKER_MODEL_RISKY: 'Model workerov pre rizikové úlohy', ANTHROPIC_MODEL: 'Anthropic API model (platené)',
-  OPENAI_MODEL: 'OpenAI-compatible model (platené)', GEMINI_MODEL: 'Gemini API model (platené)', OWNER_LANG: 'Jazyk pre teba',
-  AUTOPILOT: 'Autopilot (sám vyberá ďalšie ciele)', AUTO_MERGE: 'Automatický merge', CONTINUE_CONVERSATIONS: 'Pokračovať v konverzácii pri oprave',
-  MAX_REWORK: 'Max. vrátení na úlohu', MAX_ACTIVE_GOALS: 'Max. aktívnych cieľov', SPLIT_AFTER_CAPS: 'Rozdeliť úlohu po N stropoch tokenov',
-  TASK_TOKEN_BUDGET: 'Cieľová veľkosť úlohy (tokeny)', MAX_PARALLEL: 'Max. súbežných behov', RUN_TOKEN_CAP: 'Strop tokenov na beh',
-  RUN_TIMEOUT_MIN: 'Časový limit behu (min)', QUOTA_MIN_5H_PCT: 'Minimálna 5h kvóta workera (%)', QUOTA_MIN_WEEK_PCT: 'Minimálna týždenná kvóta (%)',
-  CONSEC_FAIL_TRIP: 'Kill switch po N zlyhaniach za sebou',
-  CONTEXT_PACK: 'Balík kontextu v zadaní (on / off / ab = polovica úloh, na meranie)', CONTEXT_PACK_CHARS: 'Max. veľkosť balíka (znaky)',
-  SELF_CHECK_ROUNDS: 'Oprava testov v tom istom behu (max. kôl)', MAX_TASK_FILES: 'Max. súborov na úlohu (viac = rozdeliť vopred)',
-  WORKER_MODEL_LIGHT: 'Model pre ľahké roly', LIGHT_ROLES: 'Ľahké roly (čiarkou)', AB_MODEL: 'A/B test: alternatívny model workerov',
-  AB_SHARE: 'A/B test: podiel úloh na ňom (%)', PLAN_AHEAD: 'Plánovať dopredu, keď workeri čakajú na kvótu',
-  MAINTENANCE: 'Údržba main bez AI, keď tím stojí (testy 3×, docstringy)', TEST_CMD: 'Testovací príkaz (prázdne = pytest)',
-  GATE_IMAGE: 'Image pre testy (prázdne = image workera)', NOTIFY_URL: 'Notifikácie: URL (ntfy téma, Slack/Discord webhook)',
-  NOTIFY_FORMAT: 'Notifikácie: formát', NOTIFY_EVENTS: 'Notifikácie: udalosti', RUNS_KEEP_DAYS: 'Komprimovať prepisy behov po (dňoch)',
-  API_WORKERS_POLICY: 'Kedy dostanú prácu', WORKER_MODEL_CLAUDE: 'Model pre Claude Code (prázdne = predvolený)',
-  WORKER_MODEL_CODEX: 'Model pre Codex (prázdne = predvolený)', WORKER_MODEL_GEMINI: 'Model pre Gemini CLI (prázdne = predvolený)',
-  API_RUN_BUDGET_USD: 'Strop na jeden beh (USD)', API_DAILY_BUDGET_USD: 'Strop na deň, všetky projekty (USD)',
-  RUN_MAX_TOOL_CALLS: 'Max. volaní nástrojov na beh', PRICE_CODEX: 'Cena Codex: vstup, cache, výstup (USD / 1M tokenov)',
-  PRICE_GEMINI: 'Cena Gemini: vstup, cache, výstup (USD / 1M tokenov)'};
-const PROVLABEL = {'claude-cli': 'Claude Code (predplatné)', 'agy-claude': 'Claude cez Antigravity', 'agy-gemini': 'Gemini cez Antigravity',
-  'anthropic-api': 'Anthropic API (platené)', 'openai-api': 'OpenAI API (platené)', 'gemini-api': 'Gemini API (platené)'};
+const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
+  AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback (Gemini)',
+  WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Worker model for risky tasks', ANTHROPIC_MODEL: 'Anthropic API model (paid)',
+  OPENAI_MODEL: 'OpenAI-compatible model (paid)', GEMINI_MODEL: 'Gemini API model (paid)', OWNER_LANG: 'Your language',
+  AUTOPILOT: 'Autopilot (picks the next goals itself)', AUTO_MERGE: 'Automatic merge', CONTINUE_CONVERSATIONS: 'Continue the conversation on a rework',
+  MAX_REWORK: 'Max. reworks per task', MAX_ACTIVE_GOALS: 'Max. active goals', SPLIT_AFTER_CAPS: 'Split a task after N token caps',
+  TASK_TOKEN_BUDGET: 'Target task size (tokens)', MAX_PARALLEL: 'Max. parallel runs', RUN_TOKEN_CAP: 'Token cap per run',
+  RUN_TIMEOUT_MIN: 'Run time limit (min)', QUOTA_MIN_5H_PCT: 'Worker\'s minimum 5-hour quota (%)', QUOTA_MIN_WEEK_PCT: 'Minimum weekly quota (%)',
+  CONSEC_FAIL_TRIP: 'Kill switch after N failures in a row',
+  CONTEXT_PACK: 'Context pack in each task (on / off / ab = half the tasks, to measure)', CONTEXT_PACK_CHARS: 'Max. pack size (characters)',
+  SELF_CHECK_ROUNDS: 'Fix failing tests in the same run (max. rounds)', MAX_TASK_FILES: 'Max. files per task (more = split up front)',
+  WORKER_MODEL_LIGHT: 'Model for light roles', LIGHT_ROLES: 'Light roles (comma-separated)', AB_MODEL: 'A/B test: alternative worker model',
+  AB_SHARE: 'A/B test: share of tasks on it (%)', PLAN_AHEAD: 'Plan ahead while the workers wait for quota',
+  MAINTENANCE: 'LLM-free maintenance of main while idle (tests 3×, docstrings)', TEST_CMD: 'Test command (empty = pytest)',
+  GATE_IMAGE: 'Test image (empty = the worker image)', NOTIFY_URL: 'Notifications: URL (ntfy topic, Slack/Discord webhook)',
+  NOTIFY_FORMAT: 'Notifications: format', NOTIFY_EVENTS: 'Notifications: events', RUNS_KEEP_DAYS: 'Compress run transcripts after (days)',
+  API_WORKERS_POLICY: 'When they get work', WORKER_MODEL_CLAUDE: 'Claude Code model (empty = default)',
+  WORKER_MODEL_CODEX: 'Codex model (empty = default)', WORKER_MODEL_GEMINI: 'Gemini CLI model (empty = default)',
+  API_RUN_BUDGET_USD: 'Cap per run (USD)', API_DAILY_BUDGET_USD: 'Cap per day, all projects (USD)',
+  RUN_MAX_TOOL_CALLS: 'Max. tool calls per run', PRICE_CODEX: 'Codex price: input, cached, output (USD / 1M tokens)',
+  PRICE_GEMINI: 'Gemini price: input, cached, output (USD / 1M tokens)'};
+const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
+  'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
 async function loadSettings(force) {
   if (!force && sLoadedFor === project && S) return;
   sLoadedFor = project;
@@ -1274,82 +1107,82 @@ function modelSel(k, v, allowEmpty, emptyLabel) {
 function field(k, inner) { return '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + '</label><div>' + inner +
   (sErr[k] ? '<div class="seterr">' + esc(sErr[k]) + '</div>' : '') + '</div></div>'; }
 function settingsHtml() {
-  if (!S) { loadSettings(); return '<div class="empty">načítavam…</div>'; }
-  if (S.error) return '<div class="empty">Nastavenia nie sú dostupné: ' + esc(S.error) + '</div>';
+  if (!S) { loadSettings(); return '<div class="empty">loading…</div>'; }
+  if (S.error) return '<div class="empty">Settings are not available: ' + esc(S.error) + '</div>';
   const V = S.values || {}, num = k => '<input type="number" id="set-' + k + '" value="' + esc(V[k]) + '">',
         txt = k => '<input type="text" id="set-' + k + '" value="' + esc(V[k]) + '">', tog = k => '<input type="checkbox" id="set-' + k + '"' + (String(V[k]) === '1' ? ' checked' : '') + '>';
   const ks = F && F.killswitch, pool = String(V.WORKERS || '').split(',').filter(Boolean);
   let h = '<div class="setcard"><h3>Kill switch</h3><div class="muted" style="font-size:12.5px;margin-bottom:8px">' +
-    (ks ? 'ZAPNUTÝ' + (ks.scope === 'all' ? ' pre všetky projekty' : ' pre tento projekt') + (ks.hard ? ' (natvrdo)' : '') + ' — ' + esc(ks.reason || '') : 'vypnutý — projekt beží') + '</div>' +
-    '<div class="btnrow">' + (ks ? '<button class="resume-btn" onclick="resumeDev()">Pokračovať</button>' :
-      '<button class="warnbtn" onclick="killswitch(\'on\')">Zastaviť projekt</button><button class="badbtn" onclick="killswitch(\'on\',{hard:true})">Zastaviť natvrdo</button>') +
-    '<button class="badbtn" onclick="killswitch(\'on\',{all:true})">Zastaviť všetky projekty</button></div></div>';
-  h += '<div class="setcard"><h3>Workeri tohto projektu</h3><div class="muted" style="font-size:12.5px">Zaškrtnutí patria projektu „' + esc(project) +
-    '“. Nikto zaškrtnutý = všetci. Každý worker je samostatný Antigravity účet alebo API kľúč.</div><div id="set-WORKERS" data-kind="pool" class="pool">' +
+    (ks ? 'ON' + (ks.scope === 'all' ? ' for all projects' : ' for this project') + (ks.hard ? ' (hard)' : '') + ' — ' + esc(ks.reason || '') : 'off — the project is running') + '</div>' +
+    '<div class="btnrow">' + (ks ? '<button class="resume-btn" onclick="resumeDev()">Continue</button>' :
+      '<button class="warnbtn" onclick="killswitch(\'on\')">Stop project</button><button class="badbtn" onclick="killswitch(\'on\',{hard:true})">Stop hard</button>') +
+    '<button class="badbtn" onclick="killswitch(\'on\',{all:true})">Stop all projects</button></div></div>';
+  h += '<div class="setcard"><h3>This project\'s workers</h3><div class="muted" style="font-size:12.5px">Ticked workers belong to project “' + esc(project) +
+    '”. None ticked = all. Each worker is its own Antigravity account or API key.</div><div id="set-WORKERS" data-kind="pool" class="pool">' +
     (S.workers || []).map(w => '<div class="poolrow"><label><input type="checkbox" value="' + esc(w.name) + '"' + (pool.includes(w.name) ? ' checked' : '') + '> ' + esc(w.name) +
       ' <span class="rt rt-' + esc(w.runtime || 'agy') + '">' + esc(RTNAME[w.runtime || 'agy'] || w.runtime) + '</span> <span class="muted">(' + esc(w.state) + ')</span></label>' +
-      ((w.runtime || 'agy') === 'agy' ? '<button class="mini" data-login="' + esc(w.name) + '">prihlásiť do Antigravity</button>' : '') + '</div>').join('') +
+      ((w.runtime || 'agy') === 'agy' ? '<button class="mini" data-login="' + esc(w.name) + '">sign in to Antigravity</button>' : '') + '</div>').join('') +
     '</div>' + (sErr.WORKERS ? '<div class="seterr">' + esc(sErr.WORKERS) + '</div>' : '') +
-    '<div class="btnrow"><button class="mini" id="add-worker">+ Pridať workera</button><span id="addw-status" class="muted" style="font-size:12.5px"></span></div>' +
-    '<div id="addw-form" style="display:none" class="addw"><div class="muted" style="font-size:12.5px;margin:8px 0 4px">Na čom bude nový worker pracovať?</div>' +
+    '<div class="btnrow"><button class="mini" id="add-worker">+ Add worker</button><span id="addw-status" class="muted" style="font-size:12.5px"></span></div>' +
+    '<div id="addw-form" style="display:none" class="addw"><div class="muted" style="font-size:12.5px;margin:8px 0 4px">What will the new worker run on?</div>' +
     Object.entries(S.runtimes || {agy: {label: 'Antigravity'}}).map(([k, r], i) => '<label class="chk" style="display:flex"><input type="radio" name="addw-rt" value="' + esc(k) + '"' +
       (i ? '' : ' checked') + '> ' + esc(RTNAME[k] || k) + ' <span class="muted">— ' + esc(RTDESC[k] || r.label) + '</span></label>').join('') +
-    '<div id="addw-key" style="display:none;margin-top:6px"><input type="password" id="addw-keyin" autocomplete="off" placeholder="API kľúč (uloží sa iba na server, do tajných súborov)" style="width:100%"></div>' +
-    '<div class="btnrow"><button class="resume-btn" id="addw-go">Pridať</button><button class="mini" id="addw-cancel">Zrušiť</button></div></div></div>';
+    '<div id="addw-key" style="display:none;margin-top:6px"><input type="password" id="addw-keyin" autocomplete="off" placeholder="API key (stored on the server only, in the secrets directory)" style="width:100%"></div>' +
+    '<div class="btnrow"><button class="resume-btn" id="addw-go">Add</button><button class="mini" id="addw-cancel">Cancel</button></div></div></div>';
   const R = S.runtimes || {}, sec = S.secrets || {};
-  h += '<div class="setcard"><h3>API workeri</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Workeri s API kľúčom platia za tokeny. ' +
-    'Dnes minuté: <b>$' + Number(S.api_spent_today || 0).toFixed(2) + '</b> z $' + esc(V.API_DAILY_BUDGET_USD) + '. Kľúče: ' +
+  h += '<div class="setcard"><h3>API workers</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Workers with an API key pay per token. ' +
+    'Spent today: <b>$' + Number(S.api_spent_today || 0).toFixed(2) + '</b> of $' + esc(V.API_DAILY_BUDGET_USD) + '. Keys: ' +
     ['anthropic.key', 'openai.key', 'gemini.key'].map(k => esc(k.split('.')[0]) + ' ' + (sec[k] ? '✓' : '—')).join(', ') +
-    ' <button class="mini" id="key-change">zmeniť kľúč…</button></div>' +
+    ' <button class="mini" id="key-change">change a key…</button></div>' +
     '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option></select>' +
-    '<input type="password" id="key-val" autocomplete="off" placeholder="nový kľúč" style="flex:1;min-width:180px"><button class="mini" id="key-save">Uložiť kľúč</button></div>' +
-    field('API_WORKERS_POLICY', '<select id="set-API_WORKERS_POLICY">' + [['overflow', 'iba keď predplatné nestačí'], ['always', 'vždy prednostne']].map(([v, l]) =>
+    '<input type="password" id="key-val" autocomplete="off" placeholder="new key" style="flex:1;min-width:180px"><button class="mini" id="key-save">Save key</button></div>' +
+    field('API_WORKERS_POLICY', '<select id="set-API_WORKERS_POLICY">' + [['overflow', 'only when the subscription workers cannot'], ['always', 'always first']].map(([v, l]) =>
       '<option value="' + v + '"' + (v === V.API_WORKERS_POLICY ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>') +
     field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE')) + field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX')) + field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI')) +
     field('API_RUN_BUDGET_USD', txt('API_RUN_BUDGET_USD')) + field('API_DAILY_BUDGET_USD', txt('API_DAILY_BUDGET_USD')) + field('RUN_MAX_TOOL_CALLS', num('RUN_MAX_TOOL_CALLS')) +
     field('PRICE_CODEX', txt('PRICE_CODEX')) + field('PRICE_GEMINI', txt('PRICE_GEMINI')) + '</div>';
-  h += '<div class="setcard"><h3>Orchestrátor</h3>' + field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS', V.PLAN_PROVIDERS)) +
+  h += '<div class="setcard"><h3>Orchestrator</h3>' + field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS', V.PLAN_PROVIDERS)) +
     field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS', V.REVIEW_PROVIDERS)) +
     field('CLAUDE_MODEL', '<select id="set-CLAUDE_MODEL">' + ['sonnet', 'opus', 'haiku', 'fable'].concat(['sonnet', 'opus', 'haiku', 'fable'].includes(V.CLAUDE_MODEL) ? [] : [V.CLAUDE_MODEL])
       .map(m => '<option' + (m === V.CLAUDE_MODEL ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select>') +
     field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL', V.AGY_PLAN_MODEL)) + field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL', V.AGY_REVIEW_MODEL)) +
     field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL', V.AGY_FALLBACK_MODEL)) +
-    '<details><summary class="muted">Platené API (len ak sú vyššie zaškrtnuté a máš kľúč)</summary>' + field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL')) +
+    '<details><summary class="muted">Paid APIs (only if ticked above and you have a key)</summary>' + field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL')) +
     field('OPENAI_MODEL', txt('OPENAI_MODEL')) + field('GEMINI_MODEL', txt('GEMINI_MODEL')) + '</details></div>';
-  h += '<div class="setcard"><h3>Workeri — modely</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'predvolený (' + (S.limits_worker_model || '') + ')')) +
-    field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'rovnaký ako bežné úlohy')) +
-    '<div class="btnrow"><button class="mini" id="refresh-models">obnoviť zoznam modelov z Antigravity</button></div></div>';
+  h += '<div class="setcard"><h3>Workers — models</h3>' + field('WORKER_MODEL', modelSel('WORKER_MODEL', V.WORKER_MODEL, true, 'default (' + (S.limits_worker_model || '') + ')')) +
+    field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', V.WORKER_MODEL_RISKY, true, 'same as routine tasks')) +
+    '<div class="btnrow"><button class="mini" id="refresh-models">refresh the model list from Antigravity</button></div></div>';
   const fk = V.FORGE_KIND || '';
-  h += '<div class="setcard"><h3>Projekt</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako sa projekt testuje a kam ti tím píše.</div>' +
-    '<div class="setrow"><label>Kde je kód</label><div>' + (fk === 'github' || fk === 'gitlab' ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' + esc(V.UPSTREAM_REPO) + '</b>' :
-      fk === 'forgejo' ? 'iba interné Forgejo' : 'nevybrané') + ' <button class="mini" id="open-setup">zmeniť…</button></div></div>' +
+  h += '<div class="setcard"><h3>Project</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">How the project is tested and where the team notifies you.</div>' +
+    '<div class="setrow"><label>Where the code lives</label><div>' + (fk === 'github' || fk === 'gitlab' ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' + esc(V.UPSTREAM_REPO) + '</b>' :
+      fk === 'forgejo' ? 'internal Forgejo only' : 'not chosen') + ' <button class="mini" id="open-setup">change…</button></div></div>' +
     field('TEST_CMD', txt('TEST_CMD')) + field('GATE_IMAGE', txt('GATE_IMAGE')) + field('NOTIFY_URL', txt('NOTIFY_URL')) +
     field('NOTIFY_FORMAT', '<select id="set-NOTIFY_FORMAT">' + ['ntfy', 'slack', 'discord', 'json'].map(x => '<option' + (x === V.NOTIFY_FORMAT ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
     field('NOTIFY_EVENTS', txt('NOTIFY_EVENTS')) + field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS')) + '</div>';
-  h += '<div class="setcard"><h3>Efektivita</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">Ako tím šetrí kvótu. Výsledky meraní sú v záložke Metriky.</div>' +
+  h += '<div class="setcard"><h3>Efficiency</h3><div class="muted" style="font-size:12.5px;margin-bottom:6px">How the team saves quota. The measurements are in the Metrics tab.</div>' +
     field('CONTEXT_PACK', '<select id="set-CONTEXT_PACK">' + ['on', 'ab', 'off'].map(x => '<option' + (x === V.CONTEXT_PACK ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
     field('CONTEXT_PACK_CHARS', num('CONTEXT_PACK_CHARS')) + field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS')) + field('MAX_TASK_FILES', num('MAX_TASK_FILES')) +
-    field('WORKER_MODEL_LIGHT', modelSel('WORKER_MODEL_LIGHT', V.WORKER_MODEL_LIGHT, true, 'rovnaký ako bežné úlohy')) + field('LIGHT_ROLES', txt('LIGHT_ROLES')) +
-    field('AB_MODEL', modelSel('AB_MODEL', V.AB_MODEL, true, 'bez A/B testu')) + field('AB_SHARE', num('AB_SHARE')) +
+    field('WORKER_MODEL_LIGHT', modelSel('WORKER_MODEL_LIGHT', V.WORKER_MODEL_LIGHT, true, 'same as routine tasks')) + field('LIGHT_ROLES', txt('LIGHT_ROLES')) +
+    field('AB_MODEL', modelSel('AB_MODEL', V.AB_MODEL, true, 'no A/B test')) + field('AB_SHARE', num('AB_SHARE')) +
     field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) + '</div>';
-  h += '<div class="setcard"><h3>Správanie</h3>' + field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) +
+  h += '<div class="setcard"><h3>Behaviour</h3>' + field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) +
     field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) + field('OWNER_LANG', txt('OWNER_LANG')) + field('MAX_REWORK', num('MAX_REWORK')) +
     field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS')) + field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET')) + '</div>';
-  h += '<div class="setcard"><h3>Limity <span class="pill warn">platia pre VŠETKY projekty</span></h3>' +
+  h += '<div class="setcard"><h3>Limity <span class="pill warn">apply to ALL projects</span></h3>' +
     ['MAX_PARALLEL', 'RUN_TOKEN_CAP', 'RUN_TIMEOUT_MIN', 'QUOTA_MIN_5H_PCT', 'QUOTA_MIN_WEEK_PCT', 'CONSEC_FAIL_TRIP'].map(k => field(k, num(k))).join('') +
-    ((S.workers || []).length > Number(V.MAX_PARALLEL) ? '<div class="seterr">Workerov je viac (' + S.workers.length + ') ako MAX_PARALLEL — niektorí budú stáť.</div>' : '') + '</div>';
-  h += '<div class="btnrow sticky"><button class="resume-btn" id="save-settings">Uložiť zmeny</button><span class="muted" style="font-size:12.5px">' + esc(sMsg) + '</span></div>';
+    ((S.workers || []).length > Number(V.MAX_PARALLEL) ? '<div class="seterr">There are more workers (' + S.workers.length + ') than MAX_PARALLEL — some will idle.</div>' : '') + '</div>';
+  h += '<div class="btnrow sticky"><button class="resume-btn" id="save-settings">Save changes</button><span class="muted" style="font-size:12.5px">' + esc(sMsg) + '</span></div>';
   return h;
 }
 async function saveSettings() {
   const V = S.values || {}, changes = {};
   for (const k of Object.keys(V)) { const v = sval(k); if (v !== null && String(v) !== String(V[k])) changes[k] = v; }
-  if (!Object.keys(changes).length) { sMsg = 'nič sa nezmenilo'; render(true); return; }
+  if (!Object.keys(changes).length) { sMsg = 'nothing changed'; render(true); return; }
   let r;
   try { r = await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, changes})})).json(); }
   catch (e) { r = {ok: false, errors: {_: String(e)}}; }
   sErr = r.errors || {};
-  sMsg = r.ok ? 'uložené: ' + Object.keys(changes).join(', ') + ' — platí od najbližšieho kola (do 20 s)' : 'neuložené — oprav označené polia' + (sErr._ ? ': ' + sErr._ : '');
+  sMsg = r.ok ? 'saved: ' + Object.keys(changes).join(', ') + ' — applies from the next round (within 20 s)' : 'not saved — fix the marked fields' + (sErr._ ? ': ' + sErr._ : '');
   if (r.ok) { await loadSettings(true); return; }
   // keep everything the owner typed: only mark the bad fields
   document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
@@ -1366,7 +1199,7 @@ document.addEventListener('click', async e => {
     if (d < 0 && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
     if (d > 0 && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); return; }
   if (e.target.id === 'save-settings') { saveSettings(); return; }
-  if (e.target.id === 'refresh-models') { e.target.textContent = 'načítavam…';
+  if (e.target.id === 'refresh-models') { e.target.textContent = 'loading…';
     try { await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, refresh_models: true})}); } catch (err) {}
     loadSettings(true); return; }
   if (e.target.id === 'add-worker') { addWorker(); return; }
@@ -1394,13 +1227,13 @@ async function addWorkerGo() {
   if (key && !(S.secrets || {})[key]) {
     if (!kin.value.trim()) { kin.focus(); return; }
     const r = await post('/api/secret', {name: key, value: kin.value.trim()}); kin.value = '';
-    if (!r.ok) { st.textContent = 'kľúč sa nepodarilo uložiť: ' + (r.message || r.error || ''); return; }
+    if (!r.ok) { st.textContent = 'the key could not be saved: ' + (r.message || r.error || ''); return; }
   }
   document.getElementById('addw-form').style.display = 'none';
   let j = await post('/api/workers', {action: 'add', runtime: rt});
-  while (j.state === 'running') { st.textContent = 'vytváram ' + (j.worker || '') + '… (prvý raz aj pár minút)'; await new Promise(r => setTimeout(r, 3000));
+  while (j.state === 'running') { st.textContent = 'creating ' + (j.worker || 'the worker') + '… (the first time takes a few minutes)'; await new Promise(r => setTimeout(r, 3000));
     j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
-  st.textContent = j.state !== 'done' ? 'zlyhalo: ' + (j.log || j.error || '').slice(-300) : rt === 'agy' ? j.worker + ' vytvorený — teraz ho prihlás' : j.worker + ' vytvorený a pripravený';
+  st.textContent = j.state !== 'done' ? 'failed: ' + (j.log || j.error || '').slice(-300) : rt === 'agy' ? j.worker + ' created — now sign it in' : j.worker + ' created and ready';
   await loadSettings(true);
   if (j.state === 'done' && rt === 'agy') openLogin(j.worker);
 }
@@ -1412,7 +1245,7 @@ document.addEventListener('click', async e => {
   if (e.target.id === 'key-save') { const v = document.getElementById('key-val');
     if (!v.value.trim()) { v.focus(); return; }
     const r = await post('/api/secret', {name: document.getElementById('key-name').value, value: v.value.trim()}); v.value = '';
-    sMsg = r.ok ? 'kľúč uložený' : 'kľúč neuložený: ' + (r.message || r.error || ''); loadSettings(true); return; }
+    sMsg = r.ok ? 'key saved' : 'key not saved: ' + (r.message || r.error || ''); loadSettings(true); return; }
   if (e.target.id === 'open-setup') { openSetup(); return; }
   if (e.target.id === 'su-close' || e.target.id === 'su-later') { document.getElementById('setup').classList.remove('on'); setupDismissed[project] = true; return; }
   if (e.target.id === 'su-go') { setupGo(); return; }
@@ -1426,9 +1259,9 @@ function suRefresh() {
   const k = suKind(), up = k !== 'forgejo';
   document.getElementById('su-up').style.display = up ? '' : 'none';
   if (up) { const u = document.getElementById('su-url'); if (!u.value || Object.values(SU_URL).includes(u.value)) u.value = SU_URL[k];
-    document.getElementById('su-help').textContent = T(k === 'github'
-      ? 'Token: GitHub → Settings → Developer settings → Fine-grained token len pre tento repozitár, oprávnenia Contents a Pull requests: Read and write.'
-      : 'Token: GitLab → projekt → Settings → Access tokens, rola Developer, rozsahy api a write_repository.'); }
+    document.getElementById('su-help').textContent = k === 'github'
+      ? 'Token: GitHub → Settings → Developer settings → Fine-grained token for this repository only, permissions Contents and Pull requests: Read and write.'
+      : 'Token: GitLab → project → Settings → Access tokens, role Developer, scopes api and write_repository.'; }
 }
 document.addEventListener('change', e => { if (e.target.name === 'su-kind') suRefresh(); });
 function openSetup() {
@@ -1446,15 +1279,15 @@ async function setupGo() {
   for (const x of ['repo', 'url', 'token']) document.getElementById('su-e-' + x).textContent = '';
   if (k !== 'forgejo' && tok.value.trim()) {
     const r = await post('/api/secret', {name: k + '.token', value: tok.value.trim()}); tok.value = '';
-    if (!r.ok) { document.getElementById('su-e-token').textContent = r.message || r.error || 'token sa nepodarilo uložiť'; return; }
+    if (!r.ok) { document.getElementById('su-e-token').textContent = r.message || r.error || 'the token could not be saved'; return; }
   }
   let j = await post('/api/upstream', {action: 'connect', kind: k, repo: document.getElementById('su-repo').value.trim(),
                                        url: document.getElementById('su-url').value.trim(), force: document.getElementById('su-force').checked});
   if (j.errors) { for (const x in j.errors) { const el = document.getElementById('su-e-' + x); if (el) el.textContent = j.errors[x]; } return; }
   document.getElementById('su-form').style.display = 'none'; log.style.display = '';
-  while (j.state === 'running') { log.textContent = (j.log || '') + '\n' + T('… pracujem'); await new Promise(r => setTimeout(r, 2000));
+  while (j.state === 'running') { log.textContent = (j.log || '') + '\n… working'; await new Promise(r => setTimeout(r, 2000));
     j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
-  log.textContent = (j.log || '') + '\n' + T(j.state === 'done' ? '✔ Hotovo — tím odteraz merguje cez tento repozitár.' : '✘ Zlyhalo — pozri výpis vyššie.');
+  log.textContent = (j.log || '') + '\n' + (j.state === 'done' ? '✔ Done — the team now merges through this repository.' : '✘ Failed — see the output above.');
   if (j.state !== 'done' && /already has \d+ commits/.test(j.log || '')) {
     document.getElementById('su-form').style.display = ''; document.getElementById('su-force-row').style.display = ''; }
   S = null; loadSettings(true); setTimeout(poll, 1000);
@@ -1463,54 +1296,54 @@ let loginW = null, loginTimer = null;
 async function openLogin(w) {
   loginW = w;
   const m = document.getElementById('login'); m.classList.add('on');
-  document.getElementById('login-title').textContent = 'Prihlásenie ' + w + ' do Antigravity';
-  document.getElementById('login-out').textContent = 'spúšťam…';
+  document.getElementById('login-title').textContent = 'Sign ' + w + ' in to Antigravity';
+  document.getElementById('login-out').textContent = 'starting…';
   await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: w, action: 'start'})});
   clearInterval(loginTimer);
   loginTimer = setInterval(async () => {
     let r; try { r = await (await fetch('/api/login?worker=' + encodeURIComponent(w))).json(); } catch (e) { return; }
     const o = document.getElementById('login-out'), atBottom = o.scrollHeight - o.scrollTop - o.clientHeight < 30;
-    o.textContent = r.output || '(čakám na výstup…)'; if (atBottom) o.scrollTop = o.scrollHeight;
+    o.textContent = r.output || '(waiting for output…)'; if (atBottom) o.scrollTop = o.scrollHeight;
     const u = document.getElementById('login-url');
-    u.innerHTML = r.url ? 'Otvor a prihlás sa <b>účtom pre ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
+    u.innerHTML = r.url ? 'Open it and sign in with <b>the account for ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
   }, 1500);
 }
 async function closeLogin(check) {
   clearInterval(loginTimer);
   const st = document.getElementById('login-url');
-  if (check) st.textContent = 'overujem prihlásenie…';
+  if (check) st.textContent = 'checking the sign-in…';
   let r = {}; try { r = await (await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'stop'})})).json(); } catch (e) {}
-  if (check) { alert(r.logged_in ? loginW + ' je prihlásený a vidí svoju kvótu. Zaškrtni ho v projekte a ulož.' : loginW + ' zatiaľ nie je prihlásený — skús to znova.'); }
+  if (check) { alert(r.logged_in ? loginW + ' is signed in and sees its quota. Tick it in the project and save.' : loginW + ' is not signed in yet — try again.'); }
   document.getElementById('login').classList.remove('on');
   loadSettings(true);
 }
 
 function pills() {
-  if (!F) return '<span class="pill bad">foreman: ' + esc(window._ferr || 'načítavam') + '</span>';
+  if (!F) return '<span class="pill bad">foreman: ' + esc(window._ferr || 'loading') + '</span>';
   const p = [];
   const staleFor = foremanFetchedAt ? (Date.now()/1000 - foremanFetchedAt) : 0;
   if (staleFor > 30) {
-    p.push('<span class="pill bad">dashboard nemá čerstvé dáta (' + Math.round(staleFor/60) + ' min staré) - nedôveruj stavu nižšie' +
-           (window._ferr ? ' · príčina: ' + esc(window._ferr) : '') + '</span>');
+    p.push('<span class="pill bad">the dashboard has no fresh data (' + Math.round(staleFor/60) + ' min old) - do not trust the state below' +
+           (window._ferr ? ' · cause: ' + esc(window._ferr) : '') + '</span>');
     return p.join(' ');
   }
-  if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman nebeží</span>');
+  if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman not running</span>');
   else if (F.killswitch) {
-    p.push('<span class="pill bad">kill switch ZAP — ' + esc(F.killswitch.reason || '') + '</span>');
-    p.push((F.killswitch.scope === 'all' ? '<span class="pill bad">všetky projekty</span>' : '') +
-           (F.killswitch.hard ? '<span class="pill bad">natvrdo — workeri zastavení</span>' : '') +
-           '<button class="resume-btn" onclick="resumeDev()" id="resume-btn">Pokračovať</button>');
+    p.push('<span class="pill bad">kill switch ON — ' + esc(F.killswitch.reason || '') + '</span>');
+    p.push((F.killswitch.scope === 'all' ? '<span class="pill bad">all projects</span>' : '') +
+           (F.killswitch.hard ? '<span class="pill bad">hard — workers stopped</span>' : '') +
+           '<button class="resume-btn" onclick="resumeDev()" id="resume-btn">Continue</button>');
   }
-  else if (F.paused) p.push('<span class="pill warn">foreman pozastavený</span>');
-  else p.push('<span class="pill ok"><span class="dot running"></span>foreman beží</span>');
-  if (F.claude_until) p.push('<span class="pill warn">orchestrátor: Claude cez Antigravity (Claude Code späť ' + tfmt(F.claude_until) + ')</span>');
-  else p.push('<span class="pill ok">orchestrátor: Claude Code</span>');
+  else if (F.paused) p.push('<span class="pill warn">foreman paused</span>');
+  else p.push('<span class="pill ok"><span class="dot running"></span>foreman running</span>');
+  if (F.claude_until) p.push('<span class="pill warn">orchestrator: Claude via Antigravity (Claude Code back ' + tfmt(F.claude_until) + ')</span>');
+  else p.push('<span class="pill ok">orchestrator: Claude Code</span>');
   const agyDown = Object.keys(F.agy_cooldown || {}).length;
-  if (agyDown) p.push('<span class="pill warn">' + agyDown + ' worker(y) dočasne bez náhradného orchestrátora</span>');
-  p.push('<span class="pill">autopilot ' + (F.autopilot ? 'zap' : 'vyp') + '</span>');
+  if (agyDown) p.push('<span class="pill warn">' + agyDown + ' worker(s) temporarily without a substitute orchestrator</span>');
+  p.push('<span class="pill">autopilot ' + (F.autopilot ? 'on' : 'off') + '</span>');
   if (F.forge && (F.forge.kind === 'github' || F.forge.kind === 'gitlab')) p.push('<span class="pill">' + (F.forge.kind === 'github' ? 'GitHub' : 'GitLab') + ': ' + esc(F.forge.repo) + '</span>');
-  if (F.api && (F.api.workers || []).length) p.push('<span class="pill' + (F.api.spent_today >= F.api.budget ? ' bad' : '') + '">API dnes $' + Number(F.api.spent_today).toFixed(2) + ' / $' + Number(F.api.budget).toFixed(0) + '</span>');
-  if (F.old) p.push('<span class="pill warn">stará verzia foremana — menej detailov</span>');
+  if (F.api && (F.api.workers || []).length) p.push('<span class="pill' + (F.api.spent_today >= F.api.budget ? ' bad' : '') + '">API today $' + Number(F.api.spent_today).toFixed(2) + ' / $' + Number(F.api.budget).toFixed(0) + '</span>');
+  if (F.old) p.push('<span class="pill warn">old foreman version — fewer details</span>');
   return p.join(' ');
 }
 
@@ -1520,11 +1353,11 @@ function stats() {
   const n = s => ts.filter(x => x.status === s).length;
   const box = (v, lab) => '<div class="stat"><b>' + v + '</b><span>' + lab + '</span></div>';
   const blocked = n('blocked');
-  return box(n('running'), 'beží') + box(n('pending'), 'čaká') + box(n('gate') + n('review'), 'kontrola') +
-         box(t.merged != null ? t.merged : n('done'), 'hotovo dnes') +
-         (blocked ? box('<span style="color:var(--bad)">' + blocked + '</span>', 'zaseknuté') : '') +
-         (t.tokens ? box((t.tokens/1e6).toFixed(1) + 'M', 'tokeny dnes') : '') +
-         (l.cost_usd ? box('$' + l.cost_usd.toFixed(2), 'orchestrátor dnes') : '');
+  return box(n('running'), 'running') + box(n('pending'), 'waiting') + box(n('gate') + n('review'), 'checking') +
+         box(t.merged != null ? t.merged : n('done'), 'done today') +
+         (blocked ? box('<span style="color:var(--bad)">' + blocked + '</span>', 'blocked') : '') +
+         (t.tokens ? box((t.tokens/1e6).toFixed(1) + 'M', 'tokens today') : '') +
+         (l.cost_usd ? box('$' + l.cost_usd.toFixed(2), 'orchestrator today') : '');
 }
 
 function team() {
@@ -1532,14 +1365,14 @@ function team() {
   const steps = (live.steps || []).map(s => {
     const [kind, id] = s.key.split(':');
     const t = ts.find(x => x.id === id), g = F && (F.goals || []).find(x => x.id === id);
-    const what = s.phase || (kind === 'goal' ? 'plánovanie' : kind === 'task' ? 'kontrola' : kind);
+    const what = s.phase || (kind === 'goal' ? 'planning' : kind === 'task' ? 'checking' : kind);
     const obj = t ? esc(t.id) : g ? '„' + esc(g.text.slice(0, 60)) + '“' : '';
     return '<div class="step"><span class="dot think"></span>' + esc(what) + (obj ? ' — ' + obj : '') + ' <span class="muted">(' + ago(s.since) + ')</span></div>';
   }).join('');
-  let orch = '<div class="node orch"><div class="node-title"><span class="dot ' + (steps ? 'think' : '') + '"></span>Orchestrátor (šéf)</div>' +
-    '<div class="node-sub">' + (F && F.claude_until ? 'Claude cez Antigravity (náhradník)' : 'Claude Code Sonnet') + ' · plánuje, kontroluje, merguje</div>' +
-    (steps || '<div class="node-sub">nič nerieši — čaká na workerov</div>') +
-    (live.unavailable ? '<div class="step" style="color:var(--warn)">čaká: ' + esc(live.unavailable) + '</div>' : '') + '</div>';
+  let orch = '<div class="node orch"><div class="node-title"><span class="dot ' + (steps ? 'think' : '') + '"></span>Orchestrator (lead)</div>' +
+    '<div class="node-sub">' + (F && F.claude_until ? 'Claude via Antigravity (substitute)' : 'Claude Code') + ' · plans, reviews, merges</div>' +
+    (steps || '<div class="node-sub">idle — waiting for the workers</div>') +
+    (live.unavailable ? '<div class="step" style="color:var(--warn)">waiting: ' + esc(live.unavailable) + '</div>' : '') + '</div>';
   const names = new Set(Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7)).filter(inPool));
   ts.forEach(t => t.worker && inPool(t.worker) && names.add(t.worker));
   const ws = [...names].sort().map(w => {
@@ -1550,9 +1383,9 @@ function team() {
     const shortModel = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
     const quota = q5h.length ? '<div class="node-quota">' + q5h.map(q => shortModel(q.model) + ' ' + q.pct.toFixed(0) + '%').join(' · ') + '</div>' : '';
     const task = t ? '<div class="node-task" data-task="' + esc(t.id) + '" style="cursor:pointer"><span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span> ' +
-      esc(t.title) + '</div><div class="node-sub">' + esc(t.id) + ' · pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · beží ' + ago(t.dispatched) +
-      (e.tool_calls ? ' · ' + e.tool_calls + ' nástrojov' : '') + '</div>'
-      : '<div class="node-sub">' + (cool ? 'pauza do ' + tfmt(cool.until) + ': ' + esc(cool.reason || 'neznámy dôvod') : (live.reserved || []).includes(w) ? 'požičaný orchestrátorovi (Claude cez Antigravity)' : 'voľný') + '</div>';
+      esc(t.title) + '</div><div class="node-sub">' + esc(t.id) + ' · attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · running ' + ago(t.dispatched) +
+      (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'
+      : '<div class="node-sub">' + (cool ? 'pauza do ' + tfmt(cool.until) + ': ' + esc(cool.reason || 'unknown reason') : (live.reserved || []).includes(w) ? 'lent to the orchestrator (Claude via Antigravity)' : 'free') + '</div>';
     const rt = (F && F.api && (F.api.workers || []).includes(w)) ? ((ts.find(x => x.worker === w && x.runtime) || {}).runtime || 'API') : '';
     return '<div class="node"><div class="node-title"><span class="dot ' + state + '"></span>' + esc(w) + (rt ? ' <span class="rt rt-' + esc(rt) + '">' + esc(RTNAME[rt] || rt) + '</span>' : '') +
       '</div>' + task + quota + '</div>';
@@ -1567,33 +1400,33 @@ function goalCard(g, ts) {
     return k ? '<i style="width:' + (100*k/n) + '%;background:' + col[s] + '"></i>' : ''; }).join('');
   const done = mine.filter(t => t.status === 'done').length;
   const lines = mine.reduce((a, t) => a + (t.status === 'done' && t.diff ? t.diff.added + t.diff.removed : 0), 0);
-  const st = {new:'plánuje sa', active:'beží', done:'hotový', blocked:'zaseknutý'}[g.status] || g.status;
+  const st = {new:'planning', active:'running', done:'done', blocked:'blocked'}[g.status] || g.status;
   // acceptance criteria of the whole goal, checked by the orchestrator when all its tasks finished (B4)
   const acc = g.acceptance || [], cr = g.criteria || [];
   const crit = acc.length ? '<div class="crit">' + acc.map((a, i) => {
       const c = cr[i] || cr.find(x => x.criterion && x.criterion.slice(0, 40) === String(a).slice(0, 40));
-      const mark = !c ? '<span class="cm wait" title="ešte nekontrolované">○</span>' : c.met ? '<span class="cm ok">✓</span>' : '<span class="cm no">✗</span>';
+      const mark = !c ? '<span class="cm wait" title="not checked yet">○</span>' : c.met ? '<span class="cm ok">✓</span>' : '<span class="cm no">✗</span>';
       return '<div class="critrow">' + mark + '<span>' + esc(a) + (c && c.evidence ? '<span class="muted"> — ' + esc(c.evidence) + '</span>' : '') + '</span></div>';
-    }).join('') + (g.criteria_at ? '<div class="muted" style="font-size:11.5px">kontrola: ' + esc(dfmt(g.criteria_at)) + '</div>' : '') + '</div>' : '';
+    }).join('') + (g.criteria_at ? '<div class="muted" style="font-size:11.5px">checked: ' + esc(dfmt(g.criteria_at)) + '</div>' : '') + '</div>' : '';
   const metCount = cr.filter(c => c.met).length;
   return '<div class="goal"><div class="goal-head"><div class="goal-text">' + esc(g.text) + '</div><div class="goal-meta">' + esc(st) +
-    (mine.length ? ' · úlohy ' + done + '/' + mine.length + ' (' + Math.round(100 * done / n) + ' %)' : '') +
-    (acc.length ? ' · kritériá ' + metCount + '/' + acc.length : '') + (g.rounds > 1 ? ' · kolo ' + g.rounds : '') +
-    (lines ? ' · ' + lines + ' riadkov' : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div></div>' +
+    (mine.length ? ' · tasks ' + done + '/' + mine.length + ' (' + Math.round(100 * done / n) + ' %)' : '') +
+    (acc.length ? ' · criteria ' + metCount + '/' + acc.length : '') + (g.rounds > 1 ? ' · round ' + g.rounds : '') +
+    (lines ? ' · ' + lines + ' lines' : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div></div>' +
     '<div class="bar">' + seg + '</div>' + ((g.summary || g.notes) ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') + crit +
     '<div class="chips">' + mine.map(t => '<span class="chip" data-task="' + esc(t.id) + '">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) +
       (t.diff ? ' · +' + t.diff.added + '/-' + t.diff.removed : '') + '</span>').join('') + '</div>' +
-    (mine.length > 1 ? '<button class="linkbtn" data-dag="' + esc(g.id) + '">' + (openDags.has(g.id) ? 'skryť graf závislostí' : 'graf závislostí') + '</button>' +
+    (mine.length > 1 ? '<button class="linkbtn" data-dag="' + esc(g.id) + '">' + (openDags.has(g.id) ? 'hide dependency graph' : 'dependency graph') + '</button>' +
       (openDags.has(g.id) ? dagSvg(mine, ts) : '') : '') + '</div>';
 }
 function goalsHtml() {
   if (!F) return '';
   const ts = F.tasks || [];
   const gs = (F.goals || []).filter(g => g.status !== 'cancelled').slice().reverse();
-  if (!gs.length) return '<div class="empty">Žiadne ciele — zadaj prvý hore v „Nový cieľ“.</div>';
+  if (!gs.length) return '<div class="empty">No goals yet — enter the first one above under “New goal”.</div>';
   const open = gs.filter(g => g.status === 'new' || g.status === 'active' || g.status === 'blocked'), fin = gs.filter(g => !open.includes(g));
-  return (open.map(g => goalCard(g, ts)).join('') || '<div class="empty">Nič nebeží.</div>') +
-    (fin.length ? '<details' + (openFin ? ' open' : '') + ' id="fin-goals"><summary class="muted">Hotové ciele (' + fin.length + ')</summary>' +
+  return (open.map(g => goalCard(g, ts)).join('') || '<div class="empty">Nothing is running.</div>') +
+    (fin.length ? '<details' + (openFin ? ' open' : '') + ' id="fin-goals"><summary class="muted">Finished goals (' + fin.length + ')</summary>' +
       fin.slice(0, 30).map(g => goalCard(g, ts)).join('') + '</details>' : '');
 }
 let openFin = false;
@@ -1602,7 +1435,7 @@ document.addEventListener('toggle', e => { if (e.target.id === 'fin-goals') open
 function boardHtml() {
   if (!F) return '';
   const ts = F.tasks || [];
-  const cols = [['pending', 'Čaká'], ['running', 'Beží'], ['gate', 'Kontrola (testy + review)'], ['done', 'Hotovo'], ['blocked', 'Zaseknuté / zrušené']];
+  const cols = [['pending', 'Waiting'], ['running', 'Running'], ['gate', 'Checking (tests + review)'], ['done', 'Done'], ['blocked', 'Blocked / cancelled']];
   const inCol = (t, s) => t.status === s || (s === 'gate' && (t.status === 'review' || t.status === 'merging')) || (s === 'pending' && t.status === 'splitting');
   return cols.map(([s, lab]) => {
     let items = ts.filter(t => inCol(t, s) || (s === 'blocked' && t.status === 'cancelled'));
@@ -1612,8 +1445,8 @@ function boardHtml() {
       const deps = (t.depends_on || []).filter(d => !ts.find(x => x.id === d && x.status === 'done'));
       return '<div class="card s-' + t.status + '" data-task="' + esc(t.id) + '"><div class="id">' + esc(t.id) + '</div><div class="t">' + esc(t.title) + '</div><div class="m">' +
         '<span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span>' + (t.worker && s !== 'pending' ? '<span>' + esc(t.worker) + '</span>' : '') +
-        (t.attempts ? '<span style="color:var(--warn)">pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + '</span>' : '') +
-        (t.pr ? '<span>PR #' + t.pr + '</span>' : '') + (deps.length && s === 'pending' ? '<span>čaká na ' + deps.map(esc).join(', ') + '</span>' : '') +
+        (t.attempts ? '<span style="color:var(--warn)">attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + '</span>' : '') +
+        (t.pr ? '<span>PR #' + t.pr + '</span>' : '') + (deps.length && s === 'pending' ? '<span>waits for ' + deps.map(esc).join(', ') + '</span>' : '') +
         (t.diff ? '<span style="color:var(--ok)">+' + t.diff.added + '</span><span style="color:var(--bad)">-' + t.diff.removed + '</span>' : '') +
         (phase(t.id) ? '<span style="color:var(--accent)">' + esc(phase(t.id)) + '</span>' : '') + '</div></div>';
     }).join('') || '<div class="empty">—</div>') + '</div>';
@@ -1628,24 +1461,24 @@ function renderDetail() {
   const sheet = document.getElementById('sheet'), keep = sheet.scrollTop;
   const hist = (t.history || []).map(h => '<div class="hist"><b>' + esc(dfmt(h.at)) + ' · ' + esc(h.outcome) + '</b>' +
     (h.reviewer ? ' (' + esc(h.reviewer) + ')' : '') + '<br>' + esc(h.feedback || h.why || h.what || '') + '</div>').join('');
-  const html = '<button class="close">Zavrieť</button><h2 class="task-title">' + esc(t.title) + '</h2>' +
+  const html = '<button class="close">Close</button><h2 class="task-title">' + esc(t.title) + '</h2>' +
     '<div class="muted" style="font-size:12.5px">' + esc(t.id) + ' · <span class="role ' + roleCls(t.role) + '">' + esc(t.role) + '</span> · ' +
-    esc(STATUS[t.status] || t.status) + ' · pokus ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + (t.worker ? ' · ' + esc(t.worker) : '') +
+    esc(STATUS[t.status] || t.status) + ' · attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + (t.worker ? ' · ' + esc(t.worker) : '') +
     (t.pr_url ? ' · <a href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">PR #' + esc(t.pr || '') + '</a>' : t.pr ? ' · PR #' + t.pr : '') +
-    (t.runtime && t.runtime !== 'agy' ? ' · ' + esc(RTNAME[t.runtime] || t.runtime) : '') + (t.risk ? ' · riziko: ' + esc(t.risk) : '') + (t.run_tokens ? ' · ' + (t.run_tokens/1000).toFixed(0) + 'k tokenov' : '') +
-    (t.diff ? ' · <span style="color:var(--ok)">+' + t.diff.added + '</span> <span style="color:var(--bad)">-' + t.diff.removed + '</span> riadkov' : '') +
-    (t.total_lines != null ? ' · súbor(y) spolu ' + t.total_lines + ' riadkov' : '') + '</div>' +
-    (g ? '<h3>Cieľ</h3><div style="font-size:13px">' + esc(g.text) + '</div>' : '') +
-    (t.blocked_why ? '<h3 style="color:var(--bad)">Prečo zaseknuté</h3><pre>' + esc(t.blocked_why) + '</pre>' : '') +
-    (t.feedback && t.status !== 'done' ? '<h3>Posledná spätná väzba workerovi</h3><pre>' + esc(t.feedback) + '</pre>' : '') +
-    (hist ? '<h3>História</h3>' + hist : '') +
-    ((t.acceptance || []).length ? '<h3>Akceptačné kritériá</h3><ul style="font-size:13px;margin:0;padding-left:18px">' + t.acceptance.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '') +
-    ((t.files || []).length ? '<h3>Súbory</h3><div class="muted" style="font-size:12.5px;font-family:ui-monospace,monospace">' + t.files.map(esc).join('<br>') + '</div>' : '') +
-    ((t.mutations || []).length ? '<h3>Mutačné testy</h3><pre>' + esc(t.mutations.join('\n')) + '</pre>' : '') +
-    (t.diff || t.pr ? '<h3>Zmeny (diff)</h3>' + (diffCache[t.id] == null
-        ? '<button class="linkbtn" data-diff="' + esc(t.id) + '">' + (diffLoading.has(t.id) ? 'načítavam…' : 'zobraziť diff') + '</button>'
+    (t.runtime && t.runtime !== 'agy' ? ' · ' + esc(RTNAME[t.runtime] || t.runtime) : '') + (t.risk ? ' · risk: ' + esc(t.risk) : '') + (t.run_tokens ? ' · ' + (t.run_tokens/1000).toFixed(0) + 'k tokens' : '') +
+    (t.diff ? ' · <span style="color:var(--ok)">+' + t.diff.added + '</span> <span style="color:var(--bad)">-' + t.diff.removed + '</span> lines' : '') +
+    (t.total_lines != null ? ' · file(s) total ' + t.total_lines + ' lines' : '') + '</div>' +
+    (g ? '<h3>Goal</h3><div style="font-size:13px">' + esc(g.text) + '</div>' : '') +
+    (t.blocked_why ? '<h3 style="color:var(--bad)">Why blocked</h3><pre>' + esc(t.blocked_why) + '</pre>' : '') +
+    (t.feedback && t.status !== 'done' ? '<h3>Latest feedback to the worker</h3><pre>' + esc(t.feedback) + '</pre>' : '') +
+    (hist ? '<h3>History</h3>' + hist : '') +
+    ((t.acceptance || []).length ? '<h3>Acceptance criteria</h3><ul style="font-size:13px;margin:0;padding-left:18px">' + t.acceptance.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '') +
+    ((t.files || []).length ? '<h3>Files</h3><div class="muted" style="font-size:12.5px;font-family:ui-monospace,monospace">' + t.files.map(esc).join('<br>') + '</div>' : '') +
+    ((t.mutations || []).length ? '<h3>Mutation tests</h3><pre>' + esc(t.mutations.join('\n')) + '</pre>' : '') +
+    (t.diff || t.pr ? '<h3>Changes (diff)</h3>' + (diffCache[t.id] == null
+        ? '<button class="linkbtn" data-diff="' + esc(t.id) + '">' + (diffLoading.has(t.id) ? 'loading…' : 'show diff') + '</button>'
         : diffHtml(diffCache[t.id])) : '') +
-    (t.spec ? '<h3>Zadanie</h3><pre>' + esc(t.spec) + '</pre>' : '');
+    (t.spec ? '<h3>Spec</h3><pre>' + esc(t.spec) + '</pre>' : '');
   if (html === lastDetailHtml && d.classList.contains('on')) return;
   lastDetailHtml = html;
   sheet.innerHTML = html;
@@ -1658,7 +1491,7 @@ function eventsHtml() {
   const ev = (F.events || []).slice().reverse();
   return ev.map(e => { const m = e.msg || '';
     const cls = /BLOCKED|refused|error|failed|unavailable|kill switch/i.test(m) ? 'bad' : /done|DONE|merged|planned/.test(m) ? 'good' : '';
-    return '<div class="ev ' + cls + '"><time>' + esc(dfmt(e.at)) + '</time><div>' + esc(m) + '</div></div>'; }).join('') || '<div class="empty">Zatiaľ nič.</div>';
+    return '<div class="ev ' + cls + '"><time>' + esc(dfmt(e.at)) + '</time><div>' + esc(m) + '</div></div>'; }).join('') || '<div class="empty">Nothing yet.</div>';
 }
 
 const paneEls = {};
@@ -1667,7 +1500,7 @@ function liveHtml() {
   const panes = P.panes || [];
   document.getElementById('c-live').textContent = panes.length;
   if (tab !== 'live') return;
-  if (!panes.length) { setHTML('grid', '<div class="empty">Žiadne AI momentálne nebežia — prepis sa zjaví, keď niečo pobeží.</div>'); for (const k in paneEls) delete paneEls[k]; return; }
+  if (!panes.length) { setHTML('grid', '<div class="empty">No AI is running right now — the transcript appears when one runs.</div>'); for (const k in paneEls) delete paneEls[k]; return; }
   if (grid.querySelector('.empty')) { grid.innerHTML = ''; lastHTML['grid'] = null; }
   const ts = (F && F.tasks) || [];
   const seen = new Set();
@@ -1712,11 +1545,11 @@ const openDags = new Set(), diffCache = {}, diffLoading = new Set();
 const RUNCOL = {ok: 'var(--ok)', running: 'var(--accent)', 'token-cap': 'var(--warn)', timeout: 'var(--warn)', failed: 'var(--bad)',
                 'setup-failed': 'var(--bad)', killswitch: 'var(--idle)'};
 function timelineHtml() {
-  if (!F || !F.timeline) return '<div class="empty">Časová os potrebuje novšiu verziu foremana.</div>';
+  if (!F || !F.timeline) return '<div class="empty">The timeline needs a newer foreman.</div>';
   const now = Date.now() / 1000, span = 24 * 3600, t0 = now - span, W = 1000, LW = 90, lane = 30;
   const runs = F.timeline;
   const ws = [...new Set(runs.map(r => r.worker).concat(Object.keys((P && P.roster) || {}).filter(k => k.startsWith('worker:')).map(k => k.slice(7))))].filter(Boolean).sort();
-  if (!ws.length) return '<div class="empty">Za posledných 24 h žiadne behy.</div>';
+  if (!ws.length) return '<div class="empty">No runs in the last 24 h.</div>';
   const x = t => LW + Math.max(0, Math.min(1, (t - t0) / span)) * (W - LW);
   let svg = '<svg class="tl" viewBox="0 0 ' + W + ' ' + (ws.length * lane + 24) + '" preserveAspectRatio="none">';
   for (let h = 0; h <= 24; h += 3) {
@@ -1733,7 +1566,7 @@ function timelineHtml() {
       const s0 = Math.max(r.start, t0), e0 = Math.min(r.end || now, now);
       if (e0 <= s0) continue;
       busy += e0 - s0;
-      const tip = esc(r.task) + ' · ' + esc(r.reason) + ' · ' + Math.round((e0 - s0) / 60) + ' min · ' + Math.round((r.tokens || 0) / 1000) + 'k tokenov';
+      const tip = esc(r.task) + ' · ' + esc(r.reason) + ' · ' + Math.round((e0 - s0) / 60) + ' min · ' + Math.round((r.tokens || 0) / 1000) + 'k tokens';
       svg += '<g data-task="' + esc(r.task.replace(/\.md$/, '')) + '"><title>' + tip + '</title><rect class="run" x="' + x(s0) + '" y="' + (y + 5) + '" width="' +
              Math.max(2, x(e0) - x(s0)) + '" height="' + (lane - 10) + '" rx="3" fill="' + (RUNCOL[r.reason] || 'var(--idle)') + '"' +
              (r.reason === 'running' ? ' opacity=".8"><animate attributeName="opacity" values=".5;1;.5" dur="2s" repeatCount="indefinite"/></rect>' : '/>') + '</g>';
@@ -1741,11 +1574,11 @@ function timelineHtml() {
     util[w] = Math.round(100 * busy / span);
   });
   svg += '</svg>';
-  const legend = '<div class="legend">' + [['ok','hotové'],['running','beží'],['token-cap','strop tokenov / čas'],['failed','zlyhalo'],['killswitch','kill switch']]
+  const legend = '<div class="legend">' + [['ok','done'],['running','running'],['token-cap','token cap / time'],['failed','failed'],['killswitch','kill switch']]
     .map(([k, l]) => '<span><i style="background:' + RUNCOL[k] + '"></i>' + l + '</span>').join('') + '</div>';
-  const u = '<div class="legend">' + ws.map(w => '<span>' + esc(w) + ': <b style="color:var(--text)">' + util[w] + ' %</b> času pracoval</span>').join('') + '</div>';
-  return '<h3>Posledných 24 hodín</h3>' + legend + '<div class="tablewrap" style="padding:8px">' + svg + '</div>' + u +
-         '<div class="muted" style="font-size:12px;margin-top:6px">Medzery v pruhu = worker stál. Klik na blok otvorí úlohu.</div>';
+  const u = '<div class="legend">' + ws.map(w => '<span>' + esc(w) + ': <b style="color:var(--text)">' + util[w] + ' %</b> of the time working</span>').join('') + '</div>';
+  return '<h3>Last 24 hours</h3>' + legend + '<div class="tablewrap" style="padding:8px">' + svg + '</div>' + u +
+         '<div class="muted" style="font-size:12px;margin-top:6px">Gaps = the worker was idle. Click a block to open its task.</div>';
 }
 
 // ---- 3. dependency graph of a goal
@@ -1778,7 +1611,7 @@ function dagSvg(mine) {
 async function loadDiff(id) {
   diffLoading.add(id); renderDetail();
   try { diffCache[id] = await (await fetch('/api/diff?task=' + encodeURIComponent(id) + '&project=' + encodeURIComponent(project))).text(); }
-  catch (e) { diffCache[id] = '(nepodarilo sa načítať: ' + e + ')'; }
+  catch (e) { diffCache[id] = '(could not load: ' + e + ')'; }
   diffLoading.delete(id); renderDetail();
 }
 function diffHtml(text) {
@@ -1791,36 +1624,36 @@ function diffHtml(text) {
 // ---- 8. team metrics
 function metricsHtml() {
   const M = F && F.metrics;
-  if (!M) return '<div class="empty">Metriky potrebujú novšiu verziu foremana.</div>';
+  if (!M) return '<div class="empty">Metrics need a newer foreman.</div>';
   const T = M.totals || {}, box = (v, lab) => '<div class="stat"><b>' + (v == null ? '–' : v) + '</b><span>' + lab + '</span></div>';
-  let h = '<div class="stats">' + box(T.done, 'hotových úloh') + box(T.first_pass_pct == null ? null : T.first_pass_pct + ' %', 'schválené na 1. pokus') +
-          box(T.reworks, 'vrátení na opravu') + box(T.blocked, 'zaseknutých') + box(T.tokens_per_done ? Math.round(T.tokens_per_done / 1000) + 'k' : null, 'tokenov na hotovú úlohu') + '</div>';
+  let h = '<div class="stats">' + box(T.done, 'tasks done') + box(T.first_pass_pct == null ? null : T.first_pass_pct + ' %', 'approved first time') +
+          box(T.reworks, 'sent back') + box(T.blocked, 'blocked') + box(T.tokens_per_done ? Math.round(T.tokens_per_done / 1000) + 'k' : null, 'tokens per done task') + '</div>';
   const days = M.merged_per_day || [], mx = Math.max(1, ...days.map(d => d[1]));
-  h += '<h3>Hotové úlohy za deň</h3><div class="bars">' + (days.map(([d, n]) => '<div><span>' + n + '</span><b style="height:' + (100 * n / mx) + '%"></b><span>' + d.slice(5) + '</span></div>').join('') || '<span class="muted">zatiaľ nič</span>') + '</div>';
+  h += '<h3>Tasks done per day</h3><div class="bars">' + (days.map(([d, n]) => '<div><span>' + n + '</span><b style="height:' + (100 * n / mx) + '%"></b><span>' + d.slice(5) + '</span></div>').join('') || '<span class="muted">nothing yet</span>') + '</div>';
   const roles = Object.entries(M.roles || {}).sort((a, b) => b[1].tasks - a[1].tasks);
-  h += '<h3>Podľa roly</h3><div class="tablewrap"><table class="m"><tr><th>rola</th><th class="num">úloh</th><th class="num">hotovo</th><th class="num">1. pokus</th><th class="num">vrátení</th><th class="num">zaseknuté</th><th class="num">tokeny/úloha</th><th class="num">riadky</th></tr>' +
+  h += '<h3>By role</h3><div class="tablewrap"><table class="m"><tr><th>role</th><th class="num">tasks</th><th class="num">done</th><th class="num">1st try</th><th class="num">sent back</th><th class="num">blocked</th><th class="num">tokens/task</th><th class="num">lines</th></tr>' +
        roles.map(([r, v]) => '<tr><td>' + esc(r) + '</td><td class="num">' + v.tasks + '</td><td class="num">' + v.done + '</td><td class="num">' + (v.first_pass_pct == null ? '–' : v.first_pass_pct + ' %') +
          '</td><td class="num">' + v.reworks + '</td><td class="num">' + v.blocked + '</td><td class="num">' + (v.tokens_per_done ? Math.round(v.tokens_per_done / 1000) + 'k' : '–') + '</td><td class="num">' + v.lines_done + '</td></tr>').join('') + '</table></div>';
   const E = M.efficiency || {};
   const effTable = (title, rows, note) => rows.length ? '<h3>' + title + '</h3>' + (note ? '<div class="muted" style="font-size:12.5px">' + note + '</div>' : '') +
-    '<div class="tablewrap"><table class="m"><tr><th></th><th class="num">behov</th><th class="num">ok</th><th class="num">strop</th><th class="num">kvóta/beh</th><th class="num">kvóta/hotová úloha</th>' +
-    '<th class="num">nástroje/beh</th><th class="num">tokeny/beh</th><th class="num">hotovo</th><th class="num">1. pokus</th></tr>' +
+    '<div class="tablewrap"><table class="m"><tr><th></th><th class="num">runs</th><th class="num">ok</th><th class="num">cap</th><th class="num">quota/run</th><th class="num">quota/done task</th>' +
+    '<th class="num">tools/run</th><th class="num">tokens/run</th><th class="num">done</th><th class="num">1st try</th></tr>' +
     rows.map(([k, v]) => '<tr><td>' + esc(k) + '</td><td class="num">' + v.runs + '</td><td class="num">' + v.ok_pct + ' %</td><td class="num">' + v.cap_pct + ' %</td><td class="num">' +
       (v.week_per_run == null ? '–' : v.week_per_run + ' %') + '</td><td class="num"><b>' + (v.week_per_done == null ? '–' : v.week_per_done + ' %') + '</b></td><td class="num">' +
       (v.tools_median == null ? '–' : v.tools_median) + '</td><td class="num">' + (v.tokens_median ? Math.round(v.tokens_median / 1000) + 'k' : '–') + '</td><td class="num">' + v.done +
       '</td><td class="num">' + (v.first_pass_pct == null ? '–' : v.first_pass_pct + ' %') + '</td></tr>').join('') + '</table></div>' : '';
-  h += effTable('Efektivita podľa modelu workerov', Object.entries(E.model || {}).sort((a, b) => b[1].runs - a[1].runs),
-                'kvóta = % týždenného limitu jedného účtu (agy /usage pred a po behu); nižšie je lepšie');
-  h += effTable('Balík kontextu — A/B', Object.entries(E.pack || {}).sort((a, b) => b[1].runs - a[1].runs),
-                'pri CONTEXT_PACK=ab dostane balík polovica úloh; porovnaj kvótu na hotovú úlohu a počet nástrojov na beh');
+  h += effTable('Efficiency by worker model', Object.entries(E.model || {}).sort((a, b) => b[1].runs - a[1].runs),
+                'quota = % of one account\'s weekly limit (agy /usage before and after the run); lower is better');
+  h += effTable('Context pack — A/B', Object.entries(E.pack || {}).sort((a, b) => b[1].runs - a[1].runs),
+                'with CONTEXT_PACK=ab half the tasks get the pack; compare quota per done task and tools per run');
   const SC = E.self_check;
-  if (SC && SC.runs) h += '<h3>Kontrola testov v behu</h3><div class="stats">' + box(SC.runs, 'behov s kontrolou') + box(SC.green_first, 'zelené hneď') +
-    box(SC.fixed, 'opravené v tom istom behu') + box(SC.still_red, 'ostali červené') + '</div>';
+  if (SC && SC.runs) h += '<h3>Self-check in the run</h3><div class="stats">' + box(SC.runs, 'runs with a self-check') + box(SC.green_first, 'green at once') +
+    box(SC.fixed, 'fixed in the same run') + box(SC.still_red, 'stayed red') + '</div>';
   const MT = F.maintenance;
-  if (MT) h += '<h3>Údržba main (bez AI)</h3><div class="muted maint" style="font-size:13px">' + esc(dfmt(MT.at)) + ' · ' + esc(MT.sha || '') + ' · testy: ' +
+  if (MT) h += '<h3>Maintenance of main (no AI)</h3><div class="muted maint" style="font-size:13px">' + esc(dfmt(MT.at)) + ' · ' + esc(MT.sha || '') + ' · testy: ' +
     (MT.suite || []).map(r => (r.rc === 0 ? '✓ ' : '✗ ') + esc(r.summary)).join(' / ') + (MT.nodoc ? ' · modulov bez docstringu: ' + MT.nodoc : '') + '</div>';
   const prov = Object.entries(M.providers || {}).sort((a, b) => b[1].calls - a[1].calls);
-  h += '<h3>Orchestrátor za 7 dní (kto plánoval a robil review)</h3><div class="tablewrap"><table class="m"><tr><th>poskytovateľ</th><th class="num">volaní</th><th class="num">zlyhalo</th><th class="num">priemer</th></tr>' +
+  h += '<h3>Orchestrator, last 7 days (who planned and reviewed)</h3><div class="tablewrap"><table class="m"><tr><th>provider</th><th class="num">calls</th><th class="num">failed</th><th class="num">average</th></tr>' +
        prov.map(([p, v]) => '<tr><td>' + esc(p) + '</td><td class="num">' + v.calls + '</td><td class="num">' + v.failed + '</td><td class="num">' + (v.calls ? Math.round(v.secs / v.calls) + ' s' : '–') + '</td></tr>').join('') + '</table></div>';
   return h;
 }
@@ -1829,12 +1662,12 @@ function metricsHtml() {
 async function askTeam() {
   const q = document.getElementById('ask-q').value.trim(), btn = document.getElementById('ask-btn'), out = document.getElementById('ask-a');
   if (!q) return;
-  btn.disabled = true; btn.textContent = 'Orchestrátor premýšľa… (aj 1–2 min)';
+  btn.disabled = true; btn.textContent = 'The orchestrator is thinking… (1–2 min)';
   let r;
   try { r = await (await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: q, project})})).json(); }
-  catch (e) { r = {answer: '(chyba spojenia: ' + e + ')'}; }
-  btn.disabled = false; btn.textContent = 'Spýtať sa';
-  out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(bez odpovede)') + '</div>' + out.innerHTML;
+  catch (e) { r = {answer: '(connection error: ' + e + ')'}; }
+  btn.disabled = false; btn.textContent = 'Ask';
+  out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(no answer)') + '</div>' + out.innerHTML;
 }
 
 function render(force) {
@@ -1847,15 +1680,15 @@ function render(force) {
     setHTML('goals', goalsHtml(), force);
     const bl = (F && F.backlog) || [];
     setHTML('backlog', bl.length ? bl.map((b, i) => '<div class="goal blrow"><span class="muted">' + (i + 1) + '.</span> <span class="bltext">' + esc(b) +
-        '</span><span class="blbtns">' + (i ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + i + '" title="vyššie">↑</button>' : '') +
-        (i < bl.length - 1 ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + (i + 2) + '" title="nižšie">↓</button>' : '') +
-        '<button class="mini" data-bl="drop" data-n="' + (i + 1) + '" title="zahodiť">✕</button></span></div>').join('')
-      : '<div class="empty">Prázdny' + (F && F.autopilot ? ' — keď bude worker voľný, autopilot vyberie ďalší cieľ z vízie.' : '.') + '</div>', force);
+        '</span><span class="blbtns">' + (i ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + i + '" title="up">↑</button>' : '') +
+        (i < bl.length - 1 ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + (i + 2) + '" title="down">↓</button>' : '') +
+        '<button class="mini" data-bl="drop" data-n="' + (i + 1) + '" title="remove">✕</button></span></div>').join('')
+      : '<div class="empty">Empty' + (F && F.autopilot ? ' — when a worker is free, the autopilot picks the next goal from the vision.' : '.') + '</div>', force);
     const qs = (F && F.owner_questions) || [];
     if (!document.getElementById('questions').contains(document.activeElement))
-      setHTML('questions', qs.length ? '<h3>Otázky plánovača (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div class="qtext">' + esc(q) +
-        '</div><div class="btnrow"><input type="text" class="qin" data-qn="' + (i + 1) + '" placeholder="tvoja odpoveď (plánovač sa ňou bude riadiť)">' +
-        '<button class="mini" data-qa="' + (i + 1) + '">Odpovedať</button><button class="mini" data-qd="' + (i + 1) + '" title="otázka nie je dôležitá">Zahodiť</button></div></div>').join('') : '', force);
+      setHTML('questions', qs.length ? '<h3>The planner\'s questions (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div class="qtext">' + esc(q) +
+        '</div><div class="btnrow"><input type="text" class="qin" data-qn="' + (i + 1) + '" placeholder="your answer (the planner will follow it)">' +
+        '<button class="mini" data-qa="' + (i + 1) + '">Answer</button><button class="mini" data-qd="' + (i + 1) + '" title="the question does not matter">Dismiss</button></div></div>').join('') : '', force);
   } else if (tab === 'queue') setHTML('board', boardHtml(), force);
   else if (tab === 'events') setHTML('events', eventsHtml(), force);
   else if (tab === 'timeline') setHTML('timeline', timelineHtml(), force);
@@ -1876,7 +1709,7 @@ async function loadProjects() {
   if (!ps.some(p => p.name === project)) project = (ps[0] || {name: 'default'}).name;
   PROJ_LIST = ps;
   const html = ps.map(p => '<option value="' + esc(p.name) + '"' + (p.name === project ? ' selected' : '') + '>' + esc(p.name) +
-                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('') + '<option value="__new">+ Nový projekt…</option>';
+                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('') + '<option value="__new">+ New project…</option>';
   if (sel.innerHTML !== html) sel.innerHTML = html;
   sel.style.display = '';
 }
@@ -1892,8 +1725,8 @@ async function openNewProject() {
   for (const p of PROJ_LIST) for (const w of String(p.workers || '').split(',').filter(Boolean)) owner[w] = p.name;
   const ws = st.workers || [];
   box.innerHTML = ws.length ? ws.map(w => '<label class="chk"><input type="checkbox" data-npw="' + esc(w) + '"> ' + esc(w) +
-      ' <span class="muted">(' + esc(owner[w] || (st.values && !st.values.WORKERS ? 'default — všetci' : 'voľný')) + ')</span></label>').join(' ')
-    : 'žiadni workeri — pridaj ich v Nastaveniach';
+      ' <span class="muted">(' + esc(owner[w] || (st.values && !st.values.WORKERS ? 'default — all' : 'free')) + ')</span></label>').join(' ')
+    : 'no workers — add them in Settings';
 }
 async function createProject() {
   const v = id => document.getElementById(id).value.trim();
@@ -1904,10 +1737,10 @@ async function createProject() {
   if (j.errors) { for (const k in j.errors) { const el = document.getElementById('np-e-' + k); if (el) el.textContent = j.errors[k]; } return; }
   document.getElementById('np-form').style.display = 'none';
   const log = document.getElementById('np-log'); log.style.display = '';
-  while (j.state === 'running') { log.textContent = (j.log || '') + '\n' + T('… pracujem'); await new Promise(r => setTimeout(r, 2500));
+  while (j.state === 'running') { log.textContent = (j.log || '') + '\n… working'; await new Promise(r => setTimeout(r, 2500));
     j = await (await fetch('/api/jobs/' + encodeURIComponent(j.id))).json(); }
-  log.textContent = (j.log || '') + '\n' + T({done: '✔ Projekt je pripravený — vyber ho hore a zadaj prvý goal.',
-    'needs-sudo': '⚠ Projekt je vytvorený, len jeho služba potrebuje root — spusti príkaz vyššie.'}[j.state] || '✘ Zlyhalo — pozri výpis vyššie.');
+  log.textContent = (j.log || '') + '\n' + ({done: '✔ The project is ready — pick it at the top and enter its first goal.',
+    'needs-sudo': '⚠ The project exists; only its service needs root — run the command above.'}[j.state] || '✘ Failed — see the output above.');
   projAt = 0; await loadProjects();
   if (j.state !== 'failed') { project = body.name; try { localStorage.setItem('af-project', project); } catch (e) {} }
 }
@@ -1932,21 +1765,12 @@ async function poll() {
 }
 function showJsError(msg) {
   const el = document.getElementById('jserr');
-  if (el) { el.style.display = 'block'; el.textContent = 'Chyba stránky: ' + msg; }
+  if (el) { el.style.display = 'block'; el.textContent = 'Page error: ' + msg; }
 }
-window.addEventListener('error', e => showJsError((e.message || 'neznáma') + ' (' + (e.lineno || '?') + ')'));
+window.addEventListener('error', e => showJsError((e.message || 'unknown') + ' (' + (e.lineno || '?') + ')'));
 window.addEventListener('unhandledrejection', e => showJsError(String(e.reason && e.reason.message || e.reason)));
-// translate the static page once, then everything rendered later as it appears
-if (LANG !== 'sk') {
-  document.documentElement.lang = 'en';
-  translate(document.body);
-  new MutationObserver(ms => { for (const m of ms) { if (m.type === 'characterData') translate(m.target);
-    else m.addedNodes.forEach(translate); } }).observe(document.body, {childList: true, subtree: true, characterData: true});
-}
-const langBtn = document.getElementById('lang');
-langBtn.textContent = LANG === 'sk' ? 'EN' : 'SK';
-langBtn.addEventListener('click', () => { try { localStorage.setItem('af-lang', LANG === 'sk' ? 'en' : 'sk'); } catch (e) {} location.reload(); });
 setTab(tab);
+if (HASH.task && /^\d{4}-[\w-]+$/.test(HASH.task)) { openTask = HASH.task; }
 let busyPoll = false;
 async function tickPoll() { if (document.hidden || busyPoll) return; busyPoll = true; try { await poll(); } finally { busyPoll = false; } }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tickPoll(); });
@@ -2101,15 +1925,15 @@ class Handler(BaseHTTPRequestHandler):
             ws = [str(w) for w in body.get("workers") or []]
             errs = {}
             if not PROJECT_RE.fullmatch(name) or name == "default":
-                errs["name"] = "malé písmená, číslice a pomlčky (nie 'default')"
+                errs["name"] = "lowercase letters, digits and dashes (not 'default')"
             elif any(p.get("name") == name for p in PROJECTS["list"]):
-                errs["name"] = "projekt už existuje"
+                errs["name"] = "the project already exists"
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}/[A-Za-z0-9_.-]{1,60}", repo):
-                errs["repo"] = "organizácia/repozitár, napr. acme/shop"
+                errs["repo"] = "organisation/repository, e.g. acme/shop"
             if not all(re.fullmatch(r"worker-\d+", w) for w in ws):
-                errs["workers"] = "neplatný worker"
+                errs["workers"] = "invalid worker"
             if not re.fullmatch(r"[A-Za-z][A-Za-z ()-]{0,30}", lang):
-                errs["lang"] = "názov jazyka, napr. Slovak"
+                errs["lang"] = "a language name, e.g. English"
             if errs:
                 self._json({"ok": False, "errors": errs}); return
             vision = str(body.get("vision", ""))[:20000]
@@ -2212,7 +2036,7 @@ class Handler(BaseHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-[\w-]+", tid):
                 self._json({"error": "bad task id"}, 400); return
             rc, out, err = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman{pf} diff {tid}", timeout=40)
-            raw = (out if rc == 0 else f"(chyba: {err.strip()[-300:]})").encode()
+            raw = (out if rc == 0 else f"(error: {err.strip()[-300:]})").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))

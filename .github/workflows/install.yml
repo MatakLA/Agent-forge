@@ -1,0 +1,42 @@
+# A fresh install exactly as a new user does it - on a brand-new GitHub runner VM (Ubuntu, Docker, systemd, sudo), every push.
+# Then: the services answer, a worker container can be created, bin/doctor is happy, and the integration tests of the
+# supervisor and of the real agent CLIs (against a fake model API - no keys, no cost) pass. A first green run is the proof
+# that `scripts/install.sh` works for someone who is not us.
+name: install
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"          # weekly: catches upstream breakage (images, CLIs, package mirrors)
+jobs:
+  fresh-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from scratch, as a user would
+        run: scripts/install.sh --demo
+      - name: The services run and answer
+        run: |
+          systemctl is-active agent-forge-foreman agent-forge-web
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8171/healthz && break; sleep 2; done
+          for i in $(seq 1 30); do [ -f runs/foreman/live.json ] && break; sleep 2; done
+          python3 bin/foreman status
+      - name: A worker container can be created (it stays logged out - no accounts in CI)
+        run: bin/worker-add 1
+      - name: Health check (exit 1 = warnings only, e.g. no notifications configured)
+        run: python3 bin/doctor --quick || [ $? -eq 1 ]
+      - name: Supervisor integration test (a fake agent in the real worker image)
+        run: tests/test_supervisor.sh
+      - name: API runtimes - the real Claude Code, Codex and Gemini CLIs against a fake model API
+        env: {WORKER_N: "0", WORKER_RUNTIME: claude, WORKER_KEY_FILE: none}
+        run: |
+          docker compose -f worker/docker-compose.api.yml build
+          tests/test_runtimes.sh
+      - name: Logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u agent-forge-foreman -u agent-forge-web --no-pager | tail -100 || true
+          docker ps -a || true

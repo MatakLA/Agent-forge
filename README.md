@@ -1,141 +1,157 @@
 # Agent-Forge
 
-**A self-hosted AI team that works through a queue on its own, inside a sandbox it cannot escape.**
+**A self-hosted AI dev team that works through a queue on its own - inside a sandbox it cannot escape.**
 
-You write a goal ("add a contacts module with birthday reminders", "write the user guide", "translate the app to German").
-An orchestrator splits it into small tasks, each with a role (backend developer, tester, security tester, technical writer,
-UX designer, translator, ... 19 playbooks in `roles/`). Worker agents build the tasks in parallel, each in its own locked-down
-container on its own branch. Every branch runs the full test suite in a fresh offline container, gets reviewed, and is merged
-through a pull request - on your GitHub or GitLab repository, or on the internal Forgejo - or sent back with concrete feedback
-until it is right.
+[![license: Sustainable Use (source-available)](https://img.shields.io/badge/license-Sustainable%20Use%20(source--available)-blue)](LICENSE)
+![status: experimental](https://img.shields.io/badge/status-experimental-orange)
+![python 3.10+](https://img.shields.io/badge/python-3.10%2B-informational)
+![dependencies: stdlib only](https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen)
 
-Workers run on what you have: **Google Antigravity** subscriptions, or **API keys** for **Claude Code**, **Codex** or **Gemini CLI**
-(pay per token, with hard caps per run and per day) - mixed in one team if you like ([docs/RUNTIMES.md](docs/RUNTIMES.md)). The
-orchestrator uses **Claude Code**, Claude or Gemini via Antigravity, or a paid API ([docs/PROVIDERS.md](docs/PROVIDERS.md)).
+![Agent-Forge dashboard tour](docs/img/tour.gif)
 
-> Status: alpha. Extracted from a setup that ran a 4-worker team on one owner's project for two weeks (~400 worker runs,
-> ~190 pull requests). Expect rough edges and read [SECURITY.md](SECURITY.md) before you run it.
+You write a goal - *"add due dates to tasks, with tests"*, *"write the user guide"*, *"translate the app to German"*. An
+orchestrator splits it into small, parallel tasks, each with a role (19 playbooks: backend developer, tester, security tester,
+technical writer, translator, UX designer, ...). Worker agents build the tasks at the same time, each in its own locked-down
+container on its own branch. Every branch runs the full test suite in a fresh offline container, gets an AI review, and is merged
+through a pull request - on your GitHub or GitLab repository, or on the built-in Forgejo - or sent back with concrete feedback
+until it is right. Then the next goal starts, from your backlog or from your product vision. You can go to sleep.
 
----
+> **Experimental - for testing and evaluation.** Agent-Forge is young (alpha). Run it on a dedicated VM with test data, point
+> it at repositories where an AI merging code is acceptable to you, and read [SECURITY.md](SECURITY.md) first. It was extracted
+> from a setup that ran a 4-worker team for two weeks (~400 worker runs, ~190 merged pull requests) - expect rough edges.
 
-## What is different from Vibe Kanban, Conductor, Claude Squad & co.
+## Why it is different
 
-Most parallel-agent tools run agents on your machine in git worktrees and leave review and merging to you. Agent-Forge
-assumes you are asleep:
+Most parallel-agent tools run agents on your machine in git worktrees and leave the review and the merging to you. Agent-Forge
+assumes you are not watching:
 
 | | typical parallel-agent UI | Agent-Forge |
 |---|---|---|
-| Isolation | git worktree on your machine, full network | a container per worker, all capabilities dropped, no docker socket, **egress only to an allow-list** through a proxy |
-| What happens next | you decide | the orchestrator plans goals into role-tagged tasks; an optional autopilot picks the next goal from your vision file |
-| Verification | you read the diff | full test suite in a **fresh offline container** + an AI review + optional **mutation tests** before any merge |
-| Failures | you notice | automatic rework with the gate output, review retries that do not blame the worker, crash recovery, kill switch |
-| Capacity | one key or one subscription | subscriptions and API keys mixed; work goes where quota is left, paid keys only as overflow, with spend caps |
-| Your repository | the agent pushes from your machine | merged into your **GitHub / GitLab** repo through PRs under its branch protection - the workers never see GitHub or a token |
-| Team | coding agents | 19 roles incl. technical writer, translator, UX designer, product manager, data analyst |
+| **What happens next** | you decide | goals are planned into role-tagged, parallel tasks; an autopilot picks the next goal from your vision |
+| **Isolation** | git worktree on your machine, full network | a container per worker, no capabilities, no docker socket, **egress only to an allow-list** |
+| **Verification** | you read the diff | full test suite in a **fresh offline container** + AI review + optional **mutation tests**, before any merge |
+| **Failures** | you notice | automatic rework with the gate output, crash recovery, a kill switch, nothing pushed from a suspicious run |
+| **Your repository** | the agent pushes from your machine | **pull requests on GitHub / GitLab** under your branch protection - the workers never see GitHub or a token |
+| **Cost** | whatever the agent spends | **USD caps per run and per day**, subscriptions first, measured quota / cost per merged task |
+| **Team** | coding agents | 19 roles incl. technical writer, translator, UX designer, product manager, data analyst |
 
-If you want an interactive cockpit for agents you watch, those tools are great. Agent-Forge is for a queue you leave running.
+If you want a cockpit for agents you watch, those tools are great. Agent-Forge is for a queue you leave running.
+
+## Quickstart
+
+On a fresh Ubuntu machine - ideally a dedicated VM (4+ vCPU, 8+ GB RAM); [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) makes one:
+
+```bash
+git clone https://github.com/<you>/agent-forge && cd agent-forge
+scripts/install.sh --demo
+```
+
+About 20 minutes: Docker, the egress proxy, an internal Forgejo, the worker image, the services. Then open the dashboard
+(`ssh -L 8171:127.0.0.1:8171 <vm>`, then http://127.0.0.1:8171):
+
+1. **Where does the code live?** Internal only, or your GitHub / GitLab repository (a token for that repository only).
+2. **Add workers** - see below.
+3. **Enter a goal** - or let the autopilot build the demo project in [`examples/demo`](examples/demo).
+
+`bin/doctor` checks the whole install and tells you how to fix what is wrong. All steps by hand: [docs/SETUP.md](docs/SETUP.md).
+
+## Workers: API keys or a subscription
+
+| runtime | pays with | notes |
+|---|---|---|
+| **Claude Code** | Anthropic API key | hard USD cap per run (`--max-budget-usd`) and per day |
+| **Codex CLI** | OpenAI API key | USD per day, token and tool-call caps per run |
+| **Gemini CLI** | Gemini API key | USD per day, token and tool-call caps per run |
+| **Antigravity** | a Google account with Antigravity | uses its subscription quota; one account per worker |
+
+Mix them in one team. The key is entered once in the dashboard, stored on the server only (mode 0600) and reaches only the
+agent's environment; a worker can talk to its provider's API host and nothing else, and the gate refuses any branch that adds
+a key or token. Details: [docs/RUNTIMES.md](docs/RUNTIMES.md).
+
+> **Several Antigravity accounts are a testing setup only.** Running more than one subscription account for one person's work
+> may conflict with the provider's terms (Google prohibits circumventing usage limits and has banned accounts for it).
+> Agent-Forge supports it for testing and evaluation; it does not encourage pooling accounts to get around limits. For regular
+> work use API keys (paid per token, with the caps above) or a single subscription. Read the terms of any provider whose CLI
+> you automate.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Overview: goals with acceptance criteria, the team, the backlog and the planner's questions](docs/img/overview.png) | ![Live: each worker's transcript as it works](docs/img/live.png) |
+| **Overview** - goals with acceptance criteria, the team, backlog, questions | **Live** - what every worker is doing right now |
+| ![Timeline: 24 hours of runs per worker](docs/img/timeline.png) | ![Metrics: first-pass rate, quota and cost per merged task, A/B tests](docs/img/metrics.png) |
+| **Timeline** - 24 h of runs per worker, click to open the task | **Metrics** - first-pass rate, quota and cost per merged task |
+| ![Queue and a task with its spec, history and diff](docs/img/task.png) | ![Settings: kill switch, workers, models, budgets](docs/img/settings.png) |
+| **Task** - spec, history, review feedback, diff | **Settings** - kill switch, workers, models, budgets, notifications |
+
+(Invented demo data - `tools/screenshots.sh` regenerates them.)
 
 ## How it works
 
 ```
- you ──goal──► bin/foreman (deterministic loop, 20 s tick)
-                 ├ plan ──► orchestrator LLM (Claude Code · Claude or Gemini via Antigravity · optional paid API)
+ you ──goal──► bin/foreman (a deterministic loop, 20 s tick)
+                 ├ plan ──► orchestrator LLM (Claude Code · Claude/Gemini via Antigravity · optional paid API)
                  │          → tasks: role · files it owns · spec · acceptance criteria · dependencies
-                 ├ dispatch ──► worker-N container (agy, its own account, its own branch, egress only to the model API)
+                 ├ dispatch ──► worker container (its own key or account, its own branch, egress only to its model API)
                  ├ gate ──► fresh offline container: full test suite + static checks (+ mutation tests for risky code)
                  ├ review ──► orchestrator LLM: approve / rework (with feedback) / reject
-                 └ merge ──► pull request on the internal Forgejo; only the orchestrator bot may merge to main
+                 └ merge ──► pull request: GitHub / GitLab (under its branch protection) or the internal Forgejo
 ```
 
 No LLM decides *when* anything happens - the loop does. LLMs are called only for judgement (plan, review, "is the goal done?"),
 each time as a fresh, tool-less call, so worker-written content in a diff cannot make the reviewer run anything.
-Details: [ARCHITECTURE.md](ARCHITECTURE.md) · security model: [SECURITY.md](SECURITY.md) · roles: [docs/ROLES.md](docs/ROLES.md).
+Details: [ARCHITECTURE.md](ARCHITECTURE.md) · [SECURITY.md](SECURITY.md) · [docs/ROLES.md](docs/ROLES.md).
+
+## What the loop does so you do not have to
+
+- **Rebases for the worker.** Branches are rebased onto main by the orchestrator; append-conflicts in shared registries are
+  merged keeping both sides. Only real conflicts go back to the worker.
+- **Never loses work.** Whatever a run leaves uncommitted is pushed to its branch; a run stopped by its cap continues next time
+  from there. A task that hits the cap twice is split into smaller tasks - and tasks that own too many files are split before
+  anyone starts.
+- **Fixes red tests in the same conversation.** Before a run ends the worker's clone is tested like the gate would; a red suite
+  goes back into the same agent conversation, which still has the context.
+- **Continues instead of restarting.** A rework resumes the worker's own conversation with a short prompt.
+- **Spends tokens on work, not on reading.** Each task carries a context pack - its files and the interfaces it uses, from a
+  code map generated without any LLM. Measured: [docs/EFFICIENCY.md](docs/EFFICIENCY.md).
+- **Learns.** A review that sends work back may record one general lesson; lessons go into every later plan, review and task.
+- **Closes goals on evidence.** Each goal gets observable acceptance criteria, checked one by one before it is closed.
+- **Works with your stack.** `TEST_CMD` and `GATE_IMAGE` per project: pytest by default, `npm test`, `go test ./...`, ...
+- **Survives crashes and reboots,** and does not blame the worker for Forgejo, Docker or provider outages.
+- **Uses idle time.** While all subscriptions wait for their reset, the planner prepares the next goals and main is tested
+  without any LLM (red main, flaky tests, missing docstrings become work items).
+- **Tells you what matters.** Notifications (ntfy, Slack, Discord, any webhook) when a goal is done, a task is blocked, the
+  kill switch tripped, the planner has a question or the money/quota is used up.
 
 ## Day to day
+
+Everything is in the dashboard; the same from a shell:
 
 ```bash
 bin/foreman goal "Add a CSV export to the expenses module, with tests"
 bin/foreman project "Build the app described in docs/vision.md"   # → a roadmap of goals in the backlog
-bin/foreman status            # goals, tasks, workers, recent events
-bin/foreman backlog           # what is queued
-bin/foreman questions         # what the planner needs you to decide
-bin/foreman pause | resume
-bin/foreman retry <task> | cancel <goal>
-bin/killswitch on [--hard]    # stop this project now (--all: every project)
-bin/doctor                    # is everything healthy? says how to fix what is not
+bin/foreman status | backlog | questions
+echo "Use PostgreSQL" | bin/foreman answer 1                      # becomes a binding decision for later plans
+bin/killswitch on [--hard] [--all]                                # stop this project (or every project) now
+bin/doctor
 ```
 
-The web dashboard (`web/server.py`, installed by `scripts/install-services`) shows the team, the task board with each task's
-spec, history and diff, a 24-hour timeline per worker, dependency graphs, team metrics and live worker transcripts, and lets you
-ask the team questions about the code. You queue goals (now, into the backlog, or as a big project the planner turns into a
-roadmap), reorder the backlog and answer the planner's questions there; answers become binding decisions for later plans.
-Optional notifications (ntfy, Slack, Discord, any webhook) tell you when a goal is done, a task is blocked, the kill switch
-tripped or all accounts are out of quota. Its **Settings** tab stops/continues a project (soft or hard, or all projects), picks the
-orchestrator providers and models and the worker models (from the live `agy models` list), assigns workers to the project, edits
-behaviour and the global limits, and adds a worker including its Antigravity login in a browser terminal. The dashboard speaks English and Slovak.
+One install runs **several projects** side by side, each with its own orchestrator, repository and worker pool (dashboard →
+project picker → "+ New project", or `bin/foreman init-project`).
 
-## Several projects at once
+## Documentation
 
-One install can run several projects side by side, each with its own orchestrator (foreman), repository, vision and worker pool:
+[SETUP](docs/SETUP.md) · [RUNTIMES](docs/RUNTIMES.md) (API keys, costs) · [UPSTREAM](docs/UPSTREAM.md) (GitHub / GitLab) ·
+[PROVIDERS](docs/PROVIDERS.md) (orchestrator) · [ROLES](docs/ROLES.md) · [EFFICIENCY](docs/EFFICIENCY.md) ·
+[ARCHITECTURE](ARCHITECTURE.md) · [SECURITY](SECURITY.md) · [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md)
 
-```bash
-bin/foreman init-project shop --repo acme/shop --workers worker-5,worker-6,worker-7,worker-8
-FORGE_REPO=acme/shop scripts/forge-bootstrap          # repository, access, protected main
-sudo scripts/install-services --project shop          # its own foreman service
-bin/foreman --project shop goal "Add a cart page"
-bin/foreman projects                                   # every project with its pool and state
-```
-
-With 8 workers that is e.g. workers 1-4 on the default project and 5-8 on `shop`. Each project has its own kill switch
-(`bin/killswitch --project shop on`), and `bin/killswitch --all on` stops every project at once; goals, tasks, lessons and quotas
-are per project too. The egress proxy is shared. The dashboard has a project selector.
-
-## What the loop does so you do not have to
-
-- **Works with your stack.** The gate, the workers' self-check and maintenance run your project's `TEST_CMD` in your
-  `GATE_IMAGE` - pytest by default, `npm test`, `go test ./...` or anything else with a command-line runner.
-- **Survives crashes and reboots.** Runs whose supervisor died are closed and re-queued without costing an attempt; a merge that
-  Forgejo was still checking is retried instead of being reported as a conflict; Forgejo or Docker outages are not blamed on
-  the worker.
-
-- **Rebases for the worker.** Before a branch is tested it is rebased onto main by the orchestrator bot; append-conflicts in shared
-  registries (`SHARED_FILES` with .jsonl/.md/.txt/.csv) are merged keeping both sides. Only real conflicts go back to the worker.
-- **Never loses work.** A run stopped by its token cap or timeout has its unfinished work committed and pushed as a WIP commit; the
-  next attempt continues from it. A task stopped by the cap twice is split by the planner into smaller tasks.
-- **Continues instead of restarting.** A rework on the same worker resumes the worker's own agy conversation with a short prompt.
-- **Learns.** A review that sends work back may record one general lesson; lessons go into every later plan, review and task.
-- **Goal-level acceptance.** Each goal gets observable acceptance criteria; tasks are reviewed against them and the goal is only
-  closed when they hold.
-- **Structured answers.** Antigravity orchestrator calls use `--json-schema`, so plans and verdicts come back as valid JSON.
-- **Spends quota on work, not on reading.** Each task carries a context pack (its files and the interfaces it uses, generated
-  from main - no LLM), the worker fixes a red test suite in the same conversation before its run ends, tasks over
-  `MAX_TASK_FILES` files are split before work starts, and the Metrics tab shows quota per merged task by model and variant
-  (A/B tests built in). While all accounts wait for their quota, the planner prepares the next goals and main is checked
-  without any LLM. See [docs/EFFICIENCY.md](docs/EFFICIENCY.md).
-
-## Setup
-
-One command on a fresh Ubuntu machine (ideally a dedicated VM; `deploy/cloud-init.yaml` creates one), about 20 minutes:
-
-```bash
-git clone <this repository> agent-forge && cd agent-forge && scripts/install.sh --demo
-```
-
-Then, in the dashboard: choose where the code lives (internal, GitHub or GitLab), add workers (an Antigravity account signed in
-from the browser, or an API key), enter a goal - or let the autopilot build the demo in `examples/demo`. Step by step and all
-options: **[docs/SETUP.md](docs/SETUP.md)**; `bin/doctor` checks the whole install.
-
-## Read this before you add workers
-
-API-key workers are billed by the provider per token - set the caps (`API_RUN_BUDGET_USD`, `API_DAILY_BUDGET_USD`) and a spend
-limit at the provider. An Antigravity worker logs into Antigravity with its own Google account. Google's terms prohibit **bypassing system measures or
-circumventing usage limits**, and Google has banned accounts for it. Running several accounts you pay for, for your own work,
-is your judgement and your risk - Agent-Forge does not encourage pooling accounts to get around limits, and you should not use
-it that way. The same goes for any provider whose CLI you automate: read its terms first.
+`make check` runs the tests that need nothing (no Docker, no model calls); `make test` adds the integration tests of the
+supervisor and of the real agent CLIs against a fake model API.
 
 ## License
 
-**Source-available, free to use - not for resale.** Agent-Forge is licensed under the Sustainable Use License
-([LICENSE](LICENSE)): use it and change it for free, for yourself and inside your company, and share it free of charge for
-non-commercial purposes. Selling it, offering it as a hosted or paid service, or otherwise making money from Agent-Forge
-itself needs a commercial license ([LICENSE_EE.md](LICENSE_EE.md)). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
+**Source-available ("fair-code"), not open source in the OSI sense.** Agent-Forge is licensed under the Sustainable Use License
+([LICENSE](LICENSE)): use it and change it for free - for yourself and inside your company - and share it free of charge for
+non-commercial purposes. Selling it, offering it as a hosted or paid service, or otherwise making money from Agent-Forge itself
+needs a commercial license ([LICENSE_EE.md](LICENSE_EE.md)). Contributions are welcome: [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -92,11 +92,11 @@ docker image rm hello-world >/dev/null 2>&1 || true
 
 step "Done"
 if [[ -f /var/run/reboot-required ]]; then
-  warn "A reboot is recommended (kernel update): sudo reboot   — then reconnect with ssh devbox"
+  warn "A reboot is recommended (kernel update): sudo reboot   — then reconnect over ssh"
 fi
 cat <<'EOF'
   Next:
-    1. Log out and back in (exit, then ssh devbox) so the docker group applies:  docker ps  must work without sudo.
+    1. Log out and back in (exit, then ssh in again) so the docker group applies:  docker ps  must work without sudo.
     2. Ask the owner for a snapshot on the host:  ./run vm-snapshot create baseline "after V1"
     3. Continue with docs/SETUP.md (step 2: Forgejo).
 EOF
