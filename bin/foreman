@@ -1263,7 +1263,7 @@ def merge_upstream(t, up, who, fb, gate):
     """Approved branch -> pushed to upstream -> PR/MR -> merged (AUTO_MERGE) -> upstream main synced into Forgejo. When upstream
     needs more (required checks or reviews, a human merge with AUTO_MERGE=0) the task waits in status "merging"."""
     import upstream
-    PHASE[t["id"]] = f"PR na {up.kind}"
+    PHASE[t["id"]] = f"pull request on {up.kind}"
     body = (f"Task {t['id']} ({t['role']}), goal {t['goal']}.\n\nReview by {who}: {fb}\n\nGate (full test suite in a clean "
             f"container):\n```\n{gate[-2500:]}\n```\n\nOpened by Agent-Forge.\n")
     try:
@@ -1376,7 +1376,7 @@ def step_gate_review_merge(t):
     pr = already_merged_pr(t["branch"])
     if pr:
         return lambda: finish(t, f"already merged as PR #{pr} (recovered after an interruption)", "foreman", "", pr)
-    PHASE[t["id"]] = "rebase na main"
+    PHASE[t["id"]] = "rebase onto main"
     rb = auto_rebase(t["branch"])
     if rb == "conflict":
         return lambda: rework(t, "Your branch conflicts with main in a way that cannot be merged automatically. `git fetch origin && git rebase "
@@ -1384,7 +1384,7 @@ def step_gate_review_merge(t):
                                  "--force-with-lease`. Change nothing else.", "", count=False)
     if rb == "rebased":
         event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
-    PHASE[t["id"]] = "testy v čistom kontajneri"
+    PHASE[t["id"]] = "tests in a clean container"
     refresh_repo()
     rc, out, err = sh([os.path.join(BIN, "review-branch"), t["branch"]], timeout=900)
     gate = (out + err)[-8000:]
@@ -1411,7 +1411,7 @@ def step_gate_review_merge(t):
     open(os.path.join(FD, "diffs", t["id"] + ".diff"), "w").write(diff[:400000])
     if len(diff) > C["DIFF_MAX"]:
         diff = diff[:C["DIFF_MAX"]] + f"\n... (diff truncated, {len(diff)} bytes total)"
-    PHASE[t["id"]] = "review orchestrátorom"
+    PHASE[t["id"]] = "review by the orchestrator"
     text, who = llm("review", review_prompt(t, gate, diff))
     v = extract_json(text) or {}
     verdict, fb = v.get("verdict"), str(v.get("feedback", ""))[:4000]
@@ -1429,7 +1429,7 @@ def step_gate_review_merge(t):
     if muts:
         spec = os.path.join(FD, "mutations", t["id"] + ".json")
         jsave(spec, muts)
-        PHASE[t["id"]] = f"mutačné testy ({len(muts)})"
+        PHASE[t["id"]] = f"mutation tests ({len(muts)})"
         rc2, out2, _ = sh([os.path.join(BIN, "review-branch"), t["branch"], "--mutations", spec], timeout=1500)
         surv = [l.strip() for l in out2.splitlines() if l.strip().startswith(("SURVIVED", "BAD-SPEC"))]
         t2 = jload(os.path.join(FD, "tasks", t["id"] + ".json")) or t
@@ -1805,14 +1805,14 @@ def advance():
                     g.update(status="cancelled" if all(t["status"] in ("blocked", "cancelled") for t in mine) else "done", summary="stopped after maximum planning rounds", finished=sbx.now())
                     save_goal(g); event(f"goal {g['id']} closed after {g.get('rounds', 0)} rounds (blocked tasks handled automatically)", goal=g["id"]); continue
                 res = "\n".join(f"- {t['id']} {t['title']}: {t['status']}; {(t['history'] or [{}])[-1].get('feedback', '')[:300]}" for t in mine)
-                PHASE[g["id"]] = "kontrola, či je cieľ splnený alebo treba opravu"
+                PHASE[g["id"]] = "checking whether the goal is met"
                 submit("goal:" + g["id"], step_plan, g, res)
     for g in goals():
         if g["status"] == "new" and "goal:" + g["id"] in INFLIGHT:
-            PHASE.setdefault(g["id"], "plánovanie úloh")
+            PHASE.setdefault(g["id"], "planning tasks")
     req = gstate().get("roadmap_request")
     if req:
-        PHASE["roadmap"] = "roadmapa projektu"
+        PHASE["roadmap"] = "project roadmap"
         submit("roadmap:roadmap", step_roadmap, req)
     feed_idle_workers()
 
@@ -1868,7 +1868,7 @@ def feed_idle_workers():
         return
     st = gstate()
     if C["AUTOPILOT"] and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")) and st.get("autopilot_quiet_until", 0) <= time.time():
-        PHASE["autopilot"] = "autopilot vyberá ďalší cieľ z vízie"
+        PHASE["autopilot"] = "autopilot picks the next goal from the vision"
         submit("next:autopilot", step_next)
 
 
@@ -1908,7 +1908,7 @@ def maybe_maintenance():
         return
     if any(t["status"] == "pending" for t in ts) and not pool_quota_out():
         return
-    PHASE["main"] = "údržba: testy na main 3x, mapa kódu (bez AI)"
+    PHASE["main"] = "maintenance: tests on main 3x, code map (no AI)"
     submit("maint:main", step_maintenance)
 
 
@@ -2386,6 +2386,7 @@ next:
 
 def dashboard_json():
     """Everything the host dashboard shows, in one read-only call (`bin/foreman status --dashboard`)."""
+    pool = workers()                                   # first: it also learns each worker's runtime (WORKER_RT)
     st, ts, now = gstate(), tasks(), time.time()
     live = jload(os.path.join(FD, "live.json"), {})
     alive = live.get("at", 0) > now - 3 * C["LOOP_SEC"] - 30
@@ -2416,7 +2417,7 @@ def dashboard_json():
                              updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines"),
                              mutations=t.get("mutations", []), pr_url=t.get("pr_url") or (t.get("upstream_pr") or {}).get("url"),
                              runtime=WORKER_RT.get(t.get("worker") or "", "")))
-    return dict(project=PROJECT or "default", repo=sbx.FORGE_REPO, pool=workers(), now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
+    return dict(project=PROJECT or "default", repo=sbx.FORGE_REPO, pool=pool, now=now, alive=alive, paused=os.path.exists(os.path.join(FD, "PAUSED")), killswitch=sbx.killswitch_active(),
                 autopilot=bool(C["AUTOPILOT"]) and not os.path.exists(os.path.join(FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
                 agy_cooldown={w: u for w, u in st.get("agy_cooldown", {}).items() if u > now},

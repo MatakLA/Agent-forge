@@ -19,6 +19,13 @@ never reach GitHub/GitLab or the token. The dashboard asks where a new project's
 selling it or offering it as a paid / hosted service needs a commercial license (`LICENSE`, `LICENSE_EE.md`, `CONTRIBUTING.md`
 with a contributor license agreement).
 
+**Dashboard.** English only (one language, no client-side translation layer); deep links (`#tab=queue&project=p&task=0004-x`);
+the Live tab shows only running runs and those finished in the last minutes; API workers show their runtime and spend.
+
+**Proof for newcomers.** Screenshots and a tour GIF from invented demo data (`tools/screenshots.sh`, `tools/demo_state.py`),
+a CI workflow that installs everything on a fresh VM and runs the integration tests (`.github/workflows/install.yml`),
+`ROADMAP.md`, `tools/publish-snapshot` (publishes the tree as one commit without private history).
+
 **Security.** The gate refuses branches that add API keys, tokens or private keys (was: a warning for some patterns).
 `bin/worker-add` no longer passes the Forgejo admin token on curl's command line.
 
@@ -34,9 +41,6 @@ routing and A/B tests with quota-per-merged-task metrics, planning ahead and LLM
 projects from the dashboard; notifications via ntfy / Slack / Discord / webhook; `bin/doctor`.
 
 **Any language** - `TEST_CMD` and `GATE_IMAGE` per project (also editable in the dashboard's Settings → Project).
-
-**English and Slovak dashboard** - English by default, Slovak for Slovak browsers, switchable (EN/SK button); content such as
-goals, specs and transcripts is never translated.
 
 **Security** - dashboard Host check (DNS rebinding), CSRF header, no framing, CSP, optional `DASHBOARD_TOKEN`; Forgejo tokens
 no longer on git command lines; nothing is pushed from a run with a HIGH egress alarm.
