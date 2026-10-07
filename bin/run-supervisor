@@ -51,7 +51,9 @@ def salvage(reason):
     what = "auto-saved when the run hit its " + reason if reason in ("token-cap", "timeout") else f"auto-committed at the end of the run ({reason})"
     r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
            f'set -o pipefail; [ "$(git branch --show-current)" = "{br}" ] || exit 3; '
-           f"git add -A -- . ':(exclude)**/__pycache__/**' ':(exclude)**/*.pyc' ':(exclude).pytest_cache/**' && "
+           f"git add -A -- . ':(exclude)*/__pycache__/*' ':(exclude)*.pyc' ':(exclude).pytest_cache' "
+           # databases and logs that test runs leave in the source tree (seen: tools/gym.db) are never part of the work
+           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' && "
            f'(git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"); '
            # nothing beyond main (a run that did nothing): never push a branch equal to main - the gate would see an empty
            # diff and the review would take it for "already merged"
@@ -179,21 +181,41 @@ for f in sorted(changed):
             if re.search(pat, src):
                 problems.append(f"{f} contains {name} (the gate rejects it)")
 try:
-    t = sh("python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--maxfail=5", t=360)
+    t = sh("python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--maxfail=5", t=600)
     out, rc = t.stdout + t.stderr, t.returncode
 except subprocess.TimeoutExpired:
-    out, rc = "the test suite did not finish within 6 minutes", 1
+    # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"
+    print(json.dumps({"ok": not problems, "rc": None, "summary": "suite slower than 10 min - left to the gate", "tail": "",
+                      "problems": problems}))
+    raise SystemExit
 rc = 0 if rc == 5 else rc
 last = out.strip().splitlines()[-1] if out.strip() else ""
 print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems}))
 """
 
 
+def last_result_ok():
+    """The last agy invocation of this run ended with status SUCCESS (not an API error / quota stop)."""
+    st = None
+    try:
+        for line in open(run + "/stream.jsonl"):
+            if '"result"' in line:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("event") == "result":
+                    st = (e.get("result") or {}).get("status")
+    except OSError:
+        pass
+    return st == "SUCCESS"
+
+
 def self_check():
     """The full test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). Infrastructure trouble never
     blocks the run: it counts as passed and the real gate decides."""
     try:
-        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-w", sbx.WORKER_CLONE, W, "python3", "-", input=SELF_CHECK_PY, timeout=420)
+        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-w", sbx.WORKER_CLONE, W, "python3", "-", input=SELF_CHECK_PY, timeout=700)
         return json.loads(r.stdout.strip().splitlines()[-1])
     except Exception as e:
         return {"ok": True, "error": f"self-check could not run: {e}"[:200]}
@@ -289,19 +311,22 @@ reason, rc = watch(cmd, "w")
 
 # ---- self-check: the gate's test run, in the worker's own clone, before the run ends. A red suite is sent back by the gate
 # anyway - fixing it now, in the same agy conversation that still has the context, is far cheaper than a new attempt.
-if not runner and reason is None and rc == 0:
+if not runner and reason is None and rc == 0 and last_result_ok():
     for i in range(int(m.get("self_check") or 0)):
         chk = self_check()
         SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
         if chk.get("ok"):
             break
         conv = conversation_id()
-        if not conv:
+        left_s, used = timeout_s - (time.time() - t0), sbx.stream_tokens(run + "/stream.jsonl")
+        if not conv or left_s < 8 * 60 or used > 0.8 * cap:
+            # not enough time / tokens left for a fix round: end the run as it is, the gate gives the feedback instead
+            SELF_CHECKS[-1]["skipped_fix"] = "no conversation" if not conv else f"{int(left_s // 60)} min / {100 * used // max(cap, 1)} % tokens used"
             break
         with open(run + "/supervisor.log", "a") as f:
             f.write(f"{sbx.now()} self-check {i + 1} failed ({chk.get('summary', '')}); continuing the conversation to fix it\n")
         reason, rc = watch(agy_cmd(fix_prompt(chk), conv), "a")
-        if reason is not None or rc != 0:
+        if reason is not None or rc != 0 or not last_result_ok():
             break
     else:
         if SELF_CHECKS and not SELF_CHECKS[-1].get("ok"):

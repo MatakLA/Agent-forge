@@ -391,6 +391,11 @@ def context_pack(t):
                 lang = os.path.splitext(f)[1].lstrip(".") or ""
                 if not add(f"### `{f}` (current content on main, {src.count(chr(10)) + 1} lines)\n```{lang}\n{src}\n```\n"):
                     add(f"### `{f}` - too large for the pack; interface:\n{codemap.render(cm, [f])}\n")
+            elif codemap.is_test(f):
+                head = "\n".join(src.splitlines()[:60])
+                add(f"### `{f}` - {src.count(chr(10)) + 1} lines, too large to include whole. Its first 60 lines (imports, fixtures):\n"
+                    f"```python\n{head}\n```\nHelpers and existing tests:\n{codemap.render(cm, [f])}\nAdd new tests at the end; do not "
+                    f"rewrite existing ones.\n")
             else:
                 add(f"### `{f}` - {src.count(chr(10)) + 1} lines, too large to include whole; its interface:\n{codemap.render(cm, [f])}\n"
                     f"Open only the parts you change.\n")

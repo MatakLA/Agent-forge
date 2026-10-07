@@ -117,7 +117,16 @@ def render(cm, paths=None, with_api=True, max_chars=40000):
         if not e:
             continue
         head = f"- `{p}` ({e['lines']} lines){': ' + e['purpose'] if e['purpose'] else ' - NO MODULE DOCSTRING'}"
-        s = head + ("\n" + "\n".join("    " + a for a in e["api"][:40]) if with_api and e["api"] and not e["test"] else "")
+        if with_api and e["api"] and e["test"]:
+            # a test file: its helpers/fixtures in full, the test names compactly (new tests should reuse the helpers)
+            helpers = [a for a in e["api"] if not re.match(r"(async )?def test_", a) and not a.startswith("    ")]
+            names = [re.sub(r"^\s*(async )?def (test_\w+).*", r"\2", a) for a in e["api"] if re.match(r"\s*(async )?def test_", a)]
+            s = head + "".join("\n    " + a for a in helpers[:25])
+            if names:
+                tl = ", ".join(names)
+                s += f"\n    tests ({len(names)}): " + (tl[:1200] + " …" if len(tl) > 1200 else tl)
+        else:
+            s = head + ("\n" + "\n".join("    " + a for a in e["api"][:40]) if with_api and e["api"] and not e["test"] else "")
         if n + len(s) > max_chars:
             s = head                                  # no room for the interface: keep at least the one-line entry
         if n + len(s) > max_chars:
