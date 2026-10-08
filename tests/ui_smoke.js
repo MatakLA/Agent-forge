@@ -41,6 +41,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   w.closeSheet();
   w.eval("SUB.tasks = 'graph'"); w.setTab('tasks'); await sleep(800);
   check('graph shows the critical path', txt('tasks-view').includes('Critical path'));
+  // the egress view with a blocked host, an alarm and the kill switch it tripped (the demo has no proxy log)
+  w.eval(`SYS.egress = {health: {ok: true, mode: 'enforce'}, since: '2026-10-08T00:00:00Z', allowed: {'api.anthropic.com': 12}, denied: {'pypi.org': 3, 'stats.example.net': 1},
+    noise: {}, new_domains: {'worker-2 pypi.org': 3}, private: [], alarms: [{level: 'HIGH', code: 'new-domain', message: 'worker-2 tried pypi.org'}],
+    local_allowlist: ['files.example.org'], baseline: ['stats.example.net'], killswitch: {reason: 'egress alarm during run X: worker-2 tried pypi.org', scope: 'project'}};
+    SYS.egressAt = Date.now(); SUB.system = 'egress';`);
+  w.setTab('system'); await sleep(800);
+  check('egress: the stop is explained, blocked hosts can be allowed / ignored, own entries removed',
+    txt('system').includes('stopped by an egress alarm') && !!d.querySelector('[data-egact="allow"][data-host="pypi.org"]') &&
+    !!d.querySelector('[data-egact="ignore"][data-host="pypi.org"]') && !d.querySelector('[data-egact="ignore"][data-host="stats.example.net"]') &&
+    !!d.querySelector('[data-egact="unallow"][data-host="files.example.org"]') && !d.querySelector('[data-egact="unallow"][data-host="api.anthropic.com"]'));
   check('no page error shown', !txt('jserr'));
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));

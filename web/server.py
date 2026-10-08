@@ -49,6 +49,7 @@ SEC_HEADERS = {"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "
 TASK_ID = re.compile(r"\d{4}-[\w-]{1,60}")
 GOAL_ID = re.compile(r"G\d{8}-\d{6}(-[\w-]{1,30})?")
 DOC_NAME = re.compile(r"vision|team-rules|decisions|lessons|role:[a-z][a-z0-9-]{1,40}")
+HOST = re.compile(r"[a-z0-9][a-z0-9.-]{2,252}")          # bin/lib/egress.py check_host() decides the rest
 TARGET = re.compile(r"|worker-\d+|[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
 TASK_ACTIONS = ("approve", "cancel", "retry", "feedback", "assign", "model")
 GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "cancel")
@@ -351,10 +352,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "message": "this fix has no button - follow the hint"}, 400); return
             self._json({"ok": rc == 0, "message": B.ANSI.sub("", (out + err).strip())[-1500:]})
         elif path == "/api/egress":
-            if body.get("action") != "ack":
-                self._json({"error": "action ack"}, 400); return
-            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/egress-report --ack", timeout=30)
-            self._json({"ok": rc == 0, "message": (out or err).strip()[-300:]})
+            # acknowledge the alarms, or decide about one host: allow it, take it off again, or accept it as known noise
+            act, host = str(body.get("action", "")), str(body.get("host", "")).strip().lower()
+            if act == "ack":
+                rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/egress-report --ack", timeout=30)
+                self._json({"ok": rc == 0, "message": (out or err).strip()[-300:]}); return
+            flag = {"allow": "--allow", "unallow": "--unallow", "ignore": "--baseline-add"}.get(act)
+            if not flag or not HOST.fullmatch(host):
+                self._json({"ok": False, "message": "action ack | allow | unallow | ignore, and an exact host name"}, 400); return
+            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/egress-report {flag} {host} --json", timeout=60)
+            self._json(as_json(out, err, rc))
         elif path == "/api/disk":
             act, days = str(body.get("action", "")), str(body.get("days", ""))
             if act not in ("compress", "transcripts", "docker") or (days and not days.isdigit()):

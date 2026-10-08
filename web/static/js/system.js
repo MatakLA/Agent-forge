@@ -36,25 +36,59 @@ function healthHtml() {
     [...new Set(checks.map(c => c.section))].map(s => '<h4>' + esc(s) + '</h4>' + checks.filter(c => c.section === s).map(row).join('')).join('') + '</details>';
 }
 
-// ---- Egress
+// ---- Egress: what the workers reached and what was blocked; the owner decides per blocked host (allow it, or accept it as
+// harmless noise), then acknowledges the alarms and lets the project continue
+const isIp = h => /^[\d.]+$|^\[?[0-9a-f:]+\]?$/i.test(h);
 function egressHtml() {
   sysLoad('egress', '/api/egress', {since: '24h'}, 60000);
   const E = SYS.egress;
   if (!E) return '<div class="empty">' + esc(SYS.err.egress || 'reading the proxy log…') + '</div>';
-  const h0 = E.health || {}, al = (E.alarms || []).filter(a => a.code !== 'proxy');
-  const tbl = (title, obj, cls) => { const e = Object.entries(obj || {}).sort((a, b) => b[1] - a[1]); return '<div><h4>' + title + ' (' + e.reduce((a, x) => a + x[1], 0) + ')</h4>' +
-    (e.length ? '<table class="m">' + e.slice(0, 40).map(([k, v]) => '<tr><td class="mono small ' + (cls || '') + '">' + esc(k) + '</td><td class="num">' + v + '</td></tr>').join('') + '</table>' : small('none')) + '</div>'; };
-  return '<div class="health-head ' + (h0.ok ? 'ok' : 'bad') + '">Proxy: ' + (h0.ok ? 'enforcing' : 'PROBLEM') + ' <span class="muted small">mode ' + esc(h0.mode || '?') +
-    ' · since ' + esc(dfmt(E.since)) + '</span><button class="mini" data-egress-reload>Refresh</button></div>' +
+  const h0 = E.health || {}, al = (E.alarms || []).filter(a => a.code !== 'proxy'), ks = E.killswitch || (F && F.killswitch);
+  const byEgress = ks && /egress/i.test(ks.reason || '');
+  // blocked hosts: who tried them, how often, and whether they still raise an alarm
+  const who = {};
+  Object.keys(E.new_domains || {}).forEach(k => { const [w, h] = k.split(' '); (who[h] = who[h] || new Set()).add(w); });
+  const base = new Set(E.baseline || []), priv = new Set((E.private || []).map(p => String(p.target).split(':')[0]));
+  const blocked = Object.entries(E.denied || {}).filter(([h]) => !isIp(h) && !priv.has(h)).sort((x, y) => (who[y[0]] ? 1 : 0) - (who[x[0]] ? 1 : 0) || y[1] - x[1]);
+  const local = new Set(E.local_allowlist || []);
+  const allowed = Object.assign(Object.fromEntries([...local].map(h => [h, 0])), E.allowed || {});
+  const act = (a, h, label, cls) => '<button class="' + (cls || 'mini') + '" data-egact="' + a + '" data-host="' + esc(h) + '">' + label + '</button>';
+  let html = '';
+  if (byEgress) html += '<div class="inbox-item blocked"><div class="ib-head"><span class="badge bad">stopped</span> The project was stopped by an egress alarm</div>' +
+    '<div class="ib-body">' + esc(ks.reason || '') + '</div><div class="ib-body">1. Decide about each blocked host below - <b>Allow</b> it if the work really needs it, or <b>Ignore</b> it ' +
+    '(it stays blocked, only the alarm stops). 2. Then continue: the alarms are acknowledged and the workers start again.</div>' +
+    '<div class="btnrow"><button class="primary sm" data-act="resume">Acknowledge and continue</button></div></div>';
+  html += '<div class="health-head ' + (h0.ok ? 'ok' : 'bad') + '">Proxy: ' + (h0.ok ? 'enforcing' : 'PROBLEM') + ' <span class="muted small">mode ' + esc(h0.mode || '?') +
+    ' · last 24 h</span><button class="mini" data-egress-reload>Refresh</button></div>' +
     (h0.ok ? '' : (h0.problems || []).map(p => '<div class="check bad"><span class="ci">✘</span><div>' + esc(p) + '<div class="muted small">workers cannot run until the proxy enforces the allow-list</div></div><div>' +
-      fixButton('egress-up') + '</div></div>').join('')) +
-    (al.length ? '<h3 class="bad">Alarms (' + al.length + ')</h3>' + al.map(a => '<div class="check ' + (a.level === 'HIGH' ? 'bad' : 'warn') + '"><span class="ci">' + (a.level === 'HIGH' ? '✘' : '!') +
-      '</span><div>' + esc(a.message) + '<div class="muted small">' + esc(a.code) + '</div></div><div></div></div>').join('') +
-      '<div class="btnrow"><button class="primary sm" data-egress-ack>I have read them - acknowledge</button>' + small('A HIGH alarm stops the project (kill switch) and blocks new runs until acknowledged.') + '</div>'
-      : '<div class="note ok">No unacknowledged alarms.</div>') +
-    '<div class="cols3">' + tbl('Allowed', E.allowed) + tbl('Denied - new', Object.fromEntries(Object.entries(E.new_domains || {})), 'bad') + tbl('Denied - known noise', E.noise) + '</div>' +
-    ((E.private || []).length ? '<h4 class="bad">Private-network attempts</h4>' + E.private.map(p => '<div class="mono small">' + esc(dfmt(p.ts)) + ' ' + esc(p.worker) + ' → ' + esc(p.target) + '</div>').join('') : '');
+      fixButton('egress-up') + '</div></div>').join(''));
+  if (al.length && !byEgress) html += '<div class="note">' + al.length + ' unacknowledged alarm(s) - they block new runs. Decide about the hosts below, then ' +
+    '<button class="primary sm" data-egress-ack>acknowledge</button></div>';
+  html += '<h3' + (Object.keys(who).length ? ' class="bad"' : '') + '>Blocked (' + blocked.length + ')</h3>' + (blocked.length ? '<div class="tablewrap"><table class="m"><tr><th>host</th><th>tried by</th>' +
+    '<th class="num">times</th><th>state</th><th></th></tr>' + blocked.map(([h, n]) => '<tr><td class="mono">' + esc(h) + '</td><td>' + esc([...(who[h] || [])].join(', ') || '–') +
+      '</td><td class="num">' + n + '</td><td>' + (who[h] ? '<span class="badge bad">alarm</span>' : base.has(h) ? '<span class="badge">ignored</span>' : '<span class="badge">acknowledged</span>') +
+      '</td><td class="right">' + act('allow', h, 'Allow') + (base.has(h) ? '' : ' ' + act('ignore', h, 'Ignore')) + '</td></tr>').join('') + '</table></div>' +
+    small('Allow = the workers may send anything to that host from now on (exact name, all its paths). Ignore = it stays blocked and stops raising alarms - the safer choice for telemetry and update checks.')
+    : '<div class="note ok">Nothing was blocked.</div>');
+  html += '<h3>Allowed (' + Object.keys(allowed).length + ')</h3><div class="tablewrap"><table class="m"><tr><th>host</th><th class="num">tunnels (24 h)</th><th></th></tr>' +
+    Object.entries(allowed).sort((x, y) => y[1] - x[1]).map(([h, n]) => '<tr><td class="mono">' + esc(h) + (local.has(h) ? ' <span class="badge">added by you</span>' : '') + '</td><td class="num">' + n +
+      '</td><td class="right">' + (local.has(h) ? act('unallow', h, 'Remove') : '') + '</td></tr>').join('') + '</table></div>' +
+    small('Hosts in egress/allowlist.txt (the agents\' own APIs) are part of Agent-Forge and cannot be removed here.');
+  if ((E.private || []).length) html += '<h3 class="bad">Attempts to reach a private network</h3>' + E.private.map(p => '<div class="mono small">' + esc(dfmt(p.ts)) + ' ' +
+    esc(p.worker) + ' → ' + esc(p.target) + '</div>').join('') + small('These can never be allowed here (your own model server is set in Settings → Workers).');
+  return html;
 }
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-egact]'); if (!b) return;
+  const h = b.dataset.host, a = b.dataset.egact;
+  const q = {allow: 'Allow the workers to reach ' + h + '?\n\nThey can then send anything to it - code, the task, output. Only allow hosts the work really needs (e.g. a package index).',
+    ignore: 'Keep ' + h + ' blocked and stop raising alarms for it?', unallow: 'Remove ' + h + ' - the workers can no longer reach it?'}[a];
+  if (!confirm(q)) return;
+  b.disabled = true;
+  const r = await post('/api/egress', {action: a, host: h});
+  done(r); if (r.ok && /recreate it once/.test(r.message || '')) alert(r.message);
+  SYS.egressAt = 0; SYS.egress = null; schedule(true);
+});
 
 // ---- Disk
 const MB = n => n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : n >= 2 ** 20 ? Math.round(n / 2 ** 20) + ' MB' : Math.max(n ? 1 : 0, Math.round(n / 1024)) + ' kB';

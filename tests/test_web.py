@@ -113,6 +113,12 @@ s, _, _ = req("POST", "/api/fix", {"fix": "worker-up:3"}, H)
 check("fix: a whitelisted fix runs its fixed command", s == 200 and calls[-1][0].endswith("bin/worker-up 3 2>&1"))
 s, _, _ = req("GET", "/api/search?q=due%27%3B%20reboot")
 check("search: the words go on stdin", s == 200 and calls[-1][0].endswith("bin/foreman search") and calls[-1][1] == "due'; reboot")
+s, _, _ = req("POST", "/api/egress", {"action": "allow", "host": "pypi.org"}, H)
+check("egress allow: a fixed flag and the validated host", s == 200 and calls[-1][0].endswith("bin/egress-report --allow pypi.org --json"))
+n = len(calls)
+bad_e = [req("POST", "/api/egress", b, H)[0] for b in ({"action": "allow", "host": "x.org; reboot"}, {"action": "allow", "host": "$(id).org"},
+                                                     {"action": "delete", "host": "pypi.org"})]
+check("egress: odd hosts and unknown actions are refused before anything runs", bad_e == [400, 400, 400] and len(calls) == n)
 srv.B.FOREMAN_BY["default"] = {"data": {"a": 1, "tasks": []}, "at": 1.0, "error": None}
 c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
 c.request("GET", "/api/stream", headers={"Host": f"127.0.0.1:{port}", "Cookie": "af_token=s3cret"})

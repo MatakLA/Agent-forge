@@ -285,3 +285,4 @@ mark { background:color-mix(in srgb, var(--hot) 40%, transparent); color:inherit
 #toasts { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); display:grid; gap:6px; z-index:20; width:min(92vw, 520px); }
 .toast { background:var(--text); color:var(--bg); padding:9px 14px; border-radius:10px; font-size:13.5px; box-shadow:0 6px 20px rgba(0,0,0,.35); transition:opacity .4s; }
 .toast.bad { background:var(--bad); color:#fff; } .toast.out { opacity:0; }
+.right { text-align:right; white-space:nowrap; }

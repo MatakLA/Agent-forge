@@ -292,12 +292,80 @@ def set_endpoint(url):
             f.write(f"# model server (COMPAT_BASE_URL)\n{rule[1]}\n")
         msgs.append(f"egress: {rule[1]} added to the allow-list")
         changed = True
-    if changed and sh("docker", "inspect", "egress-proxy").returncode == 0:
-        has = sh("docker", "exec", "egress-proxy", "sh", "-c", "grep -q local-endpoint.conf /etc/squid/squid.${EGRESS_MODE}.conf && "
-                 "test -r /etc/squid/local-endpoint.conf && test -r /etc/squid/allowlist.local.txt")
-        if has.returncode != 0:
-            msgs.append("egress: this proxy predates the model-server setting - recreate it once: bin/egress-up")
-        else:
-            r = sh("docker", "exec", "egress-proxy", "sh", "-c", "squid -k reconfigure -f /etc/squid/squid.${EGRESS_MODE}.conf")
-            msgs.append("egress: proxy reloaded" if r.returncode == 0 else f"egress: reload FAILED: {(r.stderr or r.stdout).strip()[:200]}")
+    if changed:
+        msgs += reload_proxy()
     return msgs
+
+
+def reload_proxy():
+    """Make the running proxy read its allow-lists again (squid -k reconfigure; running tunnels are not cut). A proxy created
+    before allowlist.local.txt / local-endpoint.conf existed cannot see them: it must be recreated once (bin/egress-up)."""
+    if sh("docker", "inspect", "egress-proxy").returncode != 0:
+        return ["egress: no proxy running - the change applies when it starts"]
+    has = sh("docker", "exec", "egress-proxy", "sh", "-c", "grep -q local-endpoint.conf /etc/squid/squid.${EGRESS_MODE}.conf && "
+             "test -r /etc/squid/local-endpoint.conf && test -r /etc/squid/allowlist.local.txt")
+    if has.returncode != 0:
+        return ["egress: this proxy is older than the local allow-list - recreate it once (bin/egress-up, or System → Health) so it applies"]
+    r = sh("docker", "exec", "egress-proxy", "sh", "-c", "squid -k reconfigure -f /etc/squid/squid.${EGRESS_MODE}.conf")
+    return ["egress: proxy reloaded"] if r.returncode == 0 else [f"egress: reload FAILED: {(r.stderr or r.stdout).strip()[:200]}"]
+
+
+# ---- the owner's decisions about a denied host (bin/egress-report --allow / --unallow / --baseline-add, System → Egress)
+HOST_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
+
+
+def check_host(host):
+    """A host the owner may allow or ignore: an exact DNS name (no wildcard, no IP address, no private name). Returns an error or ""."""
+    h = str(host or "").strip().lower()
+    if not HOST_RE.fullmatch(h):
+        return "an exact host name such as pypi.org (no wildcards, no IP addresses)"
+    if h.endswith((".local", ".internal", ".lan", ".home", ".arpa")) or h in ("localhost",):
+        return "a name on a private network cannot be allowed here"
+    return ""
+
+
+def local_allowlist():
+    return _lines(ALLOWLIST_LOCAL)
+
+
+def allow_host(host):
+    """The workers may reach `host` from now on (appended to egress/allowlist.local.txt; the proxy reloads). Returns messages."""
+    h = host.strip().lower()
+    err = check_host(h)
+    if err:
+        raise ValueError(err)
+    if h in allowlist():
+        return [f"{h} is already allowed"]
+    with open(ALLOWLIST_LOCAL, "a") as f:
+        f.write(f"# allowed by the owner {time.strftime('%Y-%m-%d', time.gmtime())}\n{h}\n")
+    return [f"{h} allowed for the workers"] + reload_proxy()
+
+
+def unallow_host(host):
+    """Take `host` off egress/allowlist.local.txt again (the shipped allowlist.txt is not touched). Returns messages."""
+    h = host.strip().lower()
+    if h not in local_allowlist():
+        return [f"{h} is not on the local allow-list (only hosts added here can be removed here)"]
+    out, skip = [], False
+    lines = open(ALLOWLIST_LOCAL).read().splitlines()
+    for i, l in enumerate(lines):
+        if l.split("#", 1)[0].strip() == h:
+            if out and out[-1].startswith("# allowed by the owner"):
+                out.pop()
+            continue
+        out.append(l)
+    open(ALLOWLIST_LOCAL, "w").write("\n".join(out) + "\n")
+    return [f"{h} removed - the workers can no longer reach it"] + reload_proxy()
+
+
+def ignore_host(host):
+    """Accept a denied host as known noise: it stays denied, but no longer raises an alarm (etc/egress-baseline.txt)."""
+    h = host.strip().lower()
+    err = check_host(h)
+    if err:
+        raise ValueError(err)
+    if h not in baseline():
+        os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
+        with open(BASELINE, "a") as f:
+            f.write(h + "\n")
+    return [f"{h} stays blocked but no longer raises an alarm"]
