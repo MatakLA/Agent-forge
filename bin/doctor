@@ -107,7 +107,9 @@ vision = os.path.join(sbx.ROOT, "projects", sbx.PROJECT, conf.get("VISION_FILE",
     os.path.join(sbx.ROOT, conf.get("VISION_FILE", "docs/vision.md"))
 ok(f"vision file {os.path.relpath(vision, sbx.ROOT)}") if os.path.exists(vision) else \
     warn("no vision file - the autopilot has nothing to plan from", f"write {os.path.relpath(vision, sbx.ROOT)} (docs/vision.example.md)")
-if conf.get("NOTIFY_URL"):
+if conf.get("NOTIFY_URL") == "outbox":
+    ok("notifications go to runs/notify-outbox.jsonl (a relay outside this machine delivers them)")
+elif conf.get("NOTIFY_URL"):
     shown = re.sub(r"(//[^/]+/).*", "\\1…", conf["NOTIFY_URL"])          # never print a webhook's secret path
     ok(f"notifications to {shown} ({conf.get('NOTIFY_FORMAT', 'ntfy')})")
 else:

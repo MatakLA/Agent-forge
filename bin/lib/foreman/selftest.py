@@ -283,6 +283,17 @@ def _selftest():
     b2, _ = sbx.notify_payload("slack", "goal_done", "T", "m")
     check("notify_payload: ntfy encodes a non-ASCII title (RFC 2047), slack sends text",
           b == b"text" and h["Title"].startswith("=?UTF-8?B?") and json.loads(b2)["text"] == "*T*\nm")
+    ob_runs, ob_conf, ob_dir = sbx.RUNS, sbx.project_conf, tempfile.mkdtemp(prefix="forge-outbox-")
+    try:
+        sbx.RUNS = ob_dir
+        sbx.project_conf = lambda project=None: {"NOTIFY_URL": "outbox", "NOTIFY_EVENTS": "goal_done"}
+        sent = sbx.notify("goal_done", "Cieľ hotový", "x" * 5000), sbx.notify("task_blocked", "T", "m")
+        rows = [json.loads(l) for l in open(sbx.notify_outbox_path(), encoding="utf-8")]
+    finally:
+        sbx.RUNS, sbx.project_conf = ob_runs, ob_conf
+        shutil.rmtree(ob_dir, ignore_errors=True)
+    check("notify: NOTIFY_URL=outbox appends filtered events to runs/notify-outbox.jsonl",
+          sent == (True, False) and len(rows) == 1 and rows[0]["title"] == "Cieľ hotový" and len(rows[0]["message"]) == 3500)
     # maintenance findings, unique goal ids, orphaned runs - on a throwaway state dir
     old_fd = ctx.FD
     d = tempfile.mkdtemp(prefix="forge-maint-")
