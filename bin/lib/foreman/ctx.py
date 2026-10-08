@@ -36,7 +36,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # how the project is tested (gate, self-check, maintenance) and in which image; any language with a CLI test runner
             TEST_CMD="", GATE_IMAGE="",
             # owner notifications: an ntfy topic, a Slack / Discord webhook or any JSON endpoint ("" = off)
-            NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out,auth",
+            NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out,auth,approval",
             # finished runs older than this are compressed by maintenance (their transcripts are the bulk of runs/)
             RUNS_KEEP_DAYS=14,
             # API-key worker runtimes (bin/worker-add N --runtime claude|codex|gemini): their models ("" = the CLI's default),

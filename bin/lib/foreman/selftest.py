@@ -13,11 +13,19 @@ from .prompts import worker_spec
 from .merge import auto_rebase
 from .maintenance import MAINT_PREFIX, _maintenance_findings
 from .loop import orphaned
-from .report import efficiency, task_diff, team_metrics
+from .report import task_diff, team_metrics
+from .stats import efficiency
 from .settings import settings_apply
 
 
 def selftest():
+    """Runs every check; the event lines the tested code writes to stderr are swallowed (they are expected)."""
+    import contextlib, io
+    with contextlib.redirect_stderr(io.StringIO()):
+        return _selftest()
+
+
+def _selftest():
     import shutil, tempfile
     bad = 0
 
@@ -379,4 +387,118 @@ def _raises(fn):
     return False
 
 
-GROUPS = [test_runtimes_egress_budgets]
+def test_owner_and_insights(check):
+    """The owner's approvals and actions, why a worker is idle, the backlog forecast, the numbers behind routing and A/B."""
+    import shutil, tempfile
+    from .util import ready_tasks
+    from .owner import goal_action, task_action
+    from .planning import hold_if_risky
+    from .loop import why_no_task
+    from .report import forecast
+    from .knowledge import doc_path
+    from .stats import ab_verdict, estimate, mean_ci, pick_model, routing_table, sizes, wilson
+    ts = [dict(id="0001-a", goal="G1", status="pending", files=["a.py"]), dict(id="0002-b", goal="G2", status="pending", files=["b.py"]),
+          dict(id="0003-c", goal="G3", status="pending", files=["c.py"])]
+    gm = {"G1": dict(id="G1"), "G2": dict(id="G2", priority=2), "G3": dict(id="G3", paused=True)}
+    check("ready_tasks: a paused goal's tasks wait, a prioritized goal's tasks go first",
+          [t["id"] for t in ready_tasks(ts, set(), gm)] == ["0002-b", "0001-a"])
+    t = dict(status="pending", risk="risky")
+    hold_if_risky(t, {"risky"})
+    t2 = dict(status="pending", risk="routine")
+    hold_if_risky(t2, {"risky"})
+    check("APPROVE=risky holds a risky task (and only that) for the owner", t == dict(status="approval", risk="risky", awaiting="risky")
+          and t2["status"] == "pending")
+    old_fd, d = ctx.FD, tempfile.mkdtemp(prefix="forge-owner-")
+    try:
+        ctx.FD = d
+        os.makedirs(os.path.join(d, "tasks")); os.makedirs(os.path.join(d, "goals"))
+        w = lambda kind, x: json.dump(x, open(os.path.join(d, kind, x["id"] + ".json"), "w"))
+        r = lambda kind, i: json.load(open(os.path.join(d, kind, i + ".json")))
+        w("goals", dict(id="G20260101-000000", text="g", status="approval", rounds=1))
+        w("tasks", dict(id="0001-plan", goal="G20260101-000000", status="approval", awaiting="plan", after="pending", risk="risky", attempts=0, history=[]))
+        w("tasks", dict(id="0002-plan", goal="G20260101-000000", status="approval", awaiting="plan", after="splitting", attempts=0, history=[]))
+        w("tasks", dict(id="0003-merge", goal="G20260101-000000", status="approval", awaiting="merge", attempts=0, history=[]))
+        w("tasks", dict(id="0004-run", goal="G20260101-000000", status="running", run=os.path.join(d, "run1"), attempts=0, history=[]))
+        w("tasks", dict(id="0005-blk", goal="G20260101-000000", status="blocked", attempts=4, history=[], blocked_why="x"))
+        w("tasks", dict(id="0006-new", goal="G20260101-000000", status="pending", attempts=0, history=[]))
+        os.makedirs(os.path.join(d, "run1"))
+        old_ap = ctx.C["APPROVE"]
+        ctx.C["APPROVE"] = "plan,risky,merge"
+        try:
+            ok1 = goal_action("G20260101-000000", "approve")[0]
+        finally:
+            ctx.C["APPROVE"] = old_ap
+        check("approving a plan releases its tasks (a split goes on splitting, a risky one waits again as risky), the goal runs",
+              ok1 and r("goals", "G20260101-000000")["status"] == "active" and r("tasks", "0002-plan")["status"] == "splitting"
+              and r("tasks", "0001-plan")["status"] == "approval" and r("tasks", "0001-plan")["awaiting"] == "risky")
+        check("approving the risky task starts it; approving a merge marks it merge-ready (and remembers the approval)",
+              task_action("0001-plan", "approve")[0] and r("tasks", "0001-plan")["status"] == "pending"
+              and task_action("0003-merge", "approve")[0] and r("tasks", "0003-merge")["status"] == "merge-ready"
+              and r("tasks", "0003-merge")["merge_approved"] is True)
+        check("cancelling a running task asks its supervisor to stop (stop file) and keeps it running until the run ends",
+              task_action("0004-run", "cancel")[0] and os.path.exists(os.path.join(d, "run1", "stop"))
+              and r("tasks", "0004-run")["status"] == "running" and r("tasks", "0004-run")["cancel_requested"])
+        ok_fb, _ = task_action("0005-blk", "feedback", text="Use the existing parser.")
+        t5 = r("tasks", "0005-blk")
+        check("feedback on a blocked task sends it back with the owner's words and fresh attempts",
+              ok_fb and t5["status"] == "pending" and t5["attempts"] == 0 and "Use the existing parser." in t5["feedback"])
+        check("feedback on a task nobody worked on goes into its spec", task_action("0006-new", "feedback", text="Prefer sqlite.")[0]
+              and "Prefer sqlite." in r("tasks", "0006-new")["owner_notes"] and r("tasks", "0006-new")["status"] == "pending")
+        check("assign / model: validated, and refused for a running task",
+              task_action("0006-new", "assign", target="worker-3")[0] and r("tasks", "0006-new")["pin_worker"] == "worker-3"
+              and not task_action("0006-new", "assign", target="worker-3; reboot")[0] and not task_action("0004-run", "model", target="x")[0]
+              and not task_action("../x", "cancel")[0] and not task_action("0006-new", "explode")[0])
+        check("goals: pause / prioritize / cancel; replan needs a plan waiting and a note",
+              goal_action("G20260101-000000", "pause")[0] and r("goals", "G20260101-000000")["paused"]
+              and goal_action("G20260101-000000", "prioritize")[0] and r("goals", "G20260101-000000")["priority"] == 1
+              and not goal_action("G20260101-000000", "replan", "x")[0]
+              and goal_action("G20260101-000000", "cancel")[0] and r("tasks", "0006-new")["status"] == "cancelled")
+    finally:
+        ctx.FD = old_fd
+        shutil.rmtree(d, ignore_errors=True)
+    run = [dict(id="0009-r", status="running", files=["x.py"])]
+    check("why idle: the kill switch first, then MAX_PARALLEL, then the blocker of the first waiting task",
+          why_no_task([], {}, "the project is stopped (kill switch): egress") .startswith("the project is stopped")
+          and "MAX_PARALLEL" in why_no_task([], {}, "", 4, 4)
+          and "0001-a waits for 0000-z" in why_no_task([dict(id="0001-a", goal="G", status="pending", depends_on=["0000-z"])], {})
+          and "0010-s waits: 0009-r is changing the same files" in why_no_task(run + [dict(id="0010-s", goal="G", status="pending", files=["x.py"])], {})
+          and "its goal is paused" in why_no_task([dict(id="0011-p", goal="G", status="pending")], {"G": dict(paused=True)})
+          and "assigned to worker-2" in why_no_task([dict(id="0012-q", goal="G", status="pending", pin_worker="worker-2")], {}, worker="worker-1")
+          and "wait for your approval" in why_no_task([dict(id="0013-a", goal="G", status="approval")], {})
+          and "add a goal" in why_no_task([], {}))
+    now = 1_800_000_000
+    iso = lambda dd: __import__("datetime").datetime.fromtimestamp(now - dd * 86400, __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fts = [dict(id=f"{i:04d}", goal=f"G{i % 3}", status="done", finished=iso(i % 6)) for i in range(14)] + \
+          [dict(id="0100", goal="G9", status="pending"), dict(id="0101", goal="G9", status="running")]
+    f = forecast(fts, 2, now)
+    check("forecast: 14 merged in 7 days = 2/day; 2 open + 2 backlog goals x 4.7 tasks = ~11 -> ~5.7 days",
+          f["per_day"] == 2.0 and f["open"] == 2 and f["remaining"] == 11 and abs(f["eta_days"] - 5.7) < 0.1)
+    check("forecast: no pace yet -> no date", forecast([dict(id="1", goal="G", status="pending")], 0, now)["eta_days"] is None)
+    lo, hi = wilson(8, 10)
+    check("wilson: 8 of 10 -> about 49-94 %; nothing -> None", (lo, hi) == (49, 94) and wilson(0, 0) == (None, None))
+    m = mean_ci([1, 2, 3, 4, 5])
+    check("mean_ci: mean 3, symmetric interval; one value is not enough", m[0] == 3 and abs((m[2] - 3) - (3 - m[1])) < 1e-9 and mean_ci([1]) is None)
+    A = dict(done=20, first_pass_ci=[60, 90], week_done_ci=[2.0, 1.8, 2.2], cost_done_ci=None)
+    B = dict(done=20, first_pass_ci=[55, 88], week_done_ci=[1.2, 1.0, 1.4], cost_done_ci=None)
+    Bq = dict(B, first_pass_ci=[10, 40])
+    v1, v2, v3 = ab_verdict(A, B, "pro", "flash"), ab_verdict(A, Bq, "pro", "flash"), ab_verdict(A, dict(B, week_done_ci=[1.9, 1.5, 2.3]), "pro", "flash")
+    check("A/B: cheaper with the same quality wins; cheaper but worse first time does not; overlapping intervals ask for more data",
+          v1["winner"] == "flash" and v2["winner"] is None and v3["winner"] is None and v3["need_more"] and v3["need_more"] > 0)
+    rts = [dict(id=f"{i:04d}-t", status="done", role="tester", files=["t.py"], history=[dict(outcome="rework")] if i == 4 else []) for i in range(8)]
+    rs = {f"r{i}": dict(task=f"{i:04d}-t", model="flash" if i < 5 else "pro", tokens=100_000 * (1 + i % 2), week=0.5 if i < 5 else 1.5,
+                        cost=None, reason="ok", variant="", tools=1, checks=[]) for i in range(8)}
+    tbl = routing_table(rts, rs)
+    check("routing: the cheaper model that has proven itself wins; too few tasks or too many reworks do not qualify",
+          pick_model("tester", tbl, ["pro", "flash"], 5, 70) == "flash" and pick_model("tester", tbl, ["pro", "flash"], 6, 70) is None
+          and pick_model("tester", tbl, ["pro"], 3, 70) == "pro" and pick_model("tester", tbl, ["flash"], 5, 90) is None)
+    sz = sizes(rts, rs)
+    e = estimate(dict(role="tester", files=["a.py"]), sz)
+    check("sizes/estimate: median tokens of merged tasks of the same role (and size)", sz["n"] == 8 and e and e["tokens"] in (100_000, 150_000, 200_000)
+          and "tester" in e["basis"] and estimate(dict(role="x"), None) is None)
+    check("documents: only known names, a role is written to the project's own roles/ directory",
+          doc_path("vision") and doc_path("role:../../etc/passwd") is None and doc_path("../x") is None
+          and doc_path("role:tester", write=True).endswith(os.path.join("roles", "tester.md"))
+          and doc_path("role:tester", write=True).startswith(ctx.CFG_DIR))
+
+
+GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights]

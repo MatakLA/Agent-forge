@@ -16,6 +16,7 @@ MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"
 # a model on the owner's own server: "qwen3-coder:30b" (Ollama), "anthropic/claude-sonnet-4.5" (OpenRouter), "Qwen/Qwen3-32B" (vLLM)
 SERVER_MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,99}"
 USD_RE = r"\d{1,6}(\.\d{1,2})?"
+NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval"
 
 
 # key -> (validation regex or (min, max), scope: "project" = this project's config, "limits" = etc/limits.conf for ALL projects)
@@ -36,7 +37,7 @@ EDITABLE = {
     "TEST_CMD": ("|" + sbx.TEST_CMD_RE.pattern, "project"), "GATE_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
     "NOTIFY_URL": (r"|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf
     "NOTIFY_FORMAT": (r"ntfy|slack|discord|json", "project"),
-    "NOTIFY_EVENTS": (r"|(goal_done|task_blocked|killswitch|questions|quota_out|auth)(,(goal_done|task_blocked|killswitch|questions|quota_out|auth))*", "project"),
+    "NOTIFY_EVENTS": (r"|(%s)(,(%s))*" % ((NOTIFY_KINDS,) * 2), "project"),
     "WORKER_MODEL_CLAUDE": ("|" + MODEL_RE, "project"), "WORKER_MODEL_CODEX": ("|" + MODEL_RE, "project"),
     "WORKER_MODEL_GEMINI": ("|" + MODEL_RE, "project"), "API_WORKERS_POLICY": (r"overflow|always", "project"),
     "API_RUN_BUDGET_USD": (r"\d{1,4}(\.\d{1,2})?", "limits"), "API_DAILY_BUDGET_USD": (r"\d{1,5}(\.\d{1,2})?", "limits"),

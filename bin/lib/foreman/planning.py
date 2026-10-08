@@ -5,7 +5,7 @@ import os, time
 import sbx
 
 from . import ctx
-from .util import _strs, extract_json, norm_tasks
+from .util import _strs, approvals, extract_json, norm_tasks
 from .store import (event, goals, gsave, gstate, jload, jsave, locked, new_goal_id, next_task_number, notify, save_goal, save_task,
                     state_tx, tasks)
 from .pool import workers
@@ -16,13 +16,16 @@ from .prompts import TASK_SCHEMA, context_bundle, plan_prompt
 
 def step_plan(g, followup=None):
     refresh_repo()
-    text, who = llm("check" if followup else "plan", plan_prompt(g, followup))
+    text, who = llm("check" if followup else "plan", plan_prompt(g, followup), g["id"])
     d = extract_json(text)
 
     def apply():
         g2 = jload(os.path.join(ctx.FD, "goals", g["id"] + ".json"))
         if not g2:
             return                                  # the goal file was removed while the planner was thinking
+        if g2.get("status") != g.get("status") or g2.get("text") != g.get("text"):
+            event(f"goal {g['id']}: changed by the owner while it was planned - this plan is dropped", goal=g["id"])
+            return                                  # edited, cancelled or re-planned meanwhile: the next round plans the new text
         if not d or (not d.get("done") and not norm_tasks(d, 0) and followup is None):
             g2["plan_errors"] = g2.get("plan_errors", 0) + 1
             event(f"goal {g['id']}: {who} replied without valid JSON (attempt {g2['plan_errors']})", goal=g["id"])
@@ -35,28 +38,35 @@ def step_plan(g, followup=None):
             g2["criteria_at"] = sbx.now()
         if d.get("done") is True:
             g2.update(status="done", summary=str(d.get("summary") or "")[:2000], finished=sbx.now()); save_goal(g2)
-            for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending")]:
+            for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending", "approval")]:
                 ot["status"] = "cancelled"; ot["cancelled_why"] = "goal completed via replacement task"; save_task(ot)
             event(f"goal {g['id']} DONE ({who}): {str(d.get('summary') or '')[:500]}", goal=g["id"]); notify("goal_done", g2); return
-        for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending")]:
+        for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending", "approval")]:
             ot["status"] = "cancelled"; ot["cancelled_why"] = f"superseded by round {g2.get('rounds', 0) + 1}"; save_task(ot)
         planned = norm_tasks(d, next_task_number())
-        presplit = []
+        presplit, gate = [], approvals()
         for tid, x, deps in planned:
             prefix = "test" if "test" in x["role"].lower() and "developer" not in x["role"].lower() else "feat"
             nt = dict(id=tid, goal=g["id"], branch=f"{prefix}/{tid}", depends_on=deps, status="pending", attempts=0, history=[],
                       created=sbx.now(), planned_by=who, **x)
             if len(own_files(nt)) > int(ctx.C["MAX_TASK_FILES"]):
                 nt.update(status="splitting", presplit=True); presplit.append(tid)
+            if "plan" in gate:
+                nt.update(status="approval", awaiting="plan", after=nt["status"])     # the owner approves the plan first
+            else:
+                hold_if_risky(nt, gate)
             save_task(nt)
         if presplit:
             event(f"goal {g['id']}: {', '.join(presplit)} own more than {ctx.C['MAX_TASK_FILES']} files - splitting before dispatch", goal=g["id"])
-        g2.update(status="active", rounds=g2.get("rounds", 0) + 1, notes=str(d.get("notes") or "")[:1000])
+        waiting = "plan" in gate and planned
+        g2.update(status="approval" if waiting else "active", rounds=g2.get("rounds", 0) + 1, notes=str(d.get("notes") or "")[:1000])
         if d.get("goal_acceptance") and not g2.get("acceptance"):
             g2["acceptance"] = [a[:300] for a in _strs(d["goal_acceptance"])][:6]
         save_goal(g2)
-        event(f"goal {g['id']} planned by {who}: {len(planned)} task(s) - {str(d.get('notes') or '')[:300]}", goal=g["id"],
-              tasks=[p[0] for p in planned])
+        event(f"goal {g['id']} planned by {who}: {len(planned)} task(s)" + (" - waiting for your approval" if waiting else "") +
+              f" - {str(d.get('notes') or '')[:300]}", goal=g["id"], tasks=[p[0] for p in planned])
+        if waiting:
+            notify("approval", text=f"The plan for: {g2['text'][:200]}\n" + "\n".join(f"- {p[1]['title']} ({p[1]['role']})" for p in planned))
     return apply
 
 
@@ -73,7 +83,7 @@ def step_split(t):
               f"Split the task into 2-3 smaller tasks that together deliver exactly the same spec and acceptance criteria, each well under "
               f"{ctx.C['TASK_TOKEN_BUDGET']:,} tokens of work and at most {ctx.C['MAX_TASK_FILES']} files, disjoint files where possible.\n"
               f"Reply with ONLY one JSON object in this schema:\n{TASK_SCHEMA}\n")
-    text, who = llm("plan", prompt)
+    text, who = llm("plan", prompt, t["id"])
     d = extract_json(text) or {}
 
     def apply():
@@ -90,9 +100,14 @@ def step_split(t):
             ids.append(tid)
             if t.get("risk") == "risky":
                 x["risk"] = "risky"                    # a part of risky work stays risky
-            save_task(dict(id=tid, goal=t["goal"], branch=t["branch"] if i == 0 else f"{t['branch'].split('/')[0]}/{tid}",
-                           depends_on=list(t.get("depends_on", [])) + deps, status="pending", attempts=0, history=[],
-                           created=sbx.now(), planned_by=who, split_from=t["id"], **x))
+            nt = dict(id=tid, goal=t["goal"], branch=t["branch"] if i == 0 else f"{t['branch'].split('/')[0]}/{tid}",
+                      depends_on=list(t.get("depends_on", [])) + deps, status="pending", attempts=0, history=[],
+                      created=sbx.now(), planned_by=who, split_from=t["id"], **x)
+            for k in ("pin_worker", "model_override", "owner_notes"):         # the owner's choices for the task carry over
+                if t.get(k):
+                    nt[k] = t[k]
+            hold_if_risky(nt, approvals())
+            save_task(nt)
         t2.update(status="cancelled", cancelled_why=f"split into {', '.join(ids)}"); save_task(t2)
         for ot in tasks():
             if t["id"] in ot.get("depends_on", []):
@@ -165,3 +180,9 @@ def step_roadmap(text):
         event(f"roadmap ({who}): {len(new)} goal(s) queued in the backlog" + (f", {len(qs)} question(s) for the owner" if qs else "") +
               f" - {str(d.get('notes', ''))[:200]}")
     return apply
+
+
+def hold_if_risky(t, gate):
+    """APPROVE contains "risky": a risky task waits for the owner before any worker starts it."""
+    if "risky" in gate and t.get("risk") == "risky" and t["status"] == "pending":
+        t.update(status="approval", awaiting="risky")

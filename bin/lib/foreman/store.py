@@ -1,6 +1,6 @@
 """The foreman's state as plain JSON files under runs/[projects/<name>/]foreman/: goals, tasks, state.json, events.jsonl.
 Read-modify-write goes through locked() / state_tx() (thread lock + flock), so the loop and CLI commands never lose updates."""
-import contextlib, fcntl, json, os, re, threading, time
+import contextlib, fcntl, json, os, re, sys, threading, time
 
 import sbx
 
@@ -26,7 +26,7 @@ def event(msg, **kw):
     os.makedirs(ctx.FD, exist_ok=True)
     with open(os.path.join(ctx.FD, "events.jsonl"), "a") as f:
         f.write(json.dumps(dict(at=sbx.now(), msg=msg, **kw), ensure_ascii=False) + "\n")
-    print(f"{sbx.now()} {msg}", flush=True)
+    print(f"{sbx.now()} {msg}", file=sys.stderr, flush=True)     # stderr: the journal gets it, a command's JSON output stays clean
 
 
 def gstate():
@@ -124,6 +124,8 @@ def notify(kind, obj=None, text=""):
         title, msg = "All workers are out of quota", text
     elif kind == "auth":
         title, msg = "An API key was rejected", text
+    elif kind == "approval":
+        title, msg = "Waiting for your approval", text
     else:
         title, msg = kind, text
     threading.Thread(target=sbx.notify, args=(kind, title, msg), daemon=True).start()

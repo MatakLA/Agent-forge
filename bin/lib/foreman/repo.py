@@ -6,6 +6,7 @@ import sbx, codemap
 from . import ctx
 from .util import git_auth_env, sh, slugify
 from .store import jload, jsave
+from .stats import pick_model, routing_table, run_stats
 
 
 REPO_LOCK = threading.Lock()
@@ -139,10 +140,13 @@ def variant(t):
         pack = cp == "on" or (cp == "ab" and _bucket(t["id"] + ":pack", 2) == 0)
         risky = t.get("risk") == "risky"
         light = slugify(t.get("role", "")) in {slugify(r) for r in str(ctx.C["LIGHT_ROLES"]).split(",") if r.strip()}
+        routed = routed_model(t) if not risky and str(ctx.C.get("MODEL_ROUTING", "off")) == "auto" else None
         if risky and ctx.C["WORKER_MODEL_RISKY"]:
             model, why = ctx.C["WORKER_MODEL_RISKY"], "risky"
         elif not risky and ctx.C["AB_MODEL"] and _bucket(t["id"] + ":model", 100) < int(ctx.C["AB_SHARE"]):
-            model, why = ctx.C["AB_MODEL"], "ab"
+            model, why = ctx.C["AB_MODEL"], "ab"            # the A/B experiment keeps exploring, routing exploits what it found
+        elif routed:
+            model, why = routed, "routed"
         elif light and ctx.C["WORKER_MODEL_LIGHT"]:
             model, why = ctx.C["WORKER_MODEL_LIGHT"], "light"
         else:
@@ -150,3 +154,26 @@ def variant(t):
         v = dict(pack=pack, model=model, why=why)
         t["variant"] = v
     return v
+
+
+ROUTING = {}
+
+
+def routed_model(t):
+    """MODEL_ROUTING=auto: the cheapest worker model that has proven itself for this task's role in this project (see
+    stats.pick_model), among the models configured here; None when none has enough history yet. The table is rebuilt at most
+    once a minute."""
+    import time
+    if time.time() - ROUTING.get("at", 0) > 60:
+        from .store import tasks
+        try:
+            ROUTING.update(at=time.time(), table=routing_table(tasks(), run_stats()))
+        except Exception:
+            ROUTING.update(at=time.time(), table={})
+    try:
+        default = str(sbx.load_limits().get("WORKER_MODEL") or "")
+    except SystemExit:
+        default = ""
+    cands = [m for m in dict.fromkeys([ctx.C["WORKER_MODEL"] or default, ctx.C["WORKER_MODEL_LIGHT"], ctx.C["AB_MODEL"], default]) if m]
+    return pick_model(t.get("role", ""), ROUTING.get("table") or {}, cands, int(ctx.C.get("ROUTING_MIN_TASKS", 5)),
+                      int(ctx.C.get("ROUTING_MIN_FIRST_PASS", 70)))
