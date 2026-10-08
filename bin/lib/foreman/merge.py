@@ -5,7 +5,7 @@ import json, os, re, threading, time
 import sbx
 
 from . import ctx
-from .util import extract_json, git_auth_env, parse_numstat, sh
+from .util import approvals, extract_json, git_auth_env, parse_numstat, sh
 from .store import event, jload, jsave, notify, save_task
 from .jobs import INFLIGHT, PHASE, submit
 from .repo import refresh_repo
@@ -75,7 +75,9 @@ def _auto_rebase(branch):
 def requeue_gate(t, why):
     """Test + review again (main moved, merge check pending). Each round costs a review call, so after 4 in a row the task is
     blocked for the owner instead of looping."""
-    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    t = live_task(t)
+    if not t:
+        return
     t["regates"] = t.get("regates", 0) + 1
     t["history"].append(dict(at=sbx.now(), outcome="regate", why=why))
     if t["regates"] > 4:
@@ -118,7 +120,9 @@ def merge_upstream(t, up, who, fb, gate):
 
 
 def await_merge(t, pr, why, who="", fb="", now=False):
-    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    t = live_task(t)
+    if not t:
+        return
     t.update(status="merging", upstream_pr=pr, not_before=0 if now else time.time() + 60, merge_reviewer=who, merge_feedback=fb[:800])
     save_task(t)
     event(f"task {t['id']}: {why}: {pr.get('url') or '#' + str(pr.get('number'))}", task=t["id"])
@@ -253,7 +257,7 @@ def step_gate_review_merge(t):
     if len(diff) > ctx.C["DIFF_MAX"]:
         diff = diff[:ctx.C["DIFF_MAX"]] + f"\n... (diff truncated, {len(diff)} bytes total)"
     PHASE[t["id"]] = "review by the orchestrator"
-    text, who = llm("review", review_prompt(t, gate, diff))
+    text, who = llm("review", review_prompt(t, gate, diff), t["id"])
     v = extract_json(text) or {}
     verdict, fb = v.get("verdict"), str(v.get("feedback", ""))[:4000]
     if verdict not in ("approve", "reject", "rework"):
@@ -280,6 +284,14 @@ def step_gate_review_merge(t):
             return lambda: rework(t, "Your tests do not catch these deliberate bugs in your code (mutation check); add tests that fail for "
                                      "each of them:\n" + "\n".join(f"- {m['name']}: in {m['file']} replace `{m['old']}` with `{m['new']}`"
                                                                    for m in muts if any(m['name'] in l for l in surv if l.startswith('SURVIVED'))), out2[-3000:])
+    if "merge" in approvals() and not t.get("merge_approved"):
+        return lambda: await_owner(t, "merge", who, fb, gate)
+    return do_merge(t, who, fb, gate)
+
+
+def do_merge(t, who, fb, gate):
+    """Merge an approved branch: a pull / merge request on GitHub or GitLab, or a PR on the internal Forgejo. Returns the
+    function the loop applies (finish, or rework / requeue / block when the merge itself fails)."""
     up = upstream_obj()
     if up:
         return merge_upstream(t, up, who, fb, gate)
@@ -287,8 +299,9 @@ def step_gate_review_merge(t):
         return lambda: finish(t, "approved (auto-merge off: merge by hand)", who, fb, None)
     PHASE[t["id"]] = "merge"
     body = os.path.join(ctx.FD, "tasks", t["id"] + ".pr.md")
+    how = "after your approval in the dashboard" if t.get("merge_approved") else "(AUTO_MERGE=1) after the gate and the review passed"
     open(body, "w").write(f"Task {t['id']} ({t['role']}), goal {t['goal']}.\n\nReview by {who}: {fb}\n\nGate:\n```\n{gate[-2500:]}\n```\n"
-                          f"\nMerged automatically by Agent-Forge (AUTO_MERGE=1) after the gate and the review passed.\n")
+                          f"\nMerged by Agent-Forge {how}.\n")
     rc, out, err = sh([os.path.join(ctx.BIN, "open-pr"), t["branch"], f"{t['id']}: {t['title']}"[:120], body], timeout=60)
     m = re.search(r"opened PR #(\d+)", out)
     if not m:
@@ -319,10 +332,49 @@ def step_gate_review_merge(t):
     return lambda: finish(t, f"merged PR #{num}", who, fb, num)
 
 
+def await_owner(t, kind, who="", fb="", gate=""):
+    """APPROVE contains "merge": the reviewed, tested branch waits for the owner's OK (dashboard: Merge / Send back)."""
+    t = live_task(t)
+    if not t:
+        return
+    t.update(status="approval", awaiting=kind, merge_reviewer=who, merge_feedback=fb[:800], gate_tail=gate[-8000:], review_fails=0)
+    save_task(t)
+    event(f"task {t['id']}: approved by {who} - waiting for your OK to merge", task=t["id"])
+    notify("approval", text=f"Merge {t['id']}: {t['title']}\nReview ({who}): {fb[:400]}")
+
+
+def step_owner_merge(t):
+    """The owner approved the merge. Main may have moved since the review: an auto-rebase that changed the branch sends it
+    through the gate and the review again (it merges right after, the approval stays); a conflict goes back to the worker."""
+    PHASE[t["id"]] = "merge (approved by you)"
+    rb = auto_rebase(t["branch"])
+    if rb == "conflict":
+        return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, rerun "
+                                 "the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
+    if rb == "rebased":
+        return lambda: requeue_gate(t, "main moved since your approval - auto-rebased")
+    if rb in ("missing", "push-failed"):
+        return lambda: requeue_gate(t, f"could not update the branch before merging ({rb})")
+    return do_merge(t, t.get("merge_reviewer") or "owner", t.get("merge_feedback") or "", t.get("gate_tail") or "")
+
+
+def live_task(t):
+    """The task as it is on disk now - None when the owner cancelled it meanwhile (a step that was already running must not
+    bring it back)."""
+    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    if not t or t.get("status") == "cancelled":
+        if t:
+            event(f"task {t['id']}: cancelled meanwhile - result of the running step dropped", task=t["id"])
+        return None
+    return t
+
+
 def retry_review(t, who, raw_text):
     """The review call produced no parseable verdict (denied tool call, rambling with no JSON, ...). Not the worker's
     fault: retry the review itself a few times (same branch, no new worker run) before escalating."""
-    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    t = live_task(t)
+    if not t:
+        return
     t["review_fails"] = t.get("review_fails", 0) + 1
     note = (raw_text or "(empty reply)")[:500]
     t["history"].append(dict(at=sbx.now(), outcome="review-retry", reviewer=who, note=note))
@@ -335,19 +387,25 @@ def retry_review(t, who, raw_text):
 
 
 def rework(t, feedback, gate_tail, count=True):
-    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    t = live_task(t)
+    if not t:
+        return
     if count:
         t["attempts"] += 1
     t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500]))
     if t["attempts"] > ctx.C["MAX_REWORK"]:
         return block(t, f"still failing after {t['attempts']} attempts: {feedback[:300]}")
     t.update(status="pending", feedback=feedback, gate_tail=gate_tail, review_fails=0, regates=0, not_before=0)
+    t.pop("merge_approved", None)              # new work needs a new approval
+    t.pop("awaiting", None)
     save_task(t)
     event(f"task {t['id']} back to the worker (attempt {t['attempts'] + 1}): {feedback[:200]}", task=t["id"])
 
 
 def block(t, why):
-    t = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json"))
+    t = live_task(t)
+    if not t:
+        return
     t["history"].append(dict(at=sbx.now(), outcome="blocked", why=why[:1500]))
     t.update(status="blocked", blocked_why=why)
     save_task(t)

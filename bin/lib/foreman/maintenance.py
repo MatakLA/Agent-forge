@@ -1,6 +1,6 @@
 """LLM-free maintenance while the team is idle: the suite on main 3x (red main, flaky tests), modules without a
 docstring, old transcripts compressed."""
-import os, time
+import json, os, time
 
 import sbx
 
@@ -38,7 +38,7 @@ def maybe_maintenance():
     if not ctx.C["MAINTENANCE"] or "maint:main" in INFLIGHT:
         return
     ts = tasks()
-    if any(t["status"] in ("running", "gate", "review", "splitting") for t in ts):
+    if any(t["status"] in ("running", "gate", "review", "splitting", "merge-ready") for t in ts):
         return
     st = gstate()
     if time.time() - st.get("maint_at", 0) < 6 * 3600:
@@ -126,3 +126,68 @@ def _maintenance_findings(runs, nodoc, sha):
     event("maintenance on main " + sha.strip()[:10] + ": suite " + " / ".join(r[1] for r in runs)[:200] +
           (" - " + "; ".join(found) if found else " - nothing to do"))
     return found
+
+
+# ---------------------------------------------------------------- disk: what takes the space, and one-click cleanups
+def disk_usage():
+    """runs/ by kind (transcripts, compressed transcripts, the rest) and by project, how many old transcripts could be compressed,
+    Docker's own accounting (images, containers, volumes, build cache) and the free space - for the dashboard's System view."""
+    import shutil
+    keep = int(ctx.C["RUNS_KEEP_DAYS"])
+    cutoff = time.time() - keep * 86400
+    tot = dict(transcripts=0, compressed=0, other=0, runs=0, old_uncompressed=0, old_bytes=0)
+    by_project = {}
+    for d in sbx.run_dirs():
+        tot["runs"] += 1
+        proj = sbx.meta(d).get("project", "") or "default"
+        for f in os.listdir(d):
+            p = os.path.join(d, f)
+            try:
+                n = os.path.getsize(p)
+            except OSError:
+                continue
+            kind = "transcripts" if f == "stream.jsonl" else "compressed" if f == "stream.jsonl.gz" else "other"
+            tot[kind] += n
+            by_project[proj] = by_project.get(proj, 0) + n
+            if f == "stream.jsonl" and os.path.exists(os.path.join(d, "finished")) and os.path.getmtime(p) < cutoff:
+                tot["old_uncompressed"] += 1; tot["old_bytes"] += n
+    rc, out, _ = sh(["docker", "system", "df", "--format", "{{json .}}"], timeout=60)
+    docker = []
+    for l in out.splitlines() if rc == 0 else []:
+        try:
+            docker.append(json.loads(l))
+        except ValueError:
+            pass
+    du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
+    return dict(runs=tot, by_project=by_project, keep_days=keep, docker=docker, free=du.free, total=du.total)
+
+
+def cleanup(action, days=None):
+    """compress: gzip transcripts of finished runs older than `days` (RUNS_KEEP_DAYS) - nothing is lost.
+    transcripts: delete transcripts (plain and gzip) of finished runs older than `days` - the numbers stay (meta.json, ledger).
+    docker: remove dangling images and the build cache (never a tagged image, container or volume). Returns a message."""
+    days = int(days if days is not None else ctx.C["RUNS_KEEP_DAYS"])
+    if action == "compress":
+        n, saved = compress_old_runs(days)
+        msg = f"compressed the transcripts of {n} run(s) older than {days} days ({saved / 2**20:.0f} MB saved)"
+    elif action == "transcripts":
+        if days < 1:
+            return "refused: keep at least 1 day"
+        cutoff, n, freed = time.time() - days * 86400, 0, 0
+        for d in sbx.run_dirs():
+            if not os.path.exists(os.path.join(d, "finished")) or os.path.getmtime(os.path.join(d, "finished")) > cutoff:
+                continue
+            for f in ("stream.jsonl", "stream.jsonl.gz"):
+                p = os.path.join(d, f)
+                if os.path.exists(p):
+                    freed += os.path.getsize(p); os.remove(p); n += 1
+        msg = f"deleted {n} transcript(s) of runs older than {days} days ({freed / 2**20:.0f} MB freed; the run numbers are kept)"
+    elif action == "docker":
+        r1 = sh(["docker", "image", "prune", "-f"], timeout=600)
+        r2 = sh(["docker", "builder", "prune", "-f"], timeout=600)
+        rec = [l for l in (r1[1] + r2[1]).splitlines() if "reclaimed" in l.lower()]
+        msg = "docker: " + ("; ".join(rec) or "nothing to remove") if r1[0] == 0 else f"docker prune failed: {(r1[2] or r1[1])[-200:]}"
+    else:
+        return "unknown cleanup (compress | transcripts | docker)"
+    event("cleanup: " + msg)
+    return msg

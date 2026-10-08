@@ -164,7 +164,7 @@ def gate_image(project=None):
 
 
 # ---- notifications (optional): NOTIFY_URL in etc/foreman.conf or projects/<name>/project.conf
-NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out,auth"
+NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out,auth,approval"
 
 
 def project_conf(project=None):

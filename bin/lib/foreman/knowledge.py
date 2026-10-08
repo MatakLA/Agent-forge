@@ -1,7 +1,6 @@
 """What the team knows besides the code: role playbooks (roles/, overridable per project), lessons learned, the owner's
 decisions, and the orchestrator's system prompt built from them."""
-import os
-
+import os, re
 
 from . import ctx
 from .util import slugify
@@ -46,16 +45,19 @@ def add_lesson(text, source):
 
 
 # ---------------------------------------------------------------- roles (roles/*.md playbooks)
+ROLE_SLUG = re.compile(r"[a-z][a-z0-9-]{1,40}")
 def _roles():
-    d = os.path.join(ctx.ROOT, "roles")
+    """slug -> (title, playbook): roles/ of the install, with this project's own versions (its roles/ directory, written from
+    the dashboard) taking precedence."""
     out = {}
-    if os.path.isdir(d):
-        for f in sorted(os.listdir(d)):
-            if f.endswith(".md"):
-                txt = open(os.path.join(d, f)).read()
-                first = next((l for l in txt.splitlines() if l.startswith("# ")), "# " + f[:-3])
-                out[f[:-3]] = (first[2:].strip(), txt)
-    return out
+    for d in (os.path.join(ctx.ROOT, "roles"), os.path.join(ctx.CFG_DIR, "roles")):
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                if f.endswith(".md") and ROLE_SLUG.fullmatch(f[:-3]):
+                    txt = open(os.path.join(d, f)).read()
+                    first = next((l for l in txt.splitlines() if l.startswith("# ")), "# " + f[:-3])
+                    out[f[:-3]] = (first[2:].strip(), txt)
+    return dict(sorted(out.items()))
 
 
 def role_catalogue():
@@ -87,3 +89,72 @@ def decisions():
         return open(os.path.join(ctx.CFG_DIR, "decisions.md")).read()[-12000:]
     except FileNotFoundError:
         return ""
+
+
+# ---------------------------------------------------------------- the team's documents, edited in the dashboard
+DOC_MAX = 200_000
+DOCS = {"vision": "The product vision - the autopilot plans goals from it",
+        "team-rules": "Rules every plan, review and worker follows in this project",
+        "decisions": "Your answers to the planner's questions - binding for every plan",
+        "lessons": "One sentence per lesson the reviews taught the team (the newest LESSONS_MAX are used)"}
+
+
+def doc_path(name, write=False):
+    """Where a document lives (None for an unknown name). role:<slug> reads this project's own version or the install's; it
+    is always written to this project's roles/ directory, so the install's playbook stays untouched."""
+    if name == "vision":
+        return os.path.join(ctx.PDIR or ctx.ROOT, ctx.C["VISION_FILE"])
+    if name in ("team-rules", "decisions", "lessons"):
+        return os.path.join(ctx.CFG_DIR, name + ".md")
+    if name.startswith("role:") and ROLE_SLUG.fullmatch(name[5:]):
+        own = os.path.join(ctx.CFG_DIR, "roles", name[5:] + ".md")
+        return own if write or os.path.exists(own) else os.path.join(ctx.ROOT, "roles", name[5:] + ".md")
+    return None
+
+
+def doc_list():
+    out = [dict(name=k, title=k.replace("-", " ").capitalize(), about=v, exists=os.path.exists(doc_path(k) or "")) for k, v in DOCS.items()]
+    own = os.path.join(ctx.CFG_DIR, "roles")
+    for slug, (title, _) in _roles().items():
+        out.append(dict(name="role:" + slug, title=title, about="role playbook", exists=True,
+                        customized=os.path.exists(os.path.join(own, slug + ".md"))))
+    return out
+
+
+def doc_get(name):
+    p = doc_path(name)
+    if not p:
+        return None
+    try:
+        text = open(p).read()
+    except FileNotFoundError:
+        text = ""
+    return dict(name=name, text=text, customized=name.startswith("role:") and p == doc_path(name, write=True))
+
+
+def doc_set(name, text):
+    """Save a document (from the dashboard). Returns an error message or ""."""
+    p = doc_path(name, write=True)
+    if not p:
+        return "unknown document"
+    if len(text) > DOC_MAX:
+        return f"too long (max {DOC_MAX // 1000} kB)"
+    if "\x00" in text:
+        return "not a text"
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    open(tmp, "w").write(text if text.endswith("\n") or not text else text + "\n")
+    os.replace(tmp, p)
+    event(f"{name} edited by the owner ({len(text):,} characters)")
+    return ""
+
+
+def doc_reset(name):
+    """A role back to the install's playbook (this project's own version is deleted)."""
+    if not name.startswith("role:") or not ROLE_SLUG.fullmatch(name[5:]):
+        return "only a role can be reset"
+    p = os.path.join(ctx.CFG_DIR, "roles", name[5:] + ".md")
+    if os.path.exists(p):
+        os.remove(p)
+        event(f"{name} reset to the install's playbook")
+    return ""

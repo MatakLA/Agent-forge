@@ -109,22 +109,30 @@ def parse_numstat(text):
     return added, removed
 
 
-def ready_tasks(ts, running_files):
-    """Pending tasks whose dependencies are done and whose files do not overlap a running task's files, oldest first.
-    SHARED_FILES (registries every task appends one entry to) never block: a conflict there is a small rebase, which the
-    merge step sends back to the worker without counting it as a failed attempt."""
+def ready_tasks(ts, running_files, goals_by_id=None):
+    """Pending tasks whose dependencies are done, whose files do not overlap a running task's files and whose goal is not
+    paused - the owner's prioritized goals first, then oldest first. SHARED_FILES (registries every task appends one entry to)
+    never block: a conflict there is a small rebase, which the merge step sends back without counting a failed attempt."""
     running_files = set(running_files) - {f.strip() for f in str(ctx.C["SHARED_FILES"]).split(",") if f.strip()}
     done = {t["id"] for t in ts if t["status"] == "done"}
+    gm = goals_by_id or {}
     out = []
     for t in ts:
         if t["status"] != "pending" or t.get("not_before", 0) > time.time():
+            continue
+        if (gm.get(t.get("goal")) or {}).get("paused"):
             continue
         if not all(d in done for d in t.get("depends_on", [])):
             continue
         if set(t.get("files", [])) & running_files:
             continue
         out.append(t)
-    return sorted(out, key=lambda t: t["id"])
+    return sorted(out, key=lambda t: (-int((gm.get(t.get("goal")) or {}).get("priority") or 0), t["id"]))
+
+
+def approvals():
+    """What the owner wants to approve before the team goes on (APPROVE): a subset of {"plan", "risky", "merge"}."""
+    return {x.strip() for x in str(ctx.C.get("APPROVE", "")).split(",") if x.strip()}
 
 
 # ---------------------------------------------------------------- shell helpers

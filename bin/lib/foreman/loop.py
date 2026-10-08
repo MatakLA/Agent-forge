@@ -5,7 +5,7 @@ import json, os, re, signal, sys, time, traceback
 import sbx, runtimes
 
 from . import ctx
-from .util import _iso_ts, parse_limit, ready_tasks, sh
+from .util import _iso_ts, fmt_ts, parse_limit, ready_tasks, sh
 from .store import event, goals, gstate, jload, jsave, locked, new_goal_id, notify, save_goal, save_task, state_tx, tasks
 from .jobs import INFLIGHT, PHASE, POOL, SINCE, submit
 from .pool import (COOLDOWN, LAST_DISPATCHED, LAST_QUOTA_MSG, QUOTA_CACHE, RESERVED, api_budget_left, order_by_quota, pool_quota_out,
@@ -14,16 +14,92 @@ from .repo import variant
 from .llm import Unavailable, llm_available
 from .prompts import worker_spec
 from .planning import step_next, step_plan, step_roadmap, step_split
-from .merge import maybe_upstream_sync, step_gate_review_merge, step_upstream_merge
+from .merge import maybe_upstream_sync, step_gate_review_merge, step_owner_merge, step_upstream_merge
 from .maintenance import maybe_maintenance
 
 
 def write_live():
     st = gstate()
+    try:
+        idle = explain_idle()
+    except Exception as e:                          # a status line must never stop the loop
+        idle = {"_": f"(could not explain: {e})"}
     jsave(os.path.join(ctx.FD, "live.json"), dict(
         at=time.time(), steps=[dict(key=k, since=SINCE.get(k), phase=PHASE.get(k.split(":", 1)[1], "")) for k in INFLIGHT],
         reserved=sorted(RESERVED), cooldown={w: dict(until=u, reason=r) for w, (u, r) in COOLDOWN.items() if u > time.time()},
-        unavailable=st.get("unavail_msg") if not llm_available() else None))
+        unavailable=st.get("unavail_msg") if not llm_available() else None, idle=idle))
+
+
+def why_no_task(ts, gm, stopped="", running_n=0, max_parallel=99, planning=0, backlog=0, autopilot=True, worker=None):
+    """One sentence: why an idle worker has nothing to do right now. Pure (selftested); the first blocker wins."""
+    if stopped:
+        return stopped
+    if running_n >= max_parallel:
+        return f"{running_n} runs are already running - the limit (MAX_PARALLEL) is {max_parallel}"
+    running_files = {f for t in ts if t["status"] == "running" for f in t.get("files", [])}
+    ready = ready_tasks(ts, running_files, gm)
+    mine = [t for t in ready if not t.get("pin_worker") or t.get("pin_worker") == worker]
+    if mine:
+        return f"{mine[0]['id']} is ready - it starts on the next round"
+    if ready:
+        return f"the ready task {ready[0]['id']} is assigned to {ready[0]['pin_worker']}"
+    waiting = [t for t in ts if t["status"] == "pending"]
+    if waiting:
+        t = waiting[0]
+        more = f" ({len(waiting)} tasks wait)" if len(waiting) > 1 else ""
+        if (gm.get(t.get("goal")) or {}).get("paused"):
+            return f"{t['id']} waits: its goal is paused{more}"
+        done = {x["id"] for x in ts if x["status"] == "done"}
+        deps = [d for d in t.get("depends_on", []) if d not in done]
+        if deps:
+            return f"{t['id']} waits for {', '.join(deps[:2])} to be merged first{more}"
+        busy = [x["id"] for x in ts if x["status"] == "running" and set(x.get("files", [])) & set(t.get("files", []))]
+        if busy:
+            return f"{t['id']} waits: {busy[0]} is changing the same files{more}"
+        if t.get("not_before", 0) > time.time():
+            return f"{t['id']} is retried at {fmt_ts(t['not_before'])}{more}"
+        return f"{t['id']} waits{more}"
+    appr = [t for t in ts if t["status"] == "approval"] + [g for g in gm.values() if g.get("status") == "approval"]
+    if appr:
+        return f"{len(appr)} item(s) wait for your approval"
+    if any(t["status"] in ("gate", "review", "merging", "merge-ready") for t in ts):
+        return "the finished work is being tested, reviewed or merged"
+    if planning:
+        return "the planner is preparing the next tasks"
+    if backlog:
+        return "the next backlog goal starts on the next round"
+    return "nothing to do - add a goal" + ("" if autopilot else " or turn on the autopilot")
+
+
+def explain_idle():
+    """worker -> why it is idle (only idle workers of this project's pool)."""
+    ts, gs, now = tasks(), goals(), time.time()
+    gm = {g["id"]: g for g in gs}
+    try:
+        lim = sbx.load_limits()
+    except SystemExit:
+        lim = {"MAX_PARALLEL": 99}
+    ks = sbx.killswitch_active()
+    stopped = ("the project is stopped (kill switch): " + str(ks.get("reason", ""))[:100]) if ks else \
+        ("the foreman is paused" if os.path.exists(os.path.join(ctx.FD, "PAUSED")) else "")
+    running_n = len([d for d in sbx.run_dirs() if sbx.is_running(d)])
+    planning = sum(1 for g in gs if g["status"] == "new") + sum(1 for k in INFLIGHT if k.startswith(("goal:", "roadmap", "next:")))
+    backlog = len(jload(os.path.join(ctx.FD, "backlog.json"), []))
+    autopilot = bool(ctx.C["AUTOPILOT"]) and not os.path.exists(os.path.join(ctx.FD, "AUTOPILOT_OFF"))
+    busy = {t.get("worker") for t in ts if t["status"] == "running"}
+    out = {}
+    for w in workers():
+        if w in busy or worker_busy(w):
+            continue
+        if w in RESERVED:
+            out[w] = "lent to the orchestrator for a planning or review call"
+            continue
+        cd = COOLDOWN.get(w)
+        if cd and cd[0] > now:
+            out[w] = f"paused until {fmt_ts(cd[0])}: {cd[1]}"
+            continue
+        out[w] = why_no_task(ts, gm, stopped, running_n, int(lim["MAX_PARALLEL"]), planning, backlog, autopilot, worker=w)
+    return out
 
 
 def collect():
@@ -62,11 +138,16 @@ def dispatch_ready():
     pct = lambda w: api_rank if runtimes.is_api(runtime_of(w)) else quota_pct(quota_rows(w, 120), fam)
     by_quota = lambda ws: order_by_quota(ws, pct, LAST_DISPATCHED)
     free = by_quota(free)
-    for t in ready_tasks(ts, busy_files):
+    for t in ready_tasks(ts, busy_files, {g["id"]: g for g in goals()}):
         if not free:
             return
-        prev = (t.get("last_run") or {}).get("worker")
-        w = prev if t.get("feedback") and prev in free and ctx.C["CONTINUE_CONVERSATIONS"] else free[0]
+        if t.get("pin_worker"):                     # the owner assigned this task to one worker: wait for that one
+            if t["pin_worker"] not in free:
+                continue
+            w = t["pin_worker"]
+        else:
+            prev = (t.get("last_run") or {}).get("worker")
+            w = prev if t.get("feedback") and prev in free and ctx.C["CONTINUE_CONVERSATIONS"] else free[0]
         rt = runtime_of(w)
         if runtimes.is_api(rt):
             rows = []
@@ -108,7 +189,7 @@ def dispatch_ready():
         spec = os.path.join(ctx.FD, "tasks", t["id"] + ".md")
         open(spec, "w").write(worker_spec(t, continuing))
         v = variant(t)
-        model = ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"]
+        model = t.get("model_override") or (ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"])
         env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
                "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(ctx.C["SELF_CHECK_ROUNDS"])),
                "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"]}
@@ -182,6 +263,9 @@ def advance():
             t["status"] = "cancelled"; save_task(t); continue
         if t["status"] == "running" and t.get("run") and orphaned(t["run"]):
             recover_orphan(t); continue
+        if t["status"] == "running" and t.get("cancel_requested") and os.path.exists(os.path.join(t.get("run", ""), "finished")):
+            t.update(status="cancelled", cancelled_why=t.get("cancelled_why") or "cancelled by the owner"); save_task(t)
+            event(f"task {t['id']}: its run stopped - cancelled", task=t["id"]); continue
         if t["status"] == "running" and t.get("run") and os.path.exists(os.path.join(t["run"], "finished")):
             m = sbx.meta(t["run"])
             reason = m.get("reason")
@@ -225,6 +309,8 @@ def advance():
             submit("split:" + t["id"], step_split, t)
         if t["status"] == "merging" and t.get("not_before", 0) <= time.time():
             submit("merge:" + t["id"], step_upstream_merge, t)
+        if t["status"] == "merge-ready":           # the owner approved the merge (APPROVE=merge)
+            submit("task:" + t["id"], step_owner_merge, t)
     if not can_think:
         return
     for g in goals():
@@ -290,8 +376,8 @@ def feed_idle_workers():
     else:
         slots = len(free)
         coming = len(ready_tasks(ts, running_files)) + 2 * len(planning)
-    unfinished = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review")}
-    live = [g for g in goals() if g["status"] == "new" or (g["status"] == "active" and g["id"] in unfinished)]
+    unfinished = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review", "splitting", "merging", "approval", "merge-ready")}
+    live = [g for g in goals() if g["status"] in ("new", "approval") or (g["status"] == "active" and g["id"] in unfinished)]
     cap = max(int(ctx.C["MAX_ACTIVE_GOALS"]), 2 * len(workers()))
     started = []
     with locked():                                   # the owner may add to the backlog (CLI / dashboard) at the same moment

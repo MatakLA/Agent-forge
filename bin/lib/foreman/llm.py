@@ -52,6 +52,7 @@ def _agy(w, prompt, model, schema=None):
 
 class _Kind(threading.local):
     k = "?"
+    subject = ""             # the task or goal the call is about (for the cost of a task / goal)
 
 
 KIND = _Kind()           # the decision kind (plan/review/...) of the LLM call running in THIS thread - steps run in parallel
@@ -134,10 +135,11 @@ def _via_paid_api(name, prompt, system):
     return r["text"] if not r["is_error"] and r["text"].strip() else None
 
 
-def llm(kind, prompt):
+def llm(kind, prompt, subject=""):
     """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
-    tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code)."""
-    KIND.k = kind
+    tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code). `subject`: the task or
+    goal id the call is about (logged, for the cost of a task or goal)."""
+    KIND.k, KIND.subject = kind, subject
     system = load_system_prompt()
     for p in providers_for(kind):
         if p == "claude-cli":
@@ -155,8 +157,8 @@ def llm(kind, prompt):
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
     with open(os.path.join(ctx.FD, "llm.jsonl"), "a") as f:
-        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc, secs=round(secs, 1), cost_usd=cost, usage=usage, head=head),
-                           ensure_ascii=False) + "\n")
+        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc, secs=round(secs, 1), cost_usd=cost, usage=usage, head=head,
+                                subject=KIND.subject or None), ensure_ascii=False) + "\n")
 
 
 REVIEW_SCHEMA = json.dumps({"type": "object", "required": ["verdict", "feedback"], "properties": {

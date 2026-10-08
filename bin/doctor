@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Usage: bin/doctor [--project NAME] [--quick]
+"""Usage: bin/doctor [--project NAME] [--quick] [--json]
 Checks an Agent-Forge install end to end and says how to fix what is wrong. Read-only, spends no model quota
 (`agy /usage` is a local status call). --quick skips the per-worker quota check (slow: a few seconds per worker).
-Exit code: 0 all good, 1 warnings only, 2 something is broken."""
+--json prints every check as JSON (section, level, message, fix, fix_id - the dashboard's Health view offers a button for the
+fixes it can run safely). Exit code: 0 all good, 1 warnings only, 2 something is broken."""
 import json, os, re, shutil, subprocess, sys, time, urllib.request
 
 a = sys.argv[1:]
@@ -13,22 +14,36 @@ if "--project" in a:
 if a and a[0] in ("-h", "--help"):
     print(__doc__); sys.exit(0)
 QUICK = "--quick" in a
+JSON = "--json" in a
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import sbx  # noqa: E402
 
-BAD, WARN = [], []
+BAD, WARN, CHECKS, SECTION = [], [], [], [""]
+
+
+def say(text=""):
+    if not JSON:
+        print(text)
+
+
+def section(name):
+    SECTION[0] = name
+    say(f"\n== {name}")
 
 
 def ok(msg):
-    print(f"  ✔ {msg}")
+    CHECKS.append(dict(section=SECTION[0], level="ok", message=msg))
+    say(f"  ✔ {msg}")
 
 
-def warn(msg, fix=""):
-    WARN.append(msg); print(f"  ! {msg}" + (f"\n      → {fix}" if fix else ""))
+def warn(msg, fix="", fix_id=""):
+    WARN.append(msg); CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
+    say(f"  ! {msg}" + (f"\n      → {fix}" if fix else ""))
 
 
-def bad(msg, fix=""):
-    BAD.append(msg); print(f"  ✘ {msg}" + (f"\n      → {fix}" if fix else ""))
+def bad(msg, fix="", fix_id=""):
+    BAD.append(msg); CHECKS.append(dict(section=SECTION[0], level="bad", message=msg, fix=fix, fix_id=fix_id))
+    say(f"  ✘ {msg}" + (f"\n      → {fix}" if fix else ""))
 
 
 def sh(*c, timeout=30):
@@ -44,11 +59,12 @@ def version(text):
     return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
 
 
-print(f"Agent-Forge doctor - {sbx.ROOT}" + (f" (project {sbx.PROJECT})" if sbx.PROJECT else ""))
+say(f"Agent-Forge doctor - {sbx.ROOT}" + (f" (project {sbx.PROJECT})" if sbx.PROJECT else ""))
 vf = os.path.join(sbx.ROOT, "VERSION")
-print(f"version {open(vf).read().strip() if os.path.exists(vf) else 'unknown'}\n")
+VERSION = open(vf).read().strip() if os.path.exists(vf) else "unknown"
+say(f"version {VERSION}")
 
-print("== Tools")
+section("Tools")
 if sys.version_info >= (3, 10):
     ok(f"python {sys.version.split()[0]}")
 else:
@@ -75,7 +91,7 @@ else:
     warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
          "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
 
-print("\n== Configuration")
+section("Configuration")
 try:
     lim = sbx.load_limits()
     ok(f"etc/limits.conf: {lim['MAX_PARALLEL']} parallel runs, token cap {lim['RUN_TOKEN_CAP']:,}, timeout {lim['RUN_TIMEOUT_MIN']:g} min")
@@ -95,9 +111,10 @@ if conf.get("NOTIFY_URL"):
     shown = re.sub(r"(//[^/]+/).*", "\\1…", conf["NOTIFY_URL"])          # never print a webhook's secret path
     ok(f"notifications to {shown} ({conf.get('NOTIFY_FORMAT', 'ntfy')})")
 else:
-    warn("no NOTIFY_URL - you are not told when a goal is done or a task is blocked", "set NOTIFY_URL (ntfy / Slack / Discord) in etc/foreman.conf")
+    warn("no NOTIFY_URL - you are not told when a goal is done or a task is blocked", "set NOTIFY_URL (ntfy / Slack / Discord) in etc/foreman.conf",
+         "settings:NOTIFY_URL")
 
-print("\n== Secrets")
+section("Secrets")
 S = sbx.SECRETS
 if not os.path.isdir(S):
     bad(f"{S} does not exist", "scripts/forge-bootstrap creates it")
@@ -113,7 +130,7 @@ else:
         else:
             ok(n)
 
-print("\n== Forgejo")
+section("Forgejo")
 try:
     urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=5).read()
     ok(f"{sbx.FORGE_URL} answers")
@@ -127,23 +144,23 @@ try:
 except Exception as e:
     bad(f"Forgejo at {sbx.FORGE_URL} does not answer ({e})", "scripts/forge-bootstrap (starts it); docker ps | grep forgejo")
 
-print("\n== Sandbox")
+section("Sandbox")
 rc, _, _ = sh("docker", "network", "inspect", "workers_internal")
-ok("network workers_internal") if rc == 0 else bad("network workers_internal missing", "bin/egress-up")
+ok("network workers_internal") if rc == 0 else bad("network workers_internal missing", "bin/egress-up", "egress-up")
 try:
     import egress
     h = egress.proxy_health()
-    ok("egress proxy enforcing") if h.get("ok") else bad("egress proxy: " + "; ".join(h["problems"]), "bin/egress-up")
+    ok("egress proxy enforcing") if h.get("ok") else bad("egress proxy: " + "; ".join(h["problems"]), "bin/egress-up", "egress-up")
 except Exception as e:
     bad(f"egress check failed: {e}")
 img = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
 rc, _, _ = sh("docker", "image", "inspect", img)
 ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: docker compose -f worker/docker-compose.yml build)")
 ks = sbx.killswitch_active()
-warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)") \
+warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)", "continue") \
     if ks else ok("kill switch off")
 
-print("\n== Workers")
+section("Workers")
 rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
 ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)), key=lambda x: int(x[0].split("-")[1]))
 pool = sbx.project_pool()
@@ -154,7 +171,7 @@ if not ws:
 running = 0
 for name, state in ws:
     if state != "running":
-        warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}"); continue
+        warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}", f"worker-up:{name.split('-')[1]}"); continue
     running += 1
     rt = sbx.worker_runtime(name)
     if rt != "agy":
@@ -166,10 +183,12 @@ for name, state in ws:
             if runtimes.endpoint_target(url):
                 ok(f"{name} runs {rt} on the model server {server}")
             else:
-                bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)")
+                bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                    "settings:COMPAT_BASE_URL")
             continue
         if not sbx.read(os.path.join(S, key)):
-            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}")
+            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                f"key:{key}")
         else:
             ok(f"{name} runs {rt} with an API key")
         continue
@@ -180,7 +199,8 @@ for name, state in ws:
     except Exception:
         rows = []
     if not rows:
-        bad(f"{name}: agy /usage unreadable - not logged in?", f"log it in: dashboard → Settings → log in, or docker exec -it {name} agy-run")
+        bad(f"{name}: agy /usage unreadable - not logged in?", f"log it in: dashboard → Settings → log in, or docker exec -it {name} agy-run",
+            f"login:{name}")
     else:
         verdict = sbx.quota_verdict(rows, lim) if lim else (True, "")
         fam = [r for r in rows if (lim or {}).get("QUOTA_MODEL_FILTER", "Gemini").lower() in r["model"].lower()]
@@ -202,7 +222,7 @@ if lim:
                     bad(f"egress allow-list lacks {rule[1]} for the {rt} workers", "save COMPAT_BASE_URL again in Settings")
                 rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
                 if rule and rule[0] == "local" and rc != 0:
-                    bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)")
+                    bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)", "egress-up")
                 continue
             allowed = set(egress.allowlist())
             missing = [h for h in r["hosts"] if h not in allowed]
@@ -211,23 +231,28 @@ if lim:
 if lim and running > lim["MAX_PARALLEL"]:
     warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
 
-print("\n== Foreman")
+section("Foreman")
 fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
 try:
     live = json.load(open(os.path.join(fd, "live.json")))
     age = time.time() - live.get("at", 0)
     ok(f"loop alive ({age:.0f} s ago)") if age < 120 else bad(f"loop last seen {age / 60:.0f} min ago",
-                                                            "sudo systemctl status agent-forge-foreman" + (f"-{sbx.PROJECT}" if sbx.PROJECT else ""))
+                                                            "sudo systemctl status agent-forge-foreman" + (f"-{sbx.PROJECT}" if sbx.PROJECT else ""),
+                                                            "restart-foreman")
 except FileNotFoundError:
-    bad("the foreman has never run for this project", "sudo scripts/install-services" + (f" --project {sbx.PROJECT}" if sbx.PROJECT else ""))
+    bad("the foreman has never run for this project", "sudo scripts/install-services" + (f" --project {sbx.PROJECT}" if sbx.PROJECT else ""),
+        "restart-foreman")
 except Exception as e:
     warn(f"live.json unreadable: {e}")
 if os.path.exists(os.path.join(fd, "PAUSED")):
-    warn("the foreman is paused", "bin/foreman resume")
+    warn("the foreman is paused", "bin/foreman resume", "resume")
 du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
 ok(f"{du.free / 2**30:.0f} GB free") if du.free > 5 * 2**30 else warn(f"only {du.free / 2**30:.1f} GB free", "old runs are compressed by maintenance; free space")
 
-print()
+if JSON:
+    print(json.dumps(dict(version=VERSION, project=sbx.PROJECT or "default", checks=CHECKS, bad=len(BAD), warn=len(WARN), at=time.time())))
+    sys.exit(2 if BAD else 1 if WARN else 0)
+say()
 if BAD:
     print(f"✘ {len(BAD)} problem(s), {len(WARN)} warning(s)"); sys.exit(2)
 print(f"✔ all good" + (f" ({len(WARN)} warning(s))" if WARN else "")); sys.exit(1 if WARN else 0)

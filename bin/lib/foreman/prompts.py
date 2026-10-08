@@ -6,7 +6,8 @@ import sbx, codemap
 from . import ctx
 from .store import event, goals, jload, tasks
 from .pool import workers
-from .repo import codemap_main, context_pack, read_repo, repo_tree, variant
+from .stats import run_stats, size_hint, sizes
+from .repo import codemap_main, context_pack, own_files, read_repo, repo_tree, variant
 from .knowledge import decisions, lessons, role_playbook
 
 
@@ -50,8 +51,13 @@ def plan_prompt(g, followup=None):
     w_list = workers() or ["worker-1", "worker-2", "worker-3", "worker-4"]
     n = len(w_list)
     head = f"You are the manager of a {n}-worker team ({', '.join(w_list)}) working in the git repository described below.\n\n{context_bundle()}\n"
+    try:
+        head += size_hint(sizes(tasks(), run_stats(), own_files), ctx.C["TASK_TOKEN_BUDGET"])     # what tasks really cost here
+    except Exception:
+        pass
+    notes = (f"\n## The owner's notes on an earlier plan of this goal - follow them\n{g['owner_notes']}\n" if g.get("owner_notes") else "")
     if followup is None:
-        ask = (f"## Goal from the owner\n{g['text']}\n\nBreak this goal into tasks.\n"
+        ask = (f"## Goal from the owner\n{g['text']}\n{notes}\nBreak this goal into tasks.\n"
                f"- PARALLEL FIRST: aim for at least {n} tasks that can start right now. Each task owns DISJOINT files; write the interface "
                f"other tasks rely on (function names, data shapes, schemas) into every spec that needs it, so they are built at the same time "
                f"instead of waiting. depends_on only when a task cannot even start without another task's merged code.\n"
@@ -65,7 +71,7 @@ def plan_prompt(g, followup=None):
                f"outcomes of the whole goal (not per task). Every task's spec must serve them; the goal is done only when all hold.\n\n{PLAN_EXAMPLE}\n")
     else:
         ga = "\n".join(f"- {a}" for a in g.get("acceptance", [])) or "(none recorded - judge from the goal text)"
-        ask = (f"## Goal from the owner\n{g['text']}\n\n## Goal acceptance criteria\n{ga}\n\n## Results of this goal's tasks\n{followup}\n\n"
+        ask = (f"## Goal from the owner\n{g['text']}\n{notes}\n## Goal acceptance criteria\n{ga}\n\n## Results of this goal's tasks\n{followup}\n\n"
                f"Check every goal acceptance criterion against the merged results. Decide whether the goal is achieved. "
                f"If yes, reply {{\"done\": true, \"summary\": \"2-4 sentences for the owner\", \"criteria\": [...]}}. If not, reply with "
                f"follow-up tasks in the schema below (only what is genuinely missing, parallel where possible) plus \"criteria\". "
@@ -150,7 +156,9 @@ def worker_spec(t, continuing=False):
     pb = role_playbook(t["role"])
     s = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `{clone_hint()}`   Goal: {t['goal']}\n",
          f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n"),
-         "## The task\n" + t["spec"].rstrip() + "\n", "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
+         "## The task\n" + t["spec"].rstrip() + "\n",
+         (f"## Notes from the owner (where they differ from the spec, they win)\n{t['owner_notes']}\n" if t.get("owner_notes") else ""),
+         "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
          goal_context(t),
          "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
          "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n", rules_block(t), rework_block(t)]

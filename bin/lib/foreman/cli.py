@@ -1,8 +1,19 @@
 """Usage: bin/foreman goal "<what the owner wants>"   queue a goal (the foreman plans, dispatches, reviews and merges on its own)
        bin/foreman status [--json]                  goals, tasks, workers, orchestrator availability, recent events
        bin/foreman pause | resume                   stop / restart taking new steps (running worker runs are not killed)
-       bin/foreman retry <task-id>                  put a blocked task back into the queue (attempt counter reset)
-       bin/foreman cancel <goal-id>                 drop a goal and its unfinished tasks
+       bin/foreman task <task-id> show              the task, each of its runs and what it cost (JSON)
+       bin/foreman task <task-id> approve | cancel | retry        approve a waiting task / stop and drop it / queue a blocked one again
+       echo "<words>" | bin/foreman task <task-id> feedback -     send its work back with your words (or add them to its spec)
+       bin/foreman task <task-id> assign <worker-N|any>  |  model <model|default>     who / which model takes it next
+       bin/foreman goal <goal-id> show              the goal's tasks, events and cost (JSON)
+       bin/foreman goal <goal-id> approve | pause | resume | prioritize | cancel
+       echo "<note>" | bin/foreman goal <goal-id> replan -        plan it again with your note   (edit -: new text before it starts)
+       echo "<words>" | bin/foreman search          goals, tasks, events and transcripts containing the words (JSON)
+       bin/foreman money                            spend per day / runtime / project / model, caps, quota burn (JSON)
+       bin/foreman doc list | get <name> | reset <role:slug>    echo "<text>" | bin/foreman doc set <name>   (vision, team-rules,
+                                                    decisions, lessons, role:<slug> - a role is saved as this project's own version)
+       bin/foreman disk                             what takes the space (JSON)   bin/foreman cleanup compress|transcripts|docker [days]
+       bin/foreman retry <task-id> | cancel <goal-id>          older spellings of `task <id> retry` / `goal <id> cancel`
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
        bin/foreman questions [--json]               things the roadmap could not decide without the owner
        echo "<answer>" | bin/foreman answer <n>     answer question n (goes to decisions.md, read by every later plan)
@@ -15,7 +26,7 @@
        bin/foreman init-project <name> --repo org/repo [--workers worker-5,worker-6] [--lang Slovak] [--vision -  (vision.md from stdin)]
        --project <name> (any command)               act on that project: its config, repository, worker pool and state
        echo "<question>" | bin/foreman ask          answer a question about the project from the repository (one orchestrator call)
-       bin/foreman backlog [add "<goal>" | drop <n> | move <n> <to>]   goals waiting for a free worker (taken in order)
+       bin/foreman backlog [add "<goal>" | drop <n> | move <n> <to> | top <n> | edit <n> -]   goals waiting for a free worker (in order)
        bin/foreman autopilot on|off                 when a worker would idle and the backlog is empty, the orchestrator proposes
                                                     the next goal from the vision file (VISION_FILE, default on)
        bin/foreman run                              the loop itself (systemd: scripts/install-services)
@@ -42,9 +53,11 @@ from .jobs import INFLIGHT
 from .repo import context_pack, refresh_repo, variant
 from .llm import Unavailable
 from .loop import collect, run_loop, tick
-from .report import dashboard_json, list_projects, status, task_diff
+from .report import dashboard_json, goal_detail, list_projects, money, search, status, task_detail, task_diff
+from .knowledge import doc_get, doc_list, doc_reset, doc_set
+from .maintenance import cleanup, disk_usage
 from .settings import init_project, models_cached, settings_apply, settings_get
-from .owner import answer_question, ask
+from .owner import GOAL_ID, TASK_ID, answer_question, ask, goal_action, task_action
 from .selftest import selftest
 
 
@@ -57,6 +70,48 @@ def main():
     # `-` instead of the text: read it from stdin (the dashboard never puts owner text into a command line)
     if (a[:1] in (["goal"], ["project"]) and a[1:2] == ["-"]) or (a[:2] == ["backlog", "add"] and a[2:3] == ["-"]):
         a[a.index("-")] = sys.stdin.read()
+    # the owner's actions on one task / goal, and read-only detail views (JSON for the dashboard)
+    if a[:1] == ["task"] and len(a) >= 3 and TASK_ID.fullmatch(a[1]):
+        if a[2] == "show":
+            d = task_detail(a[1])
+            if d is None:
+                print("no such task", file=sys.stderr); sys.exit(2)
+            print(json.dumps(d, ensure_ascii=False)); return
+        arg = a[3] if len(a) > 3 else ""
+        text = sys.stdin.read() if arg == "-" else ""
+        target = "" if arg in ("any", "default", "-") else arg
+        ok, msg = task_action(a[1], a[2], text=text, target=target)
+        print(json.dumps({"ok": ok, "message": msg})); sys.exit(0 if ok else 2)
+    if a[:1] == ["goal"] and len(a) >= 3 and GOAL_ID.fullmatch(a[1]):
+        if a[2] == "show":
+            d = goal_detail(a[1])
+            if d is None:
+                print("no such goal", file=sys.stderr); sys.exit(2)
+            print(json.dumps(d, ensure_ascii=False)); return
+        ok, msg = goal_action(a[1], a[2], text=sys.stdin.read() if a[3:4] == ["-"] else "")
+        print(json.dumps({"ok": ok, "message": msg})); sys.exit(0 if ok else 2)
+    if a == ["search"]:
+        print(json.dumps(search(sys.stdin.read()), ensure_ascii=False)); return
+    if a == ["money"]:
+        print(json.dumps(money(), ensure_ascii=False)); return
+    if a[:1] == ["doc"] and len(a) in (2, 3):
+        if a[1] == "list":
+            print(json.dumps(doc_list(), ensure_ascii=False)); return
+        if a[1] == "get" and len(a) == 3:
+            d = doc_get(a[2])
+            if d is None:
+                print("unknown document", file=sys.stderr); sys.exit(2)
+            print(json.dumps(d, ensure_ascii=False)); return
+        if a[1] in ("set", "reset") and len(a) == 3:
+            err = doc_set(a[2], sys.stdin.read()) if a[1] == "set" else doc_reset(a[2])
+            print(json.dumps({"ok": not err, "message": err or ("saved" if a[1] == "set" else "back to the install's version")}))
+            sys.exit(2 if err else 0)
+    if a == ["disk"]:
+        print(json.dumps(disk_usage())); return
+    if a[:1] == ["cleanup"] and len(a) in (2, 3) and (len(a) == 2 or a[2].isdigit()):
+        print(json.dumps({"ok": True, "message": cleanup(a[1], int(a[2]) if len(a) == 3 else None)})); return
+    if a[:2] == ["backlog", "edit"] and len(a) == 4 and a[2].isdigit() and a[3] == "-":
+        a[3] = sys.stdin.read()
     if a[:1] == ["answer"] and len(a) == 2 and a[1].isdigit():
         q = answer_question(int(a[1]), sys.stdin.read())
         if q is None:
@@ -139,6 +194,10 @@ def main():
             elif a[1:2] == ["move"] and len(a) == 4 and a[2].isdigit() and a[3].isdigit() and 1 <= int(a[2]) <= len(bl) \
                     and 1 <= int(a[3]) <= len(bl):
                 x = bl.pop(int(a[2]) - 1); bl.insert(int(a[3]) - 1, x); jsave(p, bl); event(f"backlog: moved to {a[3]}: {x[:200]}")
+            elif a[1:2] == ["top"] and len(a) == 3 and a[2].isdigit() and 1 <= int(a[2]) <= len(bl):
+                x = bl.pop(int(a[2]) - 1); bl.insert(0, x); jsave(p, bl); event(f"backlog: to the top: {x[:200]}")
+            elif a[1:2] == ["edit"] and len(a) == 4 and a[2].isdigit() and 1 <= int(a[2]) <= len(bl) and a[3].strip():
+                bl[int(a[2]) - 1] = a[3].strip()[:4000]; jsave(p, bl); event(f"backlog {a[2]} edited: {a[3].strip()[:200]}")
             elif len(a) != 1:
                 print(__doc__, file=sys.stderr); sys.exit(2)
         for i, x in enumerate(bl, 1):
@@ -160,21 +219,12 @@ def main():
         if os.path.exists(os.path.join(ctx.FD, "PAUSED")):
             os.remove(os.path.join(ctx.FD, "PAUSED"))
         event("resumed")
-    elif a[:1] == ["retry"] and len(a) == 2:
-        t = jload(os.path.join(ctx.FD, "tasks", a[1] + ".json"))
-        if not t or t["status"] != "blocked":
-            print("no blocked task with that id", file=sys.stderr); sys.exit(2)
-        t.update(status="pending", attempts=0, caps=0, review_fails=0, blocked_why=""); save_task(t)
-        event(f"task {a[1]} re-queued by the owner", task=a[1])
-    elif a[:1] == ["cancel"] and len(a) == 2:
-        g = jload(os.path.join(ctx.FD, "goals", a[1] + ".json"))
-        if not g:
-            print("no such goal", file=sys.stderr); sys.exit(2)
-        g["status"] = "cancelled"; save_goal(g)
-        for t in tasks():
-            if t["goal"] == a[1] and t["status"] in ("pending", "blocked"):
-                t["status"] = "cancelled"; save_task(t)
-        event(f"goal {a[1]} cancelled (running worker runs finish but are not reviewed)", goal=a[1])
+    elif a[:1] == ["retry"] and len(a) == 2:                 # older spelling of `task <id> retry`
+        ok, msg = task_action(a[1], "retry")
+        print(msg, file=sys.stdout if ok else sys.stderr); sys.exit(0 if ok else 2)
+    elif a[:1] == ["cancel"] and len(a) == 2:                # older spelling of `goal <id> cancel`
+        ok, msg = goal_action(a[1], "cancel")
+        print(msg, file=sys.stdout if ok else sys.stderr); sys.exit(0 if ok else 2)
     elif a == ["run"]:
         run_loop()
     elif a == ["tick"]:
