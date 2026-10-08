@@ -44,7 +44,17 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             WORKER_MODEL_CLAUDE="sonnet", WORKER_MODEL_CODEX="", WORKER_MODEL_GEMINI="", API_WORKERS_POLICY="overflow",
             # where the code lives (bin/lib/upstream.py): "" = not chosen yet (the dashboard asks), forgejo = internal only,
             # github / gitlab = merged there through pull / merge requests, main synced back
-            FORGE_KIND="", UPSTREAM_REPO="", UPSTREAM_URL="", UPSTREAM_BRANCH="main", UPSTREAM_MERGE="merge")
+            FORGE_KIND="", UPSTREAM_REPO="", UPSTREAM_URL="", UPSTREAM_BRANCH="main", UPSTREAM_MERGE="merge",
+            # workers on the owner's own model server (COMPAT_BASE_URL in etc/limits.conf): the model name there
+            WORKER_MODEL_COMPAT="", WORKER_MODEL_AIDER="",
+            # this project's API money caps in USD (0 = none; the install-wide ones are in etc/limits.conf)
+            PROJECT_DAILY_BUDGET_USD=0.0, PROJECT_MONTHLY_BUDGET_USD=0.0,
+            # the owner approves before the team goes on: "plan" (each plan of a goal), "risky" (each risky task before it
+            # starts), "merge" (each approved branch before it is merged) - comma-separated, "" = fully automatic
+            APPROVE="",
+            # model routing: "auto" = for each role, the cheapest worker model that has proven itself here (at least
+            # ROUTING_MIN_TASKS merged tasks of that role, ROUTING_MIN_FIRST_PASS % approved at once); "off" = the rules above
+            MODEL_ROUTING="off", ROUTING_MIN_TASKS=5, ROUTING_MIN_FIRST_PASS=70)
 
 
 def load_conf():

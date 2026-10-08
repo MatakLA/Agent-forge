@@ -160,6 +160,14 @@ for name, state in ws:
     if rt != "agy":
         import runtimes
         key = runtimes.RUNTIMES[rt]["key"]
+        if runtimes.uses_endpoint(rt):
+            url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+            server = re.sub(r"(//[^/]+).*", r"\1", url)          # scheme://host:port, never a path
+            if runtimes.endpoint_target(url):
+                ok(f"{name} runs {rt} on the model server {server}")
+            else:
+                bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)")
+            continue
         if not sbx.read(os.path.join(S, key)):
             bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}")
         else:
@@ -184,8 +192,19 @@ if lim:
         (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
     import runtimes
     for rt, r in runtimes.RUNTIMES.items():
-        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws):
-            allowed = set(egress.allowlist()) if "egress" in sys.modules else set()
+        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
+            if r.get("endpoint"):
+                rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
+                if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
+                    bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",
+                        "save COMPAT_BASE_URL again in Settings (or bin/worker-add N --runtime " + rt + "), then bin/egress-up once")
+                elif rule and rule[0] == "allowlist" and rule[1] not in egress.allowlist():
+                    bad(f"egress allow-list lacks {rule[1]} for the {rt} workers", "save COMPAT_BASE_URL again in Settings")
+                rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
+                if rule and rule[0] == "local" and rc != 0:
+                    bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)")
+                continue
+            allowed = set(egress.allowlist())
             missing = [h for h in r["hosts"] if h not in allowed]
             if missing:
                 bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")

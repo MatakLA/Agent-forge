@@ -27,9 +27,9 @@ def runtime_of(w):
     return WORKER_RT.get(w) or "agy"
 
 
-def api_budget_left():
-    lim = sbx.load_limits()
-    return sbx.api_spent_today() + float(lim["API_RUN_BUDGET_USD"]) <= float(lim["API_DAILY_BUDGET_USD"]) + 1e-9
+def api_budget_left(w=""):
+    """One more API run fits every money cap that applies (install, this project, and the worker `w` if given)."""
+    return sbx.budget_check(w, sbx.load_limits(), conf=sbx.project_conf())[0]
 
 
 def worker_busy(w):

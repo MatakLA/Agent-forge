@@ -257,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/secret":
             # an API key or forge token typed by the owner: goes to bin/secret-set on stdin, never into a command line or a log
             name, value = str(body.get("name", "")), str(body.get("value", "")).strip()
-            if name not in ("anthropic.key", "openai.key", "gemini.key", "github.token", "gitlab.token", "notify.token") or not value:
+            if name not in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token", "notify.token") or not value:
                 self._json({"error": "unknown secret name or empty value"}, 400); return
             rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/secret-set {name}", timeout=30, inp=value)
             self._json({"ok": rc == 0, "message": (out or err).strip()[-200:]})

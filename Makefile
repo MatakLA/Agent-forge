@@ -4,7 +4,7 @@
 PY := python3
 PYSCRIPTS := bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api \
              bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set \
-             scripts/forge-bootstrap web/server.py
+             scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py
 SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh \
              worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh
 

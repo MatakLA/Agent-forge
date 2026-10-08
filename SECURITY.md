@@ -58,6 +58,11 @@ containers never see them.
 - API keys for the worker runtimes are file mounts used only by `worker/af-agent`; the worker can reach only that provider's API
   host, and the gate refuses branches that add key- or token-like strings. Use keys with a spend limit at the provider.
   Details: docs/RUNTIMES.md.
+- Your own model server (runtimes `compat` and `aider`, `COMPAT_BASE_URL`): a public HTTPS server is one more allow-list entry.
+  A server on your network (Ollama on another machine) or one without TLS gets a narrow exception instead - the proxy allows
+  exactly that address and port (`egress/local-endpoint.conf`, written from the setting), before it refuses private ranges and
+  plain HTTP. Nothing else on that network becomes reachable; the server itself should expose nothing but its model API on
+  that port. Requests to it are counted as allowed traffic, every other private destination still raises a HIGH alarm.
 - GitHub / GitLab tokens never reach a worker: only the orchestrator on the Agent-Forge machine pushes approved branches there
   and opens / merges pull requests, under the repository's own branch protection. Give the token access to that one
   repository only. Details: docs/UPSTREAM.md.
@@ -76,6 +81,8 @@ quota stops, token caps, timeouts and stops by the kill switch itself neither co
 - Containers share the kernel with the machine; a kernel exploit escapes them. That is why a VM is recommended.
 - The model provider sees everything the workers send (prompts, code, tool output). Do not use it on code you may not share.
 - An allowed host is allowed for any payload; `daily-cloudcode-pa.googleapis.com` necessarily carries whatever the agent sends.
+- With a model server on your network, the workers can send anything to that one address and port - it is reachable on
+  purpose. Run nothing else on that port.
 
 ## Reporting a vulnerability
 Open a private security advisory on the repository, or contact the maintainer directly. Please do not open a public issue.
