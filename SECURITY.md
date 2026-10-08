@@ -30,6 +30,13 @@ its workers, or after `CONSEC_FAIL_TRIP` failed runs of that project in a row. C
 reading the report) and `bin/killswitch [--project X] off --start`, or the dashboard's "Continue" button. Treat every HIGH alarm
 as a finding until you know why it happened.
 
+Every blocked host is listed in the dashboard (System → Egress, also linked from Overview → Needs you when it stopped the
+project) with who tried it and how often. Per host you decide: **Allow** (exact host name only - no wildcards, IP addresses or
+private names - appended to `egress/allowlist.local.txt`, the proxy reloads; it can be removed again there) or **Ignore** (it
+stays blocked and no longer raises an alarm, `etc/egress-baseline.txt`). Then "Acknowledge and continue". The same from a shell:
+`bin/egress-report --allow HOST | --unallow HOST | --baseline-add HOST`. Allowing is a real decision: the workers can then send
+anything to that host, so prefer Ignore for telemetry and update checks.
+
 ### The dashboard is an admin console - keep it private
 Besides showing state, the dashboard can stop/continue projects, change settings (models, worker pools, behaviour and the
 global limits such as the token cap), queue goals, create workers and projects, and run a worker's interactive agy login.

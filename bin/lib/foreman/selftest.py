@@ -315,8 +315,8 @@ def _selftest():
 
 
 def test_runtimes_egress_budgets(check):
-    """The owner's model server (compat / aider), its egress exception, and the API money caps."""
-    import egress
+    """The owner's model server (compat / aider), its egress exception, the owner's host decisions, and the API money caps."""
+    import egress, shutil
     argv, stdin_text = runtimes.command("compat", "P", "qwen3-coder:30b", None, 10)
     check("runtimes: compat is Codex through af-agent, prompt on stdin, no URL in argv",
           argv[:3] == ["af-agent", "compat", "exec"] and stdin_text == "P" and "-m" in argv and not any("http" in a for a in argv))
@@ -356,6 +356,27 @@ def test_runtimes_egress_budgets(check):
         r = egress.analyze(events=evs, ack=False)
     finally:
         egress.local_endpoint = old_le
+    check("egress: only exact public host names can be allowed or ignored",
+          not egress.check_host("pypi.org") and not egress.check_host("files.pythonhosted.org") and egress.check_host("*.example.com")
+          and egress.check_host("10.0.0.1") and egress.check_host("printer.local") and egress.check_host("x.org; reboot") and egress.check_host(""))
+    import tempfile as _tf
+    tdir = _tf.mkdtemp(prefix="forge-egress-")
+    old_paths = (egress.ALLOWLIST, egress.ALLOWLIST_LOCAL, egress.BASELINE, egress.reload_proxy)
+    try:
+        egress.ALLOWLIST, egress.ALLOWLIST_LOCAL, egress.BASELINE = (os.path.join(tdir, n) for n in ("a.txt", "local.txt", "base.txt"))
+        open(egress.ALLOWLIST, "w").write("api.example.com\n")
+        egress.reload_proxy = lambda: ["reloaded"]
+        m1 = egress.allow_host("PyPI.org"); m2 = egress.allow_host("pypi.org")
+        allowed_then = "pypi.org" in egress.allowlist()
+        m3 = egress.unallow_host("pypi.org"); m4 = egress.unallow_host("api.example.com")
+        egress.ignore_host("telemetry.example.net")
+        check("egress: allow adds an exact host once and reloads; remove takes only hosts added here; ignore keeps it blocked",
+              allowed_then and "reloaded" in m1 and "already" in m2[0] and "pypi.org" not in egress.allowlist() and "reloaded" in m3
+              and "not on the local" in m4[0] and "api.example.com" in egress.allowlist() and "telemetry.example.net" in egress.baseline()
+              and "telemetry.example.net" not in egress.allowlist() and _raises(lambda: egress.allow_host("192.168.1.9")))
+    finally:
+        egress.ALLOWLIST, egress.ALLOWLIST_LOCAL, egress.BASELINE, egress.reload_proxy = old_paths
+        shutil.rmtree(tdir, ignore_errors=True)
     check("egress: requests to the model server are allowed traffic, anything else private still raises an alarm",
           r["allowed"].get("192.168.1.20") == 1 and [p["target"] for p in r["private"]] == ["192.168.1.9:22"])
     today, month = sbx.today(), sbx.today()[:7]

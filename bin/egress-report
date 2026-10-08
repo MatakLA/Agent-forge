@@ -3,7 +3,8 @@
        bin/egress-report --check [--trip]      alarms only; exit 0 none / 1 warnings / 2 HIGH; --trip switches the kill switch ON for HIGH
        bin/egress-report --ack                 acknowledge everything up to now (do this after reviewing the alarms)
        bin/egress-report --rotate [--force]    rotate the proxy logs when access.log > 5 MB (or always with --force)
-       bin/egress-report --baseline-add HOST   accept a denied host as known noise (etc/egress-baseline.txt)
+       bin/egress-report --baseline-add HOST   accept a denied host as known noise: stays blocked, no alarm (etc/egress-baseline.txt)
+       bin/egress-report --allow HOST | --unallow HOST   let the workers reach HOST / not any more (egress/allowlist.local.txt)
 Alarms: new-domain (denied host that is neither allowlisted nor baseline noise), private-range attempts (RFC1918, loopback, link-local,
 CGNAT/tailnet, also hostnames resolving to them), proxy not in enforce mode / unhealthy / wildcard in allowlist. Plain HTTP is a warning."""
 import json, os, re, sys, time
@@ -35,11 +36,16 @@ if "--ack" in a:
     egress.ack(); sbx.alert("egress alarms acknowledged"); print("acknowledged: events up to now no longer raise alarms"); sys.exit(0)
 if "--rotate" in a:
     print(egress.rotate(force="--force" in a)); sys.exit(0)
-if "--baseline-add" in a:
-    host = a[a.index("--baseline-add") + 1].lower()
-    if host not in egress.baseline():
-        open(egress.BASELINE, "a").write(host + "\n")
-    print(f"{host} is now known noise (denied hosts in etc/egress-baseline.txt: {len(egress.baseline())})"); sys.exit(0)
+for flag, fn in (("--baseline-add", egress.ignore_host), ("--allow", egress.allow_host), ("--unallow", egress.unallow_host)):
+    if flag in a:
+        host = a[a.index(flag) + 1] if a.index(flag) + 1 < len(a) else ""
+        try:
+            msgs = fn(host)
+        except ValueError as e:
+            print(json.dumps({"ok": False, "message": str(e)}) if "--json" in a else f"refused: {e}"); sys.exit(2)
+        if flag != "--baseline-add":
+            sbx.alert(f"egress: {'allowed' if flag == '--allow' else 'removed from the allow-list'} {host.lower()} (owner)")
+        print(json.dumps({"ok": True, "message": "; ".join(msgs)}) if "--json" in a else "\n".join(msgs)); sys.exit(0)
 
 since = parse_since(a[a.index("--since") + 1]) if "--since" in a else time.time() - 86400
 worker = a[a.index("--worker") + 1] if "--worker" in a else None
@@ -64,7 +70,9 @@ if "--json" in a:
     print(json.dumps(dict(since=iso(since), health=health, allowed=res["allowed"], denied=res["denied"], noise=res["noise"],
                           private=res["private"], new_domains={f"{w} {h}": n for (w, h), n in res["new_domains"].items()},
                           plain_http={f"{w} {h}": n for (w, h), n in res["plain_http"].items()},
-                          alarms=[dict(level=l, code=c, message=m) for l, c, m in al], log_sizes=egress.log_sizes()), indent=1))
+                          alarms=[dict(level=l, code=c, message=m) for l, c, m in al], log_sizes=egress.log_sizes(),
+                          local_allowlist=egress.local_allowlist(), baseline=sorted(egress.baseline()),
+                          killswitch=sbx.killswitch_active()), indent=1))
     sys.exit(2 if any(x[0] == "HIGH" for x in al) else 0)
 
 print(f"egress report since {iso(since)}" + (f" (worker {worker})" if worker else "") + f" - {res['events']} events")

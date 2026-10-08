@@ -26,6 +26,10 @@ tasks, events and transcripts. Insights: weekly trends, money and quota (spend p
 quota burn). System: health checks with fix buttons, egress report with acknowledge, disk usage and cleanup. Settings in six
 pages; the vision, team rules, decisions, lessons and role playbooks are edited in the browser (a role per project).
 
+**Egress decisions in the dashboard.** System → Egress lists every blocked host (who tried it, how often, alarm or not) with
+**Allow** (exact host names only; removable again) and **Ignore** (stays blocked, no alarm); a project stopped by an egress
+alarm shows up in Needs you with "Acknowledge and continue". `bin/egress-report --allow / --unallow`.
+
 **Code.** `bin/foreman` is now the package `bin/lib/foreman/` (17 modules) and the dashboard is `web/server.py` +
 `web/dashboard/` + static files (`web/static/`, no inline scripts, a stricter CSP). `bin/doctor --json`; `tests/test_ui.sh`
 tests the page in a real DOM.

@@ -9,6 +9,7 @@ function inboxItems() {
     out.push({kind: 'plan', key: 'goal:' + g.id, goal: g, tasks: ts.filter(t => t.goal === g.id && t.awaiting === 'plan')});
   for (const t of ts.filter(t => t.status === 'approval' && t.awaiting === 'merge')) out.push({kind: 'merge', key: 'task:' + t.id, task: t});
   for (const t of ts.filter(t => t.status === 'approval' && t.awaiting === 'risky')) out.push({kind: 'risky', key: 'task:' + t.id, task: t});
+  if (F.killswitch && /egress/i.test(F.killswitch.reason || '')) out.unshift({kind: 'egress', key: 'egress', reason: F.killswitch.reason});
   (F.owner_questions || []).forEach((q, i) => out.push({kind: 'question', key: 'q:' + i, n: i + 1, q}));
   for (const t of ts.filter(t => t.status === 'blocked')) out.push({kind: 'blocked', key: 'task:' + t.id, task: t});
   return out;
@@ -46,6 +47,9 @@ function inboxHtml() {
       return card('risky', '<span class="badge warn">risky task</span> ' + esc(t.title) + ' ' + roleTag(t.role), esc(sp.slice(0, 220)) + (sp.length > 220 ? '…' : ''),
         '<button class="primary sm" data-ta="approve" data-id="' + esc(t.id) + '">Start it</button><button class="mini" data-ta="cancel" data-id="' + esc(t.id) + '">Cancel it</button>' + open('task', t.id));
     }
+    if (it.kind === 'egress')
+      return card('blocked', '<span class="badge bad">stopped</span> A worker tried to reach a host that is not allowed', esc(it.reason),
+        '<button class="primary sm" data-goegress>Review the blocked hosts</button>');
     if (it.kind === 'question') {
       return card('question', '<span class="badge">question</span> ' + esc(it.q), '',
         '<input type="text" class="qin" data-qn="' + it.n + '" placeholder="your answer - the planner follows it from now on"><button class="primary sm" data-qa="' + it.n +
@@ -269,6 +273,7 @@ document.addEventListener('click', async e => {
     done(await post('/api/answer', {n, answer: qa ? inp.value.trim() : ''}), qa ? 'Answered - the planner follows it' : 'Dismissed');
     document.activeElement && document.activeElement.blur(); refreshSoon(); return;
   }
+  if (e.target.closest('[data-goegress]')) { SUB.system = 'egress'; setTab('system'); return; }
   if (e.target.closest('[data-onb-off]')) { store('af-onb-' + project, 'off'); schedule(true); return; }
   const ob = e.target.closest('[data-onb]');
   if (ob) { const k = ob.dataset.onb;
