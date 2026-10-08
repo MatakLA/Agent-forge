@@ -190,16 +190,27 @@ def notify_payload(fmt, event, title, message):
         {"Content-Type": "application/json"}
 
 
+def notify_outbox_path():
+    return os.path.join(RUNS, "notify-outbox.jsonl")
+
+
 def notify(event, title, message):
     """Send one notification if NOTIFY_URL is set and the event is in NOTIFY_EVENTS. Never raises, never takes > ~8 s.
     An optional bearer token (ntfy access token, ...) is read from the secrets file `notify.token`."""
     try:
         c = project_conf()
         url = c.get("NOTIFY_URL", "").strip()
-        if not url.startswith(("https://", "http://")):
+        if url != "outbox" and not url.startswith(("https://", "http://")):
             return False
         if event not in {e.strip() for e in c.get("NOTIFY_EVENTS", NOTIFY_DEFAULT_EVENTS).split(",")}:
             return False
+        if url == "outbox":                     # a relay outside this machine picks them up (when it cannot reach your server)
+            ensure_runs()
+            with open(notify_outbox_path(), "a") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.write(json.dumps({"at": now(), "event": event, "project": PROJECT or "default", "title": str(title)[:200],
+                                    "message": str(message)[:3500]}, ensure_ascii=False, separators=(",", ":")) + "\n")
+            return True
         body, headers = notify_payload(c.get("NOTIFY_FORMAT", "ntfy").strip() or "ntfy", event,
                                        f"[{PROJECT or 'default'}] {title}"[:200], str(message)[:3500])
         tok = read(os.path.join(SECRETS, "notify.token"))

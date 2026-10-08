@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+`NOTIFY_URL=outbox`: notifications are appended to `runs/notify-outbox.jsonl` for a relay outside the machine (when the
+sandbox may not reach your notification server itself); the file can be deleted at any time.
+
 ## 0.11.0 - 2026-10-08
 **You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each
 reviewed branch can wait for your OK. Everything that waits for you is in one place - Overview → Needs you - with one or two
