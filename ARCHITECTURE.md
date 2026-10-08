@@ -122,11 +122,20 @@ The code is the package `bin/lib/foreman/`, one module per concern (`bin/foreman
 | `loop` | the tick: apply finished steps, advance tasks and goals, dispatch, feed idle workers |
 | `planning`, `merge`, `maintenance` | the steps that run in the thread pool (`jobs`): plan / split / autopilot / roadmap; rebase, gate, review, merge; LLM-free checks of main |
 | `llm`, `prompts`, `knowledge` | orchestrator calls and providers; the prompts; roles, lessons, decisions |
-| `pool`, `repo` | workers, runtimes, quota and cooldowns; the clone of main, code map, context pack, variants |
+| `pool`, `repo`, `stats` | workers, runtimes, quota and cooldowns; the clone of main, code map, context pack, variants; what tasks cost here, estimates, model routing, confidence intervals |
 | `report`, `settings`, `owner`, `cli` | read-only views (dashboard JSON), validated settings, owner questions, the command line |
 | `selftest` | `bin/foreman --selftest` |
 
 Modules import each other in one direction only (the order of the table, bottom to top), so there are no import cycles.
+
+### The owner in the loop
+`APPROVE` (per project) puts a stop where the owner wants one: a planned goal's tasks wait in status `approval` (`awaiting:
+plan`) until the goal is approved or sent back with a note (re-planned); a risky task waits before dispatch (`awaiting: risky`);
+a branch that passed the gate and the review waits before the merge (`awaiting: merge`) - approved, it becomes `merge-ready` and
+is merged without a new review unless main moved (then it is rebased, gated and reviewed again, and merged right after).
+Owner actions (`bin/foreman task|goal <id> …`, the dashboard) change task and goal files under `locked()`; a step that was
+already running when the owner cancelled its task drops its result (`live_task()`). A running task is stopped through its
+supervisor (`runs/<run>/stop`). Owner notes go into the plan prompt or the task's spec.
 
 ### Roles (roles/) and prompts (prompts/)
 Each role file is a playbook - mission, what it owns, how it works, what it never does, definition of done. The planner sees the
@@ -136,10 +145,16 @@ catalogue; the worker gets its role's full playbook in the task; the reviewer ge
 Standard library only. `web/server.py` is the HTTP side (access control, routes); `web/dashboard/backend.py` reaches Agent-Forge
 (locally, or over ssh) and runs the long write actions as jobs; `web/dashboard/live.py` tails the running transcripts; the page is
 plain static files in `web/static/` (no build step; scripts only from the server itself - the CSP allows nothing inline). It reads
-`bin/foreman status --dashboard`, run logs and `agy /usage`, and serves the page on 127.0.0.1. Write actions: queue goals / roadmaps, reorder the backlog, answer the planner's questions, stop/continue
-a project (or all), edit settings (a fixed list of keys, validated by `bin/foreman settings apply`; the loop reloads its config on
-the next tick), add a worker (`bin/worker-add`) and run its agy login in a browser terminal, create a project. Owner text reaches
-`bin/foreman` on stdin. Access control (Host check, CSRF header, optional token) - see SECURITY.md.
+`bin/foreman status --dashboard`, run logs and `agy /usage`, and serves the page on 127.0.0.1. Open pages get updates pushed
+(`/api/stream`, Server-Sent Events: the foreman state as deltas of its top-level keys, new transcript lines only); details
+(a task with its runs, a goal's events, a run's transcript, search, money, health) are fetched when a view opens.
+
+Write actions: queue goals / roadmaps, edit and reorder the backlog, approve, answer the planner's questions, act on tasks and
+goals, stop/continue a project (or all), edit settings (a fixed list of keys, validated by `bin/foreman settings apply`; the loop
+reloads its config on the next tick) and the team's documents (`bin/foreman doc`), add a worker (`bin/worker-add`) and run its
+agy login in a browser terminal, create a project, run a whitelisted fix (`bin/doctor --json` names them), acknowledge egress
+alarms, clean up disk space. Owner text reaches `bin/foreman` on stdin, never a command line. Access control (Host check, CSRF
+header, optional token, CSP without inline scripts) - see SECURITY.md.
 
 ## State on disk
 

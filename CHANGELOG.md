@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.11.0 - 2026-10-08
+**You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each
+reviewed branch can wait for your OK. Everything that waits for you is in one place - Overview → Needs you - with one or two
+buttons each (approve, send back with your words, retry, cancel). From the dashboard or `bin/foreman task|goal <id> …`: cancel
+a task (a running one is stopped), retry, send its work back with your feedback, assign it to a worker or a model; pause,
+resume, prioritize, edit, re-plan or cancel a goal.
+
+**Your own model server.** Two new worker runtimes for any OpenAI-compatible server - Ollama, vLLM, LM Studio, OpenRouter:
+`compat` (Codex CLI, Responses API) and `aider` (Aider 0.86, chat completions). A server on your network gets an egress
+exception for exactly its address and port. The runtime test now proves for all five API runtimes that they contact nothing
+but their API (it caught Aider downloading a price table - fixed).
+
+**Budgets** per calendar month, per project (day / month) and per worker (day), next to the per-run and per-day caps; running
+API runs count at their full cap.
+
+**The planner learns from this project.** What merged tasks really cost by size and role goes into every plan; each open task
+gets an estimate; `MODEL_ROUTING=auto` gives each role the cheapest worker model that has proven itself here; A/B results come
+with 95 % intervals and a verdict.
+
+**Dashboard.** Pushed live updates (Server-Sent Events; polling as a fallback). Why each idle worker is idle. A page per goal
+(plan, tasks, events in order, cost, criteria, combined diff), a task sheet with its runs and costs, the replay of any finished
+run, a project-wide dependency graph with the critical path, backlog drag-and-drop with a done-by forecast, search across goals,
+tasks, events and transcripts. Insights: weekly trends, money and quota (spend per day, caps, when today's budget runs out,
+quota burn). System: health checks with fix buttons, egress report with acknowledge, disk usage and cleanup. Settings in six
+pages; the vision, team rules, decisions, lessons and role playbooks are edited in the browser (a role per project).
+
+**Code.** `bin/foreman` is now the package `bin/lib/foreman/` (17 modules) and the dashboard is `web/server.py` +
+`web/dashboard/` + static files (`web/static/`, no inline scripts, a stricter CSP). `bin/doctor --json`; `tests/test_ui.sh`
+tests the page in a real DOM.
+
 ## 0.10.0 - 2026-10-08
 **Workers with API keys.** Besides Antigravity subscriptions, a worker can now run Claude Code, Codex or Gemini CLI with an API
 key (`bin/worker-add N --runtime claude|codex|gemini`, or the dashboard). Keys stay in the secrets directory and reach only the

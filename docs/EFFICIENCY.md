@@ -2,7 +2,7 @@
 
 With subscription accounts the limit is not time but quota. On the reference install (4 Antigravity accounts, ~400 runs)
 the team used up a week's quota in about two and a half days, and then waited for the reset. So the measure that matters is
-**quota per merged task**, and the dashboard's Metrics tab shows it.
+**quota per merged task**, and the dashboard shows it (Insights → Experiments).
 
 What the data said before these features:
 
@@ -26,7 +26,7 @@ The foreman appends a section to each task, built from main without any LLM (`bi
 - a one-line map of every other module (path, size, purpose).
 
 It is capped (`CONTEXT_PACK_CHARS`), because it is part of every later turn too. `ab` gives it to half the tasks (stable per
-task) so the Metrics tab can compare quota per merged task and tool calls per run with and without it.
+task) so the dashboard (Insights → Experiments) can compare quota per merged task and tool calls per run with and without it.
 
 ## Code documentation that cannot go stale
 The code map is generated from the code on every main commit, so it is always current - unlike hand-written docs, which drift
@@ -49,7 +49,7 @@ The planner is told to keep tasks to at most `MAX_TASK_FILES` files; a task that
 before anyone works on it, rather than after it hit the token cap twice.
 
 ## Model routing and A/B tests (`WORKER_MODEL_LIGHT`, `AB_MODEL`, `AB_SHARE`)
-Light roles can use a cheaper model; `AB_SHARE` % of routine tasks can run on another model. The Metrics tab compares models by
+Light roles can use a cheaper model; `AB_SHARE` % of routine tasks can run on another model. Insights → Experiments compares models by
 quota per run, quota per merged task, first-pass approvals and token-cap rate. Whether a lower-thinking model is really cheaper
 per *merged* task is exactly what this measures - a cheap run that needs a rework is not cheap.
 

@@ -32,7 +32,8 @@ assumes you are not watching:
 | **Verification** | you read the diff | full test suite in a **fresh offline container** + AI review + optional **mutation tests**, before any merge |
 | **Failures** | you notice | automatic rework with the gate output, crash recovery, a kill switch, nothing pushed from a suspicious run |
 | **Your repository** | the agent pushes from your machine | **pull requests on GitHub / GitLab** under your branch protection - the workers never see GitHub or a token |
-| **Cost** | whatever the agent spends | **USD caps per run and per day**, subscriptions first, measured quota / cost per merged task |
+| **Cost** | whatever the agent spends | **USD caps per run, day, month, project and worker**, subscriptions first, or **your own model server** |
+| **Control** | you drive every step | it drives; **you approve what you choose** (plans, risky tasks, merges) from one "needs you" list |
 | **Team** | coding agents | 19 roles incl. technical writer, translator, UX designer, product manager, data analyst |
 
 If you want a cockpit for agents you watch, those tools are great. Agent-Forge is for a queue you leave running.
@@ -63,6 +64,7 @@ About 20 minutes: Docker, the egress proxy, an internal Forgejo, the worker imag
 | **Codex CLI** | OpenAI API key | USD per day, token and tool-call caps per run |
 | **Gemini CLI** | Gemini API key | USD per day, token and tool-call caps per run |
 | **Antigravity** | a Google account with Antigravity | uses its subscription quota; one account per worker |
+| **Your model server** | nothing (Ollama, vLLM, LM Studio) or OpenRouter credits | Codex CLI or Aider against any OpenAI-compatible server; on your network, the worker may reach exactly that address and port |
 
 Mix them in one team. The key is entered once in the dashboard, stored on the server only (mode 0600) and reaches only the
 agent's environment; a worker can talk to its provider's API host and nothing else, and the gate refuses any branch that adds
@@ -78,12 +80,14 @@ a key or token. Details: [docs/RUNTIMES.md](docs/RUNTIMES.md).
 
 | | |
 |---|---|
-| ![Overview: goals with acceptance criteria, the team, the backlog and the planner's questions](docs/img/overview.png) | ![Live: each worker's transcript as it works](docs/img/live.png) |
-| **Overview** - goals with acceptance criteria, the team, backlog, questions | **Live** - what every worker is doing right now |
-| ![Timeline: 24 hours of runs per worker](docs/img/timeline.png) | ![Metrics: first-pass rate, quota and cost per merged task, A/B tests](docs/img/metrics.png) |
-| **Timeline** - 24 h of runs per worker, click to open the task | **Metrics** - first-pass rate, quota and cost per merged task |
-| ![Queue and a task with its spec, history and diff](docs/img/task.png) | ![Settings: kill switch, workers, models, budgets](docs/img/settings.png) |
-| **Task** - spec, history, review feedback, diff | **Settings** - kill switch, workers, models, budgets, notifications |
+| ![Overview: what needs you, the team and why idle workers are idle, goals, backlog](docs/img/overview.png) | ![A goal's page: tasks, events, cost, criteria](docs/img/goal.png) |
+| **Overview** - what needs you (approvals, questions, blocked tasks), the team, goals, backlog | **Goal page** - its tasks, everything that happened, cost, acceptance criteria |
+| ![Live transcripts of the workers](docs/img/live.png) | ![Replay of a finished run](docs/img/replay.png) |
+| **Live** - what every worker is doing right now | **Replay** - any finished run, filtered, searchable, commands to copy |
+| ![Task sheet: merge or send back, cost, runs, diff](docs/img/task.png) | ![Dependency graph with the critical path](docs/img/graph.png) |
+| **Task** - only the actions that fit its state, its runs and cost, the diff | **Graph** - the open work and what it waits for; the critical path |
+| ![Money and quota](docs/img/money.png) | ![Experiments: A/B verdicts](docs/img/experiments.png) |
+| **Money & quota** - spend per day, caps, when the budget runs out | **Experiments** - A/B results with 95 % intervals, adopt the winner |
 
 (Invented demo data - `tools/screenshots.sh` regenerates them.)
 
@@ -116,6 +120,8 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) · [SECURITY.md](SECURITY.md) · [do
 - **Spends tokens on work, not on reading.** Each task carries a context pack - its files and the interfaces it uses, from a
   code map generated without any LLM. Measured: [docs/EFFICIENCY.md](docs/EFFICIENCY.md).
 - **Learns.** A review that sends work back may record one general lesson; lessons go into every later plan, review and task.
+  What merged tasks really cost here (by size and role) goes into every plan, each open task gets an estimate, and with
+  `MODEL_ROUTING=auto` each role gets the cheapest worker model that has proven itself in this project.
 - **Closes goals on evidence.** Each goal gets observable acceptance criteria, checked one by one before it is closed.
 - **Works with your stack.** `TEST_CMD` and `GATE_IMAGE` per project: pytest by default, `npm test`, `go test ./...`, ...
 - **Survives crashes and reboots,** and does not blame the worker for Forgejo, Docker or provider outages.
@@ -133,6 +139,8 @@ bin/foreman goal "Add a CSV export to the expenses module, with tests"
 bin/foreman project "Build the app described in docs/vision.md"   # → a roadmap of goals in the backlog
 bin/foreman status | backlog | questions
 echo "Use PostgreSQL" | bin/foreman answer 1                      # becomes a binding decision for later plans
+bin/foreman goal <goal-id> approve | pause | prioritize | cancel   # APPROVE=plan,risky,merge makes the team wait for you
+echo "Use the existing parser" | bin/foreman task <task-id> feedback -   # send its work back with your words
 bin/killswitch on [--hard] [--all]                                # stop this project (or every project) now
 bin/doctor
 ```

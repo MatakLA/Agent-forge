@@ -43,7 +43,7 @@ Passwords and tokens are written to `~/.config/sandbox/secrets/` (0600). Forgejo
 (`ssh -L 3000:127.0.0.1:3000 <vm>` from your laptop; log in as `forge-admin` with the password from the secrets directory).
 
 ## 4. Workers
-Easiest: dashboard → Settings → "+ Add worker" → pick Antigravity (it opens a terminal for the login: open the link with that
+Easiest: dashboard → Settings → Workers → "+ Add a worker" → pick Antigravity (it opens a terminal for the login: open the link with that
 worker's Google account, paste the code) or an API runtime (it asks for the key once). API workers by hand:
 ```bash
 printf '%s' "$ANTHROPIC_API_KEY" | bin/secret-set anthropic.key     # openai.key / gemini.key

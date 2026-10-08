@@ -8,7 +8,7 @@ PLAN_PROVIDERS=claude-cli,agy-claude,agy-gemini
 REVIEW_PROVIDERS=agy-claude,claude-cli
 ```
 Gemini is not a default reviewer: in practice 64 % of its review calls produced no usable verdict. Antigravity calls now pass
-`--json-schema`, which may change that - measure it in the dashboard's Metrics tab before adding `agy-gemini` back.
+`--json-schema`, which may change that - measure it in the dashboard (Insights → Team, orchestrator calls) before adding `agy-gemini` back.
 
 ## Free with subscriptions you already have
 

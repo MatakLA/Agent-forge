@@ -14,7 +14,7 @@ Each worker is one container running one agent CLI. You can mix them in one team
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
 ## Your own model server: Ollama, vLLM, LM Studio, OpenRouter
-Set `COMPAT_BASE_URL` (Settings → API workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
+Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
 with the runtime `compat` or `aider`:
 
 | server | `COMPAT_BASE_URL` | runtime |
@@ -57,14 +57,14 @@ itself can read its own environment - that is unavoidable for any agent that cal
   budgets), and rotate it if you ever suspect it leaked.
 
 ## Money
-API runtimes cost real money, so they have hard limits (`etc/limits.conf`, also in Settings → API workers):
+API runtimes cost real money, so they have hard limits (`etc/limits.conf`, also in Settings → Money):
 
 | setting | default | what it does |
 |---|---|---|
 | `API_RUN_BUDGET_USD` | 2.0 | cap per run. Claude Code enforces it itself (`--max-budget-usd`); codex / gemini runs are stopped by `RUN_TOKEN_CAP` and `RUN_MAX_TOOL_CALLS` |
 | `API_DAILY_BUDGET_USD` | 10.0 | cap per day (UTC) for all projects; `bin/dispatch` refuses API runs once spent + one run's cap would exceed it |
 | `API_MONTHLY_BUDGET_USD` | 0 (none) | cap per calendar month for all projects |
-| `PROJECT_DAILY_BUDGET_USD`, `PROJECT_MONTHLY_BUDGET_USD` | 0 (none) | caps for one project (its own config / Settings → API workers) |
+| `PROJECT_DAILY_BUDGET_USD`, `PROJECT_MONTHLY_BUDGET_USD` | 0 (none) | caps for one project (its own config / Settings → Money) |
 | `WORKER_DAILY_BUDGET_USD` | empty | caps per worker per day, e.g. `worker-5=3,worker-6=1.5` |
 | `RUN_MAX_TOOL_CALLS` | 250 | any runtime: a run that makes more tool calls is stopped like at the token cap (its work is saved) |
 | `PRICE_CODEX`, `PRICE_GEMINI`, `PRICE_COMPAT` | see file | USD per million tokens (input, cached input, output) for the cost estimate - those CLIs report tokens, not money. Set them to your model's prices |
@@ -76,8 +76,8 @@ the subscriptions are spent first; `always` uses API workers first. A run that s
 revoked, no credit) re-queues its task without counting an attempt and pauses that worker for an hour; you get an `auth`
 notification. Rate limits and quota stops are handled like an Antigravity quota stop.
 
-Spend shows up in the dashboard (pill "API today", Settings → API workers) and in Metrics (cost per merged task by runtime and
-model).
+Spend shows up in the dashboard: the pill "API today", Insights → Money & quota (per day, runtime, project and model, the caps,
+when today's budget runs out) and Insights → Experiments (cost per merged task by runtime and model).
 
 ## Models
 `WORKER_MODEL_CLAUDE` (default `sonnet`), `WORKER_MODEL_CODEX`, `WORKER_MODEL_GEMINI` (empty = the CLI's default),
