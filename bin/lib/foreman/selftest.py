@@ -127,7 +127,7 @@ def _selftest():
               not ok_ and "# keep me" in fc and "CLAUDE_MODEL=opus" in fc and "CLAUDE_MODEL=sonnet" not in fc and "WORKERS=worker-1,worker-3" in fc
               and "MAX_PARALLEL=8" in lc and "MAX_PARALLEL=4" not in lc and "MAX_PARALLEL" not in fc)
     finally:
-        ctx.ROOT, FD = old_root, old_fd
+        ctx.ROOT, ctx.FD = old_root, old_fd
         shutil.rmtree(st_dir, ignore_errors=True)
     ct = dict(id="0009-x", title="t", role="tester", branch="test/0009-x", goal="G1", spec="SPEC-TEXT", acceptance=["a"], files=["f.py"],
               attempts=1, feedback="add a test for empty input", last_run=dict(reason="token-cap", salvage=dict(rc=0)))
@@ -187,7 +187,7 @@ def _selftest():
     old_repo, old_fd = ctx.REPO, ctx.FD
     d = tempfile.mkdtemp(prefix="forge-pack-")
     try:
-        ctx.REPO, FD = os.path.join(d, "repo"), os.path.join(d, "fd")
+        ctx.REPO, ctx.FD = os.path.join(d, "repo"), os.path.join(d, "fd")
         os.makedirs(ctx.REPO); os.makedirs(ctx.FD)
         open(os.path.join(ctx.REPO, "store.py"), "w").write('"""Contact storage: add/list contacts in a JSON file."""\n\ndef add(name: str) -> dict:\n'
                                                          '    """Add a contact."""\n    return {"name": name}\n')
@@ -208,7 +208,7 @@ def _selftest():
         check("context pack respects CONTEXT_PACK_CHARS", len(context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[]))) < 1100)
     finally:
         ctx.C.update(saved)
-        ctx.REPO, FD = old_repo, old_fd
+        ctx.REPO, ctx.FD = old_repo, old_fd
         CODEMAP.clear()
         shutil.rmtree(d, ignore_errors=True)
     # efficiency metrics: quota per merged task by model / pack
