@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location("srv", os.path.join(ROOT, "web", "
 srv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(srv)
 calls = []
-srv.ssh_run_full = lambda cmd, timeout=30, inp=None: (calls.append((cmd, inp)) or (0, "ok", ""))
+srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (calls.append((cmd, inp)) or (0, "ok", ""))
 bad = 0
 
 
@@ -48,8 +48,18 @@ s, h, _ = req("GET", "/?token=s3cret", headers={"Cookie": ""})
 check("?token= sets an HttpOnly SameSite=Strict cookie and redirects", s == 303 and "HttpOnly" in h.get("Set-Cookie", "")
       and "SameSite=Strict" in h.get("Set-Cookie", "") and h.get("Location") == "/")
 s, h, body = req("GET", "/")
-check("page: no framing, CSP, nosniff", s == 200 and h.get("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in h.get("Content-Security-Policy", "")
-      and h.get("X-Content-Type-Options") == "nosniff" and "X-Agent-Forge" in body)
+csp = h.get("Content-Security-Policy", "")
+check("page: no framing, CSP without inline scripts, nosniff", s == 200 and h.get("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in csp
+      and "script-src 'self';" in csp and h.get("X-Content-Type-Options") == "nosniff" and "/static/js/core.js?v=" in body and "{{V}}" not in body)
+s, h, js = req("GET", "/static/js/core.js")
+check("static: the page's scripts are served, and every POST they make carries X-Agent-Forge", s == 200 and "X-Agent-Forge" in js
+      and h.get("Content-Type", "").startswith("text/javascript"))
+s, _, _ = req("GET", "/static/../server.py")
+s2, _, _ = req("GET", "/static/js/../../server.py")
+check("static: nothing outside the known files (no path traversal)", s == 404 and s2 == 404)
+import glob
+inline = [f for f in glob.glob(os.path.join(ROOT, "web", "static", "**", "*.*"), recursive=True) if "onclick=" in open(f).read()]
+check("static: no inline event handlers (the CSP would block them)", not inline)
 s, _, _ = req("GET", "/api/projects", host="attacker.example")
 check("DNS rebinding: a foreign Host is refused", s == 403)
 s, _, _ = req("POST", "/api/killswitch", {"action": "on"})
