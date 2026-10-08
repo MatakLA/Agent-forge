@@ -1,13 +1,23 @@
 #!/bin/bash
-# af-agent <runtime> <cli arguments...>  -- runs an API-key agent CLI (claude | codex | gemini) inside a worker container.
-# The key comes from the read-only mount /run/secrets/api-key and is put into THIS process's environment only: it never
-# appears in a command line (visible in /proc) or in the run's logs. Telemetry, update checks and every network call the
-# run does not need are switched off, so the egress proxy only ever sees the provider's API host.
+# af-agent <runtime> <cli arguments...>  -- runs an API agent CLI (claude | codex | gemini | compat | aider) inside a worker
+# container. The key comes from the read-only mount /run/secrets/api-key and is put into THIS process's environment only: it never
+# appears in a command line (visible in /proc) or in the run's logs. Telemetry, update checks and every network call the run does
+# not need are switched off, so the egress proxy only ever sees the provider's API host.
+# compat / aider talk to the owner's model server: AF_ENDPOINT (its OpenAI-compatible base URL, from COMPAT_BASE_URL, set by
+# bin/run-supervisor); the key is optional there (a local Ollama needs none).
 # AF_BASE_URL (set by bin/run-supervisor only in test mode) points the CLI at a fake API server.
 set -euo pipefail
-rt="${1:?usage: af-agent claude|codex|gemini args...}"; shift
+rt="${1:?usage: af-agent claude|codex|gemini|compat|aider args...}"; shift
 key="$(cat /run/secrets/api-key 2>/dev/null || true)"
-[ -n "$key" ] || { echo "af-agent: no API key at /run/secrets/api-key (bin/secret-set <provider>.key, then bin/worker-up N)" >&2; exit 78; }
+case "$rt" in
+  compat|aider)
+    [ "$key" = none ] && key=""
+    url="${AF_ENDPOINT:-}"
+    [[ "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]] || {
+      echo "af-agent: no usable model server URL (COMPAT_BASE_URL in etc/limits.conf, e.g. http://192.168.1.20:11434/v1)" >&2; exit 78; } ;;
+  *)
+    [ -n "$key" ] || { echo "af-agent: no API key at /run/secrets/api-key (bin/secret-set <provider>.key, then bin/worker-up N)" >&2; exit 78; } ;;
+esac
 case "$rt" in
   claude)
     export ANTHROPIC_API_KEY="$key" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 \
@@ -21,6 +31,34 @@ case "$rt" in
       exec codex exec -c model_provider=af -c "model_providers.af={name=\"af\", base_url=\"${AF_BASE_URL}/v1\", env_key=\"OPENAI_API_KEY\", wire_api=\"responses\"}" "$@"
     fi
     exec codex "$@" ;;
+  compat)
+    # Codex with a custom provider: the owner's server must speak the OpenAI Responses API (Ollama, vLLM, LM Studio, OpenRouter
+    # do; Codex dropped the chat-completions API - use the aider runtime for servers that only have that)
+    export AF_ENDPOINT_KEY="${key:-none}"
+    [ "${1:-}" = "exec" ] && shift
+    exec codex exec -c model_provider=af-endpoint \
+      -c "model_providers.af-endpoint={name=\"model server\", base_url=\"${url}\", env_key=\"AF_ENDPOINT_KEY\", wire_api=\"responses\"}" "$@" ;;
+  aider)
+    # Aider: litellm's OpenAI provider against the server's /chat/completions. The model price table and tokenizers come from
+    # the image (no downloads at run time); the chat history lives outside the repository, one per task branch, so a rework
+    # can continue it (--restore-chat-history); the project's tests run after every edit (--auto-test).
+    export OPENAI_API_KEY="${key:-none}" OPENAI_API_BASE="$url" LITELLM_LOCAL_MODEL_COST_MAP=True \
+           TIKTOKEN_CACHE_DIR=/opt/aider/tiktoken HF_HUB_OFFLINE=1 AIDER_ANALYTICS=false
+    prompt="$(mktemp /tmp/af-aider-XXXXXX.md)"; cat > "$prompt"
+    branch="$(git branch --show-current 2>/dev/null || true)"; slug="$(printf '%s' "${branch:-main}" | tr -c 'A-Za-z0-9._-' '_')"
+    hist="$HOME/.aider-history/$slug"; mkdir -p "$hist"
+    extra=(--chat-history-file "$hist/chat.md" --input-history-file "$hist/input.md" --message-file "$prompt")
+    # the model's metadata from a local file: without it Aider downloads litellm's price table from raw.githubusercontent.com
+    # (seen with a logging proxy) - an egress alarm. Prices are Agent-Forge's own (PRICE_COMPAT), so 0 here.
+    model=""; for ((i=1; i<=$#; i++)); do [ "${!i}" = "--model" ] && { j=$((i+1)); model="${!j}"; }; done
+    if [ -n "$model" ]; then
+      python3 -c 'import json, sys; json.dump({sys.argv[1]: {"max_input_tokens": int(sys.argv[3]), "max_tokens": 8192, "max_output_tokens": 8192,
+        "input_cost_per_token": 0, "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}}, open(sys.argv[2], "w"))' \
+        "$model" "$hist/model-metadata.json" "${AF_MODEL_CONTEXT:-65536}"
+      extra+=(--model-metadata-file "$hist/model-metadata.json")
+    fi
+    if [ -n "${AF_TEST_CMD:-}" ]; then extra+=(--auto-test --test-cmd "$AF_TEST_CMD"); fi
+    exec python3 /usr/local/lib/af-aider-events "$slug" aider "$@" "${extra[@]}" ;;
   gemini)
     export GEMINI_API_KEY="$key"
     if [ -n "${AF_BASE_URL:-}" ]; then export GOOGLE_GEMINI_BASE_URL="$AF_BASE_URL"; fi

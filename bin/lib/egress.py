@@ -7,6 +7,7 @@ IMAGE = "sandbox-worker:1.2.11"          # any image with `sh`+`cat`; used to re
 VOLUME = "egress_logs"
 ALLOWLIST = os.path.join(sbx.ROOT, "egress", "allowlist.txt")
 ALLOWLIST_LOCAL = os.path.join(sbx.ROOT, "egress", "allowlist.local.txt")       # API-key runtimes' hosts (bin/worker-add)
+LOCAL_ENDPOINT = os.path.join(sbx.ROOT, "egress", "local-endpoint.conf")     # the owner's model server (set_endpoint)
 BASELINE = os.path.join(sbx.ROOT, "etc", "egress-baseline.txt")
 STATE = os.path.join(sbx.RUNS, "egress-state.json")
 ROTATE_BYTES = 5 * 1024 * 1024
@@ -15,7 +16,10 @@ PRIVATE_NETS = [ipaddress.ip_network(n) for n in
 
 
 def sh(*a, timeout=90):
-    return subprocess.run(list(a), capture_output=True, text=True, timeout=timeout)
+    try:
+        return subprocess.run(list(a), capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:          # no docker on this machine, or it hangs: a failed call, not a crash
+        return subprocess.CompletedProcess(list(a), 127, "", str(e))
 
 
 def _lines(path):
@@ -125,6 +129,8 @@ def analyze(since=0.0, until=None, client=None, events=None, ack=True):
     want = ips.get(client, client) if client else None
     acked = state().get("acked_until", 0.0) if ack else 0.0
     allow, base = set(allowlist()), baseline()
+    ep = local_endpoint()
+    local = (ep[0], str(ep[1])) if ep else None
     res = dict(allowed=Counter(), denied=Counter(), noise=Counter(), private=[], new_domains=Counter(), plain_http=Counter(), events=0)
     seen_private = set()
     for e in ev:
@@ -132,8 +138,8 @@ def analyze(since=0.0, until=None, client=None, events=None, ack=True):
             continue
         res["events"] += 1
         who = cmap.get(e["client"], e["client"])
-        if e["result"].startswith("TCP_TUNNEL"):
-            res["allowed"][e["host"]] += 1
+        if e["result"].startswith("TCP_TUNNEL") or (local and (e["host"], e["port"]) == local and not e["result"].startswith("TCP_DENIED")):
+            res["allowed"][e["host"]] += 1         # an allowed tunnel, or a request to the owner's own model server
             continue
         res["denied"][e["host"]] += 1
         fresh = e["ts"] > acked
@@ -222,3 +228,76 @@ def ack(now=None):
     st = state()
     st["acked_until"] = now or time.time()
     save_state(st)
+
+
+# ---- the owner's own model server (compat / aider runtimes, COMPAT_BASE_URL)
+# A public HTTPS server (OpenRouter, a cloud vLLM) is one more allow-list entry. A server on the owner's network (Ollama on another
+# machine) or one without TLS needs a narrow exception instead: squid includes egress/local-endpoint.conf before it refuses private
+# destinations and plain HTTP, and that file allows exactly one address and port - nothing else on that network.
+def endpoint_rule(url, resolve=True):
+    """How egress must allow the model server at `url`: ("allowlist", host) for a public HTTPS host, ("local", host, port) for an
+    address on a private network or a plain-HTTP server, None for an unusable URL. Pure unless `resolve` (DNS lookup of a name)."""
+    import runtimes, socket
+    t = runtimes.endpoint_target(url)
+    if not t:
+        return None
+    scheme, host, port = t
+    private = is_private_host(host)
+    if not private and resolve and not re.fullmatch(r"[\d.]+|\[?[0-9a-f:]+\]?", host):
+        try:
+            private = any(is_private_host(a[4][0]) for a in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP))
+        except OSError:
+            private = False
+    if scheme == "https" and not private and port == 443:
+        return ("allowlist", host)
+    return ("local", host, port)
+
+
+def local_endpoint_conf(host, port):
+    """The squid snippet that lets the workers reach exactly host:port (also private / plain HTTP)."""
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}|[0-9a-fA-F:.]{2,45}", host) or not 0 < int(port) < 65536:
+        raise ValueError("bad host or port")
+    return (f"# written by Agent-Forge for COMPAT_BASE_URL - the workers may reach exactly this address and port\n"
+            f"acl af_model_server dst {host}\nacl af_model_port port {int(port)}\n"
+            f"http_access allow workers af_model_server af_model_port\n")
+
+
+def local_endpoint():
+    """(host, port) allowed by egress/local-endpoint.conf, or None."""
+    try:
+        txt = open(LOCAL_ENDPOINT).read()
+    except FileNotFoundError:
+        return None
+    h = re.search(r"^acl af_model_server dst (\S+)$", txt, re.M)
+    p = re.search(r"^acl af_model_port port (\d+)$", txt, re.M)
+    return (h.group(1).lower(), int(p.group(1))) if h and p else None
+
+
+def set_endpoint(url):
+    """Make egress allow the model server at `url` ("" = none) and reload the proxy. Returns a list of messages."""
+    msgs = []
+    rule = endpoint_rule(url) if url else None
+    if url and not rule:
+        raise ValueError("not a usable http(s) URL")
+    os.makedirs(os.path.dirname(LOCAL_ENDPOINT), exist_ok=True)
+    old = open(LOCAL_ENDPOINT).read() if os.path.exists(LOCAL_ENDPOINT) else None
+    new = local_endpoint_conf(rule[1], rule[2]) if rule and rule[0] == "local" else "# no local model server (COMPAT_BASE_URL)\n"
+    changed = old != new
+    if changed:
+        open(LOCAL_ENDPOINT, "w").write(new)
+        msgs.append(f"egress: model server {rule[1]}:{rule[2]} allowed (exactly that address and port)" if rule and rule[0] == "local"
+                    else "egress: no local model server")
+    if rule and rule[0] == "allowlist" and rule[1] not in allowlist():
+        with open(ALLOWLIST_LOCAL, "a") as f:
+            f.write(f"# model server (COMPAT_BASE_URL)\n{rule[1]}\n")
+        msgs.append(f"egress: {rule[1]} added to the allow-list")
+        changed = True
+    if changed and sh("docker", "inspect", "egress-proxy").returncode == 0:
+        has = sh("docker", "exec", "egress-proxy", "sh", "-c", "grep -q local-endpoint.conf /etc/squid/squid.${EGRESS_MODE}.conf && "
+                 "test -r /etc/squid/local-endpoint.conf && test -r /etc/squid/allowlist.local.txt")
+        if has.returncode != 0:
+            msgs.append("egress: this proxy predates the model-server setting - recreate it once: bin/egress-up")
+        else:
+            r = sh("docker", "exec", "egress-proxy", "sh", "-c", "squid -k reconfigure -f /etc/squid/squid.${EGRESS_MODE}.conf")
+            msgs.append("egress: proxy reloaded" if r.returncode == 0 else f"egress: reload FAILED: {(r.stderr or r.stdout).strip()[:200]}")
+    return msgs

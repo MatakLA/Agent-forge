@@ -1,5 +1,5 @@
 // Fake model APIs for tests/test_runtimes.sh (no key, no network, no cost): Anthropic Messages, OpenAI Responses and Gemini
-// streamGenerateContent, all streaming (SSE). The first agentic call answers with one shell tool call that writes hello.txt, the
+// streamGenerateContent, all streaming (SSE), and OpenAI chat completions (Aider, non-streaming; answers in Aider's edit format). The first agentic call answers with one shell tool call that writes hello.txt, the
 // call after the tool result gets the final text. Every request is logged (path + model, no headers). Port 8099.
 const http = require('http');
 // what the "agent" does: like a real worker, work on the task branch, then write the file (the supervisor commits + pushes it)
@@ -59,6 +59,20 @@ http.createServer((req, res) => {
       const chunk = {candidates: [{content: {role: 'model', parts}, finishReason: 'STOP', index: 0}], usageMetadata, modelVersion: 'gemini-fake'};
       if (req.url.includes(':generateContent')) { res.writeHead(200, {'content-type': 'application/json'}); res.end(JSON.stringify(chunk)); return; }
       return sse(res, [[null, chunk]]);
+    }
+    // ---- OpenAI chat completions (aider): one reply that creates hello.txt, in the edit format the system prompt asks for
+    if (req.url.includes('/chat/completions')) {
+      const msgs = j.messages || [], sys = msgs.filter(m => m.role === 'system').map(m => String(m.content)).join('\n');
+      const diff = /SEARCH/.test(sys) && /REPLACE/.test(sys);
+      const fence = '`'.repeat(3);
+      const content = diff ? 'hello.txt\n' + fence + '\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE\n' + fence + '\n'
+                           : 'hello.txt\n' + fence + '\nhello\n' + fence + '\n';
+      log('  aider edit format:', diff ? 'diff' : 'whole', 'messages=' + msgs.length);
+      res.writeHead(200, {'content-type': 'application/json'});
+      res.end(JSON.stringify({id: 'chatcmpl-' + Date.now(), object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: j.model,
+        choices: [{index: 0, message: {role: 'assistant', content}, finish_reason: 'stop'}],
+        usage: {prompt_tokens: 1200, completion_tokens: 40, total_tokens: 1240}}));
+      return;
     }
     res.writeHead(404, {'content-type': 'application/json'}); res.end('{"error":"not faked"}');
   });

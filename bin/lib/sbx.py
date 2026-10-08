@@ -42,7 +42,13 @@ DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=150000
                 API_RUN_BUDGET_USD=2.0, API_DAILY_BUDGET_USD=10.0, RUN_MAX_TOOL_CALLS=250,
                 # USD per million tokens "input,cached input,output" - for the cost estimate of codex / gemini runs (their CLIs
                 # report tokens, not money). Set them to your model's current prices.
-                PRICE_CODEX="1.25,0.125,10", PRICE_GEMINI="1.25,0.31,10")
+                PRICE_CODEX="1.25,0.125,10", PRICE_GEMINI="1.25,0.31,10",
+                # more caps (0 / empty = none): per calendar month for the whole install, per day per worker ("worker-5=3,worker-6=1.5");
+                # per project: PROJECT_DAILY_BUDGET_USD / PROJECT_MONTHLY_BUDGET_USD in its own config
+                API_MONTHLY_BUDGET_USD=0.0, WORKER_DAILY_BUDGET_USD="",
+                # the owner's own model server for the compat (Codex) and aider runtimes: its OpenAI-compatible base URL, e.g.
+                # http://192.168.1.20:11434/v1 (Ollama) or https://openrouter.ai/api/v1; prices "0,0,0" = a local model costs nothing
+                COMPAT_BASE_URL="", PRICE_COMPAT="0,0,0")
 
 
 def now():
@@ -245,7 +251,7 @@ def append_ledger(entry):
 # Run outcomes that say nothing about whether the agent misbehaves: they neither count toward nor reset the kill switch's
 # consecutive-failure streak. (Before: a hard stop of 4 running runs wrote 4 "killswitch" entries and the next single failure
 # after "Continue" tripped the kill switch again; token caps - 22 % of all runs, productive since WIP is saved - tripped it too.)
-NEUTRAL_OUTCOMES = ("killswitch", "setup-failed", "egress-not-enforced", "quota", "auth", "orphaned", "token-cap", "timeout")
+NEUTRAL_OUTCOMES = ("killswitch", "setup-failed", "egress-not-enforced", "quota", "auth", "orphaned", "token-cap", "timeout", "stopped")
 
 
 def consecutive_failures(ledger, project):
@@ -263,15 +269,86 @@ def consecutive_failures(ledger, project):
 
 def worker_runtime(worker):
     """The runtime of a worker container (label agent-forge.runtime set by bin/worker-up; none = agy, older workers)."""
+    import runtimes
     r = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "agent-forge.runtime"}}', worker], capture_output=True, text=True)
     v = r.stdout.strip()
-    return v if r.returncode == 0 and v in ("agy", "claude", "codex", "gemini") else "agy"
+    return v if r.returncode == 0 and v in runtimes.RUNTIMES else "agy"
+
+
+def api_spent(ledger=None, period="day", project=None, worker=None):
+    """USD spent by API runs today or this calendar month (UTC) - all projects unless `project` is given ("" = the default
+    project), all workers unless `worker` is given."""
+    key = today() if period == "day" else today()[:7]
+    tot = 0.0
+    for e in (ledger if ledger is not None else read_ledger()):
+        if e.get("test") or not str(e.get("date", "")).startswith(key):
+            continue
+        if (project is not None and e.get("project", "") != project) or (worker is not None and e.get("worker") != worker):
+            continue
+        tot += e.get("cost_usd") or 0
+    return round(tot, 4)
 
 
 def api_spent_today(ledger=None):
-    """USD spent today (UTC) by API-key runs, all projects (the budget is per install, like the other daily limits)."""
-    return round(sum(e.get("cost_usd") or 0 for e in (ledger if ledger is not None else read_ledger())
-                     if e.get("date") == today() and not e.get("test")), 4)
+    """USD spent today (UTC) by API runs, all projects (the daily budget is per install, like the other daily limits)."""
+    return api_spent(ledger)
+
+
+def worker_budgets(spec):
+    """'worker-5=3,worker-6=1.5' -> {'worker-5': 3.0, 'worker-6': 1.5}; malformed parts are ignored."""
+    out = {}
+    for part in str(spec or "").split(","):
+        w, _, v = part.strip().partition("=")
+        try:
+            if __import__("re").fullmatch(r"worker-\d+", w.strip()):
+                out[w.strip()] = float(v)
+        except ValueError:
+            pass
+    return out
+
+
+def _usd(v):
+    try:
+        return float(v or 0)
+    except ValueError:
+        return 0.0
+
+
+def running_api_runs():
+    """[(worker, project)] of API runs that are running now - each may still cost up to its run cap."""
+    out = []
+    for d in run_dirs():
+        if is_running(d):
+            m = meta(d)
+            if m.get("runtime", "agy") != "agy" and not m.get("test"):
+                out.append((m.get("worker"), m.get("project", "")))
+    return out
+
+
+def budget_check(worker, lim, conf=None, ledger=None, running=None):
+    """Can one more API run start on `worker` ("" = any) for this project? Returns (ok, message). The worst case is assumed: the
+    new run and every API run still running may each cost API_RUN_BUDGET_USD. Caps: per day (always) and per month for the whole
+    install, per day and per month for this project (PROJECT_DAILY_BUDGET_USD / PROJECT_MONTHLY_BUDGET_USD in its config), per day
+    for this worker (WORKER_DAILY_BUDGET_USD). 0 / empty = no cap, except the install's daily budget."""
+    led = ledger if ledger is not None else read_ledger()
+    run = _usd(lim.get("API_RUN_BUDGET_USD"))
+    conf = conf if conf is not None else project_conf()
+    running = running_api_runs() if running is None else running
+    rn = lambda proj=None, w=None: sum(1 for rw, rp in running if (proj is None or rp == proj) and (w is None or rw == w)) * run
+    name = PROJECT or "default"
+    checks = [("today, all projects", api_spent(led) + rn(), _usd(lim.get("API_DAILY_BUDGET_USD")), "API_DAILY_BUDGET_USD", True),
+              ("this month, all projects", api_spent(led, "month") + rn(), _usd(lim.get("API_MONTHLY_BUDGET_USD")), "API_MONTHLY_BUDGET_USD", False),
+              (f"today, project {name}", api_spent(led, "day", PROJECT) + rn(PROJECT), _usd(conf.get("PROJECT_DAILY_BUDGET_USD")),
+               "PROJECT_DAILY_BUDGET_USD", False),
+              (f"this month, project {name}", api_spent(led, "month", PROJECT) + rn(PROJECT), _usd(conf.get("PROJECT_MONTHLY_BUDGET_USD")),
+               "PROJECT_MONTHLY_BUDGET_USD", False)]
+    if worker:
+        checks.append((f"today, {worker}", api_spent(led, "day", worker=worker) + rn(w=worker),
+                       worker_budgets(lim.get("WORKER_DAILY_BUDGET_USD")).get(worker, 0.0), "WORKER_DAILY_BUDGET_USD", False))
+    for what, spent, cap, key, always in checks:
+        if (cap > 0 or always) and spent + run > cap + 1e-9:
+            return False, f"API budget {what} used: ${spent:.2f} of ${cap:.2f} (a run may cost up to ${run:.2f}; {key})"
+    return True, ""
 
 
 def alive(pid):

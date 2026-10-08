@@ -13,6 +13,9 @@ PROVIDERS_ALL = ("claude-cli", "agy-claude", "agy-gemini", "anthropic-api", "ope
 
 
 MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"
+# a model on the owner's own server: "qwen3-coder:30b" (Ollama), "anthropic/claude-sonnet-4.5" (OpenRouter), "Qwen/Qwen3-32B" (vLLM)
+SERVER_MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,99}"
+USD_RE = r"\d{1,6}(\.\d{1,2})?"
 
 
 # key -> (validation regex or (min, max), scope: "project" = this project's config, "limits" = etc/limits.conf for ALL projects)
@@ -31,7 +34,8 @@ EDITABLE = {
     "LIGHT_ROLES": (r"|[a-z][a-z-]{1,40}(,[a-z][a-z-]{1,40})*", "project"), "AB_MODEL": ("|" + MODEL_RE, "project"),
     "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),
     "TEST_CMD": ("|" + sbx.TEST_CMD_RE.pattern, "project"), "GATE_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
-    "NOTIFY_URL": (r"|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf "NOTIFY_FORMAT": (r"ntfy|slack|discord|json", "project"),
+    "NOTIFY_URL": (r"|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf
+    "NOTIFY_FORMAT": (r"ntfy|slack|discord|json", "project"),
     "NOTIFY_EVENTS": (r"|(goal_done|task_blocked|killswitch|questions|quota_out|auth)(,(goal_done|task_blocked|killswitch|questions|quota_out|auth))*", "project"),
     "WORKER_MODEL_CLAUDE": ("|" + MODEL_RE, "project"), "WORKER_MODEL_CODEX": ("|" + MODEL_RE, "project"),
     "WORKER_MODEL_GEMINI": ("|" + MODEL_RE, "project"), "API_WORKERS_POLICY": (r"overflow|always", "project"),
@@ -43,6 +47,12 @@ EDITABLE = {
     "PRICE_CODEX": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
     "PRICE_GEMINI": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
     "RUNS_KEEP_DAYS": ((1, 3650), "project"),
+    "COMPAT_BASE_URL": ("|" + runtimes.ENDPOINT_RE.pattern, "limits"), "PRICE_COMPAT": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
+    "WORKER_MODEL_COMPAT": ("|" + SERVER_MODEL_RE, "project"), "WORKER_MODEL_AIDER": ("|" + SERVER_MODEL_RE, "project"),
+    "API_MONTHLY_BUDGET_USD": (USD_RE, "limits"), "PROJECT_DAILY_BUDGET_USD": (USD_RE, "project"), "PROJECT_MONTHLY_BUDGET_USD": (USD_RE, "project"),
+    "WORKER_DAILY_BUDGET_USD": (r"|worker-\d+=%s(,worker-\d+=%s)*" % (USD_RE, USD_RE), "limits"),
+    "APPROVE": (r"|(plan|risky|merge)(,(plan|risky|merge))*", "project"),
+    "MODEL_ROUTING": (r"off|auto", "project"), "ROUTING_MIN_TASKS": ((1, 100), "project"), "ROUTING_MIN_FIRST_PASS": ((0, 100), "project"),
     "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
     "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
 }
@@ -75,12 +85,13 @@ def settings_get():
     allw = sorted((x.split() + ["agy"])[:3] for x in out.splitlines() if re.match(r"worker-\d+ \w+", x))
     allw.sort(key=lambda x: int(x[0].split("-")[1]))
     keys = {n: os.path.exists(os.path.join(sbx.SECRETS, n)) and os.path.getsize(os.path.join(sbx.SECRETS, n)) > 0
-            for n in ("anthropic.key", "openai.key", "gemini.key", "github.token", "gitlab.token")}
+            for n in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token")}
     return dict(project=ctx.PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
                 limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
                 workers=[dict(name=n, state=st, runtime=rt if rt in runtimes.RUNTIMES else "agy") for n, st, rt in allw],
-                runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"]) for k, v in runtimes.RUNTIMES.items()},
-                secrets=keys, api_spent_today=sbx.api_spent_today())
+                runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"], endpoint=bool(v.get("endpoint")),
+                                  optional_key=bool(v.get("optional_key"))) for k, v in runtimes.RUNTIMES.items()},
+                secrets=keys, api_spent_today=sbx.api_spent_today(), api_spent_month=sbx.api_spent(period="month"))
 
 
 def settings_apply(changes):
@@ -102,6 +113,14 @@ def settings_apply(changes):
     for scope, vals in by_scope.items():
         write_conf(conf_path(scope), vals)
     event("settings changed: " + ", ".join(f"{k}={v}" for sc in by_scope.values() for k, v in sc.items())[:300])
+    if "COMPAT_BASE_URL" in by_scope.get("limits", {}):
+        # the workers may reach exactly the new model server (and no longer the old one, if it was a local exception)
+        import egress
+        try:
+            for m in egress.set_endpoint(by_scope["limits"]["COMPAT_BASE_URL"]):
+                event(m)
+        except Exception as e:
+            event(f"egress: could not apply the model server setting: {e}")
     return {}
 
 

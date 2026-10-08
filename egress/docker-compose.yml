@@ -33,6 +33,7 @@ services:
       - egress-logs:/var/log/squid
       - ./allowlist.txt:/etc/squid/allowlist.txt:ro
       - ./allowlist.local.txt:/etc/squid/allowlist.local.txt:ro
+      - ./local-endpoint.conf:/etc/squid/local-endpoint.conf:ro
     tmpfs:
       - /tmp
       - /var/spool/squid

@@ -70,7 +70,8 @@ def dispatch_ready():
         rt = runtime_of(w)
         if runtimes.is_api(rt):
             rows = []
-            ok, msg = (True, "") if api_budget_left() else (False, "quota low: API budget for today used (API_DAILY_BUDGET_USD)")
+            ok, msg = sbx.budget_check(w, lim, conf=sbx.project_conf())
+            msg = msg and "quota low: " + msg
         else:
             rows = quota_rows(w, 60)
             ok, msg = sbx.quota_verdict(rows, lim)

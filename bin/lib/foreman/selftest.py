@@ -300,5 +300,83 @@ def selftest():
     finally:
         ctx.FD = old_fd
         shutil.rmtree(d, ignore_errors=True)
+    for group in GROUPS:
+        group(check)
     print("foreman selftest: " + ("ALL OK" if not bad else f"{bad} FAILED"))
     return 1 if bad else 0
+
+
+def test_runtimes_egress_budgets(check):
+    """The owner's model server (compat / aider), its egress exception, and the API money caps."""
+    import egress
+    argv, stdin_text = runtimes.command("compat", "P", "qwen3-coder:30b", None, 10)
+    check("runtimes: compat is Codex through af-agent, prompt on stdin, no URL in argv",
+          argv[:3] == ["af-agent", "compat", "exec"] and stdin_text == "P" and "-m" in argv and not any("http" in a for a in argv))
+    argv, _ = runtimes.command("aider", "P", "qwen3-coder", "aider:feat_x", 10)
+    check("runtimes: aider gets its quiet flags, the openai/ model prefix and restores the branch's chat on a rework",
+          argv[:2] == ["af-agent", "aider"] and "--analytics-disable" in argv and "openai/qwen3-coder" in argv and "--restore-chat-history" in argv)
+    ev = ['{"type": "aider.init", "conversation_id": "aider:feat_0001-x"}', '{"type": "aider.line", "text": "Applied edit to hello.txt"}',
+          '{"type": "aider.line", "text": "Done, the tests pass."}', '{"type": "aider.usage", "sent": 1200, "received": 40, "cost": 0.0}',
+          '{"type": "aider.usage", "sent": 800, "received": 60, "cost": 0.0}', '{"type": "aider.result", "status": "SUCCESS", "exit_code": 0}']
+    a = runtimes.scan("aider", ev, "1,0.1,10")
+    check("runtimes: aider events - conversation, edits as tool calls, tokens summed, cost from PRICE_COMPAT",
+          a["conversation_id"] == "aider:feat_0001-x" and a["tools"] == 1 and a["tokens"] == 2100 and a["result"]["status"] == "SUCCESS"
+          and abs(a["result"]["cost_usd"] - (2000 * 1 + 100 * 10) / 1e6) < 1e-9 and "tests pass" in a["result"]["response"])
+    check("runtimes: a local server at price 0 costs 0, not 'unknown'",
+          runtimes.scan("aider", ev, "0,0,0")["result"]["cost_usd"] == 0.0 and runtimes.scan("compat", [], "0,0,0")["result"] is None)
+    check("runtimes: endpoint URLs - only plain http(s), the host is what egress must allow",
+          runtimes.hosts("compat", "http://192.168.1.20:11434/v1") == ["192.168.1.20"] and runtimes.hosts("aider", "") == []
+          and runtimes.endpoint_target("http://x:1/v1'; rm -rf /") is None and runtimes.endpoint_target("ftp://x/v1") is None)
+    check("egress: a public HTTPS server is an allow-list entry; a private address or plain HTTP is an exact address:port exception",
+          egress.endpoint_rule("https://openrouter.ai/api/v1", resolve=False) == ("allowlist", "openrouter.ai")
+          and egress.endpoint_rule("http://192.168.1.20:11434/v1", resolve=False) == ("local", "192.168.1.20", 11434)
+          and egress.endpoint_rule("https://10.0.0.5/v1", resolve=False) == ("local", "10.0.0.5", 443)
+          and egress.endpoint_rule("http://ollama.example.com/v1", resolve=False) == ("local", "ollama.example.com", 80)
+          and egress.endpoint_rule("not a url") is None)
+    conf = egress.local_endpoint_conf("192.168.1.20", 11434)
+    check("egress: the squid snippet allows exactly that address and port, and refuses anything that is not a host name / IP",
+          "acl af_model_server dst 192.168.1.20" in conf and "acl af_model_port port 11434" in conf
+          and "http_access allow workers af_model_server af_model_port" in conf and _raises(lambda: egress.local_endpoint_conf("a b", 80))
+          and _raises(lambda: egress.local_endpoint_conf("x\nhttp_access allow all", 80)))
+    evs = [dict(ts=10.0, client="1.1.1.1", result="TCP_MISS", code="200", method="POST", url="http://192.168.1.20:11434/v1/responses",
+                host="192.168.1.20", port="11434", private=True),
+           dict(ts=11.0, client="1.1.1.1", result="TCP_DENIED", code="403", method="CONNECT", url="192.168.1.9:22", host="192.168.1.9",
+                port="22", private=True)]
+    old_le = egress.local_endpoint
+    egress.local_endpoint = lambda: ("192.168.1.20", 11434)
+    try:
+        r = egress.analyze(events=evs, ack=False)
+    finally:
+        egress.local_endpoint = old_le
+    check("egress: requests to the model server are allowed traffic, anything else private still raises an alarm",
+          r["allowed"].get("192.168.1.20") == 1 and [p["target"] for p in r["private"]] == ["192.168.1.9:22"])
+    today, month = sbx.today(), sbx.today()[:7]
+    led = [dict(date=today, cost_usd=3.0, project="", worker="worker-5"), dict(date=today, cost_usd=1.0, project="shop", worker="worker-6"),
+           dict(date=month + "-01" if today[8:] != "01" else month + "-02", cost_usd=20.0, project="", worker="worker-5"),
+           dict(date="2000-01-01", cost_usd=99.0, project="", worker="worker-5"), dict(date=today, cost_usd=50.0, test=True)]
+    check("budgets: spend by day / month, project and worker; test runs never count",
+          sbx.api_spent(led) == 4.0 and sbx.api_spent(led, "month") in (24.0, 4.0) and sbx.api_spent(led, "day", "shop") == 1.0
+          and sbx.api_spent(led, "day", worker="worker-5") == 3.0)
+    check("budgets: worker caps are parsed leniently", sbx.worker_budgets("worker-5=3, worker-6=1.5,junk,worker-7=x") ==
+          {"worker-5": 3.0, "worker-6": 1.5})
+    lim = dict(API_RUN_BUDGET_USD=2.0, API_DAILY_BUDGET_USD=10.0, API_MONTHLY_BUDGET_USD=0.0, WORKER_DAILY_BUDGET_USD="worker-5=4")
+    bc = lambda w, conf, running=(): sbx.budget_check(w, lim, conf=conf, ledger=led, running=list(running))
+    check("budgets: within every cap -> ok; the worker's own daily cap stops it; the project's daily cap stops the project",
+          bc("worker-6", {})[0] and not bc("worker-5", {})[0] and "worker-5" in bc("worker-5", {})[1]
+          and not bc("worker-6", {"PROJECT_DAILY_BUDGET_USD": "4"})[0])
+    check("budgets: running API runs count at their full cap (3 running x $2 + $4 spent + $2 > $10)",
+          bc("worker-6", {}, [("worker-1", ""), ("worker-2", ""), ("worker-3", "")])[0] is False and bc("worker-6", {}, [("worker-1", "")])[0])
+    lim0 = dict(lim, API_DAILY_BUDGET_USD=0.0)
+    check("budgets: the install's daily cap always applies (0 = no API runs), the others only when set",
+          not sbx.budget_check("worker-6", lim0, conf={}, ledger=[], running=[])[0])
+
+
+def _raises(fn):
+    try:
+        fn()
+    except Exception:
+        return True
+    return False
+
+
+GROUPS = [test_runtimes_egress_budgets]

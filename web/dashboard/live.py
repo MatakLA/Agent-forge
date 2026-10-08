@@ -44,6 +44,9 @@ def render_worker_line(d, acc):
     with a "timestamp"."""
     t = d.get("type")
     if "event" not in d and isinstance(t, str):
+        if t.startswith("aider."):
+            yield from _render_aider(d)
+            return
         if t.startswith(("thread.", "turn.", "item.")) or (t == "error" and "timestamp" not in d):
             yield from _render_codex(d)
         elif "timestamp" in d and t in ("init", "message", "tool_use", "tool_result", "result", "error"):
@@ -57,7 +60,23 @@ def render_worker_line(d, acc):
 def is_final(d):
     """The event that ends a worker's run, for any runtime."""
     t = d.get("type")
-    return d.get("event") == "result" or t == "result" or t in ("turn.completed", "turn.failed")
+    return d.get("event") == "result" or t == "result" or t in ("turn.completed", "turn.failed", "aider.result")
+
+
+def _render_aider(d):
+    """Aider's output lines (wrapped into events by worker/af-aider-events): edits and commands as tools, the rest as text."""
+    t = d.get("type")
+    if t == "aider.line":
+        s = str(d.get("text") or "")
+        if s.startswith(("Applied edit to ", "Running ")):
+            yield "tool", trunc(s)
+        elif s.startswith(("Commit ", "Tokens:", "Aider v", "Model:", "Git repo:", "Repo-map:", "Analytics ")):
+            yield "tool_done", trunc(s)
+        else:
+            yield "assistant", trunc(s)
+    elif t == "aider.result":
+        yield "result", ("SUCCESS" if d.get("status") == "SUCCESS" else "ERROR: " + str(d.get("error") or "")) + \
+            f" ({d.get('edits', 0)} edit(s))"
 
 
 def _render_claude(d):

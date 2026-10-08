@@ -8,8 +8,40 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `claude` | Anthropic API key, per token | `bin/worker-add N --runtime claude` | `api.anthropic.com` |
 | `codex` | OpenAI API key, per token | `bin/worker-add N --runtime codex` | `api.openai.com` |
 | `gemini` | Gemini API key, per token | `bin/worker-add N --runtime gemini` | `generativelanguage.googleapis.com` |
+| `compat` | your own model server (nothing, for a local one) - Codex CLI over the OpenAI Responses API | `bin/worker-add N --runtime compat` | that server only |
+| `aider` | your own model server - Aider over the OpenAI chat-completions API | `bin/worker-add N --runtime aider` | that server only |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
+
+## Your own model server: Ollama, vLLM, LM Studio, OpenRouter
+Set `COMPAT_BASE_URL` (Settings → API workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
+with the runtime `compat` or `aider`:
+
+| server | `COMPAT_BASE_URL` | runtime |
+|---|---|---|
+| Ollama on another machine | `http://192.168.1.20:11434/v1` | `compat` (Ollama 0.13+ has the Responses API) or `aider` |
+| vLLM / SGLang | `http://gpu-box:8000/v1` | `compat` or `aider` |
+| LM Studio | `http://192.168.1.30:1234/v1` | `compat` (0.3.29+) or `aider` |
+| OpenRouter | `https://openrouter.ai/api/v1` (+ key: `bin/secret-set compat.key`) | `compat` or `aider` |
+| anything with only `/v1/chat/completions` | its base URL | `aider` |
+
+- **compat** runs Codex CLI with a custom provider. Codex speaks only the OpenAI *Responses* API (it dropped chat completions);
+  most current servers have it.
+- **aider** runs Aider (0.86, in its own Python 3.12 inside the image) against `/chat/completions`. Aider edits files and commits
+  by itself; the supervisor checks out the task branch before the run, Aider runs the project's `TEST_CMD` after each edit and
+  fixes failures, and its chat history is kept per task branch outside the repository, so a rework continues the conversation.
+  Its text output becomes JSON events (`worker/af-aider-events`) for the live transcript and the token count.
+- Models: `WORKER_MODEL_COMPAT` / `WORKER_MODEL_AIDER` (per project) - the name the server knows (`qwen3-coder:30b`,
+  `Qwen/Qwen3-Coder-30B-A3B-Instruct`, `anthropic/claude-sonnet-4.5` on OpenRouter). A coding model with tool use and a long
+  context works best; small local models do small tasks.
+- Cost: `PRICE_COMPAT` (USD per million tokens, input,cached,output) - `0,0,0` for your own hardware, the provider's prices for
+  OpenRouter. The budgets below apply as for any API runtime.
+- Network: a public HTTPS server is added to the allow-list; a server on your network or without TLS gets an exception for
+  exactly its address and port (see SECURITY.md). A proxy created before this feature needs `bin/egress-up` once - `bin/doctor`
+  says so.
+- Nothing else is contacted: Aider would download litellm's price table and tokenizers at run time - the image ships the
+  tokenizers and `af-agent` gives Aider the model's metadata from a local file. `tests/test_runtimes.sh` routes every other
+  connection to a logging proxy and fails if a CLI tries one.
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
@@ -31,8 +63,13 @@ API runtimes cost real money, so they have hard limits (`etc/limits.conf`, also 
 |---|---|---|
 | `API_RUN_BUDGET_USD` | 2.0 | cap per run. Claude Code enforces it itself (`--max-budget-usd`); codex / gemini runs are stopped by `RUN_TOKEN_CAP` and `RUN_MAX_TOOL_CALLS` |
 | `API_DAILY_BUDGET_USD` | 10.0 | cap per day (UTC) for all projects; `bin/dispatch` refuses API runs once spent + one run's cap would exceed it |
+| `API_MONTHLY_BUDGET_USD` | 0 (none) | cap per calendar month for all projects |
+| `PROJECT_DAILY_BUDGET_USD`, `PROJECT_MONTHLY_BUDGET_USD` | 0 (none) | caps for one project (its own config / Settings → API workers) |
+| `WORKER_DAILY_BUDGET_USD` | empty | caps per worker per day, e.g. `worker-5=3,worker-6=1.5` |
 | `RUN_MAX_TOOL_CALLS` | 250 | any runtime: a run that makes more tool calls is stopped like at the token cap (its work is saved) |
-| `PRICE_CODEX`, `PRICE_GEMINI` | see file | USD per million tokens (input, cached input, output) for the cost estimate - those CLIs report tokens, not money. Set them to your model's prices |
+| `PRICE_CODEX`, `PRICE_GEMINI`, `PRICE_COMPAT` | see file | USD per million tokens (input, cached input, output) for the cost estimate - those CLIs report tokens, not money. Set them to your model's prices |
+
+Every check assumes the worst case: the new run and each API run still running may cost a full `API_RUN_BUDGET_USD`.
 
 `API_WORKERS_POLICY` (per project): `overflow` (default) gives API workers a task only when no subscription worker can take it -
 the subscriptions are spent first; `always` uses API workers first. A run that stops because the key was rejected (wrong,
@@ -43,7 +80,8 @@ Spend shows up in the dashboard (pill "API today", Settings → API workers) and
 model).
 
 ## Models
-`WORKER_MODEL_CLAUDE` (default `sonnet`), `WORKER_MODEL_CODEX`, `WORKER_MODEL_GEMINI` (empty = the CLI's default). Set Codex's
+`WORKER_MODEL_CLAUDE` (default `sonnet`), `WORKER_MODEL_CODEX`, `WORKER_MODEL_GEMINI` (empty = the CLI's default),
+`WORKER_MODEL_COMPAT`, `WORKER_MODEL_AIDER` (the model name on your server). Set Codex's
 model explicitly (e.g. `gpt-5.1-codex` or the current Codex model): in tests, Codex offered no tools for a default model it had
 no metadata for.
 
@@ -63,11 +101,25 @@ proxy saw Codex contact only `api.openai.com` (without them also `chatgpt.com` a
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, Gemini CLI with usage statistics and auto-update off; each then contacts only its
 API host.
 
-Event streams (verified against the real CLIs - claude 2.1.293, codex 0.161.0, gemini 0.63.0 - running against a fake API
-server, `tests/test_runtimes.sh`) are read by `bin/lib/runtimes.py`: tokens, tool calls, the conversation id (used to resume a
+Event streams (verified against the real CLIs - claude 2.1.293, codex 0.161.0, gemini 0.63.0, aider 0.86.2 - running against a
+fake API server, `tests/test_runtimes.sh`) are read by `bin/lib/runtimes.py`: tokens, tool calls, the conversation id (used to resume a
 rework in the same conversation), the result and its cost. The dashboard shows each runtime's live transcript.
 
+## Adding a runtime
+A runtime is an agent CLI that can run unattended in a container, take a prompt, edit files and run commands. To add one:
+1. `bin/lib/runtimes.py`: an entry in `RUNTIMES` (label, image, key file, hosts it needs, `api`), its command line in `command()`
+   (prompt on stdin if the CLI allows), and its event stream in `scan()` - tokens without cache reads, tool calls, the
+   conversation id for resuming, a final result with status and cost. No machine-readable output? Wrap it like
+   `worker/af-aider-events` does.
+2. `worker/Dockerfile.api`: install it pinned (version and checksum); `worker/af-agent`: put the key into its environment and
+   switch off update checks, telemetry and anything else that calls home.
+3. `tests/fixtures/fake-model-api.js` answers its API; add it to `tests/test_runtimes.sh` - the logging proxy shows every host
+   it tries to reach. Then `web/dashboard/live.py` renders its events and `bin/worker-add` accepts the name.
+
+Not included, and why: Cursor CLI (its backend hosts are not documented, so the egress allow-list cannot be pinned) and
+OpenHands (it brings its own sandbox runtime). Contributions that solve that are welcome.
+
 ## Versions
-`worker/Dockerfile.api` pins Node.js (SHA-256 checked) and the three CLIs. To upgrade: change the versions, rebuild
+`worker/Dockerfile.api` pins Node.js (SHA-256 checked), the three CLIs, uv (hash-checked) and Aider. To upgrade: change the versions, rebuild
 (`docker compose -f worker/docker-compose.api.yml build`), run `tests/test_runtimes.sh`, then `bin/worker-up N` for each
 API worker.

@@ -46,3 +46,4 @@ etc/lessons.md
 # per install: worker runtimes, the API runtimes' egress hosts
 etc/workers.conf
 egress/allowlist.local.txt
+egress/local-endpoint.conf

@@ -12,7 +12,7 @@ m = sbx.meta(run)
 W, test, runner = m["worker"], m.get("test", False), m.get("runner")
 RT = m.get("runtime") or "agy"
 lim = sbx.load_limits()
-PRICES = lim.get("PRICE_CODEX") if RT == "codex" else lim.get("PRICE_GEMINI") if RT == "gemini" else None
+PRICES = lim.get(runtimes.RUNTIMES.get(RT, {}).get("prices") or "-")       # "in,cached,out" USD/Mtok when the CLI reports no cost
 
 
 def stats():
@@ -61,7 +61,7 @@ def salvage(reason):
            f'set -o pipefail; [ "$(git branch --show-current)" = "{br}" ] || exit 3; '
            f"git add -A -- . ':(exclude)*/__pycache__/*' ':(exclude)*.pyc' ':(exclude).pytest_cache' "
            # databases and logs that test runs leave in the source tree (seen: tools/gym.db) are never part of the work
-           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' && "
+           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' ':(exclude).aider*' && "
            f'(git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"); '
            # nothing beyond main (a run that did nothing): never push a branch equal to main - the gate would see an empty
            # diff and the review would take it for "already merged"
@@ -120,7 +120,7 @@ def finish(reason, rc):
     if ks and reason not in ("ok",) and reason != "killswitch":
         reason = "killswitch"
     code = {"ok": 0, "timeout": 124, "token-cap": 125, "killswitch": 126, "egress-not-enforced": 127, "setup-failed": 90,
-            "quota": 75, "auth": 77}.get(reason, rc if rc else 1)
+            "quota": 75, "auth": 77, "stopped": 79}.get(reason, rc if rc else 1)
     cost = (res or {}).get("cost_usd")
     dur = int(time.time() - t0)
     quota_after = None
@@ -250,6 +250,10 @@ def agent_cmd(prompt, conversation=None):
     env = []
     if sbx.TEST_MODE and os.environ.get("AF_TEST_BASE_URL"):           # tests only: a fake model API instead of the real one
         env = ["-e", "AF_BASE_URL=" + os.environ["AF_TEST_BASE_URL"]]
+    if runtimes.uses_endpoint(RT) and runtimes.endpoint_target(str(lim.get("COMPAT_BASE_URL") or "")):
+        env += ["-e", "AF_ENDPOINT=" + str(lim["COMPAT_BASE_URL"])]     # the owner's model server (validated URL, not a secret)
+    if RT == "aider":
+        env += ["-e", "AF_TEST_CMD=" + sbx.test_cmd()]                  # aider runs the project's tests after each edit
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_'] + argv
     return ["docker", "exec", "-i"] + env + ["-w", sbx.WORKER_CLONE, W] + inner, stdin_text
 
@@ -284,6 +288,8 @@ def watch(cmd, mode):
             reason = "token-cap"
         elif sbx.killswitch_active():
             reason = "killswitch"
+        elif os.path.exists(run + "/stop"):
+            reason = "stopped"                     # the owner cancelled this task (bin/foreman task <id> cancel)
         elif EGRESS_CHECKS and time.time() >= next_egress_check:
             next_egress_check = time.time() + 15
             h = egress.proxy_health()
@@ -329,6 +335,11 @@ if not runner:
     if r.returncode != 0:
         open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")
         finish("setup-failed", 90)
+    br = m.get("branch") or ""
+    if not runtimes.RUNTIMES.get(RT, {}).get("own_git", True) and sbx.SAFE_ARG.fullmatch(br) and br not in ("main", "master"):
+        # an agent that does not run git itself (aider) starts on its task branch: the earlier attempts' work, or a new branch
+        sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           f"if git rev-parse -q --verify origin/{br} >/dev/null; then git checkout -q -B {br} origin/{br}; else git checkout -q -B {br} origin/main; fi")
     cmd = agent_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
