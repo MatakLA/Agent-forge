@@ -1,6 +1,6 @@
 # A fresh install exactly as a new user does it - on a brand-new GitHub runner VM (Ubuntu, Docker, systemd, sudo), every push.
 # Then: the services answer, a worker container can be created, bin/doctor is happy, and the integration tests of the
-# supervisor and of the real agent CLIs (against a fake model API - no keys, no cost) pass. A first green run is the proof
+# supervisor, of the real agent CLIs (against a fake model API - no keys, no cost) and of the dashboard page pass. A first green run is the proof
 # that `scripts/install.sh` works for someone who is not us.
 name: install
 on:
@@ -35,6 +35,8 @@ jobs:
         run: |
           docker compose -f worker/docker-compose.api.yml build
           tests/test_runtimes.sh
+      - name: The dashboard page in a real DOM (every tab and sheet, no script errors)
+        run: tests/test_ui.sh
       - name: Logs on failure
         if: failure()
         run: |

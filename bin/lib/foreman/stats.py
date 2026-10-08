@@ -142,16 +142,16 @@ def ab_verdict(a, b, a_name, b_name):
     fa, fb = a.get("first_pass_ci") or [None, None], b.get("first_pass_ci") or [None, None]
     worse_quality = lambda x, y: x[1] is not None and y[0] is not None and x[1] < y[0]        # x's best < y's worst
     if cb[2] < ca[1] and not worse_quality(fb, fa):
-        return dict(winner=b_name, text=f"{b_name} is cheaper per merged task ({cb[0]:g} vs {ca[0]:g} {unit}) and approves as much first time",
+        return dict(winner=b_name, text=f"{b_name} is cheaper per merged task ({cb[0]:.2f} vs {ca[0]:.2f} {unit}) and approves as much first time",
                     need_more=None)
     if ca[2] < cb[1] and not worse_quality(fa, fb):
-        return dict(winner=a_name, text=f"{a_name} is cheaper per merged task ({ca[0]:g} vs {cb[0]:g} {unit}) and approves as much first time",
+        return dict(winner=a_name, text=f"{a_name} is cheaper per merged task ({ca[0]:.2f} vs {cb[0]:.2f} {unit}) and approves as much first time",
                     need_more=None)
     gap = abs(ca[0] - cb[0]) or 1e-9
     half = max(ca[2] - ca[1], cb[2] - cb[1]) / 2
     n = max(a.get("done", 0), b.get("done", 0))
     need = max(0, math.ceil(n * (half / gap) ** 2) - n) if half > 0 else None
-    return dict(winner=None, text=f"no clear difference yet ({ca[0]:g} vs {cb[0]:g} {unit} per merged task)",
+    return dict(winner=None, text=f"no clear difference yet ({ca[0]:.2f} vs {cb[0]:.2f} {unit} per merged task)",
                 need_more=min(need, 999) if need is not None else None)
 
 

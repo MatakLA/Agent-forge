@@ -26,7 +26,7 @@ def timeline(hours=24):
         start = end - (e.get("duration_s") or 0)
         if end >= since:
             out.append(dict(worker=e.get("worker"), start=start, end=end, reason=e.get("reason"), tokens=e.get("tokens", 0),
-                            task=str(e.get("task", "")).removesuffix(".md")))
+                            task=str(e.get("task", "")).removesuffix(".md"), run_id=e.get("run_id")))
     for d in sbx.run_dirs():
         if sbx.is_running(d):
             m = sbx.meta(d)
@@ -36,8 +36,8 @@ def timeline(hours=24):
                 start = dt.datetime.fromisoformat(sbx.read(d + "/started").replace("Z", "+00:00")).timestamp()
             except Exception:
                 start = now
-            out.append(dict(worker=m.get("worker"), start=start, end=None, reason="running", tokens=sbx.stream_tokens(d + "/stream.jsonl"),
-                            task=str(m.get("task", "")).removesuffix(".md")))
+            out.append(dict(worker=m.get("worker"), start=start, end=None, reason="running", tokens=runtimes.scan_file(m.get("runtime"), d + "/stream.jsonl")["tokens"],
+                            task=str(m.get("task", "")).removesuffix(".md"), run_id=os.path.basename(d)))
     return out
 
 
@@ -375,7 +375,8 @@ def goal_detail(gid):
             if gid not in l and not any(i in l for i in ids):
                 continue
             e = json.loads(l)
-            if e.get("goal") == gid or e.get("task") in ids or gid in e.get("msg", "") or set(e.get("tasks") or []) & ids:
+            msg = e.get("msg", "")
+            if e.get("goal") == gid or e.get("task") in ids or gid in msg or set(e.get("tasks") or []) & ids or any(i in msg for i in ids):
                 evs.append(e)
     except (FileNotFoundError, ValueError):
         pass

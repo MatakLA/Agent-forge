@@ -18,10 +18,15 @@ for d in ("goals", "tasks", "diffs"):
 open(os.path.join(root, ".demo"), "w").write("demo state from tools/demo_state.py\n")
 os.makedirs(os.path.join(root, "etc"), exist_ok=True)
 open(os.path.join(root, "etc", "limits.conf"), "w").write(open(os.path.join(root, "etc", "limits.example.conf")).read() +
-    "\nMAX_PARALLEL=4\nRUN_TOKEN_CAP=1500000\nAPI_DAILY_BUDGET_USD=10\nAPI_RUN_BUDGET_USD=2\n")
+    "\nMAX_PARALLEL=4\nRUN_TOKEN_CAP=1500000\nAPI_DAILY_BUDGET_USD=10\nAPI_RUN_BUDGET_USD=2\nAPI_MONTHLY_BUDGET_USD=150\n"
+    "WORKER_DAILY_BUDGET_USD=worker-4=6\n")
 open(os.path.join(root, "etc", "foreman.conf"), "w").write(
     "FORGE_KIND=github\nUPSTREAM_REPO=acme/tasks-cli\nUPSTREAM_URL=https://github.com\nOWNER_LANG=English\nAUTOPILOT=1\n"
-    "CONTEXT_PACK=on\nWORKER_MODEL_CLAUDE=sonnet\nNOTIFY_URL=https://ntfy.sh/acme-forge-demo\n")
+    "CONTEXT_PACK=on\nWORKER_MODEL_CLAUDE=sonnet\nNOTIFY_URL=https://ntfy.sh/acme-forge-demo\nAPPROVE=plan,risky,merge\n"
+    "AB_MODEL=gemini-3.1-pro-high\nAB_SHARE=30\n")
+open(os.path.join(root, "etc", "lessons.md"), "w").write("# Lessons learned\n\n- A command that fails must exit non-zero and print one line saying why.\n"
+    "- Test the empty case (no tasks, empty file) for every new command.\n")
+open(os.path.join(root, "etc", "decisions.md"), "w").write("# Owner decisions\n\n- Q: Store dates as ISO strings or timestamps?\n  A: ISO dates (YYYY-MM-DD), local time.\n")
 open(os.path.join(root, "docs", "vision.md"), "w").write(open(os.path.join(root, "examples", "demo", "vision.md")).read())
 
 
@@ -45,6 +50,9 @@ goals = [
     dict(id="G20261008-063000", text="Write docs/USAGE.md: a short user guide with an example session.", status="active", source="autopilot",
          created=iso(NOW - 4.5 * 3600), rounds=1, acceptance=["a new user can install and use every command from the guide alone"], criteria=[]),
 ]
+goals.append(dict(id="G20261008-070000", text="Tags: `tasks add --tag work`, `tasks list --tag work`, tags shown in `list`.", status="approval",
+                  source="backlog", created=iso(NOW - 20 * 60), rounds=1, notes="Store and CLI in parallel; a tester for the filter syntax.",
+                  acceptance=["a task can carry several tags", "`list --tag` shows only tasks with that tag"], criteria=[]))
 for g in goals:
     save(os.path.join(fd, "goals", g["id"] + ".json"), g)
 
@@ -69,6 +77,19 @@ tasks = [
       upstream_pr=dict(number=9, url="https://github.com/acme/tasks-cli/pull/9")),
     T(id="0009-readme", goal=goals[2]["id"], title="README: install and first steps", role="technical-writer", status="pending",
       files=["README.md"], depends_on=["0008-usage"], attempts=0),
+    T(id="0010-overdue-color", goal=goals[1]["id"], title="Show overdue tasks in red when the terminal supports it", role="backend-developer",
+      status="approval", awaiting="merge", worker="worker-3", files=["tasks/render.py", "tests/test_render.py"], diff=dict(added=64, removed=9), attempts=0,
+      run_tokens=402000, merge_reviewer="claude-cli", merge_feedback="Meets the spec: colors only on a TTY, NO_COLOR respected, 6 new tests."),
+    T(id="0011-import-check", goal=goals[1]["id"], title="Validate imported files (size, fields, dates) before writing", role="security-tester",
+      status="approval", awaiting="risky", files=["tasks/importer.py", "tests/test_import_safety.py"], attempts=0),
+    T(id="0012-lock", goal=goals[1]["id"], title="Lock the store against two writers", role="backend-developer", status="blocked", worker="worker-1",
+      files=["tasks/store.py"], attempts=3, blocked_why="still failing after 4 attempts: the lock test is flaky on the CI runner (fcntl on tmpfs)."),
+    T(id="0013-tag-store", goal="G20261008-070000", title="Store tags with each task", role="backend-developer", status="approval", awaiting="plan",
+      after="pending", files=["tasks/store.py", "tests/test_tags.py"], attempts=0),
+    T(id="0014-tag-cli", goal="G20261008-070000", title="`--tag` for add and list", role="backend-developer", status="approval", awaiting="plan",
+      after="pending", files=["tasks/cli.py"], attempts=0),
+    T(id="0015-tag-tests", goal="G20261008-070000", title="Filter syntax edge cases", role="tester", status="approval", awaiting="plan",
+      after="pending", files=["tests/test_tag_filter.py"], depends_on=["0013-tag-store"], attempts=0),
 ]
 spec = ("Add a `due` field (ISO date, optional) to each task in `tasks/store.py`. `load()` keeps old files working (no `due` = None).\n"
         "`list_tasks(include_done=False)` returns tasks sorted by due date, tasks without one last.\n\nInterface used by 0005 and 0006:\n"
@@ -98,7 +119,9 @@ save(os.path.join(fd, "backlog.json"), ["Search: `tasks find <text>`, case-insen
 save(os.path.join(fd, "owner_questions.json"), ["Should `tasks today` also list tasks due tomorrow, or strictly today and overdue?"])
 save(os.path.join(fd, "state.json"), {})
 save(os.path.join(fd, "live.json"), dict(at=NOW + 3600, steps=[dict(key="task:0007-date-tests", since=NOW - 50, phase="review by the orchestrator")],
-                                         reserved=[], cooldown={}, unavailable=None))
+                                         reserved=[], cooldown={}, unavailable=None,
+                                         idle={"worker-1": "0009-readme waits for 0008-usage to be merged first",
+                                               "worker-3": "3 item(s) wait for your approval"}))
 events = [(NOW - 5 * 3600, "goal G20261008-062000 planned by claude-cli: 4 task(s) - Store, CLI and tests are built in parallel"),
           (NOW - 4.4 * 3600, "task 0004-due-store (backend-developer) dispatched to worker-1 on gemini-3.8-flash-high"),
           (NOW - 3.9 * 3600, "task 0004-due-store done: merged github PR #7 (review: claude-cli)"),
@@ -158,6 +181,8 @@ with open(os.path.join(runs, "ledger.jsonl"), "w") as led:
         if start > NOW - 45 * 60:
             break
         rt, model = models[w]
+        if rt == "agy" and random.random() < 0.3:          # the A/B share on the alternative model
+            model = "gemini-3.1-pro-high"
         dur = random.randint(9, 24) * 60
         reason = random.choices(["ok", "token-cap", "failed"], [0.86, 0.11, 0.03])[0]
         tok = random.randint(320, 880) * 1000
@@ -169,11 +194,30 @@ with open(os.path.join(runs, "ledger.jsonl"), "w") as led:
         led.write(json.dumps(e) + "\n")
         d = os.path.join(runs, rid); os.makedirs(d, exist_ok=True)
         pct = 80 - random.random()
+        used = (1.6 if model == "gemini-3.1-pro-high" else 0.8) * (0.7 + 0.6 * random.random())
         save(os.path.join(d, "meta.json"), dict(run_id=rid, worker=w, task=t["id"] + ".md", runtime=rt, model=model, variant="pack-default",
                                                  reason=reason, tokens=tok, tool_calls=e["tool_calls"], cost_usd=cost, project="",
-                                                 quota_before=[dict(model="Gemini Models", label="Weekly Limit Remaining", pct=round(pct + 0.8, 1), reset="")],
+                                                 quota_before=[dict(model="Gemini Models", label="Weekly Limit Remaining", pct=round(pct + used, 1), reset="")],
                                                  quota_after=[dict(model="Gemini Models", label="Weekly Limit Remaining", pct=round(pct, 1), reset="")],
                                                  self_checks=[dict(ok=c) for c in checks]))
+        if not os.path.exists(os.path.join(runs, ".demo-replay")):        # one finished transcript to replay
+            open(os.path.join(runs, ".demo-replay"), "w").write(rid)
+            stream = [{"event": "init", "init": {"conversation_id": "demo-r"}},
+                      {"event": "step_update", "step_update": {"step_type": "user_input", "text": "# Task " + t["id"] + " - " + t["title"], "state": "DONE"}}]
+            for k, (cmd, out) in enumerate([("git fetch origin && git checkout -b " + t["branch"] + " origin/main", ""),
+                                            ("python3 -m pytest -q", "41 passed in 0.62s"), ("sed -n 1,80p tasks/store.py", ""),
+                                            ("python3 -m pytest -q tests/test_" + t["id"].split("-")[1] + ".py", "1 failed, 3 passed"),
+                                            ("python3 -m pytest -q", "45 passed in 0.71s"),
+                                            ("git add -A && git commit -m 'feat: " + t["title"][:40] + "' && git push -u origin " + t["branch"], "")]):
+                stream.append({"event": "step_update", "step_update": {"step_index": 2 * k + 1, "step_type": "agent_response", "state": "DONE",
+                               "text_delta": ["Reading the context pack first.", "Baseline is green.", "The store keeps tasks in a list; adding the field here.",
+                                              "One failing test - the empty list case. Fixing it.", "All green.", "Committing and pushing."][k]}})
+                stream.append({"event": "step_update", "step_update": {"step_index": 2 * k + 2, "step_type": "tool", "state": "ACTIVE",
+                               "tool_info": {"name": "run_command", "parameters": {"CommandLine": cmd}}}})
+                stream.append({"event": "step_update", "step_update": {"step_index": 2 * k + 2, "step_type": "tool", "state": "DONE", "duration_seconds": 1.2,
+                               "usage": {"total_tokens": tok // 6}}})
+            stream.append({"event": "result", "result": {"status": "SUCCESS", "response": "Done: the feature, 4 new tests, 45 passing. Pushed to " + t["branch"] + "."}})
+            open(os.path.join(d, "stream.jsonl"), "w").write("\n".join(json.dumps(x) for x in stream) + "\n")
         open(os.path.join(d, "finished"), "w").write(iso(start + dur))
         os.utime(os.path.join(d, "finished"), (start + dur, start + dur))
         clock[w] = start + dur + random.randint(30, 110) * 60
