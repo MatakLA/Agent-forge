@@ -1,11 +1,11 @@
 # make check        fast checks, no Docker, no model calls (also what CI runs)
-# make test         check + integration tests of the supervisor and the API runtimes (need Docker and the worker images)
+# make test         check + integration tests of the supervisor, the API runtimes and the dashboard page (need Docker)
 # make doctor       end-to-end health check of this install
 PY := python3
 PYSCRIPTS := bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api \
              bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set \
              scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py
-SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh \
+SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh tests/test_ui.sh tools/fake-docker \
              worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh
 
 .PHONY: check test doctor
@@ -20,6 +20,7 @@ check:
 test: check
 	@tests/test_supervisor.sh
 	@tests/test_runtimes.sh
+	@tests/test_ui.sh
 
 doctor:
 	@$(PY) bin/doctor

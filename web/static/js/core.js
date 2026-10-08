@@ -1,125 +1,276 @@
-// Agent-Forge dashboard - core: state, helpers, the render loop, polling, the project picker.
-// Scripts share one global scope and load in this order: core, overview, tasks, live, insights, settings, main.
+// Agent-Forge dashboard - core: state, helpers, the live stream (Server-Sent Events, polling as a fallback), the render loop,
+// tabs, the sheet (task / goal / run / document / search), toasts and the project picker.
+// Scripts share one global scope and load in order: core, overview, tasks, goal, live, insights, system, settings, search, main.
+
 // every write carries X-Agent-Forge: the server refuses POSTs without it (a cross-site page cannot add it without CORS consent)
 const _fetch = window.fetch.bind(window);
 window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() === 'POST') o.headers = Object.assign({'X-Agent-Forge': '1'}, o.headers || {}); return _fetch(u, o); };
 
-const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const tfmt = ts => { const d = typeof ts === 'number' ? new Date(ts*1000) : new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); };
-const dfmt = ts => { const d = new Date(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
-  return today ? d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : d.toLocaleString([], {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'}); };
-const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now()/1000 - (typeof ts === 'number' ? ts : Date.parse(ts)/1000)));
-  return s < 60 ? s + ' s' : s < 3600 ? Math.round(s/60) + ' min' : Math.round(s/3600) + ' h'; };
-const STATUS = {splitting:'Splitting', pending:'Waiting', running:'Running', gate:'Checking', review:'Checking', merging:'Merging', done:'Done', blocked:'Blocked', cancelled:'Cancelled'};
-const RTNAME = {agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI'};
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const toDate = ts => typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+const tfmt = ts => { const d = toDate(ts); return isNaN(d) ? '' : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); };
+const dfmt = ts => { const d = toDate(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'}) : d.toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now() / 1000 - (typeof ts === 'number' ? ts : Date.parse(ts) / 1000)));
+  return s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days'; };
+const dur = s => { s = Math.round(s || 0); return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days'; };
+const fmtTok = n => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
+const usd = v => v == null ? '–' : '$' + (v > 0 && v < 1 ? Number(v).toFixed(3) : Number(v).toFixed(2));
+const STATUS = {splitting: 'Splitting', pending: 'Waiting', running: 'Running', gate: 'Checking', review: 'Checking', merging: 'Merging',
+  'merge-ready': 'Merging', approval: 'Needs you', done: 'Done', blocked: 'Blocked', cancelled: 'Cancelled'};
+const GSTATUS = {new: 'Planning', approval: 'Plan needs you', active: 'Running', done: 'Done', blocked: 'Blocked', cancelled: 'Cancelled'};
+const RTNAME = {agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', compat: 'Codex · own server', aider: 'Aider · own server'};
 const RTDESC = {agy: 'a Google account with a subscription, signed in from the browser', claude: 'Anthropic API key, paid per token',
-                codex: 'OpenAI API key, paid per token', gemini: 'Gemini API key, paid per token'};
+  codex: 'OpenAI API key, paid per token', gemini: 'Gemini API key, paid per token',
+  compat: 'your model server (Ollama, vLLM, LM Studio, OpenRouter) through Codex CLI', aider: 'your model server through Aider (any chat API)'};
 const roleCls = r => /secur/i.test(r) ? 'sec' : (/test/i.test(r) && !/develop/i.test(r)) ? 'test' : '';
-let tab = 'overview', F = null, P = {roster:{}, panes:[]}, openTask = null, project = 'default';
-try { project = localStorage.getItem('af-project') || 'default'; } catch (e) {}
+const roleTag = r => '<span class="role ' + roleCls(r) + '">' + esc(r) + '</span>';
+const chip = s => '<span class="st st-' + esc(s) + '">' + esc(STATUS[s] || s) + '</span>';
+const small = t => '<span class="muted small">' + t + '</span>';
+
+let tab = 'overview', F = null, P = {roster: {}, panes: []}, project = 'default', foremanFetchedAt = 0, PROJ_LIST = [];
+const SUB = {tasks: 'board', insights: 'team', system: 'health', settings: 'team'};
+const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; };
+project = store('af-project') || 'default';
+tab = store('af-tab') || 'overview';
+try { Object.assign(SUB, JSON.parse(store('af-sub') || '{}')); } catch (e) {}
 const inPool = w => !F || !(F.pool || []).length || F.pool.includes(w);
-try { tab = localStorage.getItem('af-tab') || 'overview'; } catch (e) {}
-// deep links: #tab=queue, #task=0012-store, #project=shop (bookmarks, links in notifications)
+
+// deep links: #tab=tasks&project=shop&task=0012-store | goal=G… | run=… (bookmarks, links in notifications)
+const TABS = ['overview', 'tasks', 'live', 'timeline', 'insights', 'system', 'settings'];
+const ALIAS = {queue: 'tasks', metrics: 'insights', events: 'system'};
 const HASH = Object.fromEntries((location.hash || '').replace(/^#/, '').split('&').filter(Boolean).map(kv => kv.split('=').map(decodeURIComponent)));
-if (['overview', 'queue', 'timeline', 'live', 'metrics', 'settings', 'events'].includes(HASH.tab)) tab = HASH.tab;
+if (HASH.tab) { const t = ALIAS[HASH.tab] || HASH.tab; if (TABS.includes(t)) tab = t; if (HASH.tab === 'events') SUB.system = 'activity'; }
 if (HASH.project && /^[a-z0-9][a-z0-9-]{0,39}$/.test(HASH.project)) project = HASH.project;
+if (HASH.view && SUB[ALIAS[HASH.tab] || HASH.tab] !== undefined && /^[a-z]{2,20}$/.test(HASH.view)) SUB[ALIAS[HASH.tab] || HASH.tab] = HASH.view;
+if (TABS.includes(tab) === false) tab = 'overview';
 
-function setTab(t) {
-  tab = t;
-  for (const k in lastHTML) delete lastHTML[k];
-  try { localStorage.setItem('af-tab', t); } catch (e) {}
-  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
-  document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 't-' + t));
-  render();
+// ---- server calls
+async function getJSON(path, params) {
+  const q = new URLSearchParams(Object.assign({project}, params || {}));
+  const r = await fetch(path + '?' + q.toString());
+  if (!r.ok && r.status !== 400) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
-document.getElementById('nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.t); });
-document.getElementById('detail').addEventListener('click', e => { if (e.target.id === 'detail' || e.target.classList.contains('close')) { openTask = null; lastDetailHtml = ''; e.currentTarget.classList.remove('on'); } });
-document.addEventListener('click', e => {
-  const df = e.target.closest('[data-diff]');
-  if (df) { loadDiff(df.dataset.diff); return; }
-  const dg = e.target.closest('[data-dag]');
-  if (dg) { const id = dg.dataset.dag; openDags.has(id) ? openDags.delete(id) : openDags.add(id); render(true); return; }
-  const c = e.target.closest('[data-task]');
-  if (c) { openTask = c.dataset.task; renderDetail(); }
-});
+const post = async (url, body) => { try { return await (await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify(Object.assign({project}, body))})).json(); } catch (e) { return {ok: false, message: String(e)}; } };
 
-// ---- only touch the DOM when a section's HTML actually changed (no flicker, no lost scroll, less battery)
+// ---- toasts: short confirmations and errors of actions, at the bottom of the screen
+function toast(msg, bad) {
+  const el = document.createElement('div'); el.className = 'toast' + (bad ? ' bad' : ''); el.textContent = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => el.classList.add('out'), bad ? 6500 : 3500); setTimeout(() => el.remove(), bad ? 7000 : 4000);
+}
+// an action's answer from the server -> a toast; true when it worked
+function done(r, okText) {
+  const ok = !!r && (r.ok === undefined ? !r.error : r.ok);
+  toast(ok ? (okText || r.message || 'done') : 'Not done: ' + ((r && (r.message || r.error)) || 'no answer'), !ok);
+  return ok;
+}
+
+// ---- rendering: only touch the DOM when a section's HTML changed (no flicker, no lost scroll, less battery)
 const lastHTML = {};
 function setHTML(id, html, force) {
   if (!force && lastHTML[id] === html) return;
   lastHTML[id] = html;
-  document.getElementById(id).innerHTML = html;
+  const el = $(id); if (el) el.innerHTML = html;
 }
-let lastDetailHtml = '';
-const openDags = new Set(), diffCache = {}, diffLoading = new Set();
+let renderQueued = false, renderForce = false;
+function schedule(force) {
+  renderForce = renderForce || !!force;
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; const f = renderForce; renderForce = false; render(f); });
+}
+const typing = el => !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && !['checkbox', 'radio', 'button'].includes(el.type)) || el.isContentEditable);
+// a section the owner is typing in is not re-rendered under their fingers
+const busyIn = id => { const el = $(id); return !!el && el.contains(document.activeElement) && typing(document.activeElement); };
 
 function render(force) {
   setHTML('pills', pills(), force);
   setHTML('stats', stats(), force);
   const ts = (F && F.tasks) || [];
-  document.getElementById('c-queue').textContent = ts.filter(t => ['pending', 'running', 'gate', 'review'].includes(t.status)).length;
-  if (tab === 'overview') {
-    setHTML('team', team(), force);
-    setHTML('goals', goalsHtml(), force);
-    const bl = (F && F.backlog) || [];
-    setHTML('backlog', bl.length ? bl.map((b, i) => '<div class="goal blrow"><span class="muted">' + (i + 1) + '.</span> <span class="bltext">' + esc(b) +
-        '</span><span class="blbtns">' + (i ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + i + '" title="up">↑</button>' : '') +
-        (i < bl.length - 1 ? '<button class="mini" data-bl="move" data-n="' + (i + 1) + '" data-to="' + (i + 2) + '" title="down">↓</button>' : '') +
-        '<button class="mini" data-bl="drop" data-n="' + (i + 1) + '" title="remove">✕</button></span></div>').join('')
-      : '<div class="empty">Empty' + (F && F.autopilot ? ' — when a worker is free, the autopilot picks the next goal from the vision.' : '.') + '</div>', force);
-    const qs = (F && F.owner_questions) || [];
-    if (!document.getElementById('questions').contains(document.activeElement))
-      setHTML('questions', qs.length ? '<h3>The planner\'s questions (' + qs.length + ')</h3>' + qs.map((q, i) => '<div class="goal qrow"><div class="qtext">' + esc(q) +
-        '</div><div class="btnrow"><input type="text" class="qin" data-qn="' + (i + 1) + '" placeholder="your answer (the planner will follow it)">' +
-        '<button class="mini" data-qa="' + (i + 1) + '">Answer</button><button class="mini" data-qd="' + (i + 1) + '" title="the question does not matter">Dismiss</button></div></div>').join('') : '', force);
-  } else if (tab === 'queue') setHTML('board', boardHtml(), force);
-  else if (tab === 'events') setHTML('events', eventsHtml(), force);
-  else if (tab === 'timeline') setHTML('timeline', timelineHtml(), force);
-  else if (tab === 'metrics') setHTML('metrics', metricsHtml(), force);
-  else if (tab === 'settings' && (force || !document.getElementById('settings').contains(document.activeElement))) setHTML('settings', settingsHtml(), force);
-  liveHtml();
-  if (openTask) renderDetail();
+  $('c-tasks').textContent = ts.filter(t => !['done', 'cancelled'].includes(t.status)).length;
+  const inbox = F ? inboxItems().length : 0;
+  $('c-inbox').hidden = !inbox; $('c-inbox').textContent = inbox;
+  if (tab === 'overview') renderOverview(force);
+  else if (tab === 'tasks') renderTasks(force);
+  else if (tab === 'timeline') renderTimeline(force);
+  else if (tab === 'insights') renderInsights(force);
+  else if (tab === 'system') renderSystem(force);
+  else if (tab === 'settings') renderSettings(force);
+  renderLive();
+  refreshSheet();
 }
 
-let foremanFetchedAt = 0;
+function setTab(t) {
+  tab = TABS.includes(t) ? t : 'overview';
+  for (const k in lastHTML) delete lastHTML[k];
+  store('af-tab', tab);
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 't-' + tab));
+  document.querySelectorAll('.seg').forEach(seg => { const g = seg.id.replace('-seg', '');
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === SUB[g])); });
+  syncHash();
+  render(true);
+}
+function setSub(group, v) {
+  SUB[group] = v; store('af-sub', JSON.stringify(SUB));
+  document.querySelectorAll('#' + group + '-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  for (const k in lastHTML) delete lastHTML[k];
+  render(true);
+}
+$('nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.t); });
+document.addEventListener('click', e => { const b = e.target.closest('.seg button'); if (b) setSub(b.closest('.seg').id.replace('-seg', ''), b.dataset.v); });
+
+// ---- the sheet: one at a time (task, goal, run replay, document, search, finished runs); Esc or a click outside closes it
+const SHEET = {kind: null, id: null};
+function sheetHTML(html) { return '<button class="close" data-close>Close</button>' + html; }
+function openSheet(kind, id, html, wide) {
+  SHEET.kind = kind; SHEET.id = id;
+  const s = $('sheet'); s.className = 'sheet' + (wide ? ' wide' : '');
+  s.dataset.html = sheetHTML(html || '<div class="empty">loading…</div>'); s.innerHTML = s.dataset.html;
+  $('detail').classList.add('on'); s.scrollTop = 0;
+  syncHash();
+}
+function setSheet(kind, id, html) {
+  if (SHEET.kind !== kind || SHEET.id !== id) return;          // the owner opened something else meanwhile
+  const s = $('sheet'), next = sheetHTML(html);
+  if (s.dataset.html === next) return;
+  if (s.contains(document.activeElement) && typing(document.activeElement)) return;   // never under the owner's fingers
+  const keep = s.scrollTop;
+  s.dataset.html = next; s.innerHTML = next; s.scrollTop = keep;
+}
+function closeSheet() {
+  SHEET.kind = SHEET.id = null; $('detail').classList.remove('on'); $('sheet').dataset.html = ''; syncHash();
+}
+$('detail').addEventListener('click', e => { if (e.target.id === 'detail' || e.target.closest('[data-close]')) closeSheet(); });
+function refreshSheet() {
+  if (SHEET.kind === 'task') renderTaskSheet();
+  else if (SHEET.kind === 'goal') renderGoalSheet();
+}
+function syncHash() {
+  const parts = ['tab=' + tab].concat(SUB[tab] !== undefined ? ['view=' + SUB[tab]] : []);
+  if (project !== 'default') parts.push('project=' + encodeURIComponent(project));
+  if (['task', 'goal', 'run'].includes(SHEET.kind)) parts.push(SHEET.kind + '=' + encodeURIComponent(SHEET.id));
+  if (HASH.poll === '1') parts.push('poll=1');
+  try { history.replaceState(null, '', '#' + parts.join('&')); } catch (e) {}
+}
+
+// ---- header: what is abnormal gets a pill; a healthy, running project shows just one
+function pills() {
+  if (!F) return '<span class="pill bad">foreman: ' + esc(window._ferr || 'loading') + '</span>';
+  const p = [], staleFor = foremanFetchedAt ? (Date.now() / 1000 - foremanFetchedAt) : 0;
+  if (staleFor > 30)
+    return '<span class="pill bad">no fresh data for ' + Math.round(staleFor / 60) + ' min — do not trust the state below' + (window._ferr ? ' · cause: ' + esc(window._ferr) : '') + '</span>';
+  if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman not running</span>');
+  else if (F.killswitch) p.push('<span class="pill bad">kill switch ON' + (F.killswitch.scope === 'all' ? ' (all projects)' : '') + ' — ' +
+    esc(F.killswitch.reason || '') + '</span><button class="primary sm" data-act="resume">Continue</button>');
+  else if (F.paused) p.push('<span class="pill warn">paused</span><button class="mini" data-fix="resume">Resume</button>');
+  else p.push('<span class="pill ok"><span class="dot running"></span>running</span>');
+  if (F.claude_until) p.push('<span class="pill warn" title="Claude Code is out of usage; Claude via Antigravity substitutes">orchestrator: substitute until ' + tfmt(F.claude_until) + '</span>');
+  if (!F.autopilot) p.push('<span class="pill" title="The team does not pick goals from the vision by itself">autopilot off</span>');
+  if (F.forge && (F.forge.kind === 'github' || F.forge.kind === 'gitlab')) p.push('<span class="pill">' + (F.forge.kind === 'github' ? 'GitHub' : 'GitLab') + ': ' + esc(F.forge.repo) + '</span>');
+  if (F.api && (F.api.workers || []).length) p.push('<span class="pill' + (F.api.spent_today >= F.api.budget ? ' bad' : '') + '">API today ' + usd(F.api.spent_today) + ' / ' + usd(F.api.budget) + '</span>');
+  if (F.old) p.push('<span class="pill warn">old foreman version — fewer details</span>');
+  return p.join(' ');
+}
+function stats() {
+  if (!F) return '';
+  const t = F.today || {}, ts = F.tasks || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
+  const box = (v, lab, cls, go) => '<div class="stat' + (cls ? ' ' + cls : '') + '"' + (go ? ' data-go="' + go + '"' : '') + '><b>' + v + '</b><span>' + lab + '</span></div>';
+  const mine = inboxItems().length, blocked = n('blocked');
+  return box(n('running'), 'running', '', 'live') + box(n('pending', 'splitting'), 'waiting', '', 'tasks') + box(n('gate', 'review', 'merging', 'merge-ready'), 'checking', '', 'tasks') +
+    box(t.merged != null ? t.merged : n('done'), 'done today', '', 'insights') + (mine ? box(mine, 'need you', 'hot', 'overview') : '') + (blocked ? box(blocked, 'blocked', 'bad', 'tasks') : '');
+}
+document.addEventListener('click', e => { const g = e.target.closest('.stat[data-go]'); if (g) setTab(g.dataset.go); });
+
+// ---- live data: Server-Sent Events (the foreman's state as deltas, new transcript lines only); polling when SSE does not work
+let ES = null, pollTimer = null, sseFails = 0;
+function onForeman(m) {
+  if (m.full) F = m.full;
+  else if (F && m.delta) { Object.assign(F, m.delta); (m.removed || []).forEach(k => delete F[k]); }
+  window._ferr = m.error; foremanFetchedAt = m.fetched_at || 0;
+  if (F && F.forge && F.forge.setup_needed) maybeSetup();
+  schedule();
+}
+function applyPanes(m) {
+  if (m.roster) P.roster = m.roster;
+  for (const p of m.panes || []) {
+    const old = P.panes.find(x => x.id === p.id);
+    if (!old || p.reset) {
+      const np = {id: p.id, title: p.title, kind: p.kind, state: p.state, lines: p.lines || []};
+      if (old) Object.assign(old, np); else P.panes.push(np);
+      continue;
+    }
+    old.state = p.state; old.title = p.title;
+    old.lines = old.lines.concat(p.lines || []).slice(-400);
+  }
+  if ((m.gone || []).length) P.panes = P.panes.filter(x => !m.gone.includes(x.id));
+  const order = {orchestrator: 0, worker: 1};
+  P.panes.sort((a, b) => ((order[a.kind] ?? 9) - (order[b.kind] ?? 9)) || a.title.localeCompare(b.title));
+}
+function connect() {
+  if (ES) { ES.close(); ES = null; }
+  // #poll=1: no live stream (screenshots, proxies that buffer event streams)
+  if (!window.EventSource || HASH.poll === '1') { startPoll(); return; }
+  ES = new EventSource('/api/stream?project=' + encodeURIComponent(project));
+  ES.addEventListener('foreman', e => { try { onForeman(JSON.parse(e.data)); } catch (err) {} });
+  ES.addEventListener('panes', e => { try { applyPanes(JSON.parse(e.data)); schedule(); } catch (err) {} });
+  ES.onopen = () => { sseFails = 0; stopPoll(); };
+  ES.onerror = () => {
+    if (++sseFails >= 3 && ES) {                        // an older server without /api/stream, or a proxy that buffers it
+      ES.close(); ES = null; startPoll();
+      setTimeout(() => { if (!ES) { sseFails = 0; connect(); } }, 120000);
+    }
+  };
+}
+async function poll() {
+  try { const r = await getJSON('/api/foreman'); onForeman({full: r.foreman, error: r.error, fetched_at: r.fetched_at}); } catch (e) {}
+  try { const p = await (await fetch('/api/panes')).json(); P.roster = p.roster || {}; P.panes = p.panes || []; schedule(); } catch (e) {}
+}
+let busyPoll = false;
+async function tickPoll() { if (document.hidden || busyPoll) return; busyPoll = true; try { await poll(); } finally { busyPoll = false; } }
+function startPoll() { if (pollTimer) return; tickPoll(); pollTimer = setInterval(tickPoll, 2500); }
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+// for actions: show their effect at once instead of waiting for the next push
+const refreshSoon = () => setTimeout(() => { if (pollTimer || !ES) tickPoll(); }, 700);
+
+// ---- projects
 let projAt = 0;
-async function loadProjects() {
-  if (Date.now() - projAt < 30000) return;
+async function loadProjects(force) {
+  if (!force && Date.now() - projAt < 30000) return;
   projAt = Date.now();
   let ps = [];
   try { ps = (await (await fetch('/api/projects')).json()).projects || []; } catch (e) { return; }
-  const sel = document.getElementById('proj');
   if (!ps.some(p => p.name === project)) project = (ps[0] || {name: 'default'}).name;
   PROJ_LIST = ps;
-  const html = ps.map(p => '<option value="' + esc(p.name) + '"' + (p.name === project ? ' selected' : '') + '>' + esc(p.name) +
-                     (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('') + '<option value="__new">+ New project…</option>';
+  const sel = $('proj'), html = ps.map(p => '<option value="' + esc(p.name) + '"' + (p.name === project ? ' selected' : '') + '>' + esc(p.name) +
+    (p.repo ? ' · ' + esc(p.repo) : '') + '</option>').join('') + '<option value="__new">+ New project…</option>';
   if (sel.innerHTML !== html) sel.innerHTML = html;
   sel.style.display = '';
 }
-let PROJ_LIST = [];
-
-document.getElementById('proj').addEventListener('change', e => {
-  if (e.target.value === '__new') { e.target.value = project; openNewProject(); return; }
-  project = e.target.value;
-  try { localStorage.setItem('af-project', project); } catch (err) {}
-  F = null; openTask = null; lastDetailHtml = ''; document.getElementById('detail').classList.remove('on');
+function switchProject(name) {
+  project = name; store('af-project', project);
+  F = null; P = {roster: {}, panes: []}; closeSheet();
   for (const k in lastHTML) delete lastHTML[k];
-  for (const k in diffCache) delete diffCache[k];
-  for (const id in paneEls) { paneEls[id].el.remove(); delete paneEls[id]; }
-  S = null; sLoadedFor = null; sErr = {}; sMsg = '';
-  poll();
+  resetProjectState();
+  syncHash(); connect(); schedule(true);
+}
+$('proj').addEventListener('change', e => {
+  if (e.target.value === '__new') { e.target.value = project; openNewProject(); return; }
+  switchProject(e.target.value);
 });
-async function poll() {
-  await loadProjects();
-  try { const r = await (await fetch('/api/foreman?project=' + encodeURIComponent(project))).json(); F = r.foreman; window._ferr = r.error; foremanFetchedAt = r.fetched_at || 0; } catch (e) {}
-  try { P = await (await fetch('/api/panes')).json(); } catch (e) {}
-  if (F && F.forge && F.forge.setup_needed && !setupDismissed[project] && !document.getElementById('setup').classList.contains('on')) {
-    setupDismissed[project] = true; if (!S) await loadSettings(true); openSetup(); }
-  render();
-}
-function showJsError(msg) {
-  const el = document.getElementById('jserr');
-  if (el) { el.style.display = 'block'; el.textContent = 'Page error: ' + msg; }
-}
-window.addEventListener('error', e => showJsError((e.message || 'unknown') + ' (' + (e.lineno || '?') + ')'));
+const projectResets = [];          // each tab registers what it caches per project
+function resetProjectState() { projectResets.forEach(f => f()); }
+
+// ---- errors of this page are shown, not swallowed
+function showJsError(msg) { const el = $('jserr'); if (el) { el.style.display = 'block'; el.textContent = 'Page error: ' + msg; } }
+window.addEventListener('error', e => showJsError((e.message || 'unknown') + ' (' + String(e.filename || '').split('/').pop().split('?')[0] + ':' + (e.lineno || '?') + ')'));
 window.addEventListener('unhandledrejection', e => showJsError(String(e.reason && e.reason.message || e.reason)));
+// keyboard: / opens search, Esc closes the sheet
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && SHEET.kind) { closeSheet(); return; }
+  if (e.key === '/' && !typing(document.activeElement) && !e.ctrlKey && !e.metaKey) { e.preventDefault(); openSearch(); }
+});

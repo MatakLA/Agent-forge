@@ -87,6 +87,48 @@ s, _, out = req("POST", "/api/upstream", {"action": "connect", "kind": "github",
 check("upstream: a bad repository name is refused before anything runs", s == 200 and json.loads(out).get("errors", {}).get("repo") and len(calls) == n)
 s, _, out = req("POST", "/api/upstream", {"action": "connect", "kind": "svn"}, {"X-Agent-Forge": "1"})
 check("upstream: only forgejo / github / gitlab", s == 400)
+H = {"X-Agent-Forge": "1"}
+n = len(calls)
+s, _, out = req("POST", "/api/task", {"id": "0012-store", "action": "feedback", "text": "use sqlite'; reboot"}, H)
+check("task feedback: the owner's words go on stdin, the id and action are fixed words in the command",
+      s == 200 and calls[-1][0].endswith("bin/foreman task 0012-store feedback -") and calls[-1][1] == "use sqlite'; reboot")
+s, _, out = req("POST", "/api/task", {"id": "0012-store", "action": "assign", "target": "worker-3"}, H)
+check("task assign: the worker name is validated and passed", s == 200 and calls[-1][0].endswith("task 0012-store assign worker-3"))
+n = len(calls)
+bad_task = [req("POST", "/api/task", b, H)[0] for b in ({"id": "../x", "action": "cancel"}, {"id": "0012-store", "action": "rm -rf"},
+                                                         {"id": "0012-store", "action": "assign", "target": "worker-3; reboot"})]
+check("task: bad ids, unknown actions and odd targets are refused before anything runs", bad_task == [400, 400, 400] and len(calls) == n)
+s, _, _ = req("POST", "/api/goalctl", {"id": "G20261008-062000", "action": "replan", "text": "fewer tasks"}, H)
+check("goal replan: note on stdin", s == 200 and calls[-1][0].endswith("goal G20261008-062000 replan -") and calls[-1][1] == "fewer tasks")
+n = len(calls)
+s1, _, _ = req("POST", "/api/goalctl", {"id": "G2026; reboot", "action": "pause"}, H)
+s2, _, _ = req("POST", "/api/doc", {"name": "../../etc/passwd", "text": "x"}, H)
+s3, _, _ = req("POST", "/api/fix", {"fix": "rm -rf /"}, H)
+s4, _, _ = req("GET", "/api/run?run=../../etc")
+s5, _, _ = req("POST", "/api/disk", {"action": "rm"}, H)
+check("goal / doc / fix / run / disk: only known names and ids", [s1, s2, s3, s4, s5] == [400, 400, 400, 400, 400] and len(calls) == n)
+s, _, _ = req("POST", "/api/doc", {"name": "role:tester", "text": "# Tester\nmine"}, H)
+check("doc set: the text goes on stdin", s == 200 and calls[-1][0].endswith("doc set role:tester") and calls[-1][1] == "# Tester\nmine")
+s, _, _ = req("POST", "/api/fix", {"fix": "worker-up:3"}, H)
+check("fix: a whitelisted fix runs its fixed command", s == 200 and calls[-1][0].endswith("bin/worker-up 3 2>&1"))
+s, _, _ = req("GET", "/api/search?q=due%27%3B%20reboot")
+check("search: the words go on stdin", s == 200 and calls[-1][0].endswith("bin/foreman search") and calls[-1][1] == "due'; reboot")
+srv.B.FOREMAN_BY["default"] = {"data": {"a": 1, "tasks": []}, "at": 1.0, "error": None}
+c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+c.request("GET", "/api/stream", headers={"Host": f"127.0.0.1:{port}", "Cookie": "af_token=s3cret"})
+r = c.getresponse()
+first = b""
+while first.count(b"\n\n") < 2:
+    first += r.read1(4096)
+srv.B.FOREMAN_BY["default"] = {"data": {"a": 2, "tasks": []}, "at": 2.0, "error": None}
+more = b""
+deadline = __import__("time").time() + 5
+while b'"delta"' not in more and __import__("time").time() < deadline:
+    more += r.read1(4096)
+c.close()
+check("stream: text/event-stream, the full state first, then only what changed",
+      r.getheader("Content-Type") == "text/event-stream" and b"event: hello" in first and b'"full":{"a":1' in first
+      and b'"delta":{"a":2}' in more and b'"tasks"' not in more.split(b'"delta"')[1])
 httpd.shutdown()
 print("web tests: " + ("ALL OK" if not bad else f"{bad} FAILED"))
 sys.exit(1 if bad else 0)

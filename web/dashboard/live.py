@@ -196,6 +196,7 @@ class Pane:
         self.id, self.title, self.kind, self.remote_path, self.renderer = pane_id, title, kind, remote_path, renderer
         self.tail_argv = tail_argv
         self.lines = collections.deque(maxlen=LINE_BUFFER)
+        self.seq = 0                                 # running number of the rendered lines (the live stream sends only new ones)
         self.state = "running"
         self.finished_at = None
         self.tool_calls = 0
@@ -252,7 +253,8 @@ class Pane:
                     if kind == "task":
                         self.task_label = text
                         continue
-                    self.lines.append({"kind": kind, "text": text})
+                    self.seq += 1
+                    self.lines.append({"kind": kind, "text": text, "n": self.seq})
                     if kind == "tool":
                         self.tool_calls += 1
             except Exception:
@@ -404,3 +406,65 @@ def _discover_once():
                 RETIRED[pane_id] = p.remote_path
                 p.stop()
                 del PANES[pane_id]
+
+
+def pane_delta(state):
+    """What changed in the live panes since this client last asked: new lines per pane (all of them when the client is new or
+    fell behind the buffer: reset), panes that are gone, and the roster when it changed. `state` is the client's memory and is
+    updated in place. None = nothing new."""
+    out, ids = [], set()
+    with PANES_LOCK:
+        order = {"orchestrator": 0, "worker": 1}
+        for p in sorted(PANES.values(), key=lambda p: (order.get(p.kind, 9), p.title)):
+            ids.add(p.id)
+            lines = list(p.lines)
+            last = state.get(p.id)
+            if last is None or (lines and last < lines[0]["n"] - 1):
+                new, reset = lines, True
+            else:
+                new, reset = [l for l in lines if l["n"] > last], False
+            meta = (p.state, p.title)
+            if new or reset or state.get(p.id + "|meta") != meta:
+                out.append(dict(id=p.id, title=p.title, kind=p.kind, state=p.state, reset=reset, lines=new))
+            state[p.id] = lines[-1]["n"] if lines else (last or 0)
+            state[p.id + "|meta"] = meta
+    gone = [k for k in list(state) if "|" not in k and k not in ids]
+    for k in gone:
+        state.pop(k, None); state.pop(k + "|meta", None)
+    roster = ROSTER.snapshot()
+    roster_key = json.dumps({k: {f: v.get(f) for f in ("state", "task", "tool_calls", "quota", "title")} for k, v in roster.items()},
+                            sort_keys=True, default=str)
+    changed = state.get("|roster") != roster_key
+    state["|roster"] = roster_key
+    if not out and not gone and not changed:
+        return None
+    return dict(panes=out, gone=gone, roster=roster if changed else None)
+
+
+RUN_ID = re.compile(r"\d{8}T\d{6}Z-worker-\d+")
+
+
+def render_run(raw, limit=6000):
+    """A finished run's whole transcript (its stream.jsonl text) as typed lines for the replay view: (kind, text) with the
+    index of each tool call, so the page can jump between them and copy commands."""
+    acc, out = {}, []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        try:
+            for kind, text in render_worker_line(d, acc):
+                if kind != "task":
+                    out.append({"kind": kind, "text": text})
+        except Exception:
+            continue
+        if len(out) >= limit:
+            out.append({"kind": "tool_done", "text": f"(transcript cut at {limit} lines)"})
+            break
+    return out

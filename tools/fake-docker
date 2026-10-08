@@ -1,0 +1,13 @@
+#!/bin/sh
+# A stand-in `docker` for the demo dashboard (tools/screenshots.sh, tests/test_ui.sh): four workers (worker-4 runs Claude Code
+# with an API key), the Antigravity quota of the others from /af/.demo-usage; everything else fails like a missing daemon.
+case "$1 $*" in
+  "ps "*Label*State*|"ps "*State*Label*) printf 'worker-1 running agy\nworker-2 running agy\nworker-3 running agy\nworker-4 running claude\n' ;;
+  "ps "*Label*) printf 'worker-1|agy\nworker-2|agy\nworker-3|agy\nworker-4|claude\n' ;;
+  "ps "*State*) printf 'worker-1 running\nworker-2 running\nworker-3 running\nworker-4 running\n' ;;
+  "ps "*) printf 'worker-1\nworker-2\nworker-3\nworker-4\n' ;;
+  "exec "*usage*) case "$*" in *worker-4*) exit 1 ;; *) cat /af/.demo-usage ;; esac ;;
+  "inspect "*worker-4*) echo claude ;;
+  "inspect "*) echo agy ;;
+  *) exit 1 ;;
+esac

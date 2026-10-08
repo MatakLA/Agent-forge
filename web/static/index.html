@@ -1,56 +1,82 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent-Forge</title>
+<meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/static/app.css?v={{V}}">
 </head>
 <body>
 <header>
-  <div class="top"><h1>Agent-Forge</h1><select id="proj" class="projsel" style="display:none" aria-label="project"></select><span id="pills"></span></div>
-  <div id="jserr" style="display:none; margin-top:8px; font-size:12.5px; color:var(--bad);"></div>
-  <div id="resume-result" style="display:none; margin-top:8px; font-size:12.5px;"></div>
+  <div class="top">
+    <h1>Agent-Forge</h1>
+    <select id="proj" class="projsel" style="display:none" aria-label="project"></select>
+    <span id="pills"></span>
+    <button class="iconbtn" id="search-open" title="Search goals, tasks, events and transcripts (/)" aria-label="search">⌕</button>
+  </div>
+  <div id="jserr" class="banner bad" style="display:none"></div>
+  <div id="resume-result" class="banner" style="display:none"></div>
   <div class="stats" id="stats"></div>
-  <nav id="nav">
-    <button data-t="overview">Overview</button>
-    <button data-t="queue">Queue <span class="cnt" id="c-queue">0</span></button>
-    <button data-t="timeline">Timeline</button>
+  <nav id="nav" aria-label="sections">
+    <button data-t="overview">Overview <span class="cnt hot" id="c-inbox" hidden></span></button>
+    <button data-t="tasks">Tasks <span class="cnt" id="c-tasks">0</span></button>
     <button data-t="live">Live <span class="cnt" id="c-live">0</span></button>
-    <button data-t="metrics">Metrics</button>
+    <button data-t="timeline">Timeline</button>
+    <button data-t="insights">Insights</button>
+    <button data-t="system">System <span class="cnt hot" id="c-system" hidden></span></button>
     <button data-t="settings">Settings</button>
-    <button data-t="events">Events</button>
   </nav>
 </header>
 <main>
   <section id="t-overview">
-    <h3>New goal</h3>
-    <div class="ask"><textarea id="goal-text" placeholder="What should the team do? E.g.: Add a CSV export of expenses, with tests."></textarea>
-      <div class="btnrow"><button id="goal-now">Start now</button><button class="mini" id="goal-backlog">Add to backlog</button>
+    <div id="inbox"></div>
+    <div id="onboarding"></div>
+    <div class="ask newgoal">
+      <textarea id="goal-text" placeholder="What should the team do? E.g.: Add a CSV export of expenses, with tests."></textarea>
+      <div class="btnrow"><button class="primary sm" id="goal-now">Start now</button><button class="mini" id="goal-backlog">Add to backlog</button>
         <button class="mini" id="goal-roadmap" title="The planner splits a big request into a series of smaller goals in the backlog">Big project → roadmap</button>
-        <span id="goal-msg" class="muted" style="font-size:12.5px"></span></div></div>
-    <div id="questions"></div>
-    <h3>Ask the team</h3>
-    <div class="ask"><textarea id="ask-q" placeholder="E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses Claude usage)"></textarea>
-      <button id="ask-btn">Ask</button><div id="ask-a"></div></div>
+        <span id="goal-msg" class="muted small"></span></div>
+    </div>
     <h3>Team</h3><div id="team" class="team"><div class="empty">loading…</div></div>
     <h3>Goals</h3><div id="goals"></div>
-    <h3>Backlog</h3><div id="backlog"></div>
+    <h3 id="backlog-h">Backlog</h3><div id="backlog"></div>
+    <details class="askbox"><summary>Ask the team about the code</summary>
+      <div class="ask"><textarea id="ask-q" placeholder="E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses orchestrator quota)"></textarea>
+        <button class="primary" id="ask-btn">Ask</button><div id="ask-a"></div></div>
+    </details>
   </section>
-  <section id="t-queue"><div id="board" class="board"></div></section>
+  <section id="t-tasks">
+    <div class="seg" id="tasks-seg"><button data-v="board">Board</button><button data-v="graph">Graph</button></div>
+    <div id="tasks-view"></div>
+  </section>
+  <section id="t-live">
+    <div class="livebar"><span class="muted small" id="live-note"></span><button class="mini" id="runs-open">Finished runs…</button></div>
+    <div id="grid" class="grid"></div>
+  </section>
   <section id="t-timeline"><div id="timeline"></div></section>
-  <section id="t-live"><div id="grid" class="grid"></div></section>
-  <section id="t-metrics"><div id="metrics"></div></section>
-  <section id="t-settings"><div id="settings"></div></section>
-  <section id="t-events"><div id="events"></div></section>
+  <section id="t-insights">
+    <div class="seg" id="insights-seg"><button data-v="team">Team</button><button data-v="money">Money &amp; quota</button><button data-v="experiments">Experiments</button></div>
+    <div id="insights"></div>
+  </section>
+  <section id="t-system">
+    <div class="seg" id="system-seg"><button data-v="health">Health</button><button data-v="egress">Egress</button><button data-v="disk">Disk</button><button data-v="activity">Activity</button></div>
+    <div id="system"></div>
+  </section>
+  <section id="t-settings">
+    <div class="seg" id="settings-seg"><button data-v="team">Workers</button><button data-v="models">Models</button><button data-v="project">Project</button><button data-v="money">Money</button><button data-v="knowledge">Knowledge</button><button data-v="limits">Limits</button></div>
+    <div id="settings"></div>
+  </section>
 </main>
+
+<!-- one sheet for task / goal / run replay / document / search; the dialogs below are separate because they hold a running process -->
 <div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
 <div class="detail" id="login"><div class="sheet"><button class="close" id="login-close">Close</button><h2 id="login-title">Sign-in</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the
+  <div class="muted small" style="margin:6px 0">This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the
   code and send it here. If agy asks anything, answer here.</div>
   <div id="login-url" style="font-size:13px;margin:6px 0"></div>
   <pre id="login-out" class="term"></pre>
   <div class="btnrow"><input type="text" id="login-in" placeholder="code or answer" style="flex:1"><button class="mini" id="login-send">Send</button></div>
-  <div class="btnrow"><button class="resume-btn" id="login-done">Done — check the sign-in</button></div></div></div>
+  <div class="btnrow"><button class="primary" id="login-done">Done — check the sign-in</button></div></div></div>
 <div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close">Close</button><h2>New project</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">Creates a project with its own orchestrator, a repository on Forgejo and a group of workers.
+  <div class="muted small" style="margin:6px 0">Creates a project with its own orchestrator, a repository on Forgejo and a group of workers.
   Each worker should belong to one project only.</div>
   <div id="np-form">
   <div class="setrow"><label>Name (lowercase letters, dashes)</label><div><input type="text" id="np-name" placeholder="e.g. shop"><div class="seterr" id="np-e-name"></div></div></div>
@@ -58,10 +84,10 @@
   <div class="setrow"><label>Language the team uses with you</label><div><input type="text" id="np-lang" value="English"><div class="seterr" id="np-e-lang"></div></div></div>
   <div class="setrow"><label>Vision — what the project should do (the autopilot plans from it)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
   <div class="setrow"><label>Workers for this project</label><div><div id="np-workers" class="muted">loading…</div><div class="seterr" id="np-e-workers"></div></div></div>
-  <div class="btnrow"><button class="resume-btn" id="np-create">Create project</button></div></div>
+  <div class="btnrow"><button class="primary" id="np-create">Create project</button></div></div>
   <pre id="np-log" class="term" style="display:none"></pre></div></div>
 <div class="detail" id="setup"><div class="sheet"><button class="close" id="su-close">Close</button><h2>Where does this project's code live?</h2>
-  <div class="muted" style="font-size:12.5px;margin:6px 0">Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub
+  <div class="muted small" style="margin:6px 0">Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub
   or GitLab, the orchestrator opens and merges pull requests there and takes main from there. Workers never reach GitHub/GitLab.</div>
   <div id="su-form">
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="forgejo"> Internal Forgejo only</label>
@@ -71,17 +97,21 @@
   <div class="setrow"><label>Server</label><div><input type="text" id="su-url" placeholder="https://github.com"><div class="seterr" id="su-e-url"></div></div></div>
   <div class="setrow"><label>Repository (owner/repository)</label><div><input type="text" id="su-repo" placeholder="e.g. acme/shop"><div class="seterr" id="su-e-repo"></div></div></div>
   <div class="setrow"><label>Token (empty = keep the stored one)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
-    <div class="muted" id="su-help" style="font-size:12px;margin-top:4px"></div></div></div>
+    <div class="muted small" id="su-help" style="margin-top:4px"></div></div></div>
   <div class="setrow" id="su-force-row" style="display:none"><label>The internal repository already has commits</label><div><label class="chk"><input type="checkbox" id="su-force">
     replace them with the content from GitHub/GitLab</label></div></div>
   </div>
-  <div class="btnrow"><button class="resume-btn" id="su-go">Save and connect</button><button class="mini" id="su-later">Later</button></div></div>
+  <div class="btnrow"><button class="primary" id="su-go">Save and connect</button><button class="mini" id="su-later">Later</button></div></div>
   <pre id="su-log" class="term" style="display:none"></pre></div></div>
+<div id="toasts" aria-live="polite"></div>
 <script src="/static/js/core.js?v={{V}}"></script>
 <script src="/static/js/overview.js?v={{V}}"></script>
-<script src="/static/js/settings.js?v={{V}}"></script>
 <script src="/static/js/tasks.js?v={{V}}"></script>
+<script src="/static/js/goal.js?v={{V}}"></script>
 <script src="/static/js/live.js?v={{V}}"></script>
 <script src="/static/js/insights.js?v={{V}}"></script>
+<script src="/static/js/system.js?v={{V}}"></script>
+<script src="/static/js/settings.js?v={{V}}"></script>
+<script src="/static/js/search.js?v={{V}}"></script>
 <script src="/static/js/main.js?v={{V}}"></script>
 </body></html>
