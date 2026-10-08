@@ -113,13 +113,30 @@ global limits (`etc/limits.conf`) and the egress proxy are shared.
 - Plan ahead + maintenance: when the whole pool is under its quota floor, backlog goals are planned ahead and main is tested 3x
   and mapped without any LLM. Details and the data behind all of this: docs/EFFICIENCY.md.
 
+The code is the package `bin/lib/foreman/`, one module per concern (`bin/foreman` only picks the project and calls `cli.main`):
+
+| module | what |
+|---|---|
+| `ctx` | the project being acted on, its directories and its settings (`ctx.FD`, `ctx.C`, ... - read as attributes, so tests can repoint them) |
+| `store` | goals, tasks, state.json, events - plain JSON files, changed under `locked()` |
+| `loop` | the tick: apply finished steps, advance tasks and goals, dispatch, feed idle workers |
+| `planning`, `merge`, `maintenance` | the steps that run in the thread pool (`jobs`): plan / split / autopilot / roadmap; rebase, gate, review, merge; LLM-free checks of main |
+| `llm`, `prompts`, `knowledge` | orchestrator calls and providers; the prompts; roles, lessons, decisions |
+| `pool`, `repo` | workers, runtimes, quota and cooldowns; the clone of main, code map, context pack, variants |
+| `report`, `settings`, `owner`, `cli` | read-only views (dashboard JSON), validated settings, owner questions, the command line |
+| `selftest` | `bin/foreman --selftest` |
+
+Modules import each other in one direction only (the order of the table, bottom to top), so there are no import cycles.
+
 ### Roles (roles/) and prompts (prompts/)
 Each role file is a playbook - mission, what it owns, how it works, what it never does, definition of done. The planner sees the
 catalogue; the worker gets its role's full playbook in the task; the reviewer gets that role's definition of done.
 
 ### Dashboard (web/)
-One file, standard library. Reads `bin/foreman status --dashboard`, run logs and `agy /usage` locally (or over ssh), serves a
-single page on 127.0.0.1. Write actions: queue goals / roadmaps, reorder the backlog, answer the planner's questions, stop/continue
+Standard library only. `web/server.py` is the HTTP side (access control, routes); `web/dashboard/backend.py` reaches Agent-Forge
+(locally, or over ssh) and runs the long write actions as jobs; `web/dashboard/live.py` tails the running transcripts; the page is
+plain static files in `web/static/` (no build step; scripts only from the server itself - the CSP allows nothing inline). It reads
+`bin/foreman status --dashboard`, run logs and `agy /usage`, and serves the page on 127.0.0.1. Write actions: queue goals / roadmaps, reorder the backlog, answer the planner's questions, stop/continue
 a project (or all), edit settings (a fixed list of keys, validated by `bin/foreman settings apply`; the loop reloads its config on
 the next tick), add a worker (`bin/worker-add`) and run its agy login in a browser terminal, create a project. Owner text reaches
 `bin/foreman` on stdin. Access control (Host check, CSRF header, optional token) - see SECURITY.md.

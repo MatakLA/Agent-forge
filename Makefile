@@ -10,7 +10,7 @@ SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services
 
 .PHONY: check test doctor
 check:
-	@for f in $(PYSCRIPTS) bin/lib/*.py tests/*.py; do $(PY) -m py_compile $$f || exit 1; done
+	@for f in $(PYSCRIPTS) bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*.py; do $(PY) -m py_compile $$f || exit 1; done
 	@for f in $(SHSCRIPTS); do bash -n $$f || exit 1; done
 	@$(PY) bin/foreman --selftest | tail -1 | grep -q "ALL OK" || { $(PY) bin/foreman --selftest | grep -v '^ok'; exit 1; }
 	@$(PY) tests/test_web.py | tail -1
