@@ -101,7 +101,7 @@ function teamHtml() {
     const idle = (live.idle || {})[w];
     const body = t ? '<div class="node-task" data-open="task:' + esc(t.id) + '">' + roleTag(t.role) + ' ' + esc(t.title) + '</div><div class="node-sub">' + esc(t.id) +
         ' · attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · ' + ago(t.dispatched) + (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'
-      : '<div class="node-sub idle-why">' + esc(idle || ((live.reserved || []).includes(w) ? 'lent to the orchestrator' : 'free')) + '</div>';
+      : '<div class="node-sub idle-why">' + esc(tsloc(idle) || ((live.reserved || []).includes(w) ? 'lent to the orchestrator' : 'free')) + '</div>';
     const rt = rts[w];
     return '<div class="node' + (t ? ' busy' : '') + '"><div class="node-title"><span class="dot ' + (t ? 'running' : '') + '"></span>' + esc(w) +
       (rt && rt !== 'agy' ? ' <span class="rt rt-' + esc(rt) + '">' + esc(RTNAME[rt] || rt) + '</span>' : '') + '</div>' + body + quota + '</div>';

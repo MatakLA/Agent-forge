@@ -12,6 +12,11 @@ const toDate = ts => typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
 const tfmt = ts => { const d = toDate(ts); return isNaN(d) ? '' : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); };
 const dfmt = ts => { const d = toDate(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
   return today ? d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'}) : d.toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+// UTC timestamps inside a text ("(resets 2026-10-10T13:49:21Z)", straight from `agy /usage`) shown in the viewer's own time
+const tsloc = s => String(s == null ? '' : s).replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?Z/g, m => {
+  const d = new Date(m); if (isNaN(d)) return m;
+  return new Date().toDateString() === d.toDateString() ? tfmt(d)
+    : d.toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}); });
 const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now() / 1000 - (typeof ts === 'number' ? ts : Date.parse(ts) / 1000)));
   return s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days'; };
 const dur = s => { s = Math.round(s || 0); return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days'; };
