@@ -20,6 +20,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('overview: needs-you list rendered', txt('inbox').includes('Needs you'));
   check('overview: team shows idle reasons', txt('team').includes('waits for 0008-usage'));
   check('overview: backlog has the forecast', txt('backlog-h').includes('Backlog'));
+  check('overview: each model family keeps its own weekly quota (no mixing with the account\'s other family)',
+        /Gemini 72% · week 61%/.test(txt('team')) && txt('team').includes('Claude week 0%'));
   const iso = '2026-01-15T13:49:21Z', wantLocal = new Date(iso).toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'});
   check('quota reset timestamps are shown in the viewer\'s own time, not UTC',
         w.eval("tsloc('quota low: Gemini weekly 0% (resets " + iso + ")')") === 'quota low: Gemini weekly 0% (resets ' + wantLocal + ')');

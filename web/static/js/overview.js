@@ -94,10 +94,17 @@ function teamHtml() {
   const rts = (F && F.api && F.api.runtimes) || {};
   const ws = [...names].sort((a, b) => Number(a.split('-')[1]) - Number(b.split('-')[1])).map(w => {
     const e = R['worker:' + w] || {}, t = ts.find(x => x.worker === w && x.status === 'running');
-    const q = (e.quota || []), q5 = q.filter(x => /five hour|5h/i.test(x.label)), qw = q.filter(x => /week/i.test(x.label));
+    const q = (e.quota || []);
     const fam = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
-    const quota = q5.length ? '<div class="node-quota">' + q5.map(x => fam(x.model) + ' ' + x.pct.toFixed(0) + '%').join(' · ') +
-      (qw.length ? ' · week ' + Math.min(...qw.map(x => x.pct)).toFixed(0) + '%' : '') + '</div>' : '';
+    // one entry per model family, its 5-hour window and its own week: the worker runs on the worker model's family, while the
+    // account's other family (Claude/GPT, for the substitute orchestrator) has its own, unrelated budget
+    const low = (rows, re) => { const v = rows.filter(x => re.test(x.label)); return v.length ? Math.min(...v.map(x => x.pct)) : null; };
+    const parts = [...new Set(q.map(x => fam(x.model)))].map(f => {
+      const rows = q.filter(x => fam(x.model) === f), h5 = low(rows, /five hour|5h/i), wk = low(rows, /week/i);
+      const bits = [h5 == null ? '' : h5.toFixed(0) + '%', wk == null ? '' : 'week ' + wk.toFixed(0) + '%'].filter(Boolean);
+      return bits.length ? f + ' ' + bits.join(' · ') : '';
+    }).filter(Boolean);
+    const quota = parts.length ? '<div class="node-quota">' + esc(parts.join(' · ')) + '</div>' : '';
     const idle = (live.idle || {})[w];
     const body = t ? '<div class="node-task" data-open="task:' + esc(t.id) + '">' + roleTag(t.role) + ' ' + esc(t.title) + '</div><div class="node-sub">' + esc(t.id) +
         ' · attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · ' + ago(t.dispatched) + (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'

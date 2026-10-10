@@ -258,5 +258,9 @@ live_run("worker-4", 9, [
     {"type": "assistant", "message": {"content": [{"type": "text", "text": "Tests fail as expected. Now tasks/today.py with `due_today(tasks, today)`."}]}},
 ])
 # what agy /usage reports for the subscription workers (the fake docker of tools/screenshots.sh prints it)
-open(os.path.join(root, ".demo-usage"), "w").write("Gemini Models\tFive Hour Limit Remaining\t72%\tResets in 2h\nGemini Models\tWeekly Limit Remaining\t61%\tResets in 4d\n")
+open(os.path.join(root, ".demo-usage"), "w").write(
+    "Gemini Models\tFive Hour Limit Remaining\t72%\tResets in 2h\nGemini Models\tWeekly Limit Remaining\t61%\tResets in 4d\n"
+    # a second family on the same account: used only when a worker is lent to the orchestrator, so it must not be mixed into
+    # the worker's own numbers
+    "Claude and GPT models\tWeekly Limit Remaining\t0%\t2026-10-11T10:04:58Z\n")
 print(f"demo state written to {root}")
