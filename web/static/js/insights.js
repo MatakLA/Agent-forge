@@ -62,8 +62,8 @@ function quotaHtml(m) {
     const wk = q.filter(x => /week/i.test(x.label)), five = q.filter(x => /five hour|5h/i.test(x.label));
     const burn = (m && m.quota_burn || {})[w], left = wk.length ? Math.min(...wk.map(x => x.pct)) : null;
     const lasts = burn && left != null ? left / burn : null;
-    rows.push('<tr><td>' + esc(w) + '</td><td>' + five.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '%' + (x.reset ? ' <span class="muted">(' + esc(String(x.reset).replace(/^resets?\s*/i, '')) + ')</span>' : '')).join('<br>') +
-      '</td><td>' + wk.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '%' + (x.reset ? ' <span class="muted">(' + esc(String(x.reset).replace(/^resets?\s*/i, '')) + ')</span>' : '')).join('<br>') +
+    rows.push('<tr><td>' + esc(w) + '</td><td>' + five.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '%' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') +
+      '</td><td>' + wk.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '%' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') +
       '</td><td class="num">' + (burn ? burn.toFixed(1) + ' %/day' : '–') + '</td><td>' + (lasts == null ? '–' : lasts > 14 ? 'more than 2 weeks' : '≈ ' + lasts.toFixed(1) + ' days') + '</td></tr>');
   }
   if (!rows.length) return '';
