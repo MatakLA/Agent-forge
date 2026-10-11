@@ -232,7 +232,7 @@ function connect() {
   };
 }
 async function poll() {
-  try { const r = await getJSON('/api/foreman'); onForeman({full: r.foreman, error: r.error, fetched_at: r.fetched_at}); } catch (e) {}
+  try { const r = await getJSON('/api/foreman'); onForeman({full: r.foreman, error: r.error, fetched_at: r.fetched_at}); } catch (e) { window._ferr = (e && e.message) || String(e); schedule(); }
   try { const p = await (await fetch('/api/panes')).json(); P.roster = p.roster || {}; P.panes = p.panes || []; schedule(); } catch (e) {}
 }
 let busyPoll = false;
