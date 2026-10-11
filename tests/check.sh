@@ -62,6 +62,9 @@ fi
 if [ -f tests/test_sbx_security.py ]; then
   $PY tests/test_sbx_security.py || exit 1
 fi
+if [ -f tests/test_foreman_store.py ]; then
+  $PY tests/test_foreman_store.py || exit 1
+fi
 echo "check: ALL OK"
 
 

@@ -1,5 +1,9 @@
 """The foreman's state as plain JSON files under runs/[projects/<name>/]foreman/: goals, tasks, state.json, events.jsonl.
-Read-modify-write goes through locked() / state_tx() (thread lock + flock), so the loop and CLI commands never lose updates."""
+Public interface: jload, jsave, gstate, gsave, state_tx, locked, event, goals, save_goal, tasks, save_task, notify.
+Important invariants:
+- Read-modify-write goes through locked() / state_tx() (thread lock + flock) to prevent lost updates.
+- Atomic writes in jsave() write to a temp file in the same directory before replacing to prevent corruption.
+- jload() safely falls back to default on missing or unparseable files."""
 import contextlib, fcntl, json, os, re, sys, threading, time
 
 import sbx
@@ -10,7 +14,8 @@ from . import ctx
 # ---------------------------------------------------------------- state (plain JSON files)
 def jload(p, default=None):
     try:
-        return json.load(open(p))
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return default
 
@@ -18,13 +23,14 @@ def jload(p, default=None):
 def jsave(p, d):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
-    json.dump(d, open(tmp, "w"), indent=1, ensure_ascii=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, ensure_ascii=False)
     os.replace(tmp, p)
 
 
 def event(msg, **kw):
     os.makedirs(ctx.FD, exist_ok=True)
-    with open(os.path.join(ctx.FD, "events.jsonl"), "a") as f:
+    with open(os.path.join(ctx.FD, "events.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(dict(at=sbx.now(), msg=msg, **kw), ensure_ascii=False) + "\n")
     print(f"{sbx.now()} {msg}", file=sys.stderr, flush=True)     # stderr: the journal gets it, a command's JSON output stays clean
 
