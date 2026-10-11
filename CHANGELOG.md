@@ -17,6 +17,14 @@
 
 **Forgejo API URL query token protection.** `bin/forgejo-api` rejects requests containing tokens in URL query strings to avoid leaking secrets into access and egress proxy logs, strictly passing monitoring credentials via HTTP `Authorization` headers.
 
+**Worker pool liveness against orphaned runs.** `worker_busy(w)` verifies supervisor process liveness rather than run-directory presence alone so dead runs never mark workers busy forever.
+
+**Starvation-free dispatch rotation.** `order_by_quota` safely breaks ties using least-recently-used dispatch timestamps and handles null quotas to ensure fair round-robin dispatch across workers.
+
+**Worker cooldown expiration and cache invalidation.** `is_cooling_down(w)` and `pool_quota_out()` prune expired cooldown entries and purge stale quota cache so recovered workers become dispatchable immediately.
+
+**Worker-specific API budget checks.** `pool_quota_out()` enforces individual worker caps via `api_budget_left(w)` conjunctively with cooldown status, surfacing accurate exhaustion reasons without silently blocking the pool.
+
 **Dashboard backend SSH command injection hardening.** Remote command generation in `web/dashboard/backend.py` validates all owner-supplied parameters against strict allowlists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and safely escapes shell arguments with `shlex.quote` (`create_project_job`, `add_worker_job`, `connect_upstream_job`, `pflag`).
 
 

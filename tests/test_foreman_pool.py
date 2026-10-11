@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Tests for bin/lib/foreman/pool.py: budget and quota gates in the worker pool.
+"""Tests for bin/lib/foreman/pool.py: worker pool management, liveness, dispatch rotation, and cooldown expiry.
 
 Public interface under test:
 - api_budget_left(w): install, project, and worker caps enforced together (AND logic).
 - has_quota(rows, family, floor): boundary handling and fail-open unknown quota.
 - pool_quota_out(): distinguishing short cooldowns from true quota exhaustion.
 - order_by_quota(ws, pct_of, last_used): least-recently-used tiebreaker.
+- worker_busy(w): liveness verification against orphaned run directories.
+- is_cooling_down(w, now): expired cooldown pruning and quota cache invalidation.
 """
-import json, os, shutil, sys, tempfile, time, unittest, warnings
+import datetime as dt, json, os, shutil, sys, tempfile, time, unittest, warnings
+from unittest.mock import patch
 
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
@@ -53,19 +56,21 @@ class TestForemanPool(unittest.TestCase):
         except Exception as e:
             sys.stderr.write(f"setUp import validation failed: {e}\n")
             raise
-        # Clear ledger and cooldowns before each test
-        os.makedirs(os.environ["SANDBOX_RUNS_DIR"], exist_ok=True)
-        ledger_path = os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl")
+        self.tmp = tempfile.mkdtemp(prefix="af-pool-run-test-")
+        self.orig_runs = sbx.RUNS
+        sbx.RUNS = self.tmp
+        os.environ["SANDBOX_RUNS_DIR"] = self.tmp
+        ledger_path = sbx.ledger_path()
         if os.path.exists(ledger_path):
             os.remove(ledger_path)
         with open(ledger_path, "w") as f:
             pass  # Ensure ledger file exists
-        if hasattr(pool, "COOLDOWN"):
-            pool.COOLDOWN.clear()
-        if hasattr(pool, "QUOTA_CACHE"):
-            pool.QUOTA_CACHE.clear()
-        if hasattr(pool, "WORKER_RT"):
-            pool.WORKER_RT.clear()
+        pool.WORKER_RT.clear()
+        pool.RESERVED.clear()
+        pool.QUOTA_CACHE.clear()
+        pool.COOLDOWN.clear()
+        pool.LAST_DISPATCHED.clear()
+        pool.LAST_QUOTA_MSG.clear()
         ctx.C["PROJECT_DAILY_BUDGET_USD"] = 0.0
         ctx.C["PROJECT_MONTHLY_BUDGET_USD"] = 0.0
         self._orig_workers = pool.workers
@@ -73,6 +78,8 @@ class TestForemanPool(unittest.TestCase):
         self._orig_runtime_of = pool.runtime_of
 
     def tearDown(self):
+        sbx.RUNS = self.orig_runs
+        shutil.rmtree(self.tmp, ignore_errors=True)
         pool.workers = self._orig_workers
         pool.api_budget_left = self._orig_api_budget_left
         pool.runtime_of = self._orig_runtime_of
@@ -84,7 +91,7 @@ class TestForemanPool(unittest.TestCase):
             "worker": worker,
             "project": project,
         }
-        with open(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"), "a") as f:
+        with open(sbx.ledger_path(), "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     def test_api_budget_left_all_caps_enforced(self):
@@ -110,7 +117,8 @@ class TestForemanPool(unittest.TestCase):
 
         # Case 2: Project cap has headroom ($5.0 cap, $0 spent),
         # but worker-1 has spent $9.0 (next run $2.0 -> $11.0 > $10.0 worker cap).
-        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
         self._append_ledger(9.0, worker="worker-1", project="")
         res2 = pool.api_budget_left("worker-1")
         self.assertFalse(
@@ -121,7 +129,8 @@ class TestForemanPool(unittest.TestCase):
 
         # Case 3: Project cap and worker cap have headroom,
         # but install-wide cap ($100.0) is exceeded ($99.0 spent).
-        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
         self._append_ledger(99.0, worker="worker-other", project="other-project")
         res3 = pool.api_budget_left("worker-1")
         self.assertFalse(
@@ -131,7 +140,8 @@ class TestForemanPool(unittest.TestCase):
         assert res3 is False
 
         # Case 4: All caps satisfied: project ($0 spent), worker ($0 spent), install ($0 spent).
-        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
         res4 = pool.api_budget_left("worker-1")
         self.assertTrue(
             res4,
@@ -296,7 +306,8 @@ class TestForemanPool(unittest.TestCase):
 
         # Case 2: worker-1 has spent only $5.0. Next run costs $2.0 -> $7.0 <= $10.0.
         # Both global cap and worker cap have headroom.
-        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
         self._append_ledger(5.0, worker="worker-1", project="")
         self.assertTrue(pool.api_budget_left("worker-1"), "Worker-1 has headroom")
         assert pool.api_budget_left("worker-1") is True
@@ -311,7 +322,8 @@ class TestForemanPool(unittest.TestCase):
         # Case 3: Multiple API workers: worker-1 is over cap ($9 spent), worker-2 is under cap ($0 spent).
         # pool_quota_out must return False because worker-2 can still run.
         pool.workers = lambda: ["worker-1", "worker-2"]
-        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
         self._append_ledger(9.0, worker="worker-1", project="")
         res_multi = pool.pool_quota_out()
         self.assertFalse(
@@ -320,6 +332,153 @@ class TestForemanPool(unittest.TestCase):
         )
         assert res_multi is False
 
+    def test_worker_busy_after_orphaned_run(self):
+        """Invariant: worker_busy must not report busy forever once a run is no longer live."""
+        w = "worker-1"
+        orphaned_dir = os.path.join(self.tmp, f"20261011T120000Z-{w}")
+        os.makedirs(orphaned_dir, exist_ok=True)
+
+        # Case 1: Run directory left behind by crashed supervisor with no pid file
+        self.assertFalse(pool.worker_busy(w), "Orphaned run with no pid must not be marked busy")
+        assert not pool.worker_busy(w)
+
+        # Case 2: Run directory with pid of dead process (crashed supervisor)
+        pid_file = os.path.join(orphaned_dir, "pid")
+        with open(pid_file, "w") as f:
+            f.write("999999\n")
+        self.assertFalse(pool.worker_busy(w), "Dead supervisor pid must not mark worker busy")
+        assert not pool.worker_busy(w)
+
+        # Case 3: Finished run directory must not be marked busy
+        with open(os.path.join(orphaned_dir, "finished"), "w") as f:
+            f.write("1\n")
+        self.assertFalse(pool.worker_busy(w), "Finished run must not mark worker busy")
+        assert not pool.worker_busy(w)
+
+        # Case 4: Actively running supervisor process must report busy
+        with patch.object(sbx, "is_running", return_value=True):
+            self.assertTrue(pool.worker_busy(w), "Active run supervisor must report worker busy")
+            assert pool.worker_busy(w)
+
+    def test_starvation_rotation_order_by_quota(self):
+        """Invariant: order_by_quota rotates dispatches across tied workers without starvation."""
+        ws = ["worker-1", "worker-2", "worker-3"]
+        pct_of = lambda w: 100.0
+        last_dispatched = {}
+        history = []
+        now = 1700000000.0
+
+        # Simulate 12 consecutive task dispatches
+        for i in range(12):
+            ordered = pool.order_by_quota(ws, pct_of, last_dispatched)
+            chosen = ordered[0]
+            history.append(chosen)
+            last_dispatched[chosen] = now + i
+
+        # Assert perfect round-robin rotation
+        expected = [
+            "worker-1", "worker-2", "worker-3",
+            "worker-1", "worker-2", "worker-3",
+            "worker-1", "worker-2", "worker-3",
+            "worker-1", "worker-2", "worker-3",
+        ]
+        self.assertEqual(history, expected, "Dispatch must rotate across all 3 workers")
+        assert history == expected
+
+        # Assert no worker is starved for more than 2 turns
+        for w in ws:
+            indices = [idx for idx, chosen in enumerate(history) if chosen == w]
+            self.assertEqual(len(indices), 4, f"Worker {w} should have been dispatched exactly 4 times")
+            for j in range(len(indices) - 1):
+                gap = indices[j + 1] - indices[j] - 1
+                self.assertLessEqual(gap, 2, f"Worker {w} was starved for {gap} turns")
+                assert gap <= 2
+
+        # Assert order_by_quota handles None quota and missing timestamps gracefully
+        none_pct = pool.order_by_quota(["worker-1", "worker-2"], lambda w: None, {})
+        self.assertEqual(len(none_pct), 2, "order_by_quota must handle None quota without raising")
+        assert len(none_pct) == 2
+
+    def test_cooldown_not_expiring_stale_entry(self):
+        """Invariant: expired cooldowns must not keep worker cooling down forever (no stale entries)."""
+        w = "worker-1"
+        now = time.time()
+        past_epoch = now - 60.0
+
+        # Set a past cooldown
+        pool.COOLDOWN[w] = (past_epoch, "quota low: rate limit")
+        pool.QUOTA_CACHE[w] = (past_epoch, [{"model": "Gemini Models", "label": "Five Hour Limit Remaining", "pct": 0.0}])
+
+        # Assert worker is treated as available again (not cooling down)
+        self.assertFalse(pool.is_cooling_down(w, now=now), "Past cooldown must be treated as available")
+        assert not pool.is_cooling_down(w, now=now)
+
+        # Assert expired entry was pruned from COOLDOWN
+        self.assertNotIn(w, pool.COOLDOWN, "Expired cooldown entry must be pruned from COOLDOWN")
+        assert w not in pool.COOLDOWN
+
+        # Assert stale QUOTA_CACHE was cleared upon cooldown expiry
+        self.assertNotIn(w, pool.QUOTA_CACHE, "Stale quota cache must be purged on cooldown expiry")
+        assert w not in pool.QUOTA_CACHE
+
+        # Boundary test: exact equality (until == now) is treated as expired (available)
+        pool.COOLDOWN[w] = (now, "quota low: edge boundary")
+        self.assertFalse(pool.is_cooling_down(w, now=now), "Exact expiration boundary must count as available")
+        assert not pool.is_cooling_down(w, now=now)
+
+        # Future cooldown (until > now) must be recognized as cooling down
+        pool.COOLDOWN[w] = (now + 300.0, "quota low: cooling")
+        self.assertTrue(pool.is_cooling_down(w, now=now), "Future cooldown must report cooling down")
+        assert pool.is_cooling_down(w, now=now)
+
+    def test_api_budget_worker_busy_stale_run_surfaces_reason(self):
+        """Invariant: worker out of budget with stale run must not silently block pool and surfaces accurate reason."""
+        w = "worker-1"
+        pool.workers = lambda: [w]
+        pool.WORKER_RT[w] = "claude"
+
+        # Stale run directory left behind by dead supervisor
+        stale_run = os.path.join(self.tmp, f"20261011T120000Z-{w}")
+        os.makedirs(stale_run, exist_ok=True)
+
+        # Stale run must not mark worker busy
+        self.assertFalse(pool.worker_busy(w), "Stale run must not mark worker busy")
+        assert not pool.worker_busy(w)
+
+        # Simulate out-of-budget worker where worker cap is exceeded
+        lim = sbx.load_limits()
+        lim["WORKER_DAILY_BUDGET_USD"] = f"{w}=10.0"
+        lim["API_RUN_BUDGET_USD"] = 2.0
+        lim["API_DAILY_BUDGET_USD"] = 100.0
+
+        with patch.object(sbx, "load_limits", return_value=lim), \
+             patch.object(sbx, "read_ledger", return_value=[]), \
+             patch.object(sbx, "running_api_runs", return_value=[]), \
+             patch.object(sbx, "api_spent", side_effect=lambda led, window="day", project=None, worker=None: 9.0 if worker == w else 9.0):
+
+            # Worker has exhausted its worker-specific cap ($9 spent + $2 next run > $10 cap)
+            has_budget = pool.api_budget_left(w)
+            self.assertFalse(has_budget, "Worker exceeding its cap must not have budget")
+            assert not has_budget
+
+            # pool_quota_out must check worker-specific budget and report quota/budget exhausted
+            quota_out = pool.pool_quota_out()
+            self.assertTrue(quota_out, "Exhausted worker budget must cause pool_quota_out to return True")
+            assert quota_out
+
+            # At least one accurate reason must be surfaced by budget_check
+            ok, msg = sbx.budget_check(w, lim)
+            self.assertFalse(ok)
+            self.assertIn(w, msg, "Accurate worker failure reason must be surfaced")
+            assert not ok and w in msg
+
+        # Invariant: has_quota floor check must strictly enforce floor (not weakened)
+        rows_below_floor = [
+            {"model": "Gemini Models", "label": "Five Hour Limit Remaining", "pct": 1.0},
+            {"model": "Gemini Models", "label": "Weekly Limit Remaining", "pct": 50.0},
+        ]
+        self.assertFalse(pool.has_quota(rows_below_floor, "gemini", floor=2.0), "pct < floor must be rejected")
+        assert not pool.has_quota(rows_below_floor, "gemini", floor=2.0)
 
 
 if __name__ == "__main__":
@@ -329,4 +488,3 @@ if __name__ == "__main__":
         print("pool tests: ALL OK")
         sys.exit(0)
     sys.exit(1)
-
