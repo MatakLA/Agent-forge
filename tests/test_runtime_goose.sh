@@ -274,13 +274,11 @@ if proc.returncode != 0:
 
 lines = stdout.splitlines()
 parsed = runtimes.scan('goose', lines)
-# Serialise scan dict; note that result is a ResultStr instance
 out = {
     'tokens': parsed['tokens'],
     'tools': parsed['tools'],
     'conversation_id': parsed['conversation_id'],
     'result_str': str(parsed['result']),
-    'result_status': parsed['result'].get('status') if parsed['result'] else None,
     'is_str': isinstance(parsed['result'], str) if parsed['result'] else False,
 }
 print(json.dumps(out))
@@ -295,12 +293,11 @@ check "goose scan(): tools count is non-zero (tools >= 1)" \
 check "goose scan(): conversation_id is None" \
   'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] is None, f\"conversation_id was {r[\"conversation_id\"]}\"" "$RUN_JSON"'
 
-check "goose scan(): result is a string with SUCCESS status" \
+check "goose scan(): result is a string containing task output" \
   'python3 -c "
 import json, sys
 r = json.loads(sys.argv[1])
-assert r[\"is_str\"] is True, \"result must be a string (ResultStr)\"
-assert r[\"result_status\"] == \"SUCCESS\", f\"result_status was {r[\"result_status\"]}\"
+assert r[\"is_str\"] is True, \"result must be a string\"
 assert \"Task completed successfully.\" in r[\"result_str\"]
 " "$RUN_JSON"'
 
@@ -312,7 +309,7 @@ check "fake server reached only expected host:port" \
   'grep -q "127.0.0.1:$PORT" "$T/server.log"'
 
 # 8. scan() error handling
-check "goose scan(): error output parses as status ERROR" \
+check "goose scan(): error output captured in result string" \
   'python3 -c "
 import sys
 sys.path.insert(0, \"$ROOT/bin/lib\")
@@ -325,7 +322,7 @@ r = runtimes.scan(\"goose\", err_lines)
 assert r[\"tokens\"] is None
 assert r[\"result\"] is not None
 assert isinstance(r[\"result\"], str)
-assert r[\"result\"].get(\"status\") == \"ERROR\"
+assert \"Error: Goose execution failed\" in r[\"result\"]
 "'
 
 # 9. scan() stream edge cases
@@ -346,19 +343,23 @@ check "goose scan(): counts various tool call syntaxes (plain text and JSON)" \
 import json, sys
 sys.path.insert(0, \"$ROOT/bin/lib\")
 import runtimes
-lines = [
-    \"Starting session\",
+tool_lines = [
     \"Tool call: git status\",
     \"Invoking tool: bash with command pytest\",
     \"Running tool: pytest\",
     json.dumps({\"type\": \"tool_call\", \"name\": \"editor\"}),
     json.dumps({\"type\": \"tool_use\", \"name\": \"shell\"}),
-    \"All finished successfully.\"
 ]
-r = runtimes.scan(\"goose\", lines)
+# Verify each syntax independently increments tools by exactly 1
+for line in tool_lines:
+    assert runtimes.scan(\"goose\", [line])[\"tools\"] == 1
+# Verify combined stream of 2 non-tool lines and 5 tool-call lines yields tools == 5
+stream = [\"Starting session\"] + tool_lines + [\"All finished successfully.\"]
+r = runtimes.scan(\"goose\", stream)
 assert r[\"tokens\"] is None
-assert r[\"tools\"] == 5, f\"expected 5 tools, got {r[\"tools\"]}\"
-assert r[\"result\"].get(\"status\") == \"SUCCESS\"
+assert r[\"tools\"] == len(tool_lines) == 5
+assert isinstance(r[\"result\"], str)
+assert r[\"result\"] == \"All finished successfully.\"
 "'
 
 # 10. scan_file('goose', path) helper
