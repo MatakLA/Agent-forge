@@ -101,9 +101,15 @@ class TestForemanStore(unittest.TestCase):
     def test_scenario_1_lost_update(self):
         """Scenario 1: Two threads each do 25 increments (50 total) under state_tx() with forced interleaving (20 runs)."""
         final_val = 0
+        runs_completed = 0
         for run_i in range(20):
             final_val = self._run_deterministic_lost_update(n_rounds=25)
             self.assertEqual(final_val, 50, f"Run {run_i}: expected 50, got {final_val}")
+            runs_completed += 1
+        self.assertEqual(runs_completed, 20, f"Expected 20 runs to ensure no flakiness, but only completed {runs_completed}")
+        self.assertEqual(run_i, 19, f"Expected 20 iterations (last index 19), got {run_i}")
+        assert runs_completed == 20
+        assert run_i == 19
         assert final_val == 50
 
     def test_scenario_2_jsave_crash_safety(self):
