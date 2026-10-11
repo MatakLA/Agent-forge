@@ -256,13 +256,18 @@ class TestForemanLoop(unittest.TestCase):
             loop.dispatch_ready()
 
         self.assertEqual(len(calls), 1)
+        assert len(calls) == 1
         self.assertEqual(calls[0][0], "0001-t1")
+        assert calls[0][0] == "0001-t1"
         tasks_after = {t["id"]: t for t in store.tasks()}
         self.assertEqual(tasks_after["0001-t1"]["status"], "running")
+        assert tasks_after["0001-t1"]["status"] == "running"
         pending_ids = [t["id"] for t in store.tasks() if t["status"] == "pending"]
         running_ids = [t["id"] for t in store.tasks() if t["status"] == "running"]
         self.assertNotIn("0001-t1", pending_ids)
+        assert "0001-t1" not in pending_ids
         self.assertIn("0001-t1", running_ids)
+        assert "0001-t1" in running_ids
 
     def test_dispatch_ready_file_overlap_bypass_racing_calls(self):
         """Scenario 2: two file-overlapping ready tasks must not be dispatched together even across racing calls."""
@@ -293,10 +298,14 @@ class TestForemanLoop(unittest.TestCase):
             loop.dispatch_ready()
 
         self.assertEqual(len(calls), 1)
+        assert len(calls) == 1
         self.assertEqual(calls[0][0], "0001-t1")
+        assert calls[0][0] == "0001-t1"
         tasks_after = {t["id"]: t for t in store.tasks()}
         self.assertEqual(tasks_after["0001-t1"]["status"], "running")
+        assert tasks_after["0001-t1"]["status"] == "running"
         self.assertEqual(tasks_after["0002-t2"]["status"], "pending")
+        assert tasks_after["0002-t2"]["status"] == "pending"
 
     def test_dispatch_ready_paused_goal_never_dispatched(self):
         """Scenario 3: a task whose goal has state 'paused' must never be returned or dispatched by dispatch_ready()."""
@@ -312,9 +321,12 @@ class TestForemanLoop(unittest.TestCase):
             dispatched = loop.dispatch_ready()
 
         self.assertEqual(mock_sh.call_count, 0)
+        assert mock_sh.call_count == 0
         self.assertEqual(dispatched or [], [])
+        assert dispatched == [] or dispatched is None
         tasks_after = {t["id"]: t for t in store.tasks()}
         self.assertEqual(tasks_after["0001-t1"]["status"], "pending")
+        assert tasks_after["0001-t1"]["status"] == "pending"
 
     def test_orphaned_run_detection_and_safeguards(self):
         """Scenario 4: detect dead runs without supervisor as orphaned; do not flag recent runs or runs of finished tasks."""
@@ -328,7 +340,9 @@ class TestForemanLoop(unittest.TestCase):
         open(os.path.join(run_dead, "pid"), "w").write("999999")
         with patch.object(sbx, "alive", return_value=False), \
              patch.object(sbx, "is_running", return_value=False):
-            self.assertTrue(loop.orphaned(run_dead))
+            is_dead_orphan = loop.orphaned(run_dead)
+            self.assertTrue(is_dead_orphan)
+            assert is_dead_orphan
 
         # Case B: Genuinely in progress (started seconds ago, matching live markers) -> NOT orphaned
         run_live = os.path.join(sbx.RUNS, "20261011T120001Z-worker-2")
@@ -339,7 +353,9 @@ class TestForemanLoop(unittest.TestCase):
         open(os.path.join(run_live, "pid"), "w").write("12345")
         with patch.object(sbx, "alive", return_value=True), \
              patch.object(sbx, "is_running", return_value=True):
-            self.assertFalse(loop.orphaned(run_live))
+            is_live_orphan = loop.orphaned(run_live)
+            self.assertFalse(is_live_orphan)
+            assert not is_live_orphan
 
         # Case C: Run of a different, already-finished task -> must NOT be re-flagged orphaned
         run_old_finished = os.path.join(sbx.RUNS, "20261011T120002Z-worker-3")
@@ -349,13 +365,19 @@ class TestForemanLoop(unittest.TestCase):
         json.dump(dict(task="0002-t2", status="running", worker="worker-3", dispatched="2026-10-10T00:00:00Z"),
                   open(os.path.join(run_old_finished, "meta.json"), "w"))
         with patch.object(sbx, "is_running", return_value=False):
-            self.assertFalse(loop.orphaned(run_old_finished))
+            is_old_orphan = loop.orphaned(run_old_finished)
+            self.assertFalse(is_old_orphan)
+            assert not is_old_orphan
 
         # Case D: Directory name not matching RUN_DIR_RE -> NOT orphaned
         run_invalid = os.path.join(sbx.RUNS, "invalid-dir-format")
         os.makedirs(run_invalid, exist_ok=True)
         with patch.object(sbx, "is_running", return_value=False):
-            self.assertFalse(loop.orphaned(run_invalid))
+            is_invalid_orphan = loop.orphaned(run_invalid)
+            self.assertFalse(is_invalid_orphan)
+            assert not is_invalid_orphan
+
+        assert is_dead_orphan and not is_live_orphan and not is_old_orphan and not is_invalid_orphan
 
     def test_recover_orphan_restores_dispatchability_and_worker_usability(self):
         """Scenario 5: recovered task is dispatchable and worker is immediately usable in pool.py."""
@@ -374,12 +396,17 @@ class TestForemanLoop(unittest.TestCase):
 
         recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
         self.assertEqual(recovered["status"], "pending")
+        assert recovered["status"] == "pending"
         self.assertIsNone(recovered.get("worker"))
+        assert recovered.get("worker") is None
         self.assertIsNone(recovered.get("run"))
+        assert recovered.get("run") is None
 
         # Worker is usable immediately according to pool.py
         self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
         self.assertNotIn("worker-1", pool.LAST_DISPATCHED)
+        assert "worker-1" not in pool.LAST_DISPATCHED
 
         # Assert task can be dispatched immediately to worker-1
         with patch.object(loop, "workers", return_value=["worker-1"]), \
@@ -389,9 +416,12 @@ class TestForemanLoop(unittest.TestCase):
             dispatched = loop.dispatch_ready()
 
         self.assertEqual(len(dispatched or []), 1)
+        assert len(dispatched or []) == 1
         dispatched_task = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
         self.assertEqual(dispatched_task["status"], "running")
+        assert dispatched_task["status"] == "running"
         self.assertEqual(dispatched_task["worker"], "worker-1")
+        assert dispatched_task["worker"] == "worker-1"
 
     def test_feed_idle_workers_accounts_for_planning_and_backlog_exhaustion(self):
         """Scenario 6: feed_idle_workers accounts for planning tasks and leaves idle workers alone when backlog exhausted."""
@@ -416,13 +446,19 @@ class TestForemanLoop(unittest.TestCase):
         # 1 ready + 2 planning = 3 coming >= 2 idle slots: must not pull extra backlog goals
         remaining_backlog = store.jload(backlog_path, [])
         self.assertEqual(remaining_backlog, ["Goal Backlog 1", "Goal Backlog 2"])
+        assert remaining_backlog == ["Goal Backlog 1", "Goal Backlog 2"]
         self.assertEqual(len(store.goals()), 1)
+        assert len(store.goals()) == 1
 
         # Workers are not marked busy without an actual run starting
         self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
         self.assertFalse(pool.worker_busy("worker-2"))
+        assert not pool.worker_busy("worker-2")
         self.assertNotIn("worker-1", pool.RESERVED)
+        assert "worker-1" not in pool.RESERVED
         self.assertNotIn("worker-2", pool.RESERVED)
+        assert "worker-2" not in pool.RESERVED
 
         # Exhaust backlog and assert idle workers are left alone (no retry loop or busy marks)
         store.jsave(backlog_path, [])
@@ -431,8 +467,11 @@ class TestForemanLoop(unittest.TestCase):
             loop.feed_idle_workers()
 
         self.assertEqual(len(store.goals()), 1)
+        assert len(store.goals()) == 1
         self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
         self.assertFalse(pool.worker_busy("worker-2"))
+        assert not pool.worker_busy("worker-2")
 
 
 if __name__ == "__main__":
