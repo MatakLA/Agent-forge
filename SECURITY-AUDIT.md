@@ -162,3 +162,39 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Location**: `bin/lib/foreman/knowledge.py:doc_path`, `doc_get`
 - **Abuse Scenario**: Even if a regular expression matches an unexpected pattern or symlinks exist within the configuration tree, unconfined path construction could allow escaping `CFG_DIR` or `roles/`.
 - **Fix**: Added canonical path resolution check verifying that `os.path.commonpath([base_dir, resolved]) == base_dir` and `resolved != base_dir`, ensuring target files remain strictly within their intended directory boundaries.
+## Credential Handling (`bin/secret-set`, `worker/git-credential-forgejo`, `bin/forgejo-api`)
+
+### Threat Model
+- **Input sources**: Stdin streams (`bin/secret-set`, `worker/git-credential-forgejo`), git helper invocation arguments and stdin queries (`worker/git-credential-forgejo`), CLI arguments and path/query specifications (`bin/forgejo-api`), secrets store files on disk (`~/.config/sandbox/secrets/*`, `/run/secrets/forgejo-token`).
+- **Sink / Reach**: Local filesystem (`~/.config/sandbox/secrets/*`), stdout/stderr streams, process arguments (`/proc/*/cmdline`), HTTP requests to Forgejo API (`urllib.request`).
+- **Sensitive data**: API keys (Anthropic, OpenAI, Gemini, Compat), upstream forge tokens (GitHub, GitLab), notification tokens (`notify.token`), Forgejo worker tokens, monitoring tokens (`monitor.token`).
+
+### Findings
+
+#### Finding 6: Insecure File Permissions via Pre-existing Temporary File in `bin/secret-set`
+- **Severity**: Medium
+- **Location**: `bin/secret-set`
+- **Abuse Scenario**: `bin/secret-set` created a temporary file `p + ".tmp"` using `os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)`. If `tmp` already existed (pre-created by another local user or a previous process with loose permissions such as 0666 or 0644), `os.open` with `O_CREAT` does not modify the permissions of an existing file. Subsequent `os.replace(tmp, p)` moved the loosely-permissioned file to `p`, leaving secrets world-readable. Additionally, pre-existing symlinks at `tmp` could lead to symlink traversal overwrites.
+- **Fix**: Explicitly removed any pre-existing `tmp` file with `os.unlink`, opened with `os.O_NOFOLLOW`, set mode `0o600` via `os.fchmod(fd, 0o600)` on the open file descriptor, and enforced `os.chmod(p, 0o600)` after `os.replace`. Confirmed that only a confirmation message (`stored <name> (<len> characters)`) is printed and the secret value is never echoed to stdout or stderr. Confirmed no insecure fallback locations are used.
+
+#### Finding 7: Credential Leakage via Shell Tracing (xtrace) and CLI Arguments in `worker/git-credential-forgejo`
+- **Severity**: Medium
+- **Location**: `worker/git-credential-forgejo`
+- **Abuse Scenario**:
+  1. When git or a worker executed the helper in a tracing/debug environment (such as `bash -x`, `set -x`, or inherited `SHELLOPTS=xtrace`), bash xtrace echoed `+ echo password=<TOKEN>` directly to stderr, leaking the worker's token into git command logs or container stderr.
+  2. If git called the helper with verbose/debug flags (`-v get` or `--verbose get`), the check `[ "${1:-}" = "get" ]` failed, aborting credential resolution.
+  3. If tokens were allowed to be passed via CLI arguments, `/proc/*/cmdline` would expose credentials to any user in the container or host PID namespace.
+- **Fix**: Suppressed shell tracing immediately at entry with `set +x 2>/dev/null` and `set +v 2>/dev/null`. Implemented argument parsing to handle `-v`, `--verbose`, `-d`, `--debug` flags gracefully without outputting tokens. Guaranteed that tokens are never accepted or parsed from argv. Tokens are read strictly from `/run/secrets/forgejo-token` (or `FORGEJO_TOKEN_FILE`), using bash built-in file substitution `$(< ...)` to prevent spawning child processes (`tr`). Confirmed no fallback to insecure default directories exists.
+
+#### Finding 8: Potential Credential Exposure in URL Query Strings in `bin/forgejo-api`
+- **Severity**: Low
+- **Location**: `bin/forgejo-api`
+- **Abuse Scenario**: If a caller attempted to pass authentication credentials in URL query strings (e.g. `/repos/.../pulls?token=...` or `?access_token=...`), the token would be sent across HTTP query parameters and recorded in web server access logs and Squid egress proxy logs (which are analyzed by `bin/lib/egress.py`).
+- **Fix**: Added explicit regex validation to reject any request containing `token=`, `access_token=`, or `secret=` in URL query parameters (`exit 2`). Confirmed that `bin/forgejo-api` places the monitoring token exclusively in the HTTP `Authorization: token <tok>` header. Handled `urllib.error.URLError` to prevent unhandled stack trace leaks. Confirmed no tokens are ever written to files under `runs/` (`ledger.jsonl`, `ALERT`, `events.jsonl`, transcripts). Confirmed no insecure default fallback exists.
+
+### How to Verify
+- Run the credential security test suite: `python3 tests/test_credentials.py` or `bash tests/check.sh`.
+- Test permission hardening: Pre-create `~/.config/sandbox/secrets/anthropic.key.tmp` with mode 0666, store a secret via `printf '%s' "test-token" | bin/secret-set anthropic.key`, and verify `stat -c '%a' ~/.config/sandbox/secrets/anthropic.key` outputs `600`.
+- Test tracing suppression: Run `bash -x worker/git-credential-forgejo get <<< "protocol=http"$'\n'"host=forgejo:3000"$'\n'` and verify the password value does not appear in stderr.
+- Test query token rejection: Run `bin/forgejo-api GET "/repos/sandbox/playground/pulls?token=test"` and verify exit code 2 and refusal message.
+- Verify static absence of argv/query credentials: `python3 -m unittest tests.test_credentials.TestForgejoApiSecurity.test_forgejo_api_source_code_uses_authorization_header_not_query`.
