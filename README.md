@@ -152,6 +152,7 @@ project picker → "+ New project", or `bin/foreman init-project`).
 
 [SETUP](docs/SETUP.md) · [RUNTIMES](docs/RUNTIMES.md) (API keys, costs) · [UPSTREAM](docs/UPSTREAM.md) (GitHub / GitLab) ·
 [PROVIDERS](docs/PROVIDERS.md) (orchestrator) · [ROLES](docs/ROLES.md) · [EFFICIENCY](docs/EFFICIENCY.md) ·
+[Picking an AI](docs/CHOOSING-AN-AI.md) · [Demo mode](docs/DEMO.md) ·
 [ARCHITECTURE](ARCHITECTURE.md) · [SECURITY](SECURITY.md) · [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md)
 
 `make check` runs the tests that need nothing (no Docker, no model calls); `make test` adds the integration tests of the
