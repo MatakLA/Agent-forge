@@ -11,6 +11,8 @@
 - Foreman merge: `step_gate_review_merge` and merge steps clear in-memory `PHASE` tracking on completion or mid-step failure, preventing dangling phases without active jobs.
 - Foreman merge: `step_upstream_merge` and gate steps recover tasks stuck in status 'merging' with no PR reference back to 'gate'.
 - Foreman store: serialize read-modify-write via `state_tx()` locking and ensure crash-safe atomic updates via temporary file replacement in `jsave()`.
+- Foreman store: prevent resurrection of deleted tasks and goals in `save_task()` and `save_goal()` by refusing to recreate files removed after being read.
+- Foreman store: support reentrant `state_tx()` and `locked()` in the same thread without deadlocking on nested file locks.
 
 **Secret store permission hardening.** `bin/secret-set` enforces mode 0600 on secrets files via `fchmod` and `chmod`, unlinks pre-existing temporary files with `O_NOFOLLOW` to prevent permission inheritance or symlink attacks, and confirms storage without echoing secret values.
 
