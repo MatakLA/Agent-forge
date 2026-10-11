@@ -4,24 +4,29 @@
 // ---- board
 function boardHtml() {
   const ts = F.tasks || [];
+  if (!ts.length) return '<div class="empty">No tasks yet — when goals are planned, their tasks appear here.</div>';
   const est = t => t.estimate ? '<span title="estimate: ' + esc(t.estimate.basis) + '">~' + fmtTok(t.estimate.tokens) + ' tok</span>' : '';
   const phase = id => { const st = ((F.live || {}).steps || []).find(x => x.key === 'task:' + id); return st ? st.phase : ''; };
   const cols = [['wait', 'Waiting', t => ['pending', 'splitting', 'approval'].includes(t.status)], ['run', 'Running', t => t.status === 'running'],
     ['check', 'Checking (tests, review, merge)', t => ['gate', 'review', 'merging', 'merge-ready'].includes(t.status)], ['done', 'Done', t => t.status === 'done'],
     ['stop', 'Blocked / cancelled', t => t.status === 'blocked' || t.status === 'cancelled']];
-  return '<div class="board">' + cols.map(([k, lab, f]) => {
+  const renderedTotal = cols.reduce((sum, [k, _, f]) => { const count = ts.filter(f).length; return sum + (k === 'done' || k === 'stop' ? Math.min(count, 15) : count); }, 0);
+  const summary = '<div class="muted small" style="margin-bottom:6px">' + (renderedTotal === ts.length ? ts.length + ' task(s)' : renderedTotal + ' of ' + ts.length + ' task(s) shown') + '. Click a task to open it.</div>';
+  return summary + '<div class="board">' + cols.map(([k, lab, f]) => {
     let items = ts.filter(f);
     if (k === 'done') items = items.slice().sort((a, b) => (b.finished || '').localeCompare(a.finished || ''));
     if (k === 'stop') items = items.slice().sort((a, b) => (a.status === 'blocked' ? 0 : 1) - (b.status === 'blocked' ? 0 : 1) || (b.updated || '').localeCompare(a.updated || ''));
     const total = items.length, shown = k === 'done' || k === 'stop' ? items.slice(0, 15) : items;
-    return '<div class="col"><h4>' + lab + '<span class="muted">' + total + '</span></h4>' + (shown.map(t => {
+    const countStr = total > shown.length ? shown.length + ' of ' + total : String(shown.length);
+    return '<div class="col"><h4>' + lab + '<span class="muted">' + countStr + '</span></h4>' + (shown.map(t => {
       const deps = (t.depends_on || []).filter(d => !ts.find(x => x.id === d && x.status === 'done'));
-      return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '"><div class="id">' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
+      return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
+        '<div class="id">' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
         (t.pin_worker ? ' <span class="badge" title="assigned by you">→ ' + esc(t.pin_worker) + '</span>' : '') + '</div><div class="t">' + esc(t.title) + '</div><div class="m">' +
         roleTag(t.role) + (t.worker && k !== 'wait' ? '<span>' + esc(t.worker) + '</span>' : '') +
         (t.attempts ? '<span class="warn">attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + '</span>' : '') +
         (t.pr ? '<span>PR #' + esc(t.pr) + '</span>' : '') + (deps.length && k === 'wait' ? '<span>waits for ' + deps.map(esc).join(', ') + '</span>' : '') +
-        (k === 'wait' ? est(t) : '') + (t.diff ? '<span class="plus">+' + t.diff.added + '</span><span class="minus">−' + t.diff.removed + '</span>' : '') +
+        (k === 'wait' ? est(t) : '') + (t.diff ? '<span class="plus" title="+' + t.diff.added + ' lines added">+' + t.diff.added + '</span><span class="minus" title="−' + t.diff.removed + ' lines removed">−' + t.diff.removed + '</span>' : '') +
         (phase(t.id) ? '<span class="accent">' + esc(phase(t.id)) + '</span>' : '') + '</div></div>';
     }).join('') || '<div class="empty">—</div>') + (total > shown.length ? '<div class="muted small center">… ' + (total - shown.length) + ' more (search finds them)</div>' : '') + '</div>';
   }).join('') + '</div>';
@@ -60,27 +65,31 @@ function dagSvg(nodes, crit) {
            '" fill="none" stroke="' + (hot ? 'var(--warn)' : 'var(--muted)') + '" stroke-width="' + (hot ? 2.5 : 1.3) + '"/>';
   }));
   nodes.forEach(t => { const p = pos[t.id], hot = onPath.has(t.id);
-    svg += '<g data-open="task:' + esc(t.id) + '"><title>' + esc(t.title) + ' · ' + esc(t.role) + ' · ' + esc(STATUS[t.status] || t.status) + '</title><rect x="' + p.x + '" y="' + p.y +
+    svg += '<g data-open="task:' + esc(t.id) + '" role="button" tabindex="0" focusable="true" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
+      '<title>' + esc(t.title) + ' · ' + esc(t.role) + ' · ' + esc(STATUS[t.status] || t.status) + '</title><rect x="' + p.x + '" y="' + p.y +
       '" width="' + BW + '" height="' + BH + '" rx="7" fill="var(--card2)" stroke="' + (NODECOL[t.status] || 'var(--idle)') + '" stroke-width="' + (hot ? 3 : 1.8) + '"' +
       (t.status === 'done' ? ' opacity=".55"' : '') + '/><text x="' + (p.x + 8) + '" y="' + (p.y + 15) + '">' + esc(t.id.slice(0, 24)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 29) +
       '" class="sub">' + esc(((STATUS[t.status] || t.status) + ' · ' + t.title)).slice(0, 27) + '</text></g>'; });
   return svg + '</svg>';
 }
 function graphHtml() {
-  const ts = (F.tasks || []).filter(t => t.status !== 'cancelled'), open = ts.filter(t => t.status !== 'done');
+  const allTasks = F.tasks || [];
+  if (!allTasks.length) return '<div class="empty">No tasks yet — the graph shows the work that is left and what it waits for.</div>';
+  const ts = allTasks.filter(t => t.status !== 'cancelled'), open = ts.filter(t => t.status !== 'done');
   if (!open.length) return '<div class="empty">No open tasks — the graph shows the work that is left and what it waits for.</div>';
   const need = new Set(open.flatMap(t => t.depends_on || []));
   const nodes = ts.filter(t => t.status !== 'done' || need.has(t.id));
   const crit = criticalPath(nodes);
   const left = crit.path.filter(id => (nodes.find(t => t.id === id) || {}).status !== 'done');
-  return '<div class="muted small" style="margin-bottom:6px">' + open.length + ' open task(s). <b class="warn">Critical path</b>: ' + left.length + ' task(s) in a row (' +
+  const depCount = nodes.length - open.length;
+  return '<div class="muted small" style="margin-bottom:6px">' + nodes.length + ' task(s) in graph (' + open.length + ' open' + (depCount ? ', ' + depCount + ' finished dependencies' : '') + '). <b class="warn">Critical path</b>: ' + left.length + ' task(s) in a row (' +
     left.map(esc).join(' → ') + ') — about ' + fmtTok(crit.len) + ' tokens of work that cannot run in parallel. Click a task to open it.</div>' +
     '<div class="tablewrap pad">' + dagSvg(nodes, crit) + '</div>' +
     '<div class="legend">' + [['pending', 'waiting'], ['running', 'running'], ['gate', 'checking'], ['approval', 'needs you'], ['blocked', 'blocked'], ['done', 'done (a dependency)']]
       .map(([k, l]) => '<span><i style="background:' + NODECOL[k] + '"></i>' + l + '</span>').join('') + '</div>';
 }
 function renderTasks(force) {
-  if (!F) return setHTML('tasks-view', '<div class="empty">loading…</div>', force);
+  if (!F) return setHTML('tasks-view', window._ferr ? '<div class="empty bad">Could not load tasks: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>', force);
   setHTML('tasks-view', SUB.tasks === 'graph' ? graphHtml() : boardHtml(), force);
 }
 
@@ -123,32 +132,34 @@ function taskForm(t) {
 }
 function runsTable(runs) {
   if (!runs.length) return small('No finished run yet.');
-  return '<div class="tablewrap"><table class="m"><tr><th>when</th><th>worker</th><th>model</th><th>outcome</th><th class="num">tokens</th><th class="num">cost</th><th class="num">time</th><th></th></tr>' +
+  return '<div class="tablewrap"><table class="m"><tr><th>when</th><th>worker</th><th>model</th><th>outcome</th><th class="num">tokens</th><th class="num">cost / quota</th><th class="num">time</th><th></th></tr>' +
     runs.map(r => '<tr><td>' + esc(dfmt(r.at)) + '</td><td>' + esc(r.worker) + '</td><td>' + esc(r.runtime !== 'agy' ? (RTNAME[r.runtime] || r.runtime) : (r.model || '')) + '</td><td>' +
-      esc(r.reason) + '</td><td class="num">' + fmtTok(r.tokens) + '</td><td class="num">' + (r.cost_usd ? usd(r.cost_usd) : r.week != null ? r.week + ' %wk' : '–') +
+      esc(r.reason) + '</td><td class="num">' + fmtTok(r.tokens) + '</td><td class="num">' + (r.cost_usd ? usd(r.cost_usd) : r.week != null ? r.week + ' % quota' : '–') +
       '</td><td class="num">' + dur(r.duration_s) + '</td><td><button class="linkbtn" data-open="run:' + esc(r.run_id) + '">replay</button></td></tr>').join('') + '</table></div>';
 }
 function renderTaskSheet() {
   if (SHEET.kind !== 'task') return;
   const id = TD.id, live = F && (F.tasks || []).find(x => x.id === id), d = TD.data;
-  if (!d && !live) return setSheet('task', id, TD.err ? '<div class="empty">' + esc(TD.err) + '</div>' : '<div class="empty">loading ' + esc(id) + '…</div>');
+  if (!d && !live) return setSheet('task', id, TD.err ? '<div class="empty bad">Could not load task: ' + esc(TD.err) + '</div>' : '<div class="empty">loading ' + esc(id) + '…</div>');
   const t = Object.assign({}, d ? d.task : {}, live || {});            // live state wins (status, worker)
   if (live && d && live.updated && live.updated !== d.task.updated && Date.now() - TD.at > 3000) { TD.at = Date.now(); loadTaskDetail(id); }
   const g = F && (F.goals || []).find(x => x.id === t.goal), tot = d ? d.totals : null, orch = d ? d.orchestrator : null;
   const hist = (t.history || []).slice().reverse().map(h => '<div class="hist"><b>' + esc(dfmt(h.at)) + ' · ' + esc(h.outcome) + '</b>' + (h.reviewer ? ' (' + esc(h.reviewer) + ')' : '') +
-    '<br>' + esc(h.feedback || h.why || h.what || h.note || '') + '</div>').join('');
+    '<br>' + esc(tsloc(h.feedback || h.why || h.what || h.note || '')) + '</div>').join('');
   const prLink = t.pr_url ? '<a href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">PR #' + esc(t.pr || '') + '</a>' : t.pr ? 'PR #' + esc(t.pr) : '';
   const est = (d && d.estimate) || t.estimate;
-  const html = '<h2>' + esc(t.title || id) + '</h2><div class="sub">' + [esc(id), roleTag(t.role || ''), chip(t.status), t.worker ? esc(t.worker) : '',
+  const subMeta = [esc(id), roleTag(t.role || ''), chip(t.status), t.worker ? esc(t.worker) : '',
       t.runtime && t.runtime !== 'agy' ? esc(RTNAME[t.runtime] || t.runtime) : '', prLink, t.risk === 'risky' ? '<span class="badge warn">risky</span>' : '',
       t.pin_worker ? '<span class="badge">→ ' + esc(t.pin_worker) + '</span>' : '', t.model_override ? '<span class="badge">model ' + esc(t.model_override) + '</span>' : '',
-      'attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4)].filter(Boolean).join(' · ') + '</div>' +
+      'attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4),
+      t.created ? 'created ' + esc(dfmt(t.created)) : '', t.finished ? 'finished ' + esc(dfmt(t.finished)) : ''].filter(Boolean).join(' · ');
+  const html = '<h2>' + esc(t.title || id) + '</h2><div class="sub">' + subMeta + '</div>' +
     '<div class="btnrow">' + taskActions(t) + '</div>' + taskForm(t) +
-    (g ? '<div class="goalref">Goal: <a data-open="goal:' + esc(g.id) + '">' + esc(g.text.slice(0, 140)) + '</a></div>' : '') +
-    (t.status === 'approval' && t.awaiting === 'merge' && t.merge_feedback ? '<h3>The review says</h3><div class="note">' + esc(t.merge_feedback) + '</div>' : '') +
-    (t.blocked_why ? '<h3 class="bad">Why blocked</h3><pre>' + esc(t.blocked_why) + '</pre>' : '') +
-    (t.feedback && !['done', 'cancelled'].includes(t.status) ? '<h3>Latest feedback to the worker</h3><pre>' + esc(t.feedback) + '</pre>' : '') +
-    (t.owner_notes ? '<h3>Your notes</h3><pre>' + esc(t.owner_notes) + '</pre>' : '') +
+    (g ? '<div class="goalref">Goal: <button class="linkbtn" data-open="goal:' + esc(g.id) + '" style="font:inherit;text-align:left">' + esc(g.text.slice(0, 140)) + '</button></div>' : '') +
+    (t.status === 'approval' && t.awaiting === 'merge' && t.merge_feedback ? '<h3>The review says</h3><div class="note">' + esc(tsloc(t.merge_feedback)) + '</div>' : '') +
+    (t.blocked_why ? '<h3 class="bad">Why blocked</h3><pre>' + esc(tsloc(t.blocked_why)) + '</pre>' : '') +
+    (t.feedback && !['done', 'cancelled'].includes(t.status) ? '<h3>Latest feedback to the worker</h3><pre>' + esc(tsloc(t.feedback)) + '</pre>' : '') +
+    (t.owner_notes ? '<h3>Your notes</h3><pre>' + esc(tsloc(t.owner_notes)) + '</pre>' : '') +
     '<h3>Cost</h3><div class="kpis">' +
       (est && !['done', 'cancelled'].includes(t.status) ? '<div><b>~' + fmtTok(est.tokens) + '</b><span>estimated tokens<br>(' + esc(est.basis) + ')</span></div>' : '') +
       (tot && tot.runs ? '<div><b>' + tot.runs + '</b><span>runs</span></div><div><b>' + fmtTok(tot.tokens) + '</b><span>tokens</span></div>' +
@@ -158,11 +169,11 @@ function renderTaskSheet() {
     (d ? runsTable(d.runs || []) : small('loading the runs…')) +
     ((t.acceptance || []).length ? '<h3>Acceptance criteria</h3><ul class="plain">' + t.acceptance.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '') +
     (t.spec ? '<details' + (['done', 'cancelled'].includes(t.status) ? '' : ' open') + '><summary>Spec</summary><pre>' + esc(t.spec) + '</pre></details>' : '') +
-    ((t.files || []).length ? '<h3>Files</h3><div class="mono small">' + t.files.map(esc).join('<br>') + '</div>' : '') +
+    ((t.files || []).length ? '<h3>Files (' + t.files.length + ')</h3><div class="mono small">' + t.files.map(esc).join('<br>') + '</div>' : '') +
     ((t.mutations || []).length ? '<h3>Mutation tests</h3><pre>' + esc(t.mutations.join('\n')) + '</pre>' : '') +
     (t.gate_tail ? '<details><summary>Last gate output</summary><pre>' + esc(t.gate_tail) + '</pre></details>' : '') +
     (hist ? '<h3>History</h3>' + hist : '') +
-    (t.diff || t.pr || t.status === 'approval' ? '<h3>Changes</h3>' + (TD.diff == null ? '<button class="mini" data-tdiff>' + (TD.diffLoading ? 'loading…' : 'Show the diff') + '</button>' : diffHtml(TD.diff)) : '');
+    (t.diff || t.pr || t.status === 'approval' ? '<h3>Changes</h3>' + (TD.diff == null ? '<button class="mini" data-tdiff' + (TD.diffLoading ? ' disabled' : '') + '>' + (TD.diffLoading ? 'loading diff…' : 'Show the diff') + '</button>' : diffHtml(TD.diff)) : '');
   setSheet('task', id, html);
 }
 async function loadTaskDiff() {
@@ -173,6 +184,12 @@ async function loadTaskDiff() {
 }
 // a diff, file by file, each file foldable; long files start folded
 function diffHtml(text) {
+  if (!text || !text.trim() || text.startsWith('(no diff') || text === 'no changes') {
+    return '<div class="empty">No diff available</div>';
+  }
+  if (text.startsWith('(could not load') || text.startsWith('(error:') || text.startsWith('(invalid task')) {
+    return '<div class="empty bad">' + esc(text) + '</div>';
+  }
   const files = [], lines = text.split('\n').slice(0, 8000);
   let cur = null;
   for (const l of lines) {
@@ -182,8 +199,9 @@ function diffHtml(text) {
     if (l.startsWith('-') && !l.startsWith('---')) cur.del++;
     if (!l.startsWith('+++') && !l.startsWith('---') && !l.startsWith('index ')) cur.lines.push(l);
   }
-  if (!files.length || (files.length === 1 && !files[0].name && !files[0].lines.join('').trim())) return '<div class="empty">' + esc(text.slice(0, 300) || 'no changes') + '</div>';
-  return files.map(f => '<details class="dfile"' + (f.lines.length < 400 ? ' open' : '') + '><summary><span class="mono">' + esc(f.name || '(diff)') + '</span> <span class="plus">+' + f.add +
+  const validFiles = files.filter(f => f.name || f.add || f.del || f.lines.length);
+  if (!validFiles.length) return '<div class="empty">No diff available</div>';
+  return validFiles.map(f => '<details class="dfile"' + (f.lines.length < 400 ? ' open' : '') + '><summary><span class="mono">' + esc(f.name || '(diff)') + '</span> <span class="plus">+' + f.add +
     '</span> <span class="minus">−' + f.del + '</span></summary><div class="diff">' + f.lines.map(l => {
       const c = l.startsWith('@@') ? 'at' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'r' : '';
       return '<div' + (c ? ' class="' + c + '"' : '') + '>' + (esc(l) || ' ') + '</div>'; }).join('') + '</div></details>').join('');
@@ -201,6 +219,32 @@ document.addEventListener('click', async e => {
     const ok = await taskAction(TD.id, act, act === 'feedback' ? {text} : {target});
     ts.disabled = false;
     if (ok) { TD.form = null; $('sheet').dataset.html = ''; renderTaskSheet(); }
+  }
+});
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && !typing(e.target)) {
+    const op = e.target.closest('[data-open]');
+    if (op) {
+      e.preventDefault();
+      const [kind, id] = op.dataset.open.split(/:(.*)/s);
+      if (kind === 'task') openTask(id);
+      else if (kind === 'goal') openGoal(id);
+      else if (kind === 'run') openRun(id);
+      return;
+    }
+    const btn = e.target.closest('[role="button"]');
+    if (btn) {
+      e.preventDefault();
+      if (typeof btn.click === 'function') btn.click();
+      else btn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+      return;
+    }
+  }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (e.target.id === 'tf-text' || e.target.id === 'tf-target') {
+      const sendBtn = document.querySelector('[data-tsend]');
+      if (sendBtn) { e.preventDefault(); sendBtn.click(); }
+    }
   }
 });
 projectResets.push(() => { TD.id = null; TD.data = null; });

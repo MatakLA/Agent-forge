@@ -64,8 +64,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   click('nav button[data-t="overview"]'); await sleep(500);
   w.openTask('0010-overdue-color'); await sleep(2500);
   check('task sheet: merge actions and runs', txt('sheet').includes('Merge') && txt('sheet').includes('Send back'));
+  const taskSheetAct = [...d.querySelectorAll('#sheet [data-open], #sheet [data-ta], #sheet [data-tform], #sheet [data-tdiff]')];
+  check('task sheet: all interactive controls reachable by keyboard',
+        taskSheetAct.length > 0 && taskSheetAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
+  check('diff: empty or missing diff renders explicit empty state',
+        w.eval("diffHtml('')").includes('No diff available') && w.eval("diffHtml('(no diff recorded for this task)')").includes('No diff available'));
   w.openGoal('G20261008-062000'); await sleep(2500);
   check('goal sheet: tasks, events, criteria', txt('sheet').includes('What happened') && txt('sheet').includes('Done when'));
+  const goalSheetAct = [...d.querySelectorAll('#sheet [data-open], #sheet [data-ga], #sheet [data-gform], #sheet [data-gdiff]')];
+  check('goal sheet: all interactive controls reachable by keyboard',
+        goalSheetAct.length > 0 && goalSheetAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
+  w.eval(`
+    window._origGDData = GD.data;
+    GD.data = Object.assign({}, GD.data, {tasks: []});
+    renderGoalSheet();
+  `);
+  check('goal sheet: zero tasks shows explicit empty state',
+        txt('sheet').includes('No tasks yet'));
+  w.eval(`
+    GD.data = window._origGDData;
+    renderGoalSheet();
+  `);
   const rid = (w.eval('F').timeline || []).find(r => r.end && r.run_id);
   if (rid) { w.openRun(rid.run_id); await sleep(2500); check('replay sheet opens', txt('sheet').includes('Run ')); }
   w.openSearch(); const q = d.getElementById('sr-q'); q.value = 'due'; q.dispatchEvent(new w.Event('input', {bubbles: true})); await sleep(3000);
@@ -73,8 +92,37 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   w.openDoc('role:tester'); await sleep(2000);
   check('document editor opens', !!d.getElementById('doc-text'));
   w.closeSheet();
+  w.eval("SUB.tasks = 'board'"); w.setTab('tasks'); await sleep(800);
+  const taskCards = [...d.querySelectorAll('#t-tasks .card')];
+  check('tasks: board cards are keyboard reachable',
+        taskCards.length > 0 && taskCards.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  const boardCols = [...d.querySelectorAll('#t-tasks .col')];
+  check('tasks: board header task count matches rendered cards for each column',
+        boardCols.length > 0 && boardCols.every(col => {
+          const m = (col.querySelector('h4 .muted') || {}).textContent || '';
+          const rendered = col.querySelectorAll('.card').length;
+          const num = parseInt(m.split(' ')[0], 10);
+          return num === rendered;
+        }));
   w.eval("SUB.tasks = 'graph'"); w.setTab('tasks'); await sleep(800);
   check('graph shows the critical path', txt('tasks-view').includes('Critical path'));
+  const graphNodes = [...d.querySelectorAll('.dag g[data-open]')];
+  check('tasks: graph nodes are keyboard reachable',
+        graphNodes.length > 0 && graphNodes.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  w.eval(`
+    window._origFTasks = F.tasks;
+    F.tasks = [];
+    renderTasks(true);
+  `);
+  check('tasks: graph shows explicit empty state when zero tasks',
+        txt('tasks-view').includes('No tasks yet'));
+  w.eval("SUB.tasks = 'board'; renderTasks(true);");
+  check('tasks: board shows explicit empty state when zero tasks',
+        txt('tasks-view').includes('No tasks yet'));
+  w.eval(`
+    F.tasks = window._origFTasks;
+    renderTasks(true);
+  `);
   // the egress view with a blocked host, an alarm and the kill switch it tripped (the demo has no proxy log)
   w.eval(`SYS.egress = {health: {ok: true, mode: 'enforce'}, since: '2026-10-08T00:00:00Z', allowed: {'api.anthropic.com': 12}, denied: {'pypi.org': 3, 'stats.example.net': 1},
     noise: {}, new_domains: {'worker-2 pypi.org': 3}, private: [], alarms: [{level: 'HIGH', code: 'new-domain', message: 'worker-2 tried pypi.org'}],
