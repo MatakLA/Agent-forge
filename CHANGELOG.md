@@ -16,6 +16,9 @@ sandbox may not reach your notification server itself); the file can be deleted 
 
 `worker/entrypoint.sh`: Validate `FORGEJO_USER` and `FORGE_REPO` against strict allow-patterns before execution, quote all shell variable expansions, set umask 077, strip group/other permissions on workspace and `.git`, and drop root privileges to unprivileged `worker` user.
 `egress/entrypoint.sh`: Validate `EGRESS_MODE` against allow-pattern `^(enforce|discovery)$`, set umask 027, verify enforce configuration parsing before daemon exec, and drop root privileges to unprivileged `proxy` user.
+`web/server.py`: Enforce Host header validation across all request paths including `/healthz` and require numeric ports to prevent DNS rebinding.
+`web/server.py`: Validate Origin and Referer headers against allowed hosts on state-changing POST requests as a CSRF guard.
+`web/server.py`: Redact DASHBOARD_TOKEN from error messages and response payloads to prevent secret leakage.
 
 ## 0.11.0 - 2026-10-08
 **You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each

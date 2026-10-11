@@ -23,6 +23,10 @@ def check(name, ok):
 check("host_allowed: localhost, 127.0.0.1:port, *.ts.net; not other names",
       srv.host_allowed("127.0.0.1:8171") and srv.host_allowed("localhost") and srv.host_allowed("box.tail1234.ts.net:6443")
       and not srv.host_allowed("evil.example") and not srv.host_allowed("127.0.0.1.evil.example") and not srv.host_allowed(""))
+check("host_allowed: port must be numeric, rejects injected host in port",
+      not srv.host_allowed("127.0.0.1:evil.com") and not srv.host_allowed("localhost:evil.com")
+      and not srv.host_allowed("[::1]:evil.com") and not srv.host_allowed("[::1]evil.com")
+      and not srv.host_allowed(".ts.net"))
 check("token_ok: cookie or query token, constant-time compare", srv.token_ok("a=1; af_token=s3cret") and srv.token_ok("", "s3cret")
       and not srv.token_ok("af_token=nope") and not srv.token_ok(None))
 
@@ -60,10 +64,25 @@ check("static: nothing outside the known files (no path traversal)", s == 404 an
 import glob
 inline = [f for f in glob.glob(os.path.join(ROOT, "web", "static", "**", "*.*"), recursive=True) if "onclick=" in open(f).read()]
 check("static: no inline event handlers (the CSP would block them)", not inline)
+s, _, _ = req("GET", "/healthz", host="attacker.example")
+check("DNS rebinding: /healthz refuses foreign Host", s == 403)
 s, _, _ = req("GET", "/api/projects", host="attacker.example")
 check("DNS rebinding: a foreign Host is refused", s == 403)
 s, _, _ = req("POST", "/api/killswitch", {"action": "on"})
 check("CSRF: POST without X-Agent-Forge is refused and runs nothing", s == 403 and not calls)
+s, _, _ = req("POST", "/api/killswitch", {"action": "on"}, {"X-Agent-Forge": "1", "Origin": "http://attacker.example"})
+check("CSRF: POST with foreign Origin is refused", s == 403)
+s, _, _ = req("POST", "/api/killswitch", {"action": "on"}, {"X-Agent-Forge": "1", "Origin": "null"})
+check("CSRF: POST with null Origin is refused", s == 403)
+s, _, _ = req("POST", "/api/killswitch", {"action": "on"}, {"X-Agent-Forge": "1", "Referer": "http://attacker.example/attack"})
+check("CSRF: POST with foreign Referer is refused", s == 403)
+s, _, _ = req("POST", "/api/killswitch", {"action": "on"}, {"X-Agent-Forge": "1", "Origin": f"http://127.0.0.1:{port}", "Referer": f"http://127.0.0.1:{port}/"})
+check("CSRF: POST with allowed Origin/Referer succeeds", s == 200)
+old_ssh = srv.B.ssh_run_full
+srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (1, "", "failure leaking s3cret in stderr")
+s, _, out = req("POST", "/api/doc", {"name": "vision", "reset": True}, {"X-Agent-Forge": "1"})
+srv.B.ssh_run_full = old_ssh
+check("token redaction: dashboard token is never leaked in error response body", "s3cret" not in out and "[REDACTED]" in out)
 s, _, out = req("POST", "/api/goal", {"text": "Add CSV export'; rm -rf / #", "mode": "now"}, {"X-Agent-Forge": "1"})
 check("goal text goes to stdin, never into the command", s == 200 and calls and calls[-1][0].endswith("bin/foreman goal -")
       and calls[-1][1] == "Add CSV export'; rm -rf / #")
