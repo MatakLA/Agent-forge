@@ -41,6 +41,8 @@ class TestForemanMerge(unittest.TestCase):
 
         self.old_sbx_secrets = sbx.SECRETS
         sbx.SECRETS = os.path.join(self.tmp, "secrets")
+        self.old_sbx_runs = sbx.RUNS
+        sbx.RUNS = os.path.join(self.tmp, "runs")
 
         ctx.FD = os.path.join(self.tmp, "foreman")
         ctx.REPO = os.path.join(ctx.FD, "repo")
@@ -63,6 +65,7 @@ class TestForemanMerge(unittest.TestCase):
         ctx.REPO = self.old_repo
         ctx.C = self.old_c
         sbx.SECRETS = self.old_sbx_secrets
+        sbx.RUNS = self.old_sbx_runs
         merge.sh = self.old_sh
         merge.already_merged_pr = self.old_already_merged_pr
         merge.upstream_obj = self.old_upstream_obj
@@ -85,6 +88,7 @@ class TestForemanMerge(unittest.TestCase):
         # Round 4: must block immediately after exactly 4 rounds
         merge.requeue_gate(t1_cur, "main moved 4")
         t1_cur = merge.live_task(t1)
+        assert t1_cur["status"] == "blocked"
         self.assertEqual(t1_cur["status"], "blocked", "Round 4 must block the task")
         self.assertEqual(t1_cur["regates"], 4)
         self.assertIn("after 4 tries", t1_cur.get("blocked_why", ""))
@@ -94,6 +98,7 @@ class TestForemanMerge(unittest.TestCase):
         merge.save_task(t2)
         merge.requeue_gate(t2, "busy")
         t2_cur = merge.live_task(t2)
+        assert t2_cur["status"] == "gate"
         self.assertEqual(t2_cur["status"], "gate", "Task 2 must not be affected by Task 1's budget")
         self.assertEqual(t2_cur["regates"], 1)
 
@@ -111,6 +116,7 @@ class TestForemanMerge(unittest.TestCase):
         self.assertTrue(callable(fn))
         fn()
         t_after = merge.live_task(t)
+        assert t_after["status"] == "done"
         self.assertEqual(t_after["status"], "done")
         self.assertEqual(t_after["pr"], 88)
         self.assertEqual(called_sh, [], "do_merge must not call open-pr or merge-pr when already merged")
@@ -123,6 +129,7 @@ class TestForemanMerge(unittest.TestCase):
         self.assertTrue(callable(fn_owner))
         fn_owner()
         t_owner_after = merge.live_task(t_owner)
+        assert t_owner_after["status"] == "done"
         self.assertEqual(t_owner_after["status"], "done")
         self.assertEqual(t_owner_after["pr"], 88)
 
@@ -159,6 +166,7 @@ class TestForemanMerge(unittest.TestCase):
             self.assertTrue(callable(fn))
             fn()
             t_after = merge.live_task(t)
+            assert t_after["status"] == "done"
             self.assertEqual(t_after["status"], "done")
             self.assertEqual(t_after["pr"], 15)
             self.assertEqual(len(synced_args), 1)
@@ -175,6 +183,7 @@ class TestForemanMerge(unittest.TestCase):
         ]
         merge.sh = lambda cmd, **kw: (0, json.dumps(closed_prs), "") if "pulls?state=closed" in cmd[2] else (1, "", "")
         pr_num = merge.already_merged_pr("feat/my-target")
+        assert pr_num == 3
         self.assertEqual(pr_num, 3)
 
     def test_auto_rebase_non_union_shared_file_conflict(self):
@@ -217,6 +226,7 @@ class TestForemanMerge(unittest.TestCase):
         sbx.FORGE_URL = "file://" + self.tmp
         sbx.FORGE_REPO = "forge"
         rb_res = merge.auto_rebase("feat/0001-conflict")
+        assert rb_res == "conflict"
         self.assertEqual(rb_res, "conflict")
 
 

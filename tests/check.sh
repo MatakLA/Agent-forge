@@ -36,6 +36,9 @@ if [ -f tests/test_foreman_pool.py ]; then
   $PY tests/test_foreman_pool.py | grep -q "ALL OK" || { $PY tests/test_foreman_pool.py; exit 1; }
   echo "pool tests: ALL OK"
 fi
+if [ -f tests/test_knowledge_paths.py ]; then
+  $PY tests/test_knowledge_paths.py || exit 1
+fi
 echo "check: ALL OK"
 
 
