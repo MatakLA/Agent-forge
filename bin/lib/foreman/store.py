@@ -2,6 +2,8 @@
 Public interface: jload, jsave, gstate, gsave, state_tx, locked, event, goals, save_goal, tasks, save_task, notify.
 Important invariants:
 - Read-modify-write goes through locked() / state_tx() (thread lock + flock) to prevent lost updates.
+- state_tx() and locked() support reentrant nesting in the same thread without deadlock.
+- save_task() and save_goal() refuse to resurrect deleted files with stale in-memory data.
 - Atomic writes in jsave() write to a temp file in the same directory before replacing to prevent corruption.
 - jload() safely falls back to default on missing or unparseable files."""
 import contextlib, fcntl, json, os, re, sys, threading, time
@@ -44,6 +46,8 @@ def gsave(s):
 
 
 STATE_LOCK = threading.RLock()
+_LOCK_DEPTH = threading.local()
+_TX_STATE = threading.local()
 
 
 @contextlib.contextmanager
@@ -51,20 +55,41 @@ def locked():
     """Exclusive access to this project's mutable shared files (state.json, backlog.json, owner_questions.json) for a
     read-modify-write: across the loop's threads (RLock) and across processes - the daemon and a CLI command such as
     `bin/foreman backlog add` (flock). Without it, two writers silently lost each other's update."""
+    depth = getattr(_LOCK_DEPTH, "depth", 0)
     with STATE_LOCK:
-        os.makedirs(ctx.FD, exist_ok=True)
-        with open(os.path.join(ctx.FD, ".state.lock"), "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            yield
+        if depth == 0:
+            os.makedirs(ctx.FD, exist_ok=True)
+            with open(os.path.join(ctx.FD, ".state.lock"), "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                _LOCK_DEPTH.depth = 1
+                try:
+                    yield
+                finally:
+                    _LOCK_DEPTH.depth = 0
+        else:
+            _LOCK_DEPTH.depth = depth + 1
+            try:
+                yield
+            finally:
+                _LOCK_DEPTH.depth = depth
 
 
 @contextlib.contextmanager
 def state_tx():
     """`with state_tx() as st:` - read state.json, change it, saved on exit (under locked())."""
     with locked():
-        st = gstate()
-        yield st
-        gsave(st)
+        st = getattr(_TX_STATE, "st", None)
+        if st is not None:
+            yield st
+            gsave(st)
+        else:
+            st = gstate()
+            _TX_STATE.st = st
+            try:
+                yield st
+                gsave(st)
+            finally:
+                _TX_STATE.st = None
 
 
 def new_goal_id(suffix=""):
@@ -78,11 +103,25 @@ def new_goal_id(suffix=""):
 
 def goals():
     d = os.path.join(ctx.FD, "goals")
-    return [jload(os.path.join(d, f)) for f in sorted(os.listdir(d))] if os.path.isdir(d) else []
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for f in sorted(os.listdir(d)):
+        g = jload(os.path.join(d, f))
+        if isinstance(g, dict):
+            g.setdefault("updated", "")
+            out.append(g)
+    return out
 
 
 def save_goal(g):
-    jsave(os.path.join(ctx.FD, "goals", g["id"] + ".json"), g)
+    p = os.path.join(ctx.FD, "goals", g["id"] + ".json")
+    if "updated" in g and not os.path.exists(p):
+        # A deleted goal stays deleted; do not resurrect with stale in-memory state.
+        return False
+    g["updated"] = sbx.now()
+    jsave(p, g)
+    return True
 
 
 def tasks():
@@ -98,13 +137,19 @@ def tasks():
             continue
         t = jload(os.path.join(d, f))
         if isinstance(t, dict):
+            t.setdefault("updated", "")
             out.append(t)
     return out
 
 
 def save_task(t):
+    p = os.path.join(ctx.FD, "tasks", t["id"] + ".json")
+    if "updated" in t and not os.path.exists(p):
+        # A deleted task stays deleted; do not resurrect with stale in-memory state.
+        return False
     t["updated"] = sbx.now()
-    jsave(os.path.join(ctx.FD, "tasks", t["id"] + ".json"), t)
+    jsave(p, t)
+    return True
 
 
 def next_task_number():
