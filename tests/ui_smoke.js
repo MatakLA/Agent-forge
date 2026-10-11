@@ -192,11 +192,95 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     txt('system').includes('Health check not yet run'));
   check('no page error shown', !txt('jserr'));
   click('nav button[data-t="settings"]'); await sleep(800);
+
+  // Settings / Project: task 0024 fields
   click('#settings-seg button[data-v="project"]'); await sleep(800);
-  const diffField = d.getElementById('set-DIFF_MAX');
-  const diffHelp = d.querySelector('[for="set-DIFF_MAX"] .help');
-  check('settings: newly added fields present with non-empty help',
-        !!diffField && !!diffHelp && diffHelp.textContent.trim().length > 0);
+  const projKeys0024 = ['DIFF_MAX', 'MAX_GOAL_ROUNDS', 'LESSONS_MAX', 'LOOP_SEC', 'LOCAL_TZ', 'SHARED_FILES', 'VISION_FILE', 'PROJECT_DIR'];
+  const projOk = projKeys0024.every(k => {
+    const el = d.getElementById('set-' + k);
+    const help = d.querySelector('[for="set-' + k + '"] .help');
+    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
+  });
+  check('settings / project: task 0024 fields present as inputs with help stating live reload', projOk);
+
+  // Settings / Limits: task 0024 fields
+  click('#settings-seg button[data-v="limits"]'); await sleep(800);
+  const limitsKeys0024 = ['DAILY_TOKEN_BUDGET', 'MAX_RUNS_PER_DAY', 'RUN_TIMEOUT_MAX_MIN', 'QUOTA_MODEL_FILTER', 'POLL_SEC'];
+  const limitsOk = limitsKeys0024.every(k => {
+    const el = d.getElementById('set-' + k);
+    const help = d.querySelector('[for="set-' + k + '"] .help');
+    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
+  });
+  check('settings / limits: task 0024 fields present as inputs with help stating live reload', limitsOk);
+
+  // Settings / Models: task 0024 fields
+  click('#settings-seg button[data-v="models"]'); await sleep(800);
+  const oaiBase = d.getElementById('set-OPENAI_API_BASE');
+  const oaiHelp = d.querySelector('[for="set-OPENAI_API_BASE"] .help');
+  check('settings / models: OPENAI_API_BASE present as input with help stating live reload',
+        !!oaiBase && !!oaiHelp && oaiHelp.textContent.trim().length > 0 && oaiHelp.textContent.toLowerCase().includes('applies live'));
+
+  // Settings / Money: task 0024 PROJECT_* budget fields
+  click('#settings-seg button[data-v="money"]'); await sleep(800);
+  const moneyKeys0024 = ['PROJECT_DAILY_BUDGET_USD', 'PROJECT_MONTHLY_BUDGET_USD'];
+  const moneyOk = moneyKeys0024.every(k => {
+    const el = d.getElementById('set-' + k);
+    const help = d.querySelector('[for="set-' + k + '"] .help');
+    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
+  });
+  check('settings / money: PROJECT_* budget fields present as inputs with help stating live reload', moneyOk);
+
+  // Settings: restart text accuracy
+  const restartHelpOk = w.eval("HELP.FORGE_URL.includes('restart') && HELP.FORGE_REPO.includes('restart')");
+  check('settings: keys requiring service restart state so explicitly in help', restartHelpOk);
+
+  // Settings / Knowledge: doc rows keyboard reachable
+  click('#settings-seg button[data-v="knowledge"]'); await sleep(800);
+  const docRows = [...d.querySelectorAll('.docrow')];
+  check('settings / knowledge: document rows are keyboard reachable',
+        docRows.length > 0 && docRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+
+  // Settings: all interactive controls keyboard reachable
+  const setActs = [...d.querySelectorAll('#t-settings input, #t-settings select, #t-settings button, #t-settings textarea, #t-settings [role="button"]')];
+  check('settings: all interactive controls reachable by keyboard',
+        setActs.length > 0 && setActs.every(el => el.tabIndex >= 0 || ['INPUT', 'SELECT', 'BUTTON', 'TEXTAREA'].includes(el.tagName)));
+
+  // Settings: empty states for workers and docs
+  w.eval(`
+    window._origS = S;
+    window._origDOCS = DOCS.list;
+    DOCS.list = [];
+    renderSettings(true);
+  `);
+  check('settings / knowledge: explicit empty message when documents list is empty',
+        txt('settings').includes('No documents yet') || txt('settings').includes('No roles defined yet'));
+
+  w.eval(`
+    S = Object.assign({}, window._origS, {workers: []});
+    SUB.settings = 'team';
+    renderSettings(true);
+  `);
+  check('settings / workers: explicit empty message when worker pool is empty',
+        txt('settings').includes('No workers configured yet'));
+
+  // Settings: error state on fetch failure
+  w.eval(`
+    S = null;
+    window._origFerr = window._ferr;
+    window._ferr = 'network timeout';
+    renderSettings(true);
+  `);
+  check('settings: explicit error message when fetch failed and S is null',
+        txt('settings').includes('Could not load settings') || txt('settings').includes('network timeout'));
+
+  // Restore settings state
+  w.eval(`
+    S = window._origS;
+    DOCS.list = window._origDOCS;
+    window._ferr = window._origFerr;
+    SUB.settings = 'project';
+    renderSettings(true);
+  `);
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);

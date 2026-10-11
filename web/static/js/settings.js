@@ -62,90 +62,90 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   UPSTREAM_URL: 'Upstream URL', UPSTREAM_BRANCH: 'Upstream default branch', UPSTREAM_MERGE: 'Upstream merge method',
   FORGE_URL: 'Internal Git forge URL', FORGE_REPO: 'Forgejo repository'};
 const HELP = {
-  PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api.',
-  REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api.',
-  CLAUDE_MODEL: 'Model used by the claude-cli provider (e.g. sonnet, opus, haiku).',
-  AGY_PLAN_MODEL: 'Antigravity model for planning calls in worker containers (e.g. claude-sonnet-4-6).',
-  AGY_REVIEW_MODEL: 'Antigravity model for review calls in worker containers (e.g. claude-sonnet-4-6).',
-  AGY_FALLBACK_MODEL: 'Fallback Antigravity model when primary provider is out of quota (e.g. gemini-3.1-pro-high).',
-  WORKER_MODEL: 'Default Antigravity model for routine worker tasks. Empty uses etc/limits.conf.',
-  WORKER_MODEL_RISKY: 'Stronger worker model for risky tasks (security, money, migrations). Empty uses default.',
-  ANTHROPIC_MODEL: 'Model name when using paid Anthropic API (e.g. claude-3-7-sonnet-20250219). Empty if unused.',
-  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Empty if unused.',
-  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Empty for default.',
-  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Empty if unused.',
-  OWNER_LANG: 'Language for generated goals, notes, and questions (e.g. English, German).',
-  LOCAL_TZ: 'Timezone for timestamps and deadlines (e.g. UTC, Europe/Prague, America/New_York).',
-  PROJECT_DIR: 'Subdirectory of repository the team works in. Empty = entire repository.',
-  VISION_FILE: 'Path to product vision document relative to project root (e.g. docs/vision.md).',
-  SHARED_FILES: 'Comma-separated relative files multiple tasks may edit concurrently (e.g. registry.jsonl). Empty = none.',
-  LOOP_SEC: 'Foreman loop tick interval in seconds (1-300).',
-  WORKERS: 'Comma-separated worker containers assigned to this project (e.g. worker-1,worker-2). Empty = all workers.',
-  AUTOPILOT: '1 to automatically pick the next goal from vision file when idle, 0 to disable.',
-  AUTO_MERGE: '1 to automatically merge approved branches that pass all tests, 0 to hold.',
-  CONTINUE_CONVERSATIONS: '1 to resume worker conversation on rework if under 40% token cap, 0 for fresh run.',
-  MAX_REWORK: 'Maximum rework attempts on a task after review rejection before pausing (0-10).',
-  MAX_ACTIVE_GOALS: 'Maximum active goals in progress concurrently (1-50).',
-  MAX_GOAL_ROUNDS: 'Maximum planning and review rounds for a single goal before pausing (1-20).',
-  DIFF_MAX: 'Maximum diff size in bytes passed to reviewer before truncation (1000-1000000).',
-  LESSONS_MAX: 'Number of most recent rework lessons included in worker prompts (1-500).',
-  SPLIT_AFTER_CAPS: 'Split task into smaller pieces after reaching token cap N times (1-10).',
-  TASK_TOKEN_BUDGET: 'Target token budget per task prompt and completion (50000-5000000).',
-  CONTEXT_PACK: 'Context pack mode for tasks: on (all tasks), ab (half of tasks), or off.',
-  CONTEXT_PACK_CHARS: 'Maximum size of generated context pack in characters (5000-200000).',
-  SELF_CHECK_ROUNDS: 'Rounds a worker fixes failing tests in same run before gate (0-3; 0 = off).',
-  MAX_TASK_FILES: 'Maximum files a single task may touch before being split by planner (1-20).',
-  WORKER_MODEL_LIGHT: 'Cheaper model used for routine tasks in light roles. Empty uses default worker model.',
-  LIGHT_ROLES: 'Comma-separated role names using WORKER_MODEL_LIGHT (e.g. tester,technical-writer,translator). Empty = none.',
-  AB_MODEL: 'Alternative worker model to test on routine tasks. Empty = no experiment.',
-  AB_SHARE: 'Percentage of routine tasks to run on the alternative AB_MODEL (0-100%).',
-  PLAN_AHEAD: '1 to plan backlog goals while workers wait for quota, 0 to idle.',
-  MAINTENANCE: '1 to run background self-checks on main while idle, 0 to disable.',
-  TEST_CMD: 'Command to run test suite (e.g. npm test or empty for pytest).',
-  GATE_IMAGE: 'Docker image used by the gate to run TEST_CMD (empty = worker image).',
-  RUNS_KEEP_DAYS: 'Days to keep uncompressed transcripts before gzip compression (1-3650).',
-  NOTIFY_URL: 'Target URL: ntfy topic URL, webhook (Slack/Discord), or outbox for local JSONL file. Empty = off.',
-  NOTIFY_FORMAT: 'Notification payload format: ntfy, slack, discord, or json.',
-  NOTIFY_EVENTS: 'Comma-separated events triggering notifications: goal_done, task_blocked, killswitch, questions, quota_out, auth, approval. Empty = none.',
-  API_WORKERS_POLICY: 'When API workers take work: overflow (only when no subscription worker is free) or always (preferred).',
-  WORKER_MODEL_CLAUDE: 'Model name for Claude Code CLI workers (e.g. sonnet). Empty for default.',
-  WORKER_MODEL_CODEX: 'Model name for Codex CLI workers (e.g. gpt-5.1-codex). Empty for default.',
-  WORKER_MODEL_GEMINI: 'Model name for Gemini CLI workers. Empty for the CLI\'s default.',
-  WORKER_MODEL_COMPAT: 'Model name on your custom server for the Codex runtime (e.g. qwen3-coder:30b). Empty for default.',
-  WORKER_MODEL_AIDER: 'Model name on your custom server for the Aider runtime (e.g. qwen3-coder:30b). Empty for default.',
-  COMPAT_BASE_URL: 'OpenAI-compatible server URL (e.g. http://192.168.1.20:11434/v1 or https://openrouter.ai/api/v1). Empty if unused.',
-  PRICE_COMPAT: 'USD per 1M tokens for custom server: input, cached input, output (0,0,0 for local hardware).',
-  API_RUN_BUDGET_USD: 'Maximum spending in USD for a single API worker run (e.g. 2.00).',
-  API_DAILY_BUDGET_USD: 'Install-wide daily API worker spending cap in USD (e.g. 10.00).',
-  API_MONTHLY_BUDGET_USD: 'Install-wide calendar month API worker spending cap in USD (0 = none).',
-  PROJECT_DAILY_BUDGET_USD: 'Daily API worker spending cap for this project in USD (0 = none).',
-  PROJECT_MONTHLY_BUDGET_USD: 'Monthly API worker spending cap for this project in USD (0 = none).',
-  WORKER_DAILY_BUDGET_USD: 'Per-worker daily spending caps in USD (e.g. worker-1=3.0,worker-2=1.5).',
-  RUN_MAX_TOOL_CALLS: 'Maximum tool calls allowed per run before supervisor stops it (10-5000).',
-  PRICE_CODEX: 'USD per 1M tokens for Codex: input, cached input, output (e.g. 1.25,0.125,10).',
-  PRICE_GEMINI: 'USD per 1M tokens for Gemini CLI: input, cached input, output (e.g. 1.25,0.31,10).',
-  APPROVE: 'Comma-separated actions requiring owner OK before proceeding: plan, risky, merge. Empty = fully automatic.',
-  MODEL_ROUTING: 'off to use fixed models, or auto to route each role to cheapest proven worker model.',
-  ROUTING_MIN_TASKS: 'Minimum merged tasks of a role required for a model to be eligible for auto-routing (1-100).',
-  ROUTING_MIN_FIRST_PASS: 'Minimum first-pass approval percentage required for auto-routing (0-100%).',
-  FORGE_KIND: 'Type of git forge where the code lives: forgejo, github, or gitlab.',
-  UPSTREAM_REPO: 'Upstream repository path (owner/repo or group/project) when using GitHub or GitLab.',
-  UPSTREAM_URL: 'Base URL of upstream git forge (e.g. https://github.com or https://gitlab.com).',
-  UPSTREAM_BRANCH: 'Default branch on upstream repository synced with internal main (e.g. main).',
-  UPSTREAM_MERGE: 'Merge method used for pull/merge requests on upstream: merge, squash, or rebase.',
-  MAX_PARALLEL: 'Maximum concurrent worker runs allowed across all projects (1-64).',
-  RUN_TOKEN_CAP: 'Hard token cap per worker run; run is killed when reached (100000-20000000).',
-  RUN_TIMEOUT_MIN: 'Minimum wall-clock run timeout in minutes (5-240).',
-  RUN_TIMEOUT_MAX_MIN: 'Maximum wall-clock run timeout in minutes (5-1440).',
-  DAILY_TOKEN_BUDGET: 'System-wide token budget per UTC day across all runs (100000-10000000000000).',
-  MAX_RUNS_PER_DAY: 'Maximum worker runs allowed per UTC day across all projects (1-10000000).',
-  QUOTA_MODEL_FILTER: 'Model family name checked against quota floor before dispatch (e.g. Gemini).',
-  QUOTA_MIN_5H_PCT: 'Minimum remaining 5-hour quota percentage required to dispatch a run (0-90%).',
-  QUOTA_MIN_WEEK_PCT: 'Minimum remaining weekly quota percentage required to dispatch a run (0-90%).',
-  CONSEC_FAIL_TRIP: 'Consecutive failed runs across install before kill switch trips automatically (1-100).',
-  POLL_SEC: 'Supervisor polling interval in seconds for limit enforcement (1-60).',
-  FORGE_URL: 'URL of internal Forgejo server.',
-  FORGE_REPO: 'Forgejo repository path for this project.'};
+  PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
+  REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
+  CLAUDE_MODEL: 'Model used by the claude-cli provider (e.g. sonnet, opus, haiku). Applies live.',
+  AGY_PLAN_MODEL: 'Antigravity model for planning calls in worker containers (e.g. claude-sonnet-4-6). Applies live.',
+  AGY_REVIEW_MODEL: 'Antigravity model for review calls in worker containers (e.g. claude-sonnet-4-6). Applies live.',
+  AGY_FALLBACK_MODEL: 'Fallback Antigravity model when primary provider is out of quota (e.g. gemini-3.1-pro-high). Applies live.',
+  WORKER_MODEL: 'Default Antigravity model for routine worker tasks. Empty uses etc/limits.conf. Applies live.',
+  WORKER_MODEL_RISKY: 'Stronger worker model for risky tasks (security, money, migrations). Empty uses default. Applies live.',
+  ANTHROPIC_MODEL: 'Model name when using paid Anthropic API (e.g. claude-3-7-sonnet-20250219). Empty if unused. Applies live.',
+  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Empty if unused. Applies live.',
+  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Empty for default. Applies live.',
+  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Empty if unused. Applies live.',
+  OWNER_LANG: 'Language for generated goals, notes, and questions (e.g. English, German). Applies live.',
+  LOCAL_TZ: 'Timezone for timestamps and deadlines (e.g. UTC, Europe/Prague, America/New_York). Applies live.',
+  PROJECT_DIR: 'Subdirectory of repository the team works in. Empty = entire repository. Applies live.',
+  VISION_FILE: 'Path to product vision document relative to project root (e.g. docs/vision.md). Applies live.',
+  SHARED_FILES: 'Comma-separated relative files multiple tasks may edit concurrently (e.g. registry.jsonl). Empty = none. Applies live.',
+  LOOP_SEC: 'Foreman loop tick interval in seconds (1-300). Applies live.',
+  WORKERS: 'Comma-separated worker containers assigned to this project (e.g. worker-1,worker-2). Empty = all workers. Applies live.',
+  AUTOPILOT: '1 to automatically pick the next goal from vision file when idle, 0 to disable. Applies live.',
+  AUTO_MERGE: '1 to automatically merge approved branches that pass all tests, 0 to hold. Applies live.',
+  CONTINUE_CONVERSATIONS: '1 to resume worker conversation on rework if under 40% token cap, 0 for fresh run. Applies live.',
+  MAX_REWORK: 'Maximum rework attempts on a task after review rejection before pausing (0-10). Applies live.',
+  MAX_ACTIVE_GOALS: 'Maximum active goals in progress concurrently (1-50). Applies live.',
+  MAX_GOAL_ROUNDS: 'Maximum planning and review rounds for a single goal before pausing (1-20). Applies live.',
+  DIFF_MAX: 'Maximum diff size in bytes passed to reviewer before truncation (1000-1000000). Applies live.',
+  LESSONS_MAX: 'Number of most recent rework lessons included in worker prompts (1-500). Applies live.',
+  SPLIT_AFTER_CAPS: 'Split task into smaller pieces after reaching token cap N times (1-10). Applies live.',
+  TASK_TOKEN_BUDGET: 'Target token budget per task prompt and completion (50000-5000000). Applies live.',
+  CONTEXT_PACK: 'Context pack mode for tasks: on (all tasks), ab (half of tasks), or off. Applies live.',
+  CONTEXT_PACK_CHARS: 'Maximum size of generated context pack in characters (5000-200000). Applies live.',
+  SELF_CHECK_ROUNDS: 'Rounds a worker fixes failing tests in same run before gate (0-3; 0 = off). Applies live.',
+  MAX_TASK_FILES: 'Maximum files a single task may touch before being split by planner (1-20). Applies live.',
+  WORKER_MODEL_LIGHT: 'Cheaper model used for routine tasks in light roles. Empty uses default worker model. Applies live.',
+  LIGHT_ROLES: 'Comma-separated role names using WORKER_MODEL_LIGHT (e.g. tester,technical-writer,translator). Empty = none. Applies live.',
+  AB_MODEL: 'Alternative worker model to test on routine tasks. Empty = no experiment. Applies live.',
+  AB_SHARE: 'Percentage of routine tasks to run on the alternative AB_MODEL (0-100%). Applies live.',
+  PLAN_AHEAD: '1 to plan backlog goals while workers wait for quota, 0 to idle. Applies live.',
+  MAINTENANCE: '1 to run background self-checks on main while idle, 0 to disable. Applies live.',
+  TEST_CMD: 'Command to run test suite (e.g. npm test or empty for pytest). Applies live.',
+  GATE_IMAGE: 'Docker image used by the gate to run TEST_CMD (empty = worker image). Applies live.',
+  RUNS_KEEP_DAYS: 'Days to keep uncompressed transcripts before gzip compression (1-3650). Applies live.',
+  NOTIFY_URL: 'Target URL: ntfy topic URL, webhook (Slack/Discord), or outbox for local JSONL file. Empty = off. Applies live.',
+  NOTIFY_FORMAT: 'Notification payload format: ntfy, slack, discord, or json. Applies live.',
+  NOTIFY_EVENTS: 'Comma-separated events triggering notifications: goal_done, task_blocked, killswitch, questions, quota_out, auth, approval. Empty = none. Applies live.',
+  API_WORKERS_POLICY: 'When API workers take work: overflow (only when no subscription worker is free) or always (preferred). Applies live.',
+  WORKER_MODEL_CLAUDE: 'Model name for Claude Code CLI workers (e.g. sonnet). Empty for default. Applies live.',
+  WORKER_MODEL_CODEX: 'Model name for Codex CLI workers (e.g. gpt-5.1-codex). Empty for default. Applies live.',
+  WORKER_MODEL_GEMINI: 'Model name for Gemini CLI workers. Empty for the CLI\'s default. Applies live.',
+  WORKER_MODEL_COMPAT: 'Model name on your custom server for the Codex runtime (e.g. qwen3-coder:30b). Empty for default. Applies live.',
+  WORKER_MODEL_AIDER: 'Model name on your custom server for the Aider runtime (e.g. qwen3-coder:30b). Empty for default. Applies live.',
+  COMPAT_BASE_URL: 'OpenAI-compatible server URL (e.g. http://192.168.1.20:11434/v1 or https://openrouter.ai/api/v1). Empty if unused. Applies live.',
+  PRICE_COMPAT: 'USD per 1M tokens for custom server: input, cached input, output (0,0,0 for local hardware). Applies live.',
+  API_RUN_BUDGET_USD: 'Maximum spending in USD for a single API worker run (e.g. 2.00). Applies live.',
+  API_DAILY_BUDGET_USD: 'Install-wide daily API worker spending cap in USD (e.g. 10.00). Applies live.',
+  API_MONTHLY_BUDGET_USD: 'Install-wide calendar month API worker spending cap in USD (0 = none). Applies live.',
+  PROJECT_DAILY_BUDGET_USD: 'Daily API worker spending cap for this project in USD (0 = none). Applies live.',
+  PROJECT_MONTHLY_BUDGET_USD: 'Monthly API worker spending cap for this project in USD (0 = none). Applies live.',
+  WORKER_DAILY_BUDGET_USD: 'Per-worker daily spending caps in USD (e.g. worker-1=3.0,worker-2=1.5). Applies live.',
+  RUN_MAX_TOOL_CALLS: 'Maximum tool calls allowed per run before supervisor stops it (10-5000). Applies live.',
+  PRICE_CODEX: 'USD per 1M tokens for Codex: input, cached input, output (e.g. 1.25,0.125,10). Applies live.',
+  PRICE_GEMINI: 'USD per 1M tokens for Gemini CLI: input, cached input, output (e.g. 1.25,0.31,10). Applies live.',
+  APPROVE: 'Comma-separated actions requiring owner OK before proceeding: plan, risky, merge. Empty = fully automatic. Applies live.',
+  MODEL_ROUTING: 'off to use fixed models, or auto to route each role to cheapest proven worker model. Applies live.',
+  ROUTING_MIN_TASKS: 'Minimum merged tasks of a role required for a model to be eligible for auto-routing (1-100). Applies live.',
+  ROUTING_MIN_FIRST_PASS: 'Minimum first-pass approval percentage required for auto-routing (0-100%). Applies live.',
+  FORGE_KIND: 'Type of git forge where the code lives: forgejo, github, or gitlab. Applies live.',
+  UPSTREAM_REPO: 'Upstream repository path (owner/repo or group/project) when using GitHub or GitLab. Applies live.',
+  UPSTREAM_URL: 'Base URL of upstream git forge (e.g. https://github.com or https://gitlab.com). Applies live.',
+  UPSTREAM_BRANCH: 'Default branch on upstream repository synced with internal main (e.g. main). Applies live.',
+  UPSTREAM_MERGE: 'Merge method used for pull/merge requests on upstream: merge, squash, or rebase. Applies live.',
+  MAX_PARALLEL: 'Maximum concurrent worker runs allowed across all projects (1-64). Applies live.',
+  RUN_TOKEN_CAP: 'Hard token cap per worker run; run is killed when reached (100000-20000000). Applies live.',
+  RUN_TIMEOUT_MIN: 'Minimum wall-clock run timeout in minutes (5-240). Applies live.',
+  RUN_TIMEOUT_MAX_MIN: 'Maximum wall-clock run timeout in minutes (5-1440). Applies live.',
+  DAILY_TOKEN_BUDGET: 'System-wide token budget per UTC day across all runs (100000-10000000000000). Applies live.',
+  MAX_RUNS_PER_DAY: 'Maximum worker runs allowed per UTC day across all projects (1-10000000). Applies live.',
+  QUOTA_MODEL_FILTER: 'Model family name checked against quota floor before dispatch (e.g. Gemini). Applies live.',
+  QUOTA_MIN_5H_PCT: 'Minimum remaining 5-hour quota percentage required to dispatch a run (0-90%). Applies live.',
+  QUOTA_MIN_WEEK_PCT: 'Minimum remaining weekly quota percentage required to dispatch a run (0-90%). Applies live.',
+  CONSEC_FAIL_TRIP: 'Consecutive failed runs across install before kill switch trips automatically (1-100). Applies live.',
+  POLL_SEC: 'Supervisor polling interval in seconds for limit enforcement (1-60). Applies live.',
+  FORGE_URL: 'URL of internal Forgejo server. Set in etc/forge.conf — requires restarting the foreman service to take effect.',
+  FORGE_REPO: 'Forgejo repository path for this project. Set in etc/forge.conf or project.conf at bootstrap — requires restarting the foreman service to change.'};
 const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
   'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
 async function loadSettings(force) {
@@ -175,28 +175,34 @@ const sel = (k, opts) => '<select id="set-' + k + '">' + opts.map(o => { const [
 const multi = (k, opts) => { const on = String(V()[k] || '').split(',').filter(Boolean);
   return '<div id="set-' + k + '" data-kind="multi" class="multi">' + opts.map(([v, l]) => '<label class="chk"><input type="checkbox" value="' + esc(v) + '"' + (on.includes(v) ? ' checked' : '') + '> ' + esc(l) + '</label>').join('') + '</div>'; };
 function provEditor(k) {
-  const on = String(V()[k] || '').split(',').filter(Boolean), all = on.concat((S.providers || []).filter(p => !on.includes(p)));
+  const on = String(V()[k] || '').split(',').filter(Boolean), all = on.concat(((S && S.providers) || []).filter(p => !on.includes(p)));
+  if (!all.length) return '<div class="provlist" id="set-' + k + '" data-kind="prov"><div class="empty">No providers configured</div></div>';
   return '<div class="provlist" id="set-' + k + '" data-kind="prov">' + all.map(p => '<div class="prov" data-p="' + esc(p) + '"><label><input type="checkbox"' +
-    (on.includes(p) ? ' checked' : '') + '> ' + esc(PROVLABEL[p] || p) + '</label><span><button class="iconbtn sm" data-mv="-1">↑</button><button class="iconbtn sm" data-mv="1">↓</button></span></div>').join('') + '</div>';
+    (on.includes(p) ? ' checked' : '') + '> ' + esc(PROVLABEL[p] || p) + '</label><span><button class="iconbtn sm" data-mv="-1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' up">↑</button><button class="iconbtn sm" data-mv="1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' down">↓</button></span></div>').join('') + '</div>';
 }
 function modelSel(k, allowEmpty, emptyLabel) {
-  const v = V()[k], ms = (S.models || []).map(m => m.id), opts = (allowEmpty ? [''] : []).concat(ms.includes(v) || !v ? ms : [v].concat(ms));
+  const v = V()[k], ms = ((S && S.models) || []).map(m => m.id), opts = (allowEmpty ? [''] : []).concat(ms.includes(v) || !v ? ms : [v].concat(ms));
   return '<select id="set-' + k + '">' + opts.map(m => '<option value="' + esc(m) + '"' + (m === v ? ' selected' : '') + '>' +
-    esc(m ? ((S.models || []).find(x => x.id === m) || {name: m}).name + ' (' + m + ')' : emptyLabel) + '</option>').join('') + '</select>';
+    esc(m ? (((S && S.models) || []).find(x => x.id === m) || {name: m}).name + ' (' + m + ')' : emptyLabel) + '</option>').join('') + '</select>';
 }
 const field = (k, inner, help) => '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + ((help || HELP[k]) ? '<span class="help">' + esc(help || HELP[k]) + '</span>' : '') + '</label><div>' + inner + '</div></div>';
 const card = (title, body, intro) => '<div class="setcard"><h3>' + title + '</h3>' + (intro ? '<div class="muted small intro">' + intro + '</div>' : '') + body + '</div>';
 
 // ---- the six pages
 function pageWorkers() {
+  if (!S) return window._ferr ? '<div class="empty bad">Could not load workers: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (S.error) return '<div class="empty bad">Could not load workers: ' + esc(S.error) + '</div>';
   const ks = F && F.killswitch, pool = String(V().WORKERS || '').split(',').filter(Boolean), sec = S.secrets || {}, R = S.runtimes || {};
   let h = card('Kill switch', '<div class="btnrow">' + (ks ? '<button class="primary sm" data-act="resume">Continue</button>' :
       '<button class="warnbtn" data-act="ks-on">Stop this project</button><button class="badbtn" data-act="ks-hard">Stop hard</button>') +
       '<button class="badbtn ghost" data-act="ks-all">Stop all projects</button></div>',
     ks ? 'ON' + (ks.scope === 'all' ? ' for all projects' : ' for this project') + (ks.hard ? ' (hard)' : '') + ' — ' + esc(ks.reason || '') : 'Off - the project is running. Hard also stops the worker containers.');
-  h += card('This project\'s workers', '<div id="set-WORKERS" data-kind="pool" class="pool">' + (S.workers || []).map(w => '<div class="poolrow"><label><input type="checkbox" value="' + esc(w.name) +
+  const ws = S.workers || [];
+  const poolHtml = ws.length ? ws.map(w => '<div class="poolrow"><label><input type="checkbox" value="' + esc(w.name) +
       '"' + (pool.includes(w.name) ? ' checked' : '') + '> ' + esc(w.name) + ' <span class="rt rt-' + esc(w.runtime || 'agy') + '">' + esc(RTNAME[w.runtime || 'agy'] || w.runtime) +
-      '</span> <span class="muted">(' + esc(w.state) + ')</span></label>' + ((w.runtime || 'agy') === 'agy' ? '<button class="mini" data-login="' + esc(w.name) + '">sign in…</button>' : '') + '</div>').join('') +
+      '</span> <span class="muted">(' + esc(w.state) + ')</span></label>' + ((w.runtime || 'agy') === 'agy' ? '<button class="mini" data-login="' + esc(w.name) + '">sign in…</button>' : '') + '</div>').join('')
+    : '<div class="empty">No workers configured yet — add one below.</div>';
+  h += card('This project\'s workers', '<div id="set-WORKERS" data-kind="pool" class="pool">' + poolHtml +
       '</div><div class="btnrow"><button class="mini" id="add-worker">+ Add a worker</button><span id="addw-status" class="muted small"></span></div>' + addWorkerForm(),
     'Ticked workers belong to project “' + esc(project) + '” (none ticked = all). Each is its own Antigravity account, API key or connection to your model server.');
   h += card('API keys and your model server', '<div class="keys">' + ['anthropic.key', 'openai.key', 'gemini.key', 'compat.key'].map(k => '<span>' + esc(k.split('.')[0] === 'compat' ? 'your server' : k.split('.')[0]) +
@@ -214,16 +220,21 @@ function pageWorkers() {
   return h;
 }
 function addWorkerForm() {
-  const R = S.runtimes || {}, sec = S.secrets || {};
+  const R = (S && S.runtimes) || {}, sec = (S && S.secrets) || {};
+  const rtEntries = Object.entries(R);
+  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block"><input type="radio" name="addw-rt" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc(RTNAME[k] || k) +
+      '</b> <span class="muted">— ' + esc(RTDESC[k] || r.label) + '</span></label>').join('')
+    : '<div class="empty">No runtimes available.</div>';
   return '<div id="addw-form" style="display:none" class="addw"><div class="muted small">What will the new worker run on?</div>' +
-    Object.entries(R).map(([k, r], i) => '<label class="chk block"><input type="radio" name="addw-rt" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc(RTNAME[k] || k) +
-      '</b> <span class="muted">— ' + esc(RTDESC[k] || r.label) + '</span></label>').join('') +
+    rtHtml +
     '<div id="addw-url" style="display:none"><input type="text" id="addw-urlin" placeholder="your model server, e.g. http://192.168.1.20:11434/v1" value="' + esc(V().COMPAT_BASE_URL || '') + '">' +
     '<input type="text" id="addw-model" placeholder="model name on it, e.g. qwen3-coder:30b"></div>' +
     '<div id="addw-key" style="display:none"><input type="password" id="addw-keyin" autocomplete="off" placeholder="API key (stored on the server only)"></div>' +
     '<div class="btnrow"><button class="primary sm" id="addw-go">Add</button><button class="mini" id="addw-cancel">Cancel</button></div></div>';
 }
 function pageModels() {
+  if (!S) return window._ferr ? '<div class="empty bad">Could not load models: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (S.error) return '<div class="empty bad">Could not load models: ' + esc(S.error) + '</div>';
   return card('Orchestrator - who plans and reviews', field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS'), HELP.PLAN_PROVIDERS) +
       field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS'), HELP.REVIEW_PROVIDERS) +
       field('CLAUDE_MODEL', sel('CLAUDE_MODEL', [...new Set(['sonnet', 'opus', 'haiku', 'fable', V().CLAUDE_MODEL].filter(Boolean))]), HELP.CLAUDE_MODEL) +
@@ -252,6 +263,8 @@ function pageModels() {
       'Results with 95 % intervals and a button to adopt the winner: Insights → Experiments.');
 }
 function pageProject() {
+  if (!S) return window._ferr ? '<div class="empty bad">Could not load project settings: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (S.error) return '<div class="empty bad">Could not load project settings: ' + esc(S.error) + '</div>';
   const fk = V().FORGE_KIND || '';
   return card('Where the code lives',
       '<div class="setrow"><label>' + esc(LABEL.FORGE_URL) + '<span class="help">' + esc(HELP.FORGE_URL) + '</span></label><div><code>' + esc(V().FORGE_URL || '') + '</code> <span class="muted small">(set in etc/forge.conf - restart the foreman service to change)</span></div></div>' +
@@ -293,6 +306,8 @@ function pageProject() {
         ['questions', 'the planner has questions'], ['killswitch', 'the kill switch tripped'], ['quota_out', 'all workers are out of quota'], ['auth', 'an API key was rejected']]), HELP.NOTIFY_EVENTS));
 }
 function pageMoney() {
+  if (!S) return window._ferr ? '<div class="empty bad">Could not load budgets: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (S.error) return '<div class="empty bad">Could not load budgets: ' + esc(S.error) + '</div>';
   const api = (S.workers || []).filter(w => (S.runtimes || {})[w.runtime] && (S.runtimes[w.runtime] || {}).api);
   const wb = Object.fromEntries(String(V().WORKER_DAILY_BUDGET_USD || '').split(',').filter(x => x.includes('=')).map(x => x.split('=')));
   return card('Budgets (USD)', field('API_RUN_BUDGET_USD', txt('API_RUN_BUDGET_USD'), HELP.API_RUN_BUDGET_USD) +
@@ -301,7 +316,7 @@ function pageMoney() {
       field('PROJECT_DAILY_BUDGET_USD', txt('PROJECT_DAILY_BUDGET_USD'), HELP.PROJECT_DAILY_BUDGET_USD) +
       field('PROJECT_MONTHLY_BUDGET_USD', txt('PROJECT_MONTHLY_BUDGET_USD'), HELP.PROJECT_MONTHLY_BUDGET_USD) +
       field('WORKER_DAILY_BUDGET_USD', api.length ? '<div id="set-WORKER_DAILY_BUDGET_USD" data-kind="wbudget" class="wbudget">' + api.map(w => '<label>' + esc(w.name) +
-        ' <input type="number" min="0" step="0.5" data-w="' + esc(w.name) + '" value="' + esc(wb[w.name] || '') + '" placeholder="no cap"></label>').join('') + '</div>' : small('no API workers'), HELP.WORKER_DAILY_BUDGET_USD),
+        ' <input type="number" min="0" step="0.5" data-w="' + esc(w.name) + '" value="' + esc(wb[w.name] || '') + '" placeholder="no cap"></label>').join('') + '</div>' : '<div id="set-WORKER_DAILY_BUDGET_USD" data-kind="wbudget" class="wbudget"><span class="muted small">no API workers configured</span></div>', HELP.WORKER_DAILY_BUDGET_USD),
       'Spent today: <b>' + usd(S.api_spent_today) + '</b>, this month: <b>' + usd(S.api_spent_month) + '</b>. Every check assumes the new run and each running API run cost a full run budget. ' +
       'The day and month budgets count all projects; details in Insights → Money.') +
     card('Caps per run', field('RUN_MAX_TOOL_CALLS', num('RUN_MAX_TOOL_CALLS'), HELP.RUN_MAX_TOOL_CALLS)) +
@@ -311,9 +326,11 @@ function pageMoney() {
       'Codex, Gemini CLI and Aider report tokens, not money - set your models\' prices. 0,0,0 for your own hardware.');
 }
 function pageLimits() {
+  if (!S) return window._ferr ? '<div class="empty bad">Could not load limits: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (S.error) return '<div class="empty bad">Could not load limits: ' + esc(S.error) + '</div>';
   const keys = ['MAX_PARALLEL', 'RUN_TOKEN_CAP', 'RUN_TIMEOUT_MIN', 'RUN_TIMEOUT_MAX_MIN', 'DAILY_TOKEN_BUDGET', 'MAX_RUNS_PER_DAY', 'QUOTA_MODEL_FILTER', 'QUOTA_MIN_5H_PCT', 'QUOTA_MIN_WEEK_PCT', 'CONSEC_FAIL_TRIP', 'POLL_SEC'];
   return card('Limits <span class="pill warn">all projects</span>', keys
-    .map(k => field(k, k === 'QUOTA_MODEL_FILTER' ? txt(k, 'Gemini') : num(k), HELP[k])).join('') + ((S.workers || []).length > Number(V().MAX_PARALLEL) ? '<div class="seterr">There are more workers (' + S.workers.length +
+    .map(k => field(k, k === 'QUOTA_MODEL_FILTER' ? txt(k, 'Gemini') : num(k), HELP[k])).join('') + (((S && S.workers) || []).length > Number(V().MAX_PARALLEL) ? '<div class="seterr">There are more workers (' + ((S && S.workers) || []).length +
     ') than parallel runs allowed - some will always wait.</div>' : ''));
 }
 // ---- Knowledge: the team's documents, edited here (a role is saved as this project's own version)
@@ -326,19 +343,23 @@ async function loadDocs(force) {
 function pageKnowledge() {
   loadDocs();
   const L = DOCS.list;
-  if (!L) return '<div class="empty">loading…</div>';
-  if (!Array.isArray(L)) return '<div class="empty">' + esc(L.error || 'not available') + '</div>';
+  if (!L) return window._ferr ? '<div class="empty bad">Could not load documents: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  if (!Array.isArray(L)) return '<div class="empty bad">Could not load documents: ' + esc(L.error || 'not available') + '</div>';
   const main = L.filter(d => !d.name.startsWith('role:')), roles = L.filter(d => d.name.startsWith('role:'));
-  return card('What the team knows', main.map(d => '<div class="docrow" data-doc="' + esc(d.name) + '"><b>' + esc(d.title) + '</b> ' + small(esc(d.about)) +
-      (d.exists ? '' : ' <span class="badge">empty</span>') + '</div>').join(''), 'Every plan, review and task reads these. Edit them like you would brief a new colleague.') +
-    card('Roles (' + roles.length + ')', '<div class="roles">' + roles.map(d => '<button class="rolebtn" data-doc="' + esc(d.name) + '">' + esc(d.title) +
-      (d.customized ? ' <span class="badge">yours</span>' : '') + '</button>').join('') + '</div>',
+  const mainHtml = main.length ? main.map(d => '<div class="docrow" data-doc="' + esc(d.name) + '" role="button" tabindex="0" aria-label="' + esc(d.title) + '"><b>' + esc(d.title) + '</b> ' + small(esc(d.about)) +
+      (d.exists ? '' : ' <span class="badge">empty</span>') + '</div>').join('')
+    : '<div class="empty">No documents yet.</div>';
+  const rolesHtml = roles.length ? '<div class="roles">' + roles.map(d => '<button class="rolebtn" data-doc="' + esc(d.name) + '">' + esc(d.title) +
+      (d.customized ? ' <span class="badge">yours</span>' : '') + '</button>').join('') + '</div>'
+    : '<div class="empty">No roles defined yet.</div>';
+  return card('What the team knows', mainHtml, 'Every plan, review and task reads these. Edit them like you would brief a new colleague.') +
+    card('Roles (' + roles.length + ')', rolesHtml,
       'Each worker gets its role\'s full playbook with the task. Saving a role keeps your version for this project; “reset” brings back the standard one.');
 }
 async function openDoc(name) {
   openSheet('doc', name, '<div class="empty">loading…</div>', true);
   let d; try { d = await getJSON('/api/doc', {name}); } catch (e) { d = {error: String(e)}; }
-  if (d.error) return setSheet('doc', name, '<div class="empty">' + esc(d.error) + '</div>');
+  if (d.error) return setSheet('doc', name, '<div class="empty bad">Could not load document: ' + esc(d.error) + '</div>');
   setSheet('doc', name, '<h2>' + esc(name.startsWith('role:') ? 'Role: ' + name.slice(5) : name.replace('-', ' ')) + '</h2>' +
     (d.customized ? '<div class="note">This project uses its own version of this role.</div>' : '') +
     '<textarea class="doced" id="doc-text" spellcheck="false">' + esc(d.text) + '</textarea>' +
@@ -353,10 +374,21 @@ document.addEventListener('click', async e => {
   if (r) { if (!confirm('Delete this project\'s version of the role and use the standard one?')) return;
     if (done(await post('/api/doc', {name: r.dataset.docreset, reset: true}), 'Back to the standard role')) { loadDocs(true); openDoc(r.dataset.docreset); } }
 });
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-doc]')) {
+    e.preventDefault();
+    const docEl = e.target.closest('[data-doc]');
+    if (docEl && docEl.dataset.doc) openDoc(docEl.dataset.doc);
+  }
+});
 
 function settingsHtml() {
-  if (!S) { loadSettings(); return '<div class="empty">loading…</div>'; }
-  if (S.error) return '<div class="empty">Settings are not available: ' + esc(S.error) + '</div>';
+  if (!S) {
+    if (window._ferr) return '<div class="empty bad">Could not load settings: ' + esc(window._ferr) + '</div>';
+    loadSettings();
+    return '<div class="empty">loading…</div>';
+  }
+  if (S.error) return '<div class="empty bad">Could not load settings: ' + esc(S.error) + '</div>';
   const p = SUB.settings;
   const body = p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
   return body + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
@@ -511,7 +543,7 @@ async function openNewProject() {
   for (const p of PROJ_LIST) for (const w of String(p.workers || '').split(',').filter(Boolean)) owner[w] = p.name;
   const ws = st.workers || [];
   $('np-workers').innerHTML = ws.length ? ws.map(w => '<label class="chk"><input type="checkbox" data-npw="' + esc(w.name) + '"> ' + esc(w.name) +
-    ' <span class="muted">(' + esc(owner[w.name] || (st.values && !st.values.WORKERS ? 'default — all' : 'free')) + ')</span></label>').join(' ') : 'no workers — add them in Settings';
+    ' <span class="muted">(' + esc(owner[w.name] || (st.values && !st.values.WORKERS ? 'default — all' : 'free')) + ')</span></label>').join(' ') : '<div class="empty">No workers available — add them in Settings.</div>';
 }
 async function createProject() {
   const v = id => $(id).value.trim();
