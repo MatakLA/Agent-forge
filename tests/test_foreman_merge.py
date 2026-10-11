@@ -17,6 +17,11 @@ import sbx
 from unittest.mock import patch
 from foreman import ctx, merge, store
 
+# Smoke import check: ensures modules are loaded cleanly without silent failure
+for _mod in (sbx, ctx, merge, store):
+    assert _mod is not None, f"Module {_mod} failed to load"
+
+
 
 class TestForemanMerge(unittest.TestCase):
     def setUp(self):
@@ -167,19 +172,21 @@ class TestForemanMerge(unittest.TestCase):
         old_sync_main = upstream.sync_main
         synced_args = []
         upstream.sync_main = lambda up, fd: synced_args.append((up, fd)) or "synced"
+        t_after = None
         try:
             fn = merge.step_upstream_merge(t)
             self.assertTrue(callable(fn))
             fn()
             t_after = merge.live_task(t)
-            assert t_after["status"] == "done"
-            self.assertEqual(t_after["status"], "done")
-            assert t_after["status"] == "done"
-            self.assertEqual(t_after["pr"], 15)
-            assert t_after["pr"] == 15
-            self.assertEqual(len(synced_args), 1)
         finally:
             upstream.sync_main = old_sync_main
+
+        self.assertEqual(t_after["status"], "done")
+        assert t_after["status"] == "done"
+        self.assertEqual(t_after["pr"], 15)
+        assert t_after["pr"] == 15
+        self.assertEqual(len(synced_args), 1)
+        assert len(synced_args) == 1
 
     def test_already_merged_pr_tolerates_null_head(self):
         """Invariant: already_merged_pr safely ignores PRs with null head and finds merged PR."""
@@ -461,6 +468,67 @@ class TestForemanMerge(unittest.TestCase):
         assert t_merg_after["status"] == "gate"
         self.assertNotIn(t_merg["id"], jobs.PHASE)
         assert t_merg["id"] not in jobs.PHASE
+
+    def test_requeue_gate_ignores_blocked_task(self):
+        """Invariant: requeue_gate returns immediately for blocked tasks without altering status, regates, or history."""
+        # Case 1: blocked task with regates < 4 must not be unblocked back to 'gate'
+        t1 = dict(id="0051-blk1", history=[], regates=1, status="blocked", blocked_why="rejected by owner")
+        merge.save_task(t1)
+        merge.requeue_gate(t1, "stray regate attempt")
+        t1_after = merge.live_task(t1)
+        self.assertEqual(t1_after["status"], "blocked")
+        assert t1_after["status"] == "blocked"
+        self.assertEqual(t1_after["regates"], 1)
+        assert t1_after["regates"] == 1
+        self.assertEqual(len(t1_after["history"]), 0)
+        assert len(t1_after["history"]) == 0
+
+        # Case 2: blocked task after hitting retry cap must not record further regates
+        t2 = dict(id="0052-blk2", history=[dict(outcome="regate")], regates=4, status="blocked",
+                  blocked_why="approved but could not be merged after 4 tries")
+        merge.save_task(t2)
+        merge.requeue_gate(t2, "another failure")
+        t2_after = merge.live_task(t2)
+        self.assertEqual(t2_after["status"], "blocked")
+        assert t2_after["status"] == "blocked"
+        self.assertEqual(t2_after["regates"], 4)
+        assert t2_after["regates"] == 4
+        self.assertEqual(len(t2_after["history"]), 1)
+        assert len(t2_after["history"]) == 1
+
+    def test_finish_ignores_blocked_task(self):
+        """Invariant: finish returns immediately for blocked tasks and never marks them done or sets pr."""
+        t = dict(id="0053-blk-finish", history=[], regates=4, status="blocked",
+                 blocked_why="blocked after repeated failures")
+        merge.save_task(t)
+        merge.finish(t, "unauthorized finish", "reviewer", "good", 123)
+        t_after = merge.live_task(t)
+        self.assertEqual(t_after["status"], "blocked")
+        assert t_after["status"] == "blocked"
+        self.assertNotIn("pr", t_after)
+        assert "pr" not in t_after
+        self.assertEqual(len(t_after["history"]), 0)
+        assert len(t_after["history"]) == 0
+
+    def test_step_upstream_merge_no_pr_no_upstream_requeues_gate(self):
+        """Invariant: step_upstream_merge on task in merging with no PR reference and no upstream requeues to gate."""
+        t = dict(id="0054-no-pr-no-up", history=[], status="merging", branch="feat/0054-test", upstream_pr=None)
+        merge.save_task(t)
+        merge.upstream_obj = lambda: None
+
+        fn = merge.step_upstream_merge(t)
+        self.assertTrue(callable(fn))
+        assert callable(fn)
+        fn()
+
+        t_after = merge.live_task(t)
+        self.assertEqual(t_after["status"], "gate")
+        assert t_after["status"] == "gate"
+        self.assertEqual(t_after["regates"], 1)
+        assert t_after["regates"] == 1
+        self.assertTrue(any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"]))
+        assert any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"])
+
 
 
 if __name__ == "__main__":
