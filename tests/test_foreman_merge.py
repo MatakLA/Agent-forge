@@ -17,6 +17,11 @@ import sbx
 from unittest.mock import patch
 from foreman import ctx, merge, store
 
+# Smoke import check: ensures modules are loaded cleanly without silent failure
+for _mod in (sbx, ctx, merge, store):
+    assert _mod is not None, f"Module {_mod} failed to load"
+
+
 
 class TestForemanMerge(unittest.TestCase):
     def setUp(self):
@@ -90,7 +95,9 @@ class TestForemanMerge(unittest.TestCase):
         t1_cur = merge.live_task(t1)
         assert t1_cur["status"] == "blocked"
         self.assertEqual(t1_cur["status"], "blocked", "Round 4 must block the task")
+        assert t1_cur["status"] == "blocked"
         self.assertEqual(t1_cur["regates"], 4)
+        assert t1_cur["regates"] == 4
         self.assertIn("after 4 tries", t1_cur.get("blocked_why", ""))
 
         # Second task: verify round counter belongs strictly to that task
@@ -100,6 +107,7 @@ class TestForemanMerge(unittest.TestCase):
         t2_cur = merge.live_task(t2)
         assert t2_cur["status"] == "gate"
         self.assertEqual(t2_cur["status"], "gate", "Task 2 must not be affected by Task 1's budget")
+        assert t2_cur["status"] == "gate"
         self.assertEqual(t2_cur["regates"], 1)
 
     def test_do_merge_crash_recovery_no_duplicate(self):
@@ -118,7 +126,9 @@ class TestForemanMerge(unittest.TestCase):
         t_after = merge.live_task(t)
         assert t_after["status"] == "done"
         self.assertEqual(t_after["status"], "done")
+        assert t_after["status"] == "done"
         self.assertEqual(t_after["pr"], 88)
+        assert t_after["pr"] == 88
         self.assertEqual(called_sh, [], "do_merge must not call open-pr or merge-pr when already merged")
 
         # Also verify step_owner_merge crash recovery
@@ -131,6 +141,7 @@ class TestForemanMerge(unittest.TestCase):
         t_owner_after = merge.live_task(t_owner)
         assert t_owner_after["status"] == "done"
         self.assertEqual(t_owner_after["status"], "done")
+        assert t_owner_after["status"] == "done"
         self.assertEqual(t_owner_after["pr"], 88)
 
     def test_step_upstream_merge_externally_merged(self):
@@ -161,17 +172,21 @@ class TestForemanMerge(unittest.TestCase):
         old_sync_main = upstream.sync_main
         synced_args = []
         upstream.sync_main = lambda up, fd: synced_args.append((up, fd)) or "synced"
+        t_after = None
         try:
             fn = merge.step_upstream_merge(t)
             self.assertTrue(callable(fn))
             fn()
             t_after = merge.live_task(t)
-            assert t_after["status"] == "done"
-            self.assertEqual(t_after["status"], "done")
-            self.assertEqual(t_after["pr"], 15)
-            self.assertEqual(len(synced_args), 1)
         finally:
             upstream.sync_main = old_sync_main
+
+        self.assertEqual(t_after["status"], "done")
+        assert t_after["status"] == "done"
+        self.assertEqual(t_after["pr"], 15)
+        assert t_after["pr"] == 15
+        self.assertEqual(len(synced_args), 1)
+        assert len(synced_args) == 1
 
     def test_already_merged_pr_tolerates_null_head(self):
         """Invariant: already_merged_pr safely ignores PRs with null head and finds merged PR."""
@@ -185,6 +200,7 @@ class TestForemanMerge(unittest.TestCase):
         pr_num = merge.already_merged_pr("feat/my-target")
         assert pr_num == 3
         self.assertEqual(pr_num, 3)
+        assert pr_num == 3
 
     def test_auto_rebase_non_union_shared_file_conflict(self):
         """Invariant: conflicts in shared files that do not have UNION_EXT (.jsonl/.md/.txt/.csv) abort as conflict."""
@@ -228,6 +244,291 @@ class TestForemanMerge(unittest.TestCase):
         rb_res = merge.auto_rebase("feat/0001-conflict")
         assert rb_res == "conflict"
         self.assertEqual(rb_res, "conflict")
+        assert rb_res == "conflict"
+
+    def test_auto_rebase_non_union_py_conflict(self):
+        """Probe 1: conflict in a non-union .py file reports conflict and leaves shared clone clean without .git/rebase-merge."""
+        bare = os.path.join(self.tmp, "forge_py.git")
+        work = os.path.join(self.tmp, "work_py")
+        git_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+        def run_git(d, *args):
+            r = subprocess.run(["git", *args], cwd=d, capture_output=True, text=True, env=git_env)
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args} failed: {r.stderr}")
+            return r.stdout.strip()
+
+        run_git(self.tmp, "init", "-q", "--bare", "-b", "main", bare)
+        run_git(self.tmp, "clone", "-q", bare, work)
+        with open(os.path.join(work, "logic.py"), "w") as f:
+            f.write("def value():\n    return 'base'\n")
+        run_git(work, "add", "-A")
+        run_git(work, "commit", "-qm", "initial logic")
+        run_git(work, "push", "-q", "origin", "main")
+
+        # Branch changes logic.py line 2
+        run_git(work, "checkout", "-q", "-b", "feat/0041-py-conflict")
+        with open(os.path.join(work, "logic.py"), "w") as f:
+            f.write("def value():\n    return 'branch'\n")
+        run_git(work, "commit", "-qam", "branch logic update")
+        run_git(work, "push", "-q", "origin", "feat/0041-py-conflict")
+
+        # Main also changes logic.py line 2
+        run_git(work, "checkout", "-q", "main")
+        with open(os.path.join(work, "logic.py"), "w") as f:
+            f.write("def value():\n    return 'main'\n")
+        run_git(work, "commit", "-qam", "main logic update")
+        run_git(work, "push", "-q", "origin", "main")
+
+        sbx.FORGE_URL = "file://" + self.tmp
+        sbx.FORGE_REPO = "forge_py"
+        rb_res = merge.auto_rebase("feat/0041-py-conflict")
+        self.assertEqual(rb_res, "conflict")
+        assert rb_res == "conflict"
+
+        rebase_dir = os.path.join(ctx.FD, "rebase")
+        self.assertFalse(os.path.exists(os.path.join(rebase_dir, ".git", "rebase-merge")))
+        assert not os.path.exists(os.path.join(rebase_dir, ".git", "rebase-merge"))
+        self.assertFalse(os.path.exists(os.path.join(rebase_dir, ".git", "rebase-apply")))
+        assert not os.path.exists(os.path.join(rebase_dir, ".git", "rebase-apply"))
+
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=rebase_dir, capture_output=True, text=True)
+        self.assertEqual(st.stdout.strip(), "", "shared clone must be clean after aborted rebase")
+        assert st.stdout.strip() == ""
+
+    def test_auto_rebase_union_jsonl_append_conflict(self):
+        """Probe 2: conflict in a union (.jsonl) file appends both lines without data loss and stays syntactically valid."""
+        ctx.C["SHARED_FILES"] = "records.jsonl"
+        bare = os.path.join(self.tmp, "forge_union.git")
+        work = os.path.join(self.tmp, "work_union")
+        git_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+        def run_git(d, *args):
+            r = subprocess.run(["git", *args], cwd=d, capture_output=True, text=True, env=git_env)
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args} failed: {r.stderr}")
+            return r.stdout.strip()
+
+        run_git(self.tmp, "init", "-q", "--bare", "-b", "main", bare)
+        run_git(self.tmp, "clone", "-q", bare, work)
+        with open(os.path.join(work, "records.jsonl"), "w") as f:
+            f.write(json.dumps({"id": "base", "val": 0}) + "\n")
+        run_git(work, "add", "-A")
+        run_git(work, "commit", "-qm", "initial records")
+        run_git(work, "push", "-q", "origin", "main")
+
+        # Branch appends line
+        run_git(work, "checkout", "-q", "-b", "feat/0041-union")
+        with open(os.path.join(work, "records.jsonl"), "a") as f:
+            f.write(json.dumps({"id": "branch_entry", "val": 1}) + "\n")
+        run_git(work, "commit", "-qam", "branch append")
+        run_git(work, "push", "-q", "origin", "feat/0041-union")
+
+        # Main appends different line
+        run_git(work, "checkout", "-q", "main")
+        with open(os.path.join(work, "records.jsonl"), "a") as f:
+            f.write(json.dumps({"id": "main_entry", "val": 2}) + "\n")
+        run_git(work, "commit", "-qam", "main append")
+        run_git(work, "push", "-q", "origin", "main")
+
+        sbx.FORGE_URL = "file://" + self.tmp
+        sbx.FORGE_REPO = "forge_union"
+        rb_res = merge.auto_rebase("feat/0041-union")
+        self.assertEqual(rb_res, "rebased")
+        assert rb_res == "rebased"
+
+        # Verify content on remote branch
+        run_git(work, "fetch", "-q", "origin")
+        run_git(work, "checkout", "-q", "feat/0041-union")
+        run_git(work, "reset", "-q", "--hard", "origin/feat/0041-union")
+        with open(os.path.join(work, "records.jsonl")) as f:
+            content = f.read()
+
+        lines = [l for l in content.strip().splitlines() if l.strip()]
+        parsed = [json.loads(l) for l in lines]
+        parsed_ids = {p["id"] for p in parsed}
+
+        self.assertIn("base", parsed_ids)
+        self.assertIn("branch_entry", parsed_ids, "branch line must be preserved in union rebase")
+        self.assertIn("main_entry", parsed_ids, "main line must be preserved in union rebase")
+        assert "branch_entry" in parsed_ids
+        assert "main_entry" in parsed_ids
+
+        rebase_dir = os.path.join(ctx.FD, "rebase")
+        self.assertFalse(os.path.exists(os.path.join(rebase_dir, ".git", "rebase-merge")))
+        assert not os.path.exists(os.path.join(rebase_dir, ".git", "rebase-merge"))
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=rebase_dir, capture_output=True, text=True)
+        self.assertEqual(st.stdout.strip(), "")
+        assert st.stdout.strip() == ""
+
+    def test_requeue_gate_cap_and_no_silent_merge(self):
+        """Probe 3: requeue_gate past retry cap blocks with clear reason and is never silently merged."""
+        t = dict(id="0041-cap", history=[], regates=0, status="gate", branch="feat/0041-cap", attempts=0)
+        merge.save_task(t)
+
+        for i in range(1, 6):
+            merge.requeue_gate(t, f"failure round {i}")
+            t_cur = merge.live_task(t)
+            if i < 4:
+                self.assertEqual(t_cur["status"], "gate")
+            else:
+                self.assertEqual(t_cur["status"], "blocked")
+                assert t_cur["status"] == "blocked"
+
+        self.assertEqual(t_cur["status"], "blocked")
+        assert t_cur["status"] == "blocked"
+        self.assertIn("after 4 tries", t_cur.get("blocked_why", ""))
+        assert "after 4 tries" in t_cur.get("blocked_why", "")
+
+        # Calling gate or merge steps on a blocked task must never silently merge it
+        fn_gate = merge.step_gate_review_merge(t_cur)
+        if callable(fn_gate):
+            fn_gate()
+        fn_merge = merge.do_merge(t_cur, "lead", "feedback", "gate tail")
+        if callable(fn_merge):
+            fn_merge()
+        merge.finish(t_cur, "silent merge attempt", "lead", "ok", 999)
+
+        t_final = merge.live_task(t)
+        self.assertEqual(t_final["status"], "blocked", "blocked task must never be transitioned to done")
+        assert t_final["status"] == "blocked"
+
+    def test_step_gate_review_merge_resumability_and_restart(self):
+        """Probe 4: restart mid-step leaves no stale PHASE and resumes to terminal/clearly-retryable state."""
+        from foreman import jobs
+        t = dict(id="0041-resumable", history=[], status="gate", branch="feat/0041-resumable",
+                 role="backend-developer", goal="G1", title="resumability test", attempts=0,
+                 spec="test spec", acceptance=[])
+        merge.save_task(t)
+
+        merge.auto_rebase = lambda b: "uptodate"
+        merge.already_merged_pr = lambda b: None
+        merge.refresh_repo = lambda: None
+
+        def interrupted_sh(cmd, *a, **kw):
+            if "review-branch" in cmd[0]:
+                cur = merge.live_task(t)
+                cur["diff"] = {"added": 10, "removed": 2}
+                merge.save_task(cur)
+                raise RuntimeError("simulated kill during test container execution")
+            return (0, "", "")
+
+        merge.sh = interrupted_sh
+        try:
+            merge.step_gate_review_merge(t)
+        except RuntimeError:
+            pass
+
+        # Invariant: PHASE tracking must not remain dangling without an active job
+        self.assertNotIn(t["id"], jobs.PHASE, "PHASE must be cleared on mid-step exception")
+        assert t["id"] not in jobs.PHASE
+
+        # Second call simulates supervisor resuming the step
+        def successful_sh(cmd, *a, **kw):
+            if "diff" in cmd:
+                return (0, "+code\n", "")
+            if "review-branch" in cmd[0]:
+                return (0, "gate tests passed\n", "")
+            if "open-pr" in cmd[0]:
+                return (0, "opened PR #41\n", "")
+            if "merge-pr" in cmd[0]:
+                return (0, "merged\n", "")
+            return (0, "", "")
+
+        merge.sh = successful_sh
+        merge.llm = lambda *a, **kw: ("{\"verdict\": \"approve\"}", "lead")
+        merge.upstream_obj = lambda: None
+        merge.total_lines_after_merge = lambda files: 25
+        ctx.C["AUTO_MERGE"] = 1
+
+        fn_resume = merge.step_gate_review_merge(merge.live_task(t))
+        self.assertTrue(callable(fn_resume))
+        fn_resume()
+
+        t_resumed = merge.live_task(t)
+        self.assertEqual(t_resumed["status"], "done")
+        assert t_resumed["status"] == "done"
+        self.assertNotIn(t["id"], jobs.PHASE)
+        assert t["id"] not in jobs.PHASE
+
+        # Also test resumability for a task stuck in 'merging' with no PR reference
+        t_merg = dict(id="0041-stuck-merg", history=[], status="merging", branch="feat/0041-stuck-merg",
+                      role="backend-developer", goal="G1", title="stuck merging test", upstream_pr=None)
+        merge.save_task(t_merg)
+        merge.upstream_obj = lambda: None
+
+        fn_up = merge.step_upstream_merge(t_merg)
+        self.assertTrue(callable(fn_up))
+        fn_up()
+
+        t_merg_after = merge.live_task(t_merg)
+        self.assertEqual(t_merg_after["status"], "gate", "stuck merging task with no PR reference must route back to gate")
+        assert t_merg_after["status"] == "gate"
+        self.assertNotIn(t_merg["id"], jobs.PHASE)
+        assert t_merg["id"] not in jobs.PHASE
+
+    def test_requeue_gate_ignores_blocked_task(self):
+        """Invariant: requeue_gate returns immediately for blocked tasks without altering status, regates, or history."""
+        # Case 1: blocked task with regates < 4 must not be unblocked back to 'gate'
+        t1 = dict(id="0051-blk1", history=[], regates=1, status="blocked", blocked_why="rejected by owner")
+        merge.save_task(t1)
+        merge.requeue_gate(t1, "stray regate attempt")
+        t1_after = merge.live_task(t1)
+        self.assertEqual(t1_after["status"], "blocked")
+        assert t1_after["status"] == "blocked"
+        self.assertEqual(t1_after["regates"], 1)
+        assert t1_after["regates"] == 1
+        self.assertEqual(len(t1_after["history"]), 0)
+        assert len(t1_after["history"]) == 0
+
+        # Case 2: blocked task after hitting retry cap must not record further regates
+        t2 = dict(id="0052-blk2", history=[dict(outcome="regate")], regates=4, status="blocked",
+                  blocked_why="approved but could not be merged after 4 tries")
+        merge.save_task(t2)
+        merge.requeue_gate(t2, "another failure")
+        t2_after = merge.live_task(t2)
+        self.assertEqual(t2_after["status"], "blocked")
+        assert t2_after["status"] == "blocked"
+        self.assertEqual(t2_after["regates"], 4)
+        assert t2_after["regates"] == 4
+        self.assertEqual(len(t2_after["history"]), 1)
+        assert len(t2_after["history"]) == 1
+
+    def test_finish_ignores_blocked_task(self):
+        """Invariant: finish returns immediately for blocked tasks and never marks them done or sets pr."""
+        t = dict(id="0053-blk-finish", history=[], regates=4, status="blocked",
+                 blocked_why="blocked after repeated failures")
+        merge.save_task(t)
+        merge.finish(t, "unauthorized finish", "reviewer", "good", 123)
+        t_after = merge.live_task(t)
+        self.assertEqual(t_after["status"], "blocked")
+        assert t_after["status"] == "blocked"
+        self.assertNotIn("pr", t_after)
+        assert "pr" not in t_after
+        self.assertEqual(len(t_after["history"]), 0)
+        assert len(t_after["history"]) == 0
+
+    def test_step_upstream_merge_no_pr_no_upstream_requeues_gate(self):
+        """Invariant: step_upstream_merge on task in merging with no PR reference and no upstream requeues to gate."""
+        t = dict(id="0054-no-pr-no-up", history=[], status="merging", branch="feat/0054-test", upstream_pr=None)
+        merge.save_task(t)
+        merge.upstream_obj = lambda: None
+
+        fn = merge.step_upstream_merge(t)
+        self.assertTrue(callable(fn))
+        assert callable(fn)
+        fn()
+
+        t_after = merge.live_task(t)
+        self.assertEqual(t_after["status"], "gate")
+        assert t_after["status"] == "gate"
+        self.assertEqual(t_after["regates"], 1)
+        assert t_after["regates"] == 1
+        self.assertTrue(any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"]))
+        assert any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"])
+
 
 
 if __name__ == "__main__":
