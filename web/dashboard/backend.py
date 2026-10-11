@@ -1,7 +1,15 @@
-"""The dashboard's backend: how it reaches Agent-Forge (LOCAL: next to it; REMOTE: over ssh to the machine that runs it), the
-foreman's status per project (polled every few seconds), and the long write actions that run as jobs (new worker, new project,
-connecting GitHub/GitLab) plus the browser terminal for a worker's Antigravity sign-in."""
-import atexit, collections, json, os, re, signal, subprocess, threading, time
+"""The dashboard's backend: reaches Agent-Forge locally or over SSH, polls foreman status,
+and executes background jobs (new worker, new project, connecting upstream) and pty login sessions.
+
+Public interface: ssh_run, ssh_run_full, pflag, add_worker_job, create_project_job,
+connect_upstream_job, LOGIN (LoginSessions), foreman_loop.
+
+Invariants:
+- All owner-supplied parameters formatted into shell strings are strictly allowlisted.
+- Vision text and configuration secrets travel strictly via stdin, never in command line or argv.
+- LoginSessions validates worker names and rejects pty control sequences to prevent breakout.
+"""
+import atexit, collections, json, os, re, shlex, signal, subprocess, threading, time
 
 
 BIND_PORT = int(os.environ.get("BIND_PORT", "8171"))
@@ -51,6 +59,9 @@ LAST_ERR = {"msg": ""}           # why the last ssh_run failed, shown on the pag
 
 
 def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
+    if not isinstance(remote_cmd, str):
+        LAST_ERR["msg"] = "remote_cmd must be a string"
+        return ""
     try:
         r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout)
         if r.returncode:
@@ -79,6 +90,12 @@ FOREMAN_SERVICE_PROJECT = os.environ.get("FOREMAN_SERVICE_PROJECT", "agent-forge
 
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
+PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+REPO_RE = re.compile(r"[A-Za-z0-9_.-]{1,40}/[A-Za-z0-9_.-]{1,60}")
+WORKER_RE = re.compile(r"worker-\d+")
+LANG_RE = re.compile(r"[A-Za-z][A-Za-z ()-]{0,30}")
+VALID_RUNTIMES = frozenset({"agy", "claude", "codex", "gemini", "compat", "aider"})
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 JOBS = {}
@@ -98,12 +115,14 @@ def add_worker_job(job, runtime="agy"):
     interactive step (LOGIN), the owner opens a URL with that worker's Google account. API runtimes: the key must already be
     stored (POST /api/secret) - the worker works right away."""
     try:
+        if not isinstance(runtime, str) or runtime not in VALID_RUNTIMES:
+            raise ValueError(f"bad runtime: {runtime!r}")
         out = ssh_run("docker ps -a --format '{{.Names}}'", timeout=20)
-        nums = [int(x.split("-")[1]) for x in out.split() if re.fullmatch(r"worker-\d+", x)]
+        nums = [int(x.split("-")[1]) for x in out.split() if WORKER_RE.fullmatch(x)]
         n = max(nums or [0]) + 1
         job["worker"] = f"worker-{n}"
         job["log"] += f"creating worker-{n}...\n"
-        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n}" + (f" --runtime {runtime}" if runtime != "agy" else "") + " 2>&1", timeout=1800)
+        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n}" + (f" --runtime {shlex.quote(runtime)}" if runtime != "agy" else "") + " 2>&1", timeout=1800)
         job["log"] += ANSI.sub("", o + e)[-4000:]
         job["state"] = "done" if rc == 0 else "failed"
     except Exception as ex:
@@ -120,18 +139,37 @@ def create_project_job(job, name, repo, workers_, lang, vision):
         job["log"] += ANSI.sub("", o + e)[-3000:] + "\n"
         return rc == 0
     try:
-        wf = f" --workers {','.join(workers_)}" if workers_ else ""
-        if not step("project files", f"cd {FORGE_DIR} && bin/foreman init-project {name} --repo {repo}{wf} --lang '{lang}' --vision -",
+        if not isinstance(name, str) or not PROJECT_RE.fullmatch(name) or name == "default":
+            raise ValueError(f"bad project name: {name!r}")
+        if not isinstance(repo, str) or not REPO_RE.fullmatch(repo):
+            raise ValueError(f"bad repo: {repo!r}")
+        if workers_:
+            if isinstance(workers_, str):
+                ws = [w.strip() for w in workers_.split(",") if w.strip()]
+            elif isinstance(workers_, (list, tuple, set)):
+                ws = list(workers_)
+            else:
+                raise ValueError(f"bad workers: {workers_!r}")
+            if not all(isinstance(w, str) and WORKER_RE.fullmatch(w) for w in ws):
+                raise ValueError(f"bad workers: {workers_!r}")
+        else:
+            ws = []
+        if not isinstance(lang, str) or not LANG_RE.fullmatch(lang):
+            raise ValueError(f"bad lang: {lang!r}")
+        if vision is not None and not isinstance(vision, str):
+            raise ValueError(f"bad vision: {type(vision)!r}")
+        wf = f" --workers {','.join(ws)}" if ws else ""
+        if not step("project files", f"cd {FORGE_DIR} && bin/foreman init-project {name} --repo {shlex.quote(repo)}{wf} --lang {shlex.quote(lang)} --vision -",
                     timeout=30, inp=vision):
             job["state"] = "failed"; return
-        if not step("repository on Forgejo", f"cd {FORGE_DIR} && FORGE_REPO={repo} scripts/forge-bootstrap 2>&1"):
+        if not step("repository on Forgejo", f"cd {FORGE_DIR} && FORGE_REPO={shlex.quote(repo)} scripts/forge-bootstrap 2>&1"):
             job["state"] = "failed"; return
-        if workers_:
+        if ws:
             rc, out, _ = ssh_run_full(f"cd {FORGE_DIR} && bin/foreman settings", timeout=60)
             try:
                 cur = json.loads(out)
                 if not cur["values"].get("WORKERS"):
-                    rest = [w for w in cur.get("workers", []) if w not in workers_]
+                    rest = [w for w in cur.get("workers", []) if w not in ws]
                     step("default project keeps the other workers", f"cd {FORGE_DIR} && bin/foreman settings apply", timeout=60,
                          inp=json.dumps({"WORKERS": ",".join(rest)}))
             except Exception:
@@ -155,6 +193,23 @@ def connect_upstream_job(job, pf, changes, upstream, force):
         job["log"] += ANSI.sub("", o + e)[-2500:] + "\n"
         return rc == 0
     try:
+        if pf:
+            if isinstance(pf, str) and pf.startswith(" --project "):
+                p = pf[len(" --project "):]
+            elif isinstance(pf, str):
+                p = pf
+            else:
+                raise ValueError(f"bad project flag: {pf!r}")
+            if p != "default":
+                if not PROJECT_RE.fullmatch(p):
+                    raise ValueError(f"bad project: {p!r}")
+                pf = f" --project {p}"
+            else:
+                pf = ""
+        else:
+            pf = ""
+        if not isinstance(changes, dict):
+            raise ValueError("changes must be a dict")
         if not step("settings", f"cd {FORGE_DIR} && bin/foreman{pf} settings apply", inp=json.dumps(changes)):
             job["state"] = "failed"; return
         if upstream:
@@ -175,6 +230,8 @@ class LoginSessions:
         self.lock = threading.Lock()
 
     def start(self, w):
+        if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
+            return {"error": "bad worker"}
         with self.lock:
             old = self.s.get(w)
             if old and old["proc"].poll() is None:
@@ -213,6 +270,12 @@ class LoginSessions:
         reap(sess["proc"])
 
     def send(self, w, text):
+        if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
+            return {"error": "bad worker"}
+        if not isinstance(text, str) or CONTROL_CHARS.search(text):
+            return {"error": "control characters not allowed"}
+        if len(text) > 4096:
+            return {"error": "text too long"}
         sess = self.s.get(w)
         if not sess or sess["proc"].poll() is not None:
             return {"error": "no running login session"}
@@ -224,6 +287,8 @@ class LoginSessions:
         return {"ok": True}
 
     def read(self, w):
+        if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
+            return {"running": False, "output": "", "error": "bad worker"}
         sess = self.s.get(w)
         if not sess:
             return {"running": False, "output": ""}
@@ -232,6 +297,8 @@ class LoginSessions:
         return {"running": sess["proc"].poll() is None, "output": out[-6000:], "url": urls[-1] if urls else None}
 
     def stop(self, w):
+        if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
+            return {"error": "bad worker"}
         sess = self.s.pop(w, None)
         if sess and sess["proc"].poll() is None:
             try:
@@ -248,6 +315,8 @@ LOGIN = LoginSessions()
 def ssh_run_full(remote_cmd, timeout=30, inp=None):
     """Like ssh_run but returns (returncode, stdout, stderr) - used by the one write action this dashboard has
     (/api/resume), so a failure can be reported instead of silently swallowed."""
+    if not isinstance(remote_cmd, str):
+        return 1, "", "remote_cmd must be a string"
     try:
         r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout, input=inp)
         return r.returncode, r.stdout, r.stderr
@@ -280,9 +349,6 @@ def reap(proc):
 FOREMAN_INTERVAL = 4
 
 
-PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
-
-
 FOREMAN_BY = {}           # project name -> {"data", "at", "error"}; "default" = the project without --project
 
 
@@ -291,9 +357,9 @@ PROJECTS = {"list": [], "at": 0}
 
 def pflag(project):
     """`--project NAME` for bin/foreman, "" for the default project; anything that is not a project name is rejected."""
-    if not project or project == "default":
+    if project is None or project == "" or project == "default":
         return ""
-    if not PROJECT_RE.fullmatch(project):
+    if not isinstance(project, str) or not PROJECT_RE.fullmatch(project):
         raise ValueError("bad project")
     return f" --project {project}"
 
@@ -311,7 +377,12 @@ def foreman_from_old_json(d):
 
 def poll_project(name):
     entry = FOREMAN_BY.setdefault(name, {"data": None, "at": 0, "error": "not loaded yet"})
-    out = ssh_run(f"cd {FORGE_DIR} && bin/foreman{pflag(name)} status --dashboard 2>/dev/null", timeout=12)
+    try:
+        pf = pflag(name)
+    except ValueError:
+        entry["error"] = f"bad project: {name}"
+        return
+    out = ssh_run(f"cd {FORGE_DIR} && bin/foreman{pf} status --dashboard 2>/dev/null", timeout=12)
     data = None
     try:
         data = json.loads(out)
