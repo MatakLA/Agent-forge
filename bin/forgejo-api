@@ -7,6 +7,8 @@ import sbx
 a = sys.argv[1:]
 if len(a) != 2 or a[0].upper() != "GET" or not re.match(r"^/(repos/" + re.escape(sbx.FORGE_REPO) + r"|orgs/" + re.escape(sbx.FORGE_ORG) + r"|users/worker-\d+)(/|\?|$)", a[1]) or ".." in a[1]:
     print(__doc__, file=sys.stderr); sys.exit(2)
+if re.search(r"[?&](token|access_token|secret)=", a[1], re.IGNORECASE):
+    print("refused: tokens must not be passed in URL query strings", file=sys.stderr); sys.exit(2)
 tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
 req = urllib.request.Request(sbx.FORGE_URL + "/api/v1" + a[1], headers={"Authorization": "token " + tok})
 try:
@@ -14,3 +16,6 @@ try:
         print(r.read().decode())
 except urllib.error.HTTPError as e:
     print(f"HTTP {e.code}: {e.read().decode()[:300]}", file=sys.stderr); sys.exit(1)
+except urllib.error.URLError as e:
+    print(f"URL error: {e.reason}", file=sys.stderr); sys.exit(1)
+
