@@ -1,0 +1,24 @@
+#!/bin/bash
+# Single wrapper for every agy invocation (interactive login and headless runs):
+# private D-Bus session + unlocked gnome-keyring, then agy. `--exec CMD...` runs CMD
+# instead of agy inside the same environment (used for keyring self-tests).
+set -euo pipefail
+
+PW_FILE="${KEYRING_PW_FILE:-/run/secrets/keyring}"
+
+if [ -z "${AGY_RUN_INNER:-}" ]; then
+  [ -r "$PW_FILE" ] || { echo "agy-run: keyring password file $PW_FILE not readable" >&2; exit 1; }
+  export AGY_RUN_INNER=1
+  exec dbus-run-session -- "$0" "$@"
+fi
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-$(id -u)}"
+mkdir -p "$XDG_RUNTIME_DIR" "$HOME/.local/share/keyrings"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+# PAM-style two-step init: --login unlocks/creates the login keyring with the password from
+# stdin, --start then registers org.freedesktop.secrets on this private session bus.
+tr -d '\n' < "$PW_FILE" | gnome-keyring-daemon --daemonize --login --components=secrets >/dev/null
+gnome-keyring-daemon --start --components=secrets >/dev/null 2>&1 || true
+
+if [ "${1:-}" = "--exec" ]; then shift; "$@"; else agy "$@"; fi

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Usage: bin/egress-up [enforce|discovery]  -- (re)create the egress proxy (and the internal/egress networks) in the given mode.
+set -euo pipefail
+MODE="${1:-enforce}"; [[ "$MODE" =~ ^(enforce|discovery)$ ]] || { echo "mode must be enforce or discovery" >&2; exit 2; }
+export EGRESS_MODE="$MODE"
+cd "$(cd "$(dirname "$0")/.." && pwd)/egress"
+# hosts added for API-key worker runtimes (bin/worker-add); must exist as a file before the bind mount
+[ -f allowlist.local.txt ] || printf "# Hosts of the API-key worker runtimes in use (added by bin/worker-add). Exact hostnames only.\n" > allowlist.local.txt
+[ -f local-endpoint.conf ] || printf "# no local model server (COMPAT_BASE_URL)\n" > local-endpoint.conf
+docker compose up -d --build --force-recreate
+sleep 2; docker logs egress-proxy 2>&1 | grep -E "mode:|ERROR|FATAL" | tail -3

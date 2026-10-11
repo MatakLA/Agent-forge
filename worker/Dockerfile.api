@@ -1,0 +1,46 @@
+# ==============================================================================
+# Worker image for the API runtimes (claude / codex / gemini / compat / aider) - the agy worker image plus Node.js with three agent
+# CLIs, and Aider, all pinned to exact versions. Same user, same locked-down container; the API key is a read-only file mount used
+# only by /usr/local/bin/af-agent. Built by bin/worker-up the first time a worker with an API runtime is created.
+# Versions were checked against a fake API server (event formats, resume, network hosts): see docs/RUNTIMES.md.
+# ==============================================================================
+FROM sandbox-worker:1.2.11
+
+ARG CLAUDE_CODE_VERSION=2.1.293
+ARG CODEX_VERSION=0.161.0
+ARG GEMINI_CLI_VERSION=0.63.0
+# Node.js from nodejs.org over HTTPS, pinned and SHA-256 verified (no apt: reproducible, and works where port 80 is closed)
+ARG NODE_VERSION=22.23.3
+ARG NODE_SHA256=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af
+# Aider needs Python < 3.13: uv (hash-pinned wheel from PyPI) installs it with its own CPython 3.12 into /opt/aider
+ARG UV_VERSION=0.12.23
+ARG UV_SHA256=565c6e2874dbeae86c02f3dea97255e878fec672659a73d4930c6b93fcab2fff
+ARG AIDER_VERSION=0.86.2
+
+USER root
+RUN curl -fsSL -o /tmp/node.tar.gz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+ && echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c - \
+ && mkdir -p /opt/node && tar -xzf /tmp/node.tar.gz -C /opt/node --strip-components=1 && rm /tmp/node.tar.gz \
+ && ln -s /opt/node/bin/node /usr/local/bin/node && ln -s /opt/node/bin/npm /usr/local/bin/npm \
+ && HOME=/tmp/build npm install -g --prefix /opt/node --no-fund --no-audit --omit=dev \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
+ && for b in claude codex gemini; do ln -s "/opt/node/bin/$b" "/usr/local/bin/$b"; done \
+ && HOME=/tmp/build claude --version && HOME=/tmp/build codex --version && HOME=/tmp/build gemini --version \
+ && rm -rf /tmp/build \
+ # nothing root-owned may end up in the worker's HOME (it is copied into each new HOME volume): the CLIs write their state there
+ && chown -R worker:worker /home/worker
+RUN python3 -m venv /tmp/uv-venv \
+ && echo "uv==${UV_VERSION} --hash=sha256:${UV_SHA256}" > /tmp/uv.txt \
+ && /tmp/uv-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/uv.txt \
+ && HOME=/tmp/build UV_PYTHON_INSTALL_DIR=/opt/aider/python UV_TOOL_DIR=/opt/aider/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+      /tmp/uv-venv/bin/uv tool install --python 3.12 "aider-chat==${AIDER_VERSION}" \
+ # tokenizers are downloaded at first use - do it now, so a run never tries to reach openaipublic.blob.core.windows.net
+ && TIKTOKEN_CACHE_DIR=/opt/aider/tiktoken /opt/aider/tools/aider-chat/bin/python -c \
+      "import tiktoken; [tiktoken.get_encoding(e) for e in ('cl100k_base', 'o200k_base')]" \
+ && HOME=/tmp/build aider --version \
+ && rm -rf /tmp/build /tmp/uv-venv /tmp/uv.txt && chmod -R a+rX /opt/aider
+COPY af-agent /usr/local/bin/af-agent
+COPY af-aider-events /usr/local/lib/af-aider-events
+RUN chmod 755 /usr/local/bin/af-agent /usr/local/lib/af-aider-events
+ENV DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+USER worker

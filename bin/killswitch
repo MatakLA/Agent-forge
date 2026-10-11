@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Usage: bin/killswitch [--project NAME | --all] on [--hard] [--reason TEXT] | off [--start] | status
+Each project has its own kill switch (FORGE_PROJECT / --project; none = the default project); --all is one switch for every project.
+on:  that project's (or every project's) new dispatches are refused and its running runs are killed within ~POLL_SEC + 10 s.
+     --hard additionally stops the project's worker containers (its WORKERS pool; every worker for the default project
+     without a pool); with --all it stops every worker and the egress proxy.
+off: clears the switch; --start starts the containers --hard stopped (proxy first)."""
+import os, re, subprocess, sys, time
+
+a = sys.argv[1:]
+ALL = "--all" in a
+if ALL:
+    a.remove("--all")
+if "--project" in a:
+    i = a.index("--project")
+    os.environ["FORGE_PROJECT"] = a[i + 1] if i + 1 < len(a) else ""
+    del a[i:i + 2]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+
+
+def containers():
+    try:
+        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
+    return [x.split() for x in r.stdout.splitlines() if re.fullmatch(r"(worker-\d+|egress-proxy) \w+", x)]
+
+
+def scope():
+    """The containers a hard stop / --start touches: the project's pool, or everything (incl. the proxy) for --all."""
+    pool = None if ALL else sbx.project_pool()
+    return [(n, s) for n, s in containers() if ALL or (n != "egress-proxy" and (pool is None or n in pool))]
+
+
+if not a or a[0] not in ("on", "off", "status"):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+label = "all projects" if ALL else f"project {sbx.PROJECT or 'default'}"
+if a[0] == "status":
+    ks = sbx._ks_read(sbx.ks_all_path()) if ALL else sbx.killswitch_active()
+    print(f"kill switch ({label}): " + ("ON" if ks else "off"))
+    if ks:
+        print(f"  since {ks.get('at')} by {ks.get('by')}: {ks.get('reason')}{' (hard)' if ks.get('hard') else ''}"
+              + (" - set for ALL projects" if ks.get("scope") == "all" and not ALL else ""))
+    for n, s in scope():
+        print(f"  {n}: {s}")
+elif a[0] == "on":
+    hard = "--hard" in a
+    reason = a[a.index("--reason") + 1] if "--reason" in a and a.index("--reason") + 1 < len(a) else "manual"
+    sbx.killswitch_on(reason, by="killswitch-cli", hard=hard, all_projects=ALL)
+    print(f"kill switch ON for {label} ({reason}); running runs will be killed within ~{int(sbx.load_limits()['POLL_SEC']) + 10} s")
+    if hard:
+        mine = {n for n, s in scope()}
+        deadline = time.time() + 40
+        while time.time() < deadline and any(sbx.is_running(d) and sbx.meta(d).get("worker") in mine for d in sbx.run_dirs()):
+            time.sleep(2)
+        names = [n for n, s in scope() if s == "running"]
+        if names:
+            subprocess.run(["docker", "stop", "-t", "10"] + names, capture_output=True)
+        print("stopped: " + (" ".join(names) or "nothing was running"))
+        sbx.alert(f"KILLSWITCH hard ({label}): stopped " + " ".join(names))
+else:
+    was = sbx.killswitch_off(all_projects=ALL)
+    print(f"kill switch for {label} cleared" if was else f"kill switch for {label} was not on")
+    stopped = [n for n, s in scope() if s != "running"]
+    if stopped:
+        if "--start" in a:
+            for n in sorted(stopped, key=lambda n: (n != "egress-proxy", n)):
+                subprocess.run(["docker", "start", n], capture_output=True)
+                if n == "egress-proxy":
+                    time.sleep(12)
+            print("started: " + " ".join(stopped))
+        else:
+            print("stopped containers: " + " ".join(stopped) + "  (start them with: bin/killswitch off --start)")
+    if not ALL and sbx._ks_read(sbx.ks_all_path()):
+        print("note: the kill switch for ALL projects is still on (bin/killswitch --all off)")

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Usage: bin/wait-run <run-dir | run-id | worker-N> [--timeout MINUTES]
+Waits until a dispatched run has finished and prints its result, so no shell loop (until/sleep/[ ) is needed.
+  <worker-N>   the latest run of that worker;  <run-id> or <run-dir>: that run (runs/<UTC-timestamp>-<worker>)
+Polls every 5 s (only reads files). --timeout defaults to the per-run maximum from etc/limits.conf + 5 minutes.
+Exit: 0 run finished ok, 1 run finished but not ok, 3 timeout / run not found / supervisor died without finishing."""
+import json, os, re, sys, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+
+a = sys.argv[1:]
+if not a or a[0].startswith("-") or len(a) not in (1, 3) or (len(a) == 3 and a[1] != "--timeout"):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+lim = sbx.load_limits()
+timeout = float(a[2]) if len(a) == 3 else lim["RUN_TIMEOUT_MAX_MIN"] + 5
+target = a[0]
+if re.fullmatch(r"worker-\d+", target):
+    runs = [d for d in sbx.run_dirs() if d.endswith("-" + target)]
+    run = runs[-1] if runs else None
+else:
+    run = target if os.path.isdir(target) else os.path.join(sbx.RUNS, os.path.basename(target))
+if not run or not os.path.isdir(run):
+    print(f"no such run: {target}", file=sys.stderr); sys.exit(3)
+run = os.path.realpath(run)
+if not os.path.realpath(run).startswith(os.path.realpath(sbx.RUNS) + os.sep):
+    print("run directory must be inside runs/", file=sys.stderr); sys.exit(2)
+deadline = time.time() + timeout * 60
+while not os.path.exists(run + "/finished"):
+    if not sbx.is_running(run) and os.path.exists(run + "/pid"):
+        print(f"{os.path.basename(run)}: supervisor died without finishing (orphaned run)", file=sys.stderr); sys.exit(3)
+    if time.time() > deadline:
+        print(f"{os.path.basename(run)}: still running after {timeout:g} min (timeout of wait-run, the run itself is not stopped)", file=sys.stderr); sys.exit(3)
+    time.sleep(5)
+m = sbx.meta(run)
+code = sbx.read(run + "/exitcode") or "?"
+ok = m.get("reason") == "ok"
+eg = (m.get("egress") or {}).get("alarms") or []
+print(f"{os.path.basename(run)}: reason={m.get('reason')} exit={code} duration={m.get('duration_s')}s tokens={m.get('tokens')} tool_calls={m.get('tool_calls')} egress_alarms={len(eg)}")
+for x in eg:
+    print("  egress alarm: " + x)
+sys.exit(0 if ok else 1)

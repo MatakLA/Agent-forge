@@ -1,0 +1,9 @@
+[credential]
+	helper = /usr/local/bin/git-credential-forgejo
+[user]
+	name = worker
+	email = worker@sandbox.local
+[init]
+	defaultBranch = main
+[safe]
+	directory = *
