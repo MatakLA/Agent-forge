@@ -86,12 +86,53 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     renderGoalSheet();
   `);
   const rid = (w.eval('F').timeline || []).find(r => r.end && r.run_id);
-  if (rid) { w.openRun(rid.run_id); await sleep(2500); check('replay sheet opens', txt('sheet').includes('Run ')); }
+  if (rid) {
+    w.openRun(rid.run_id); await sleep(2500);
+    check('replay sheet opens', txt('sheet').includes('Run '));
+    const replayAct = [...d.querySelectorAll('#sheet [data-open]')];
+    check('replay sheet: interactive task links are keyboard reachable',
+          replayAct.length === 0 || replayAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
+  }
+  w.openRuns(); await sleep(1500);
+  const runsRows = [...d.querySelectorAll('#sheet tr[data-open]')];
+  check('runs sheet: finished run rows are keyboard reachable',
+        runsRows.length === 0 || runsRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  w.closeSheet();
   w.openSearch(); const q = d.getElementById('sr-q'); q.value = 'due'; q.dispatchEvent(new w.Event('input', {bubbles: true})); await sleep(3000);
   check('search finds tasks', txt('sheet').includes('Tasks ('));
+  const srRows = [...d.querySelectorAll('.sr[data-open]')];
+  check('search: result rows are keyboard reachable',
+        srRows.length > 0 && srRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  q.value = 'xyznonexistentword'; q.dispatchEvent(new w.Event('input', {bubbles: true})); await sleep(1000);
+  check('search: explicit empty state for zero matches',
+        txt('sheet').includes('No results for'));
   w.openDoc('role:tester'); await sleep(2000);
   check('document editor opens', !!d.getElementById('doc-text'));
   w.closeSheet();
+  w.setTab('live'); await sleep(800);
+  w.eval(`
+    window._origPanes = P.panes;
+    P.panes = [];
+    renderLive();
+  `);
+  check('live: explicit empty message when nothing running',
+        txt('grid').includes('No AI is running right now'));
+  w.eval(`
+    P.panes = [{id: 'worker:worker-1', title: 'worker-1', kind: 'worker', state: 'finished', lines: [{n: 1, kind: 'tool', text: 'make test'}]}];
+    renderLive();
+  `);
+  check('live: pane that just ended renders finished state without JS error',
+        txt('grid').includes('finished'));
+  w.eval(`
+    P.panes = window._origPanes;
+    renderLive();
+  `);
+  w.setTab('timeline'); await sleep(800);
+  const tlBars = [...d.querySelectorAll('.tl g[data-open]')];
+  check('timeline: bars are keyboard reachable',
+        tlBars.length === 0 || tlBars.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  check('timeline: time axis labelled with time zone',
+        txt('timeline').includes('Timezone') || !!d.querySelector('.tl .tz'));
   w.eval("SUB.tasks = 'board'"); w.setTab('tasks'); await sleep(800);
   const taskCards = [...d.querySelectorAll('#t-tasks .card')];
   check('tasks: board cards are keyboard reachable',
