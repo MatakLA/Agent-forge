@@ -43,10 +43,12 @@ sandbox may not reach your notification server itself); the file can be deleted 
 `egress/entrypoint.sh`: Validate `EGRESS_MODE` against allow-pattern `^(enforce|discovery)$`, set umask 027, verify enforce configuration parsing before daemon exec, and drop root privileges to unprivileged `proxy` user.
 `web/server.py`: Enforce Host header validation across all request paths including `/healthz` and require numeric ports to prevent DNS rebinding.
 `web/server.py`: Validate Origin and Referer headers against allowed hosts on state-changing POST requests as a CSRF guard.
-`web/server.py`: Redact DASHBOARD_TOKEN from error messages and response payloads to prevent secret leakage.
 `bin/lib/foreman/knowledge.py`: Reject directory traversal (`..`, `/`, `\`), absolute paths, and malformed names in `doc_path`, `doc_set`, `doc_reset`, and `role_playbook`.
 `bin/lib/foreman/knowledge.py`: Enforce canonical `ROLE_SLUG` validation on role identifiers in `role_playbook` to prevent path traversal when loading role playbooks.
 `bin/lib/foreman/knowledge.py`: Enforce realpath containment verification (`commonpath`) in `doc_path` and `doc_reset` as defense-in-depth against directory traversal.
+`bin/lib/sbx.py`: Reject directory traversal (`..` and path separators) in `ks_path`, `project_conf`, `project_pool`, and `ledger_path`, and add safe path helpers for runs and secrets.
+`bin/lib/sbx.py`: Reject malicious `TEST_CMD` and `GATE_IMAGE` values in configuration by failing safe with `ValueError` rather than falling back or executing verbatim.
+`bin/dispatch`: Enforce preflight validation of worker identifiers, `DISPATCH_MODEL`, and `DISPATCH_ROLE` against safe regexes before subprocess execution.
 
 **Security: Install scripts hardening.** `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` enforce restrictive umasks (`umask 077` and `umask 027`) and file permissions (mode 0700 for `etc/` and secrets directory, mode 0600 for configuration and secret files) so no secrets or configs are created world- or group-readable; static regression tests verify safe remote execution and secret handling (`tests/test_install_security.sh`).
 
