@@ -332,6 +332,69 @@ class TestForemanPool(unittest.TestCase):
         )
         assert res_multi is False
 
+        # Case 4: API worker has budget, but is currently cooling down.
+        # pool_quota_out must return True because no eligible worker can start a run.
+        pool.workers = lambda: ["worker-1"]
+        pool.runtime_of = lambda w: "claude"
+        pool.WORKER_RT["worker-1"] = "claude"
+        pool.COOLDOWN.clear()
+        if os.path.exists(sbx.ledger_path()):
+            os.remove(sbx.ledger_path())
+        self._append_ledger(5.0, worker="worker-1", project="")
+        self.assertTrue(pool.api_budget_left("worker-1"), "Worker-1 has headroom")
+        assert pool.api_budget_left("worker-1") is True
+
+        now = time.time()
+        pool.COOLDOWN["worker-1"] = (now + 600.0, "rate limit: 429 cooling down")
+        self.assertTrue(pool.is_cooling_down("worker-1", now=now), "Worker-1 must be cooling down")
+        assert pool.is_cooling_down("worker-1", now=now) is True
+
+        res_cooling = pool.pool_quota_out()
+        self.assertTrue(
+            res_cooling,
+            "API worker with budget but in cooldown must cause pool_quota_out to return True",
+        )
+        assert res_cooling is True
+
+        # Case 5: Multiple API workers: worker-1 has budget but is cooling down,
+        # worker-2 has exhausted its budget. Neither can start a run.
+        pool.workers = lambda: ["worker-1", "worker-2"]
+        pool.WORKER_RT["worker-2"] = "claude"
+        self._append_ledger(9.0, worker="worker-2", project="")
+        self.assertFalse(pool.api_budget_left("worker-2"), "Worker-2 has no budget")
+        assert pool.api_budget_left("worker-2") is False
+
+        res_multi_cooling = pool.pool_quota_out()
+        self.assertTrue(
+            res_multi_cooling,
+            "Pool with cooling-down and exhausted API workers must return True",
+        )
+        assert res_multi_cooling is True
+
+    def test_pool_quota_out_api_worker_cooldown_guard(self):
+        """Invariant: api_budget_left guard in pool_quota_out must verify the worker is not cooling down."""
+        pool.workers = lambda: ["worker-1"]
+        pool.runtime_of = lambda w: "claude"
+        pool.WORKER_RT["worker-1"] = "claude"
+        pool.COOLDOWN.clear()
+        now = time.time()
+
+        # Worker-1 has sufficient budget (0 spent)
+        self.assertTrue(pool.api_budget_left("worker-1"), "Worker-1 has budget")
+        assert pool.api_budget_left("worker-1") is True
+
+        # When worker-1 is in cooldown, pool_quota_out must not treat it as available
+        pool.COOLDOWN["worker-1"] = (now + 600.0, "rate limit: cooling down")
+        self.assertTrue(pool.is_cooling_down("worker-1", now=now))
+        assert pool.is_cooling_down("worker-1", now=now) is True
+
+        res = pool.pool_quota_out()
+        self.assertTrue(
+            res,
+            "API worker with budget in cooldown must cause pool_quota_out to return True",
+        )
+        assert res is True
+
     def test_worker_busy_after_orphaned_run(self):
         """Invariant: worker_busy must not report busy forever once a run is no longer live."""
         w = "worker-1"
