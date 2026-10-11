@@ -56,6 +56,15 @@ EDITABLE = {
     "MODEL_ROUTING": (r"off|auto", "project"), "ROUTING_MIN_TASKS": ((1, 100), "project"), "ROUTING_MIN_FIRST_PASS": ((0, 100), "project"),
     "MAX_PARALLEL": ((1, 64), "limits"), "RUN_TOKEN_CAP": ((100000, 20000000), "limits"), "RUN_TIMEOUT_MIN": ((5, 240), "limits"),
     "QUOTA_MIN_5H_PCT": ((0, 90), "limits"), "QUOTA_MIN_WEEK_PCT": ((0, 90), "limits"), "CONSEC_FAIL_TRIP": ((1, 100), "limits"),
+    "DAILY_TOKEN_BUDGET": ((100000, 10000000000000), "limits"), "MAX_RUNS_PER_DAY": ((1, 10000000), "limits"),
+    "RUN_TIMEOUT_MAX_MIN": ((5, 1440), "limits"), "QUOTA_MODEL_FILTER": (r"[A-Za-z0-9_-]{1,32}", "limits"),
+    "POLL_SEC": ((1, 60), "limits"),
+    "OPENAI_API_BASE": (r"|https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?", "project"),
+    "DIFF_MAX": ((1000, 1000000), "project"), "MAX_GOAL_ROUNDS": ((1, 20), "project"), "LESSONS_MAX": ((1, 500), "project"),
+    "LOOP_SEC": ((1, 300), "project"), "LOCAL_TZ": (r"[A-Za-z0-9_./+-]{1,60}", "project"),
+    "SHARED_FILES": (r"|[A-Za-z0-9._~/-]+(,[A-Za-z0-9._~/-]+)*", "project"),
+    "VISION_FILE": (r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
+    "PROJECT_DIR": (r"|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
 }
 
 
@@ -81,7 +90,9 @@ def write_conf(path, values):
 
 def settings_get():
     lim = sbx.load_limits()
-    vals = {k: (lim[k] if sc == "limits" else ctx.C[k]) for k, (_, sc) in EDITABLE.items()}
+    vals = {k: (int(lim[k]) if isinstance(rule, tuple) and isinstance(lim.get(k), (int, float)) else lim[k]) if sc == "limits" else ctx.C[k] for k, (rule, sc) in EDITABLE.items()}
+    vals["FORGE_URL"] = sbx.FORGE_URL
+    vals["FORGE_REPO"] = sbx.FORGE_REPO
     rc, out, _ = sh(["docker", "ps", "-a", "--format", '{{.Names}} {{.State}} {{.Label "agent-forge.runtime"}}'], timeout=30)
     allw = sorted((x.split() + ["agy"])[:3] for x in out.splitlines() if re.match(r"worker-\d+ \w+", x))
     allw.sort(key=lambda x: int(x[0].split("-")[1]))

@@ -35,12 +35,17 @@ let S = null, sLoadedFor = null, sMsg = '';
 const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback (Gemini)',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', ANTHROPIC_MODEL: 'Anthropic API model (paid)',
-  OPENAI_MODEL: 'OpenAI-compatible model (paid)', GEMINI_MODEL: 'Gemini API model (paid)', OWNER_LANG: 'Your language',
-  AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically', CONTINUE_CONVERSATIONS: 'A rework continues the worker\'s conversation',
-  MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most', SPLIT_AFTER_CAPS: 'Split a task after N token caps',
-  TASK_TOKEN_BUDGET: 'Target task size (tokens)', MAX_PARALLEL: 'Parallel runs, at most', RUN_TOKEN_CAP: 'Token cap per run',
-  RUN_TIMEOUT_MIN: 'Time limit per run (min)', QUOTA_MIN_5H_PCT: 'A worker\'s minimum 5-hour quota (%)', QUOTA_MIN_WEEK_PCT: 'Minimum weekly quota (%)',
-  CONSEC_FAIL_TRIP: 'Kill switch after N failed runs in a row', CONTEXT_PACK: 'Context pack in each task', CONTEXT_PACK_CHARS: 'Pack size, at most (characters)',
+  OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', GEMINI_MODEL: 'Gemini API model (paid)', OWNER_LANG: 'Your language',
+  LOCAL_TZ: 'Local timezone', PROJECT_DIR: 'Project subdirectory', VISION_FILE: 'Vision file path', SHARED_FILES: 'Shared registry files',
+  LOOP_SEC: 'Loop interval (sec)', WORKERS: 'Worker pool', AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically',
+  CONTINUE_CONVERSATIONS: 'A rework continues the worker\'s conversation', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most',
+  MAX_GOAL_ROUNDS: 'Goal rounds, at most', DIFF_MAX: 'Maximum diff size (bytes)', LESSONS_MAX: 'Lessons kept in prompt, at most',
+  SPLIT_AFTER_CAPS: 'Split a task after N token caps', TASK_TOKEN_BUDGET: 'Target task size (tokens)', MAX_PARALLEL: 'Parallel runs, at most',
+  RUN_TOKEN_CAP: 'Token cap per run', RUN_TIMEOUT_MIN: 'Time limit per run (min)', RUN_TIMEOUT_MAX_MIN: 'Maximum time limit per run (min)',
+  DAILY_TOKEN_BUDGET: 'Daily token budget (all projects)', MAX_RUNS_PER_DAY: 'Maximum runs per day (all projects)',
+  QUOTA_MODEL_FILTER: 'Quota model family filter', QUOTA_MIN_5H_PCT: 'A worker\'s minimum 5-hour quota (%)', QUOTA_MIN_WEEK_PCT: 'Minimum weekly quota (%)',
+  CONSEC_FAIL_TRIP: 'Kill switch after N failed runs in a row', POLL_SEC: 'Run supervisor poll interval (sec)',
+  CONTEXT_PACK: 'Context pack in each task', CONTEXT_PACK_CHARS: 'Pack size, at most (characters)',
   SELF_CHECK_ROUNDS: 'Fix failing tests in the same run (rounds)', MAX_TASK_FILES: 'Files per task, at most (more = split first)',
   WORKER_MODEL_LIGHT: 'Model for light roles', LIGHT_ROLES: 'Light roles', AB_MODEL: 'A/B test: alternative worker model',
   AB_SHARE: 'A/B test: share of tasks on it (%)', PLAN_AHEAD: 'Plan ahead while the workers wait for quota', MAINTENANCE: 'Check main without AI while idle',
@@ -53,7 +58,94 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   PROJECT_MONTHLY_BUDGET_USD: 'Per month, this project (0 = none)', WORKER_DAILY_BUDGET_USD: 'Per day, per worker',
   RUN_MAX_TOOL_CALLS: 'Tool calls per run, at most', PRICE_CODEX: 'Codex: input, cached, output (USD / 1M tokens)', PRICE_GEMINI: 'Gemini: input, cached, output (USD / 1M tokens)',
   APPROVE: 'Wait for my OK before…', MODEL_ROUTING: 'Model routing', ROUTING_MIN_TASKS: 'Routing: merged tasks a model needs per role',
-  ROUTING_MIN_FIRST_PASS: 'Routing: approved first time, at least (%)'};
+  ROUTING_MIN_FIRST_PASS: 'Routing: approved first time, at least (%)', FORGE_KIND: 'Git forge type', UPSTREAM_REPO: 'Upstream repository',
+  UPSTREAM_URL: 'Upstream URL', UPSTREAM_BRANCH: 'Upstream default branch', UPSTREAM_MERGE: 'Upstream merge method',
+  FORGE_URL: 'Internal Git forge URL', FORGE_REPO: 'Forgejo repository'};
+const HELP = {
+  PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api.',
+  REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api.',
+  CLAUDE_MODEL: 'Model used by the claude-cli provider (e.g. sonnet, opus, haiku).',
+  AGY_PLAN_MODEL: 'Antigravity model for planning calls in worker containers (e.g. claude-sonnet-4-6).',
+  AGY_REVIEW_MODEL: 'Antigravity model for review calls in worker containers (e.g. claude-sonnet-4-6).',
+  AGY_FALLBACK_MODEL: 'Fallback Antigravity model when primary provider is out of quota (e.g. gemini-3.1-pro-high).',
+  WORKER_MODEL: 'Default Antigravity model for routine worker tasks. Empty uses etc/limits.conf.',
+  WORKER_MODEL_RISKY: 'Stronger worker model for risky tasks (security, money, migrations). Empty uses default.',
+  ANTHROPIC_MODEL: 'Model name when using paid Anthropic API (e.g. claude-3-7-sonnet-20250219). Empty if unused.',
+  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Empty if unused.',
+  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Empty for default.',
+  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Empty if unused.',
+  OWNER_LANG: 'Language for generated goals, notes, and questions (e.g. English, German).',
+  LOCAL_TZ: 'Timezone for timestamps and deadlines (e.g. UTC, Europe/Prague, America/New_York).',
+  PROJECT_DIR: 'Subdirectory of repository the team works in. Empty = entire repository.',
+  VISION_FILE: 'Path to product vision document relative to project root (e.g. docs/vision.md).',
+  SHARED_FILES: 'Comma-separated relative files multiple tasks may edit concurrently (e.g. registry.jsonl). Empty = none.',
+  LOOP_SEC: 'Foreman loop tick interval in seconds (1-300).',
+  WORKERS: 'Comma-separated worker containers assigned to this project (e.g. worker-1,worker-2). Empty = all workers.',
+  AUTOPILOT: '1 to automatically pick the next goal from vision file when idle, 0 to disable.',
+  AUTO_MERGE: '1 to automatically merge approved branches that pass all tests, 0 to hold.',
+  CONTINUE_CONVERSATIONS: '1 to resume worker conversation on rework if under 40% token cap, 0 for fresh run.',
+  MAX_REWORK: 'Maximum rework attempts on a task after review rejection before pausing (0-10).',
+  MAX_ACTIVE_GOALS: 'Maximum active goals in progress concurrently (1-50).',
+  MAX_GOAL_ROUNDS: 'Maximum planning and review rounds for a single goal before pausing (1-20).',
+  DIFF_MAX: 'Maximum diff size in bytes passed to reviewer before truncation (1000-1000000).',
+  LESSONS_MAX: 'Number of most recent rework lessons included in worker prompts (1-500).',
+  SPLIT_AFTER_CAPS: 'Split task into smaller pieces after reaching token cap N times (1-10).',
+  TASK_TOKEN_BUDGET: 'Target token budget per task prompt and completion (50000-5000000).',
+  CONTEXT_PACK: 'Context pack mode for tasks: on (all tasks), ab (half of tasks), or off.',
+  CONTEXT_PACK_CHARS: 'Maximum size of generated context pack in characters (5000-200000).',
+  SELF_CHECK_ROUNDS: 'Rounds a worker fixes failing tests in same run before gate (0-3; 0 = off).',
+  MAX_TASK_FILES: 'Maximum files a single task may touch before being split by planner (1-20).',
+  WORKER_MODEL_LIGHT: 'Cheaper model used for routine tasks in light roles. Empty uses default worker model.',
+  LIGHT_ROLES: 'Comma-separated role names using WORKER_MODEL_LIGHT (e.g. tester,technical-writer,translator). Empty = none.',
+  AB_MODEL: 'Alternative worker model to test on routine tasks. Empty = no experiment.',
+  AB_SHARE: 'Percentage of routine tasks to run on the alternative AB_MODEL (0-100%).',
+  PLAN_AHEAD: '1 to plan backlog goals while workers wait for quota, 0 to idle.',
+  MAINTENANCE: '1 to run background self-checks on main while idle, 0 to disable.',
+  TEST_CMD: 'Command to run test suite (e.g. npm test or empty for pytest).',
+  GATE_IMAGE: 'Docker image used by the gate to run TEST_CMD (empty = worker image).',
+  RUNS_KEEP_DAYS: 'Days to keep uncompressed transcripts before gzip compression (1-3650).',
+  NOTIFY_URL: 'Target URL: ntfy topic URL, webhook (Slack/Discord), or outbox for local JSONL file. Empty = off.',
+  NOTIFY_FORMAT: 'Notification payload format: ntfy, slack, discord, or json.',
+  NOTIFY_EVENTS: 'Comma-separated events triggering notifications: goal_done, task_blocked, killswitch, questions, quota_out, auth, approval. Empty = none.',
+  API_WORKERS_POLICY: 'When API workers take work: overflow (only when no subscription worker is free) or always (preferred).',
+  WORKER_MODEL_CLAUDE: 'Model name for Claude Code CLI workers (e.g. sonnet). Empty for default.',
+  WORKER_MODEL_CODEX: 'Model name for Codex CLI workers (e.g. gpt-5.1-codex). Empty for default.',
+  WORKER_MODEL_GEMINI: 'Model name for Gemini CLI workers. Empty for the CLI\'s default.',
+  WORKER_MODEL_COMPAT: 'Model name on your custom server for the Codex runtime (e.g. qwen3-coder:30b). Empty for default.',
+  WORKER_MODEL_AIDER: 'Model name on your custom server for the Aider runtime (e.g. qwen3-coder:30b). Empty for default.',
+  COMPAT_BASE_URL: 'OpenAI-compatible server URL (e.g. http://192.168.1.20:11434/v1 or https://openrouter.ai/api/v1). Empty if unused.',
+  PRICE_COMPAT: 'USD per 1M tokens for custom server: input, cached input, output (0,0,0 for local hardware).',
+  API_RUN_BUDGET_USD: 'Maximum spending in USD for a single API worker run (e.g. 2.00).',
+  API_DAILY_BUDGET_USD: 'Install-wide daily API worker spending cap in USD (e.g. 10.00).',
+  API_MONTHLY_BUDGET_USD: 'Install-wide calendar month API worker spending cap in USD (0 = none).',
+  PROJECT_DAILY_BUDGET_USD: 'Daily API worker spending cap for this project in USD (0 = none).',
+  PROJECT_MONTHLY_BUDGET_USD: 'Monthly API worker spending cap for this project in USD (0 = none).',
+  WORKER_DAILY_BUDGET_USD: 'Per-worker daily spending caps in USD (e.g. worker-1=3.0,worker-2=1.5).',
+  RUN_MAX_TOOL_CALLS: 'Maximum tool calls allowed per run before supervisor stops it (10-5000).',
+  PRICE_CODEX: 'USD per 1M tokens for Codex: input, cached input, output (e.g. 1.25,0.125,10).',
+  PRICE_GEMINI: 'USD per 1M tokens for Gemini CLI: input, cached input, output (e.g. 1.25,0.31,10).',
+  APPROVE: 'Comma-separated actions requiring owner OK before proceeding: plan, risky, merge. Empty = fully automatic.',
+  MODEL_ROUTING: 'off to use fixed models, or auto to route each role to cheapest proven worker model.',
+  ROUTING_MIN_TASKS: 'Minimum merged tasks of a role required for a model to be eligible for auto-routing (1-100).',
+  ROUTING_MIN_FIRST_PASS: 'Minimum first-pass approval percentage required for auto-routing (0-100%).',
+  FORGE_KIND: 'Type of git forge where the code lives: forgejo, github, or gitlab.',
+  UPSTREAM_REPO: 'Upstream repository path (owner/repo or group/project) when using GitHub or GitLab.',
+  UPSTREAM_URL: 'Base URL of upstream git forge (e.g. https://github.com or https://gitlab.com).',
+  UPSTREAM_BRANCH: 'Default branch on upstream repository synced with internal main (e.g. main).',
+  UPSTREAM_MERGE: 'Merge method used for pull/merge requests on upstream: merge, squash, or rebase.',
+  MAX_PARALLEL: 'Maximum concurrent worker runs allowed across all projects (1-64).',
+  RUN_TOKEN_CAP: 'Hard token cap per worker run; run is killed when reached (100000-20000000).',
+  RUN_TIMEOUT_MIN: 'Minimum wall-clock run timeout in minutes (5-240).',
+  RUN_TIMEOUT_MAX_MIN: 'Maximum wall-clock run timeout in minutes (5-1440).',
+  DAILY_TOKEN_BUDGET: 'System-wide token budget per UTC day across all runs (100000-10000000000000).',
+  MAX_RUNS_PER_DAY: 'Maximum worker runs allowed per UTC day across all projects (1-10000000).',
+  QUOTA_MODEL_FILTER: 'Model family name checked against quota floor before dispatch (e.g. Gemini).',
+  QUOTA_MIN_5H_PCT: 'Minimum remaining 5-hour quota percentage required to dispatch a run (0-90%).',
+  QUOTA_MIN_WEEK_PCT: 'Minimum remaining weekly quota percentage required to dispatch a run (0-90%).',
+  CONSEC_FAIL_TRIP: 'Consecutive failed runs across install before kill switch trips automatically (1-100).',
+  POLL_SEC: 'Supervisor polling interval in seconds for limit enforcement (1-60).',
+  FORGE_URL: 'URL of internal Forgejo server.',
+  FORGE_REPO: 'Forgejo repository path for this project.'};
 const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
   'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
 async function loadSettings(force) {
@@ -92,7 +184,7 @@ function modelSel(k, allowEmpty, emptyLabel) {
   return '<select id="set-' + k + '">' + opts.map(m => '<option value="' + esc(m) + '"' + (m === v ? ' selected' : '') + '>' +
     esc(m ? ((S.models || []).find(x => x.id === m) || {name: m}).name + ' (' + m + ')' : emptyLabel) + '</option>').join('') + '</select>';
 }
-const field = (k, inner, help) => '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + (help ? '<span class="help">' + help + '</span>' : '') + '</label><div>' + inner + '</div></div>';
+const field = (k, inner, help) => '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + ((help || HELP[k]) ? '<span class="help">' + esc(help || HELP[k]) + '</span>' : '') + '</label><div>' + inner + '</div></div>';
 const card = (title, body, intro) => '<div class="setcard"><h3>' + title + '</h3>' + (intro ? '<div class="muted small intro">' + intro + '</div>' : '') + body + '</div>';
 
 // ---- the six pages
@@ -111,12 +203,13 @@ function pageWorkers() {
       ' ' + (sec[k] ? '<b class="plus">✓</b>' : '<span class="muted">—</span>') + '</span>').join('') + '<button class="mini" id="key-change">set a key…</button></div>' +
     '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option><option value="compat.key">compat.key (your server)</option></select>' +
     '<input type="password" id="key-val" autocomplete="off" placeholder="the key (stored on the server only)" style="flex:1;min-width:180px"><button class="mini" id="key-save">Save key</button></div>' +
-    field('COMPAT_BASE_URL', txt('COMPAT_BASE_URL', 'http://192.168.1.20:11434/v1  or  https://openrouter.ai/api/v1'),
-      'Ollama, vLLM, LM Studio, OpenRouter. On your network or without TLS, the workers may reach exactly this address and port.') +
-    field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b')) + field('WORKER_MODEL_AIDER', txt('WORKER_MODEL_AIDER', 'e.g. qwen3-coder:30b')) +
-    field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE', 'sonnet')) + field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX', 'e.g. gpt-5.1-codex')) +
-    field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI', 'the CLI\'s default')) +
-    field('API_WORKERS_POLICY', sel('API_WORKERS_POLICY', [['overflow', 'only when no subscription worker can take the task'], ['always', 'first']])),
+    field('COMPAT_BASE_URL', txt('COMPAT_BASE_URL', 'http://192.168.1.20:11434/v1  or  https://openrouter.ai/api/v1'), HELP.COMPAT_BASE_URL) +
+    field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b'), HELP.WORKER_MODEL_COMPAT) +
+    field('WORKER_MODEL_AIDER', txt('WORKER_MODEL_AIDER', 'e.g. qwen3-coder:30b'), HELP.WORKER_MODEL_AIDER) +
+    field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE', 'sonnet'), HELP.WORKER_MODEL_CLAUDE) +
+    field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX', 'e.g. gpt-5.1-codex'), HELP.WORKER_MODEL_CODEX) +
+    field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI', 'the CLI\'s default'), HELP.WORKER_MODEL_GEMINI) +
+    field('API_WORKERS_POLICY', sel('API_WORKERS_POLICY', [['overflow', 'only when no subscription worker can take the task'], ['always', 'first']]), HELP.API_WORKERS_POLICY),
     'Keys are stored on the server (mode 0600) and reach only the agent\'s environment. Budgets: the Money page.');
   return h;
 }
@@ -131,56 +224,96 @@ function addWorkerForm() {
     '<div class="btnrow"><button class="primary sm" id="addw-go">Add</button><button class="mini" id="addw-cancel">Cancel</button></div></div>';
 }
 function pageModels() {
-  return card('Orchestrator - who plans and reviews', field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS')) + field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS')) +
-      field('CLAUDE_MODEL', sel('CLAUDE_MODEL', [...new Set(['sonnet', 'opus', 'haiku', 'fable', V().CLAUDE_MODEL].filter(Boolean))])) +
-      field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL')) + field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL')) + field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL')) +
-      '<details><summary class="muted">Paid APIs (only when ticked above and a key is set)</summary>' + field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL')) +
-      field('OPENAI_MODEL', txt('OPENAI_MODEL')) + field('GEMINI_MODEL', txt('GEMINI_MODEL')) + '</details>',
+  return card('Orchestrator - who plans and reviews', field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS'), HELP.PLAN_PROVIDERS) +
+      field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS'), HELP.REVIEW_PROVIDERS) +
+      field('CLAUDE_MODEL', sel('CLAUDE_MODEL', [...new Set(['sonnet', 'opus', 'haiku', 'fable', V().CLAUDE_MODEL].filter(Boolean))]), HELP.CLAUDE_MODEL) +
+      field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL'), HELP.AGY_PLAN_MODEL) +
+      field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL'), HELP.AGY_REVIEW_MODEL) +
+      field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL'), HELP.AGY_FALLBACK_MODEL) +
+      '<details><summary class="muted">Paid APIs (only when ticked above and a key is set)</summary>' +
+      field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL'), HELP.ANTHROPIC_MODEL) +
+      field('OPENAI_MODEL', txt('OPENAI_MODEL'), HELP.OPENAI_MODEL) +
+      field('OPENAI_API_BASE', txt('OPENAI_API_BASE', 'https://api.openai.com/v1'), HELP.OPENAI_API_BASE) +
+      field('GEMINI_MODEL', txt('GEMINI_MODEL'), HELP.GEMINI_MODEL) + '</details>',
       'Tried in order; one out of quota is skipped until its reset.') +
-    card('Worker models (Antigravity)', field('WORKER_MODEL', modelSel('WORKER_MODEL', true, 'default (' + (S.limits_worker_model || '') + ')')) +
-      field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', true, 'same as the others')) + field('WORKER_MODEL_LIGHT', modelSel('WORKER_MODEL_LIGHT', true, 'same as the others')) +
-      field('LIGHT_ROLES', txt('LIGHT_ROLES')) + '<div class="btnrow"><button class="mini" id="refresh-models">Refresh the model list from Antigravity</button></div>') +
-    card('Model routing', field('MODEL_ROUTING', sel('MODEL_ROUTING', [['off', 'off - the rules above'], ['auto', 'auto - per role, the cheapest model that has proven itself']])) +
-      field('ROUTING_MIN_TASKS', num('ROUTING_MIN_TASKS')) + field('ROUTING_MIN_FIRST_PASS', num('ROUTING_MIN_FIRST_PASS')),
+    card('Worker models (Antigravity)', field('WORKER_MODEL', modelSel('WORKER_MODEL', true, 'default (' + (S.limits_worker_model || '') + ')'), HELP.WORKER_MODEL) +
+      field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', true, 'same as the others'), HELP.WORKER_MODEL_RISKY) +
+      field('WORKER_MODEL_LIGHT', modelSel('WORKER_MODEL_LIGHT', true, 'same as the others'), HELP.WORKER_MODEL_LIGHT) +
+      field('LIGHT_ROLES', txt('LIGHT_ROLES'), HELP.LIGHT_ROLES) +
+      '<div class="btnrow"><button class="mini" id="refresh-models">Refresh the model list from Antigravity</button></div>') +
+    card('Model routing', field('MODEL_ROUTING', sel('MODEL_ROUTING', [['off', 'off - the rules above'], ['auto', 'auto - per role, the cheapest model that has proven itself']]), HELP.MODEL_ROUTING) +
+      field('ROUTING_MIN_TASKS', num('ROUTING_MIN_TASKS'), HELP.ROUTING_MIN_TASKS) +
+      field('ROUTING_MIN_FIRST_PASS', num('ROUTING_MIN_FIRST_PASS'), HELP.ROUTING_MIN_FIRST_PASS),
       'With auto, each new task uses the worker model with the least quota per merged task among those that merged enough tasks of its role here and were approved first time often enough. Risky tasks keep their model.') +
-    card('Experiments', field('AB_MODEL', modelSel('AB_MODEL', true, 'no A/B test')) + field('AB_SHARE', num('AB_SHARE')) +
-      field('CONTEXT_PACK', sel('CONTEXT_PACK', [['on', 'on - every task'], ['ab', 'ab - half the tasks, to measure it'], ['off', 'off']])) + field('CONTEXT_PACK_CHARS', num('CONTEXT_PACK_CHARS')),
+    card('Experiments', field('AB_MODEL', modelSel('AB_MODEL', true, 'no A/B test'), HELP.AB_MODEL) +
+      field('AB_SHARE', num('AB_SHARE'), HELP.AB_SHARE) +
+      field('CONTEXT_PACK', sel('CONTEXT_PACK', [['on', 'on - every task'], ['ab', 'ab - half the tasks, to measure it'], ['off', 'off']]), HELP.CONTEXT_PACK) +
+      field('CONTEXT_PACK_CHARS', num('CONTEXT_PACK_CHARS'), HELP.CONTEXT_PACK_CHARS),
       'Results with 95 % intervals and a button to adopt the winner: Insights → Experiments.');
 }
 function pageProject() {
   const fk = V().FORGE_KIND || '';
-  return card('Where the code lives', '<div class="setrow"><label>Repository</label><div>' + (fk === 'github' || fk === 'gitlab' ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' +
-      esc(V().UPSTREAM_REPO) + '</b>' : fk === 'forgejo' ? 'internal Forgejo only' : 'not chosen yet') + ' <button class="mini" id="open-setup">change…</button></div></div>') +
-    card('Approvals', field('APPROVE', multi('APPROVE', [['plan', 'a goal\'s plan is carried out'], ['risky', 'a risky task starts'], ['merge', 'a reviewed branch is merged']])),
+  return card('Where the code lives',
+      '<div class="setrow"><label>' + esc(LABEL.FORGE_URL) + '<span class="help">' + esc(HELP.FORGE_URL) + '</span></label><div><code>' + esc(V().FORGE_URL || '') + '</code> <span class="muted small">(set in etc/forge.conf - restart the foreman service to change)</span></div></div>' +
+      '<div class="setrow"><label>' + esc(LABEL.FORGE_REPO) + '<span class="help">' + esc(HELP.FORGE_REPO) + '</span></label><div><code>' + esc(V().FORGE_REPO || '') + '</code> <span class="muted small">(set in etc/forge.conf or project.conf - set at project bootstrap)</span></div></div>' +
+      '<div class="setrow"><label>Repository</label><div>' + (fk === 'github' || fk === 'gitlab' ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' +
+      esc(V().UPSTREAM_REPO) + '</b>' : fk === 'forgejo' ? 'internal Forgejo only' : 'not chosen yet') + ' <button class="mini" id="open-setup">change…</button></div></div>' +
+      field('UPSTREAM_BRANCH', txt('UPSTREAM_BRANCH', 'main'), HELP.UPSTREAM_BRANCH) +
+      field('UPSTREAM_MERGE', sel('UPSTREAM_MERGE', [['merge', 'merge commit'], ['squash', 'squash and merge'], ['rebase', 'rebase and merge']]), HELP.UPSTREAM_MERGE)) +
+    card('Approvals', field('APPROVE', multi('APPROVE', [['plan', 'a goal\'s plan is carried out'], ['risky', 'a risky task starts'], ['merge', 'a reviewed branch is merged']]), HELP.APPROVE),
       'What you tick waits for you under Overview → Needs you (and a notification, if set). Nothing ticked = fully automatic.') +
-    card('Behaviour', field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) + field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) +
-      field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) + field('OWNER_LANG', txt('OWNER_LANG')) +
-      '<details><summary class="muted">Task size and retries</summary>' + field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET')) + field('MAX_TASK_FILES', num('MAX_TASK_FILES')) +
-      field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS')) + field('MAX_REWORK', num('MAX_REWORK')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS')) +
-      field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS')) + '</details>') +
-    card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q')) + field('GATE_IMAGE', txt('GATE_IMAGE')) + field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS')),
+    card('Behaviour', field('AUTOPILOT', tog('AUTOPILOT'), HELP.AUTOPILOT) +
+      field('AUTO_MERGE', tog('AUTO_MERGE'), HELP.AUTO_MERGE) +
+      field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS'), HELP.CONTINUE_CONVERSATIONS) +
+      field('PLAN_AHEAD', tog('PLAN_AHEAD'), HELP.PLAN_AHEAD) +
+      field('MAINTENANCE', tog('MAINTENANCE'), HELP.MAINTENANCE) +
+      field('OWNER_LANG', txt('OWNER_LANG'), HELP.OWNER_LANG) +
+      field('LOCAL_TZ', txt('LOCAL_TZ', 'UTC'), HELP.LOCAL_TZ) +
+      field('PROJECT_DIR', txt('PROJECT_DIR', ''), HELP.PROJECT_DIR) +
+      field('VISION_FILE', txt('VISION_FILE', 'docs/vision.md'), HELP.VISION_FILE) +
+      field('SHARED_FILES', txt('SHARED_FILES', ''), HELP.SHARED_FILES) +
+      field('LOOP_SEC', num('LOOP_SEC'), HELP.LOOP_SEC) +
+      '<details><summary class="muted">Task size and retries</summary>' +
+      field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET'), HELP.TASK_TOKEN_BUDGET) +
+      field('MAX_TASK_FILES', num('MAX_TASK_FILES'), HELP.MAX_TASK_FILES) +
+      field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS'), HELP.SELF_CHECK_ROUNDS) +
+      field('MAX_REWORK', num('MAX_REWORK'), HELP.MAX_REWORK) +
+      field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS'), HELP.SPLIT_AFTER_CAPS) +
+      field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS'), HELP.MAX_ACTIVE_GOALS) +
+      field('MAX_GOAL_ROUNDS', num('MAX_GOAL_ROUNDS'), HELP.MAX_GOAL_ROUNDS) +
+      field('DIFF_MAX', num('DIFF_MAX'), HELP.DIFF_MAX) +
+      field('LESSONS_MAX', num('LESSONS_MAX'), HELP.LESSONS_MAX) + '</details>') +
+    card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q'), HELP.TEST_CMD) +
+      field('GATE_IMAGE', txt('GATE_IMAGE'), HELP.GATE_IMAGE) +
+      field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS'), HELP.RUNS_KEEP_DAYS),
       'The same command runs in the gate, in the worker\'s self-check and in the maintenance of main.') +
-    card('Notifications', field('NOTIFY_URL', txt('NOTIFY_URL', 'https://ntfy.sh/your-topic')) + field('NOTIFY_FORMAT', sel('NOTIFY_FORMAT', ['ntfy', 'slack', 'discord', 'json'])) +
+    card('Notifications', field('NOTIFY_URL', txt('NOTIFY_URL', 'https://ntfy.sh/your-topic'), HELP.NOTIFY_URL) +
+      field('NOTIFY_FORMAT', sel('NOTIFY_FORMAT', ['ntfy', 'slack', 'discord', 'json']), HELP.NOTIFY_FORMAT) +
       field('NOTIFY_EVENTS', multi('NOTIFY_EVENTS', [['goal_done', 'a goal is done'], ['approval', 'something waits for my approval'], ['task_blocked', 'a task is blocked'],
-        ['questions', 'the planner has questions'], ['killswitch', 'the kill switch tripped'], ['quota_out', 'all workers are out of quota'], ['auth', 'an API key was rejected']])));
+        ['questions', 'the planner has questions'], ['killswitch', 'the kill switch tripped'], ['quota_out', 'all workers are out of quota'], ['auth', 'an API key was rejected']]), HELP.NOTIFY_EVENTS));
 }
 function pageMoney() {
   const api = (S.workers || []).filter(w => (S.runtimes || {})[w.runtime] && (S.runtimes[w.runtime] || {}).api);
   const wb = Object.fromEntries(String(V().WORKER_DAILY_BUDGET_USD || '').split(',').filter(x => x.includes('=')).map(x => x.split('=')));
-  return card('Budgets (USD)', field('API_RUN_BUDGET_USD', txt('API_RUN_BUDGET_USD')) + field('API_DAILY_BUDGET_USD', txt('API_DAILY_BUDGET_USD')) +
-      field('API_MONTHLY_BUDGET_USD', txt('API_MONTHLY_BUDGET_USD')) + field('PROJECT_DAILY_BUDGET_USD', txt('PROJECT_DAILY_BUDGET_USD')) +
-      field('PROJECT_MONTHLY_BUDGET_USD', txt('PROJECT_MONTHLY_BUDGET_USD')) +
+  return card('Budgets (USD)', field('API_RUN_BUDGET_USD', txt('API_RUN_BUDGET_USD'), HELP.API_RUN_BUDGET_USD) +
+      field('API_DAILY_BUDGET_USD', txt('API_DAILY_BUDGET_USD'), HELP.API_DAILY_BUDGET_USD) +
+      field('API_MONTHLY_BUDGET_USD', txt('API_MONTHLY_BUDGET_USD'), HELP.API_MONTHLY_BUDGET_USD) +
+      field('PROJECT_DAILY_BUDGET_USD', txt('PROJECT_DAILY_BUDGET_USD'), HELP.PROJECT_DAILY_BUDGET_USD) +
+      field('PROJECT_MONTHLY_BUDGET_USD', txt('PROJECT_MONTHLY_BUDGET_USD'), HELP.PROJECT_MONTHLY_BUDGET_USD) +
       field('WORKER_DAILY_BUDGET_USD', api.length ? '<div id="set-WORKER_DAILY_BUDGET_USD" data-kind="wbudget" class="wbudget">' + api.map(w => '<label>' + esc(w.name) +
-        ' <input type="number" min="0" step="0.5" data-w="' + esc(w.name) + '" value="' + esc(wb[w.name] || '') + '" placeholder="no cap"></label>').join('') + '</div>' : small('no API workers')),
+        ' <input type="number" min="0" step="0.5" data-w="' + esc(w.name) + '" value="' + esc(wb[w.name] || '') + '" placeholder="no cap"></label>').join('') + '</div>' : small('no API workers'), HELP.WORKER_DAILY_BUDGET_USD),
       'Spent today: <b>' + usd(S.api_spent_today) + '</b>, this month: <b>' + usd(S.api_spent_month) + '</b>. Every check assumes the new run and each running API run cost a full run budget. ' +
       'The day and month budgets count all projects; details in Insights → Money.') +
-    card('Caps per run', field('RUN_MAX_TOOL_CALLS', num('RUN_MAX_TOOL_CALLS'))) +
-    card('Prices for the cost estimate', field('PRICE_CODEX', txt('PRICE_CODEX')) + field('PRICE_GEMINI', txt('PRICE_GEMINI')) + field('PRICE_COMPAT', txt('PRICE_COMPAT')),
+    card('Caps per run', field('RUN_MAX_TOOL_CALLS', num('RUN_MAX_TOOL_CALLS'), HELP.RUN_MAX_TOOL_CALLS)) +
+    card('Prices for the cost estimate', field('PRICE_CODEX', txt('PRICE_CODEX'), HELP.PRICE_CODEX) +
+      field('PRICE_GEMINI', txt('PRICE_GEMINI'), HELP.PRICE_GEMINI) +
+      field('PRICE_COMPAT', txt('PRICE_COMPAT'), HELP.PRICE_COMPAT),
       'Codex, Gemini CLI and Aider report tokens, not money - set your models\' prices. 0,0,0 for your own hardware.');
 }
 function pageLimits() {
-  return card('Limits <span class="pill warn">all projects</span>', ['MAX_PARALLEL', 'RUN_TOKEN_CAP', 'RUN_TIMEOUT_MIN', 'QUOTA_MIN_5H_PCT', 'QUOTA_MIN_WEEK_PCT', 'CONSEC_FAIL_TRIP']
-    .map(k => field(k, num(k))).join('') + ((S.workers || []).length > Number(V().MAX_PARALLEL) ? '<div class="seterr">There are more workers (' + S.workers.length +
+  const keys = ['MAX_PARALLEL', 'RUN_TOKEN_CAP', 'RUN_TIMEOUT_MIN', 'RUN_TIMEOUT_MAX_MIN', 'DAILY_TOKEN_BUDGET', 'MAX_RUNS_PER_DAY', 'QUOTA_MODEL_FILTER', 'QUOTA_MIN_5H_PCT', 'QUOTA_MIN_WEEK_PCT', 'CONSEC_FAIL_TRIP', 'POLL_SEC'];
+  return card('Limits <span class="pill warn">all projects</span>', keys
+    .map(k => field(k, k === 'QUOTA_MODEL_FILTER' ? txt(k, 'Gemini') : num(k), HELP[k])).join('') + ((S.workers || []).length > Number(V().MAX_PARALLEL) ? '<div class="seterr">There are more workers (' + S.workers.length +
     ') than parallel runs allowed - some will always wait.</div>' : ''));
 }
 // ---- Knowledge: the team's documents, edited here (a role is saved as this project's own version)
