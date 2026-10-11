@@ -21,7 +21,7 @@ os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 from foreman import ctx
-from foreman.settings import settings_apply, write_conf
+from foreman.settings import EDITABLE, settings_apply, write_conf
 
 
 class TestForemanSettings(unittest.TestCase):
@@ -136,6 +136,30 @@ class TestForemanSettings(unittest.TestCase):
         self.assertIn("MAX_PARALLEL=8", limits_content)
         self.assertNotIn("CLAUDE_MODEL", limits_content)
         self.assertNotIn("AUTOPILOT", limits_content)
+
+    def test_settings_help_text_restart_accuracy(self):
+        """Every EDITABLE key must have HELP text in settings.js stating it applies live, and restart keys must state so."""
+        import re
+        js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
+        js = open(js_path).read()
+
+        help_match = re.search(r"const HELP = \{(.*?)\};", js, re.DOTALL)
+        self.assertIsNotNone(help_match)
+        help_map = dict(re.findall(r"([A-Z0-9_]+):\s*\x27((?:[^\x27\\]|\\.)*)\x27", help_match.group(1)))
+
+        label_match = re.search(r"const LABEL = \{(.*?)\};", js, re.DOTALL)
+        self.assertIsNotNone(label_match)
+        label_map = dict(re.findall(r"([A-Z0-9_]+):\s*\x27((?:[^\x27\\]|\\.)*)\x27", label_match.group(1)))
+
+        for k in EDITABLE:
+            self.assertIn(k, help_map, f"missing HELP for {k}")
+            self.assertIn("applies live", help_map[k].lower(), f"{k} does not state applies live")
+            self.assertIn(k, label_map, f"missing LABEL for {k}")
+            self.assertTrue(len(label_map[k]) > 0, f"empty label for {k}")
+
+        self.assertIn("restart", help_map["FORGE_URL"].lower())
+        self.assertIn("restart", help_map["FORGE_REPO"].lower())
+        assert len(help_map) >= len(EDITABLE)
 
 
 if __name__ == "__main__":
