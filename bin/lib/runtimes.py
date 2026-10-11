@@ -7,6 +7,7 @@
   compat  Codex CLI on your own model server - any OpenAI Responses API: Ollama, vLLM, LM Studio, OpenRouter (COMPAT_BASE_URL)
   aider   Aider on your own model server - any OpenAI chat-completions API (the same COMPAT_BASE_URL)
   opencode OpenCode CLI on your configured provider (COMPAT_BASE_URL)
+  qwen-code Qwen Code CLI on Alibaba DashScope
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
 a read-only file mount (/run/secrets/api-key) that worker/af-agent puts into the agent's environment only - it never appears in a
@@ -42,6 +43,8 @@ RUNTIMES = {
                   api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT", own_git=False),
     "opencode": dict(label="OpenCode (SST's OpenCode CLI, configured provider)", image=AGY_IMAGE, key=None, hosts=[],
                      api=False, endpoint=True),
+    "qwen-code": dict(label="Qwen Code (Alibaba's Qwen Code CLI)", image=AGY_IMAGE, key="qwen.key",
+                      hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"], api=False),
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -52,7 +55,10 @@ AIDER_QUIET = ["--yes-always", "--no-pretty", "--no-stream", "--no-fancy-input",
                "--analytics-disable", "--no-gitignore", "--no-show-model-warnings", "--no-detect-urls"]
 # OpenCode: non-interactive JSON stream for scan(), quiet
 OPENCODE_QUIET = ["--format", "json"]
+# Qwen Code: non-interactive stream-json, auto-approve tool execution
+QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
 GEMINI_TRAILER = "Do the task described above."
+QWEN_TRAILER = "Do the task described above."
 ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?")
 
 
@@ -113,6 +119,12 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv = ["opencode", "run"] + OPENCODE_QUIET
         argv += (["--model", model] if model else [])
         argv += (["--session", conversation] if conversation else [])
+        return argv, prompt
+    if rt == "qwen-code":
+        argv = ["qwen"] + QWEN_QUIET
+        argv += (["-m", model] if model else [])
+        argv += (["--resume", conversation] if conversation else [])
+        argv += ["-p", QWEN_TRAILER]
         return argv, prompt
     raise ValueError(f"unknown runtime {rt!r}")
 
@@ -300,6 +312,34 @@ def scan(rt, lines, prices=None):
             elif t == "error":
                 err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("error") or e.get("message") or "error")
                 st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err, usage=None, cost_usd=None)
+        elif rt == "qwen-code":
+            t = e.get("type") or e.get("event")
+            sid = e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("conversation_id")
+            if (t == "init" or sid) and sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            elif t in ("tool_use", "tool_call", "tool"):
+                st["tools"] += 1
+            elif t == "message" and (e.get("role") == "assistant" or not e.get("role")):
+                text.append(str(e.get("content") or e.get("text") or ""))
+            elif t == "text":
+                text.append(str(e.get("text") or e.get("content") or ""))
+            elif t == "error":
+                st["last_error"] = str(e.get("message") or e.get("error") or e)[:500]
+            elif t == "result":
+                s = e.get("stats") or e.get("usage") or {}
+                tot = s.get("total_tokens") or ((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0))
+                cached = s.get("cached") or s.get("cached_tokens") or s.get("cached_input_tokens") or 0
+                st["tokens"] = max(0, (tot or 0) - cached)
+                ok = e.get("status") in ("success", "SUCCESS") or (not e.get("status") and not e.get("error") and not e.get("is_error"))
+                p = _prices(prices or "")
+                cost = ((s.get("input_tokens") or 0) - cached) * p[0] + cached * p[1] + (s.get("output_tokens") or 0) * p[2]
+                res = "".join(text)[-4000:] if text else str(e.get("response") or e.get("result") or "")[-4000:]
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR", response=res,
+                                     error="" if ok else str(e.get("error") or st.get("last_error") or e.get("status") or "error"),
+                                     usage=s if s else None, cost_usd=round(cost / 1e6, 6) if prices else None)
+            elif t == "turn.failed":
+                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("error"))
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=err, usage=None, cost_usd=None)
     for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
         st.pop(k, None)
     return st
