@@ -84,3 +84,40 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Location**: `worker/entrypoint.sh`, `egress/entrypoint.sh`
 - **Abuse Scenario**: Although container images specify `USER worker` and `USER proxy`, if a container is started with a root override (`--user root` or orchestration environments defaulting to root), the entrypoints previously executed `exec "$@"` as root. Running the AI agent process or proxy as root would allow a compromised model or malicious tool call to modify container binaries, tamper with system configuration, or attempt container breakout.
 - **Fix**: Added explicit root detection (`[ "$(id -u)" -eq 0 ]`) to both entrypoint scripts. If invoked as root, the entrypoints drop privileges to the unprivileged user (`worker` for worker container, `proxy` for egress proxy) via `runuser` or `su`. If unable to switch to the non-root user, the entrypoints fail closed (`exit 1`), refusing to execute the agent process or proxy daemon as root.
+## web/server.py
+
+### Finding 1: DNS Rebinding / Host Header Validation Bypassed on `/healthz`
+- **Severity**: HIGH
+- **Location**: `web/server.py:Handler.do_GET`
+- **Abuse Scenario**: The `/healthz` endpoint dispatched and responded with `200 OK` before invoking `_allowed()`, bypassing `host_allowed()`. A malicious web page visited by a user on the LAN could use DNS rebinding (an attacker-controlled domain with a short TTL resolving to `127.0.0.1`) to send requests to `http://attacker.example:8171/healthz`. Because the Host header was unvalidated on this path, the attacker could detect and fingerprint the running Agent-Forge instance on localhost.
+- **Fix**: Check `host_allowed(self.headers.get("Host"))` at the very start of `do_GET` (and `do_HEAD`) before evaluating `/healthz` or other paths, immediately returning `403 Forbidden` for any disallowed host.
+
+### Finding 2: Host Header Port Injection and IPv6 Formatting Bypass in `host_allowed`
+- **Severity**: HIGH
+- **Location**: `web/server.py:host_allowed`
+- **Abuse Scenario**: `host_allowed` stripped ports using `host.rsplit(":", 1)[0]` and `host.split("]")[0] + "]"` without validating that the trailing portion was a numeric port. An attacker could craft a Host header such as `127.0.0.1:evil.com`, `localhost:evil.com`, `[::1]:evil.com`, or `[::1]evil.com`; the function stripped the suffix and matched the prefix against allowed hosts, bypassing Host filtering. Furthermore, `.ts.net` matched without requiring a subdomain prefix.
+- **Fix**: Strictly validate that if a colon is present in the host (or following a closing bracket in IPv6), the port portion consists solely of decimal digits. Reject malformed bracketed IPv6 strings and require `.ts.net` hostnames to have a valid non-empty subdomain.
+
+### Finding 3: Missing Origin and Referer CSRF Validation on State-Changing POST Requests
+- **Severity**: HIGH
+- **Location**: `web/server.py:Handler._allowed`
+- **Abuse Scenario**: Although `X-Agent-Forge: 1` is enforced for POST requests, the server failed to validate `Origin` or `Referer` headers. In scenarios where custom headers can be attached or sent across origins (e.g. browser extensions, misconfigured proxies, sandboxed pages, or CORS preflight bypasses), an attacker site could issue state-changing POST requests (such as task actions, killswitch triggers, settings changes, or egress modifications).
+- **Fix**: In `Handler._allowed(post=True)`, verify that if `Origin` is present or `Referer` is present, their parsed hostname/netloc satisfies `host_allowed()`. Reject any request with `403 Forbidden` if an untrusted Origin or Referer is supplied.
+
+### Finding 4: Dashboard Token Constant-Time Comparison
+- **Severity**: LOW
+- **Location**: `web/server.py:token_ok`
+- **Abuse Scenario**: If authentication tokens were compared using `==` or `in`, character-by-character early termination would introduce a timing side-channel, allowing an attacker to deduce the `DASHBOARD_TOKEN` byte by byte over repeated requests.
+- **Fix / Status**: Verified that `token_ok()` compares both query tokens and `af_token` cookie values using `hmac.compare_digest`. Hardened token parsing to strip surrounding whitespace and quotes, and moved `hmac` import to module top-level.
+
+### Finding 5: Potential Token Leakage in Error Responses and Payloads
+- **Severity**: LOW
+- **Location**: `web/server.py:Handler._json`, `Handler._deny`, `Handler._raw`, `as_json`
+- **Abuse Scenario**: If a backend command failed or returned an error traceback containing environment variables or command invocations with the token, raw error strings in JSON bodies or deny messages could disclose `DASHBOARD_TOKEN` to the client or log files.
+- **Fix**: Keep request logging silenced (`log_message` is a no-op). Automatically redact occurrences of `DASHBOARD_TOKEN` with `[REDACTED]` in `as_json`, `Handler._json`, `Handler._deny`, and `Handler._raw` before transmitting responses.
+
+### Finding 6: Regex-Validated Identifiers Input Handling
+- **Severity**: LOW (No exploitable issue found)
+- **Location**: `web/server.py:TASK_ID`, `GOAL_ID`, `DOC_NAME`, `HOST`, `TARGET`
+- **Abuse Scenario**: If untrusted input identifiers were concatenated into shell commands or filesystem paths prior to validation, an attacker could achieve arbitrary command execution or path traversal.
+- **Fix / Status**: No exploitable issue found. All identifiers (`TASK_ID`, `GOAL_ID`, `DOC_NAME`, `HOST`, `TARGET`, along with project, action, worker, and duration arguments) are strictly validated against anchored regular expressions (`.fullmatch()`) or explicit whitelists before concatenation. Dynamic command arguments use `shlex.quote()`, and owner content is transmitted via standard input (`inp`).
