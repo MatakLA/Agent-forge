@@ -1,4 +1,10 @@
-"""The worker pool: which worker containers this project may use, their runtime, their remaining quota and cooldowns."""
+"""The worker pool: which worker containers this project may use, their runtime, their remaining quota and cooldowns.
+
+Public interface: workers, runtime_of, api_budget_left, worker_busy, quota_rows, quota_pct, has_quota,
+pool_quota_out, order_by_quota, and COOLDOWN/LAST_DISPATCHED tracking.
+Invariants: money caps (install, project, worker) are enforced conjunctively; quota checks fail open for
+unknown model families; workers in brief cooldowns are not treated as exhausted.
+"""
 import datetime as dt, os, re, time
 
 import sbx, runtimes
@@ -29,7 +35,7 @@ def runtime_of(w):
 
 def api_budget_left(w=""):
     """One more API run fits every money cap that applies (install, this project, and the worker `w` if given)."""
-    return sbx.budget_check(w, sbx.load_limits(), conf=sbx.project_conf())[0]
+    return sbx.budget_check(w, sbx.load_limits(), conf=ctx.C)[0]
 
 
 def worker_busy(w):
@@ -61,14 +67,15 @@ def quota_pct(rows, family, label="five hour"):
 
 def has_quota(rows, family, floor=2.0):
     """False when `agy /usage` says this account's model family is (nearly) exhausted in either window - skip it right away instead
-    of waiting ~2 minutes for agy to answer "Individual quota reached". Unknown (no rows) counts as available."""
+    of waiting ~2 minutes for agy to answer "Individual quota reached". Unknown (no rows or absent family) counts as available."""
+    # Unknown quota (absent family or empty rows) fails open (allowed) so unlisted models are permitted.
     for label in ("five hour", "week"):
         p = quota_pct(rows, family, label)
-        if 0 <= p <= floor:
+        if 0 <= p < floor:
             return False
     fam_rows = [r for r in rows if family.lower() in r.get("model", "").lower()]
     return not (fam_rows and not any("five hour" in r.get("label", "").lower() for r in fam_rows)
-                and any(r["pct"] <= floor for r in fam_rows))
+                and any(r["pct"] < floor for r in fam_rows))
 
 
 def pool_quota_out():
@@ -76,14 +83,16 @@ def pool_quota_out():
     ws, lim, now = workers(), sbx.load_limits(), time.time()
     if not ws:
         return False
-    if any(runtimes.is_api(runtime_of(w)) for w in ws) and api_budget_left():
+    if any(runtimes.is_api(runtime_of(w)) and api_budget_left(w) for w in ws):
         return False
     for w in [w for w in ws if not runtimes.is_api(runtime_of(w))]:
         until, why = COOLDOWN.get(w, (0, ""))
-        if until > now and why.startswith("quota low"):
-            continue
         if sbx.quota_verdict(quota_rows(w, 900), lim)[0]:
             return False
+        if until > now and (not why.startswith("quota low") or until - now <= 300):
+            return False
+        if until > now and why.startswith("quota low"):
+            continue
     return True
 
 
