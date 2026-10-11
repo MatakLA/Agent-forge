@@ -6,7 +6,9 @@ Invariants:
 - Project configurations reject malicious TEST_CMD and GATE_IMAGE entries, failing safe.
 - Dispatch preflight enforces worker naming, model, and role formats before container execution.
 """
+import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -55,6 +57,10 @@ class TestSbxSecurity(unittest.TestCase):
             "proj\\win",
             "proj space",
             "proj\nline",
+            "proj.1",
+            "my.project",
+            "a.b",
+            "project.conf",
         ]
         for p in evil_projects:
             self.assertFalse(bool(sbx.PROJECT_RE.fullmatch(p)), f"PROJECT_RE must reject {p!r}")
@@ -63,6 +69,57 @@ class TestSbxSecurity(unittest.TestCase):
         assert sbx.PROJECT_RE.fullmatch("agent-forge")
         self.assertTrue(bool(sbx.PROJECT_RE.fullmatch("p1")))
         assert sbx.PROJECT_RE.fullmatch("p1")
+
+    def test_project_re_rejects_dots(self):
+        """Invariant: PROJECT_RE disallows dot characters to prevent extension and traversal confusion."""
+        self.assertNotIn(".", sbx.PROJECT_RE.pattern, "PROJECT_RE pattern must not allow dots")
+        assert "." not in sbx.PROJECT_RE.pattern
+        self.assertFalse(bool(sbx.PROJECT_RE.fullmatch("proj.1")), "PROJECT_RE must reject dot in project name")
+        assert not sbx.PROJECT_RE.fullmatch("proj.1")
+        self.assertFalse(bool(sbx.PROJECT_RE.fullmatch("my.project")), "PROJECT_RE must reject dot in project name")
+        assert not sbx.PROJECT_RE.fullmatch("my.project")
+        self.assertFalse(bool(sbx.PROJECT_RE.fullmatch("a.b")), "PROJECT_RE must reject dot in project name")
+        assert not sbx.PROJECT_RE.fullmatch("a.b")
+        for dot_proj in ["proj.1", "my.project", "a.b", "dot.test", "project.conf"]:
+            self.assertFalse(bool(sbx.PROJECT_RE.fullmatch(dot_proj)))
+            assert not sbx.PROJECT_RE.fullmatch(dot_proj)
+            with self.assertRaises(ValueError, msg=f"ks_path({dot_proj!r}) must raise ValueError"):
+                sbx.ks_path(dot_proj)
+            with self.assertRaises(ValueError, msg=f"ledger_path({dot_proj!r}) must raise ValueError"):
+                sbx.ledger_path(dot_proj)
+            with self.assertRaises(ValueError, msg=f"project_conf({dot_proj!r}) must raise ValueError"):
+                sbx.project_conf(dot_proj)
+            with self.assertRaises(ValueError, msg=f"project_pool({dot_proj!r}) must raise ValueError"):
+                sbx.project_pool(dot_proj)
+
+    def test_check_project_traversal_guard_independent_of_regex(self):
+        """Invariant: _check_project contains an explicit traversal guard for '..', '/', and '\\'."""
+        src = inspect.getsource(sbx._check_project)
+        self.assertIn('".." in p', src, "_check_project must explicitly check '..' in p")
+        assert '".." in p' in src
+        self.assertIn('"/" in p', src, "_check_project must explicitly check '/' in p")
+        assert '"/" in p' in src
+        self.assertTrue('"\\\\" in p' in src or r'"\\" in p' in src, "_check_project must explicitly check '\\' in p")
+        assert ('"\\\\" in p' in src or r'"\\" in p' in src)
+        with patch.object(sbx, "PROJECT_RE", re.compile(r".*")):
+            raised = False
+            try:
+                sbx._check_project("..")
+            except ValueError:
+                raised = True
+            self.assertTrue(raised, "_check_project must reject '..' via explicit traversal guard even if PROJECT_RE matches")
+            assert raised
+            for traversal in ["..", "../evil", "a/b", "a\\b", "/etc", "test..name"]:
+                with self.assertRaises(ValueError, msg=f"_check_project({traversal!r}) must raise ValueError"):
+                    sbx._check_project(traversal)
+                with self.assertRaises(ValueError, msg=f"ks_path({traversal!r}) must raise ValueError"):
+                    sbx.ks_path(traversal)
+                with self.assertRaises(ValueError, msg=f"ledger_path({traversal!r}) must raise ValueError"):
+                    sbx.ledger_path(traversal)
+                with self.assertRaises(ValueError, msg=f"project_conf({traversal!r}) must raise ValueError"):
+                    sbx.project_conf(traversal)
+                with self.assertRaises(ValueError, msg=f"project_pool({traversal!r}) must raise ValueError"):
+                    sbx.project_pool(traversal)
 
     def test_model_re_rejects_shell_metacharacters(self):
         """Invariant: MODEL_RE rejects shell metacharacters and control characters."""
@@ -188,7 +245,7 @@ class TestSbxSecurity(unittest.TestCase):
         valid_path = sbx.ks_path("myproj")
         self.assertIn("projects/myproj/KILLSWITCH", valid_path)
         assert "projects/myproj/KILLSWITCH" in valid_path
-        traversal_ids = ["../../etc", "../KILLSWITCH", "a/b", "a\\b", "..", "/abs"]
+        traversal_ids = ["../../etc", "../KILLSWITCH", "a/b", "a\\b", "..", "/abs", "proj.1", "my.project"]
         for p in traversal_ids:
             with self.assertRaises(ValueError, msg=f"ks_path({p!r}) should raise ValueError"):
                 sbx.ks_path(p)
@@ -206,7 +263,7 @@ class TestSbxSecurity(unittest.TestCase):
         assert sbx.ledger_path() == os.path.join(sbx.RUNS, "ledger.jsonl")
         self.assertEqual(sbx.ledger_path("proj1"), os.path.join(sbx.RUNS, "projects", "proj1", "ledger.jsonl"))
         assert sbx.ledger_path("proj1") == os.path.join(sbx.RUNS, "projects", "proj1", "ledger.jsonl")
-        traversal_ids = ["../../etc", "../ledger", "a/b", "a\\b", ".."]
+        traversal_ids = ["../../etc", "../ledger", "a/b", "a\\b", "..", "proj.1", "my.project"]
         for p in traversal_ids:
             with self.assertRaises(ValueError, msg=f"ledger_path({p!r}) should raise ValueError"):
                 sbx.ledger_path(p)
@@ -263,7 +320,7 @@ class TestSbxSecurity(unittest.TestCase):
             raised_pool = True
         self.assertTrue(raised_pool)
         assert raised_pool
-        for p in ["../../etc", "a/b", ".."]:
+        for p in ["../../etc", "a/b", "..", "proj.1", "my.project"]:
             with self.assertRaises(ValueError):
                 sbx.project_conf(p)
             with self.assertRaises(ValueError):
