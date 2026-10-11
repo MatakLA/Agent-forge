@@ -21,5 +21,9 @@ fi
 if [ -f tests/test_foreman_merge.py ]; then
   $PY tests/test_foreman_merge.py | tail -1
 fi
+if [ -f tests/test_foreman_settings.py ]; then
+  $PY tests/test_foreman_settings.py | tail -1
+fi
 echo "check: ALL OK"
+
 
