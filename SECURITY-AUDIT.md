@@ -46,6 +46,7 @@ This document records security audit findings, threat modeling, abuse scenarios,
   3. `ssh_run` and `ssh_run_full` accepted arbitrary objects without validating string type for `remote_cmd`.
   4. Potential exposure of secrets via command line arguments (`/proc/*/cmdline`).
 - **Fix**: Enforced strict type checks (`isinstance(str)`) across all functions. Ensured `pflag` rejects non-strings and any project name failing `PROJECT_RE.fullmatch`. Handled `pflag` errors gracefully in `poll_project` without calling `ssh_run`. Confirmed that no secret or token is ever formatted into argv elements or remote command strings; all sensitive data (settings JSON, secret values, vision text) is piped exclusively over stdin (`inp=...`).
+
 ## egress/worker sandbox
 
 ### Threat Model
@@ -121,3 +122,43 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Location**: `web/server.py:TASK_ID`, `GOAL_ID`, `DOC_NAME`, `HOST`, `TARGET`
 - **Abuse Scenario**: If untrusted input identifiers were concatenated into shell commands or filesystem paths prior to validation, an attacker could achieve arbitrary command execution or path traversal.
 - **Fix / Status**: No exploitable issue found. All identifiers (`TASK_ID`, `GOAL_ID`, `DOC_NAME`, `HOST`, `TARGET`, along with project, action, worker, and duration arguments) are strictly validated against anchored regular expressions (`.fullmatch()`) or explicit whitelists before concatenation. Dynamic command arguments use `shlex.quote()`, and owner content is transmitted via standard input (`inp`).
+
+
+## bin/lib/foreman/knowledge.py
+
+### Threat Model
+- **Input sources**: Document identifiers (`name`) and role names (`role`) supplied via web dashboard endpoints (proxied through `web/server.py`), CLI arguments, or internal foreman loop callers (`prompts.py`, `doc_list`, `doc_get`, `doc_set`, `doc_reset`, `role_playbook`).
+- **Sink / Reach**: Local filesystem path resolution, read, write, and deletion operations within `ctx.CFG_DIR` (`etc/`, `etc/roles/`), `ctx.ROOT` (`roles/`), and project roots (`docs/vision.md`). No database, network sockets, or shell execution is reached directly.
+- **Sensitive data**: Arbitrary host files outside the project configuration directories (e.g. `/etc/passwd`, private keys, secret tokens under `~/.config/sandbox/secrets/`, source code files).
+
+### Findings
+
+#### Finding 1: Path Traversal Bypass in `role_playbook` via Relative/Absolute Paths
+- **Severity**: HIGH
+- **Location**: `bin/lib/foreman/knowledge.py:role_playbook`
+- **Abuse Scenario**: `role_playbook(role)` accepted arbitrary role strings, transformed them via `slugify(role)`, and performed word-intersection matching against available roles. An input containing path traversal sequences or directory paths targeting existing roles (such as `../backend-developer`, `../../../roles/backend-developer`, `/backend-developer`, or `backend-developer/../../etc/passwd`) was normalized into tokens matching legitimate role playbooks (e.g. matching `backend-developer`), bypassing input sanitization. If `role_playbook` or its callers were extended to load roles directly from disk using the unsanitized or slugified role name, arbitrary file paths could be reached.
+- **Fix**: Validated the `role` parameter at entry in `role_playbook`: rejected non-strings, empty inputs, strings containing `..`, `/`, `\\`, or absolute paths (`os.path.isabs`). Canonicalized `role:<slug>` prefixes by stripping `role:`, slugified the remaining identifier, and strictly enforced that the resulting slug matches `ROLE_SLUG.fullmatch(slug)`. Returns `""` immediately for any invalid or traversal input.
+
+#### Finding 2: Missing Path Traversal and Non-String Type Guards in `doc_path`
+- **Severity**: HIGH
+- **Location**: `bin/lib/foreman/knowledge.py:doc_path`
+- **Abuse Scenario**: `doc_path(name, write=False)` accepted arbitrary document identifiers. If called with a non-string object (such as `None`), it raised unhandled `AttributeError` on `.startswith()`. Furthermore, while the web dashboard currently gates HTTP requests with `DOC_NAME`, `doc_path` did not independently reject path traversal characters (`..`, `/`, `\\`) or absolute path components before calling `os.path.join` for `CFG_DIR` or `roles`, risking file system escape if the HTTP-layer regex was loosened or if `doc_path` was invoked directly by other components.
+- **Fix**: Validated that `name` is a non-empty string and immediately rejected any name containing `..`, `/`, `\\`, or matching `os.path.isabs(name)`. Restricted document names strictly to the known `DOCS` dictionary keys or `role:<slug>` matching `ROLE_SLUG.fullmatch`. In addition, implemented defense-in-depth confinement verification using `os.path.realpath` and `os.path.commonpath` to guarantee that resolved file paths stay strictly inside `CFG_DIR`, `ctx.ROOT/roles`, or the project root.
+
+#### Finding 3: Path Traversal and Unhandled Non-String Errors in `doc_reset`
+- **Severity**: MEDIUM
+- **Location**: `bin/lib/foreman/knowledge.py:doc_reset`
+- **Abuse Scenario**: `doc_reset(name)` directly called `name.startswith("role:")` without verifying string type, causing unhandled `AttributeError` on `None` or non-string inputs. Furthermore, it constructed deletion paths using `os.path.join(ctx.CFG_DIR, "roles", name[5:] + ".md")` without validating against path traversal sequences or checking resolved path containment before calling `os.remove`.
+- **Fix**: Added explicit type validation, rejected traversal characters (`..`, `/`, `\\`, `os.path.isabs`), routed path resolution through hardened `doc_path(name, write=True)`, and verified via `os.path.realpath` / `os.path.commonpath` that the target file is strictly confined within `ctx.CFG_DIR/roles` before deletion.
+
+#### Finding 4: File Write Path Traversal Protection in `doc_set`
+- **Severity**: HIGH
+- **Location**: `bin/lib/foreman/knowledge.py:doc_set`
+- **Abuse Scenario**: `doc_set(name, text)` creates and overwrites document files on disk (`os.replace(tmp, p)`). If `doc_path` failed to reject traversal filenames, an attacker could write arbitrary files across the host filesystem.
+- **Fix / Status**: Enforced strict reliance on hardened `doc_path(name, write=True)` which returns `None` for any traversal name, causing `doc_set` to fail closed and return `"unknown document"` without creating temporary files or directories. Added type validation ensuring `text` is a string.
+
+#### Finding 5: Defense-in-Depth Path Confinement in `doc_path` and `doc_get`
+- **Severity**: LOW (Defense-in-depth)
+- **Location**: `bin/lib/foreman/knowledge.py:doc_path`, `doc_get`
+- **Abuse Scenario**: Even if a regular expression matches an unexpected pattern or symlinks exist within the configuration tree, unconfined path construction could allow escaping `CFG_DIR` or `roles/`.
+- **Fix**: Added canonical path resolution check verifying that `os.path.commonpath([base_dir, resolved]) == base_dir` and `resolved != base_dir`, ensuring target files remain strictly within their intended directory boundaries.

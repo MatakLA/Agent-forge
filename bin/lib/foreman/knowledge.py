@@ -73,8 +73,16 @@ def role_catalogue():
 
 def role_playbook(role):
     """The playbook for a role name as the planner wrote it ('backend developer', 'security-tester', ...)."""
-    rs = _roles()
+    if not isinstance(role, str) or not role:
+        return ""
+    if ".." in role or "/" in role or "\\" in role or os.path.isabs(role):
+        return ""
+    if role.startswith("role:"):
+        role = role[5:]
     slug = slugify(role)
+    if not ROLE_SLUG.fullmatch(slug):
+        return ""
+    rs = _roles()
     if slug in rs:
         return rs[slug][1]
     words = set(slug.split("-"))
@@ -102,14 +110,39 @@ DOCS = {"vision": "The product vision - the autopilot plans goals from it",
 def doc_path(name, write=False):
     """Where a document lives (None for an unknown name). role:<slug> reads this project's own version or the install's; it
     is always written to this project's roles/ directory, so the install's playbook stays untouched."""
-    if name == "vision":
-        return os.path.join(ctx.PDIR or ctx.ROOT, ctx.C["VISION_FILE"])
-    if name in ("team-rules", "decisions", "lessons"):
-        return os.path.join(ctx.CFG_DIR, name + ".md")
-    if name.startswith("role:") and ROLE_SLUG.fullmatch(name[5:]):
-        own = os.path.join(ctx.CFG_DIR, "roles", name[5:] + ".md")
-        return own if write or os.path.exists(own) else os.path.join(ctx.ROOT, "roles", name[5:] + ".md")
-    return None
+    if not isinstance(name, str) or not name:
+        return None
+    if ".." in name or "/" in name or "\\" in name or os.path.isabs(name):
+        return None
+    if name in DOCS:
+        if name == "vision":
+            intended_dir = ctx.PDIR or ctx.ROOT
+            target = os.path.join(intended_dir, ctx.C["VISION_FILE"])
+        else:
+            intended_dir = ctx.CFG_DIR
+            target = os.path.join(intended_dir, name + ".md")
+    elif name.startswith("role:") and ROLE_SLUG.fullmatch(name[5:]):
+        slug = name[5:]
+        own_dir = os.path.join(ctx.CFG_DIR, "roles")
+        own = os.path.join(own_dir, slug + ".md")
+        if write or os.path.exists(own):
+            intended_dir = own_dir
+            target = own
+        else:
+            install_dir = os.path.join(ctx.ROOT, "roles")
+            intended_dir = install_dir
+            target = os.path.join(install_dir, slug + ".md")
+    else:
+        return None
+
+    base = os.path.realpath(intended_dir)
+    resolved = os.path.realpath(target)
+    try:
+        if os.path.commonpath([base, resolved]) != base or resolved == base:
+            return None
+    except ValueError:
+        return None
+    return target
 
 
 def doc_list():
@@ -129,7 +162,7 @@ def doc_get(name):
         text = open(p).read()
     except FileNotFoundError:
         text = ""
-    return dict(name=name, text=text, customized=name.startswith("role:") and p == doc_path(name, write=True))
+    return dict(name=name, text=text, customized=isinstance(name, str) and name.startswith("role:") and p == doc_path(name, write=True))
 
 
 def doc_set(name, text):
@@ -137,6 +170,8 @@ def doc_set(name, text):
     p = doc_path(name, write=True)
     if not p:
         return "unknown document"
+    if not isinstance(text, str):
+        return "not a text"
     if len(text) > DOC_MAX:
         return f"too long (max {DOC_MAX // 1000} kB)"
     if "\x00" in text:
@@ -151,9 +186,11 @@ def doc_set(name, text):
 
 def doc_reset(name):
     """A role back to the install's playbook (this project's own version is deleted)."""
-    if not name.startswith("role:") or not ROLE_SLUG.fullmatch(name[5:]):
+    if not isinstance(name, str) or not name.startswith("role:") or not ROLE_SLUG.fullmatch(name[5:]):
         return "only a role can be reset"
-    p = os.path.join(ctx.CFG_DIR, "roles", name[5:] + ".md")
+    p = doc_path(name, write=True)
+    if not p:
+        return "only a role can be reset"
     if os.path.exists(p):
         os.remove(p)
         event(f"{name} reset to the install's playbook")
