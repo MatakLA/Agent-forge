@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Usage: bin/open-pr <branch> "<title>" <body-file>     open a pull request branch -> main as orchestrator (write token).
+The body file is written by the orchestrator (review summary + attribution line). Refuses when the branch is missing or a PR for it is already open."""
+import json, os, sys, urllib.parse, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+a = sys.argv[1:]
+if len(a) != 3 or not os.path.isfile(a[2]) or not a[1].strip() or not a[0].startswith(("feat/", "fix/", "chore/", "test/")):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+branch, title, body = a[0], a[1], open(a[2]).read()
+tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
+API = f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}"
+def call(method, path, data=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(data).encode() if data else None,
+                                 headers={"Authorization": "token " + tok, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:300]
+c, _ = call("GET", "/branches/" + urllib.parse.quote(branch, safe=""))
+if c != 200:
+    print(f"branch {branch} not found on origin (HTTP {c})", file=sys.stderr); sys.exit(1)
+c, prs = call("GET", "/pulls?state=open&limit=50")
+if any(p["head"]["ref"] == branch for p in prs):
+    print(f"an open PR for {branch} already exists", file=sys.stderr); sys.exit(1)
+c, pr = call("POST", "/pulls", dict(title=title, head=branch, base="main", body=body))
+if c != 201:
+    print(f"could not open PR: HTTP {c} {pr}", file=sys.stderr); sys.exit(1)
+print(f"opened PR #{pr['number']}: {pr['html_url']}  (mergeable: {pr.get('mergeable')})")

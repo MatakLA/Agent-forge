@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""Runs one dispatched task and enforces the limits: wall-clock timeout, token cap, tool-call cap, USD cap (API runtimes),
+kill switch. Started by bin/dispatch. Writes started/finished/exitcode/meta.json, appends to runs/ledger.jsonl, trips the kill
+switch after repeated failures. The worker's runtime (agy / claude / codex / gemini, bin/lib/runtimes.py) decides the command
+and how the event stream is read."""
+import json, os, re, subprocess, sys, threading, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress, runtimes
+
+run = sys.argv[1]
+m = sbx.meta(run)
+W, test, runner = m["worker"], m.get("test", False), m.get("runner")
+RT = m.get("runtime") or "agy"
+lim = sbx.load_limits()
+PRICES = lim.get(runtimes.RUNTIMES.get(RT, {}).get("prices") or "-")       # "in,cached,out" USD/Mtok when the CLI reports no cost
+
+
+def stats():
+    return runtimes.scan_file(RT, run + "/stream.jsonl", PRICES)
+timeout_s, cap = m["limits"]["timeout_min"] * 60, m["limits"]["token_cap"]
+t0 = time.time()
+open(run + "/started", "w").write(sbx.now() + "\n")
+reason, rc, killed = None, None, False
+EGRESS_CHECKS = (not runner) or bool(os.environ.get("SBX_TEST_EGRESS"))
+next_egress_check = time.time() + 15
+
+
+def sh(*args, **kw):
+    return subprocess.run(list(args), capture_output=True, text=True, **kw)
+
+
+def kill_in_container():
+    """Kill the whole session of the run inside the worker; restart the container if anything survives."""
+    sh("docker", "exec", W, "bash", "-c",
+       'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pkill -TERM -s "$sid"; exit 0')
+    for _ in range(8):
+        time.sleep(1)
+        if not sh("docker", "exec", W, "bash", "-c", 'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pgrep -s "$sid"').stdout.strip():
+            break
+    sh("docker", "exec", W, "bash", "-c",
+       'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pkill -KILL -s "$sid"; exit 0')
+    ps = sh("docker", "exec", W, "ps", "-eo", "pid=,args=").stdout.splitlines()
+    left = [l.strip() for l in ps if l.strip() and l.split(None, 1)[0] != "1"
+            and l.split(None, 1)[1:] not in (["sleep infinity"],) and not l.split(None, 1)[1:2][0].startswith("ps -eo")]
+    if left:
+        with open(run + "/supervisor.log", "a") as f:
+            f.write(f"{sbx.now()} processes survived the kill in {W} ({len(left)}: {left[0][:80]}); restarting the container\n")
+        sh("docker", "restart", "-t", "5", W)
+
+
+def salvage(reason):
+    """Whatever a run leaves uncommitted or unpushed is lost to the gate. After EVERY run (not only a token cap / timeout) commit +
+    push what is in the worker's clone to the task branch, so the next attempt continues from it and a finished run that forgot
+    to push is not sent back (58 of 168 reworks in the first two weeks were "branch was not pushed"). Only on the task's own
+    branch, never on main; build caches are left out."""
+    br = m.get("branch") or ""
+    if runner or not br or br in ("main", "master") or not sbx.SAFE_ARG.fullmatch(br):
+        return None
+    what = "auto-saved when the run hit its " + reason if reason in ("token-cap", "timeout") else f"auto-committed at the end of the run ({reason})"
+    r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           f'set -o pipefail; [ "$(git branch --show-current)" = "{br}" ] || exit 3; '
+           f"git add -A -- . ':(exclude)*/__pycache__/*' ':(exclude)*.pyc' ':(exclude).pytest_cache' "
+           # databases and logs that test runs leave in the source tree (seen: tools/gym.db) are never part of the work
+           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' ':(exclude).aider*' && "
+           f'(git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"); '
+           # nothing beyond main (a run that did nothing): never push a branch equal to main - the gate would see an empty
+           # diff and the review would take it for "already merged"
+           f'[ -n "$(git log --oneline origin/main..HEAD | head -1)" ] || exit 4; '
+           f'if git rev-parse -q --verify origin/{br} >/dev/null; then [ -n "$(git log --oneline origin/{br}..HEAD | head -1)" ] || exit 4; fi; '
+           f'git push -q -u origin HEAD:{br} --force-with-lease 2>&1 | tail -2')
+    return {"rc": r.returncode, "out": (r.stdout + r.stderr)[-300:]}
+
+
+def conversation_id():
+    """The agent conversation this run used (agy conversation / Claude session / Codex thread / Gemini session): the foreman
+    resumes it for a rework on the same worker."""
+    return stats()["conversation_id"]
+
+
+QUOTA_RE = re.compile(r"quota (reached|exceeded|exhausted)|RESOURCE_EXHAUSTED|usage limit|rate.?limit|hit your [\w ]*limit|"
+                      r"out of (extra )?usage|limit reached|\b429\b|insufficient_quota|overloaded", re.I)
+# an API key that does not work (wrong, revoked, no credit): not the task's fault and not misbehaviour
+AUTH_RE = re.compile(r"\b401\b|authentication_error|invalid x-api-key|incorrect api key|invalid api key|api key not valid|"
+                     r"API_KEY_INVALID|permission_denied|credit balance is too low|billing", re.I)
+
+
+def finish(reason, rc):
+    stt = stats()
+    tokens, tools, res = stt["tokens"], stt["tools"], stt["result"]
+    if reason is None and RT == "claude" and res and res.get("subtype") == "error_max_budget_usd":
+        reason = "token-cap"                       # the run hit API_RUN_BUDGET_USD: like a token cap (work is saved, then gated)
+    if reason is None:
+        ok = rc == 0 if runner else (rc == 0 and res is not None and res.get("status") == "SUCCESS")
+        # agy sometimes reports status ERROR purely because the LAST streaming call back to Google's API dropped
+        # (observed repeatedly: "API error ... streamGenerateContent ... EOF" arriving right after a long, complete,
+        # substantive response - the actual work was already done). Do not blame the worker for a transient network
+        # hiccup on the final roundtrip: the real correctness check is foreman's independent gate (fresh clone, real
+        # test suite in a clean container) regardless of this label - it only feeds the ledger and the kill-switch
+        # consecutive-failure counter, so a wrong "ok" here is low-risk (a genuinely broken task still fails the
+        # gate) while a wrong "failed" here was tripping the kill switch on good runs.
+        if not ok and rc == 0 and res is not None and res.get("status") != "SUCCESS":
+            err, resp = str(res.get("error") or ""), str(res.get("response") or "")
+            transient = re.search(r"\bEOF\b|timeout|connection reset|stream closed|: 5\d\d\b", err, re.I)
+            if transient and len(resp) > 200:
+                ok = True
+        reason = "ok" if ok else "failed"
+        if not ok and not runner:
+            # the account ran out mid-run ("Individual quota reached", RESOURCE_EXHAUSTED, ...): not a misbehaving run -
+            # the foreman re-queues the task without an attempt and rests the worker; it never counts toward the kill switch
+            tail = str((res or {}).get("error") or "") + " " + str((res or {}).get("response") or "")[-500:]
+            try:
+                tail += open(run + "/stderr.log").read()[-2000:]
+            except OSError:
+                pass
+            if runtimes.is_api(RT) and AUTH_RE.search(tail):
+                reason = "auth"
+            elif QUOTA_RE.search(tail):
+                reason = "quota"
+    ks = sbx.killswitch_active()
+    if ks and reason not in ("ok",) and reason != "killswitch":
+        reason = "killswitch"
+    code = {"ok": 0, "timeout": 124, "token-cap": 125, "killswitch": 126, "egress-not-enforced": 127, "setup-failed": 90,
+            "quota": 75, "auth": 77, "stopped": 79}.get(reason, rc if rc else 1)
+    cost = (res or {}).get("cost_usd")
+    dur = int(time.time() - t0)
+    quota_after = None
+    if not runner and RT == "agy" and container_ok():
+        try:
+            quota_after = sbx.read_quota(W)
+        except Exception:
+            pass
+    m2 = sbx.meta(run)
+    # egress first: work from a run that tried to reach something it must not is never pushed anywhere
+    egress_high = []
+    if EGRESS_CHECKS:
+        try:
+            eres = egress.analyze(since=t0 - 2, client=W)
+            egress_high = [(c, msg) for lvl, c, msg in egress.alarms(eres) if lvl == "HIGH"]
+            m2["egress"] = dict(allowed=dict(eres["allowed"]), denied=dict(eres["denied"]), alarms=[msg for _, msg in egress_high])
+        except Exception as e:
+            m2["egress"] = dict(error=str(e))
+    if reason not in ("killswitch", "setup-failed", "egress-not-enforced") and not egress_high and container_ok():
+        m2["salvage"] = salvage(reason)
+    if SELF_CHECKS:
+        m2["self_checks"] = SELF_CHECKS
+    m2["conversation_id"] = conversation_id()
+    m2.update(started=open(run + "/started").read().strip(), finished=sbx.now(), duration_s=dur, reason=reason, exit_code=code,
+              tokens=tokens, tool_calls=tools, agy_status=(res or {}).get("status"), result_usage=(res or {}).get("usage"),
+              quota_after=quota_after, cost_usd=cost, result_error=str((res or {}).get("error") or "")[:500])
+    json.dump(m2, open(run + "/meta.json", "w"), indent=1)
+    with sbx.lock():
+        if egress_high:
+            for c, msg in egress_high:
+                sbx.alert(f"run {m['run_id']}: egress {c}: {msg}")
+            if not test:
+                sbx.killswitch_on(f"egress alarm during run {m['run_id']}: {egress_high[0][1][:120]}", by="run-supervisor")
+        sbx.append_ledger(dict(run_id=m["run_id"], date=sbx.today(), at=sbx.now(), worker=W, task=m["task"], test=test,
+                               reason=reason, exit_code=code, tokens=tokens, duration_s=dur, tool_calls=tools, egress_alarms=len(egress_high),
+                               runtime=RT, cost_usd=cost))
+        if not test:
+            n = int(lim["CONSEC_FAIL_TRIP"])
+            if reason != "ok":
+                sbx.alert(f"run {m['run_id']} ended with reason {reason} (exit {code}, {tokens} tokens)")
+            if reason == "failed" and sbx.consecutive_failures(sbx.read_ledger(), sbx.PROJECT) >= n:
+                sbx.killswitch_on(f"{n} failed runs in a row (last: {reason})", by="run-supervisor")
+    open(run + "/exitcode", "w").write(str(code) + "\n")
+    open(run + "/finished", "w").write(sbx.now() + "\n")
+    sys.exit(0)
+
+
+def container_ok():
+    return sh("docker", "inspect", "-f", "{{.State.Running}}", W).stdout.strip() == "true"
+
+
+SELF_CHECKS = []
+SELF_CHECK_PY = r"""
+import json, os, re, subprocess
+CMD = os.environ.get("AF_TEST_CMD") or "python3 -m pytest -q -p no:cacheprovider"
+PYTEST = "pytest" in CMD
+def sh(*c, t=60):
+    return subprocess.run(list(c), capture_output=True, text=True, timeout=t)
+problems = []
+changed = set(sh("git", "diff", "--name-only", "origin/main").stdout.split()) | set(sh("git", "ls-files", "--others", "--exclude-standard").stdout.split())
+for f in sorted(changed):
+    if re.search(r"(^|/)test_[^/]*\.py$", f):
+        try:
+            src = open(f).read()
+        except OSError:
+            continue
+        for pat, name in ((r"pytest\.mark\.skip", "pytest.mark.skip"), (r"pytest\.skip\(", "pytest.skip("), (r"xfail", "xfail"),
+                          (r"importorskip", "importorskip"), (r"skipif", "skipif"), (r"assert True\b", "assert True")):
+            if re.search(pat, src):
+                problems.append(f"{f} contains {name} (the gate rejects it)")
+try:
+    t = sh("sh", "-c", CMD + (" --maxfail=5" if PYTEST else ""), t=600)
+    out, rc = t.stdout + t.stderr, t.returncode
+except subprocess.TimeoutExpired:
+    # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"
+    print(json.dumps({"ok": not problems, "rc": None, "summary": "suite slower than 10 min - left to the gate", "tail": "",
+                      "problems": problems}))
+    raise SystemExit
+if rc in (126, 127):
+    # the test tool is not installed in the worker image (e.g. a Node project with the default image): the gate decides
+    print(json.dumps({"ok": not problems, "rc": rc, "summary": "test command not available in the worker - left to the gate",
+                      "tail": "", "problems": problems}))
+    raise SystemExit
+rc = 0 if (rc == 5 and PYTEST) else rc
+last = out.strip().splitlines()[-1] if out.strip() else ""
+print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems}))
+"""
+
+
+def last_result_ok():
+    """The last agent invocation of this run ended successfully (not an API error / quota or budget stop)."""
+    return (stats()["result"] or {}).get("status") == "SUCCESS"
+
+
+def self_check():
+    """The full test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). Infrastructure trouble never
+    blocks the run: it counts as passed and the real gate decides."""
+    try:
+        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"AF_TEST_CMD={sbx.test_cmd()}", "-w", sbx.WORKER_CLONE, W,
+               "python3", "-", input=SELF_CHECK_PY, timeout=700)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception as e:
+        return {"ok": True, "error": f"self-check could not run: {e}"[:200]}
+
+
+def fix_prompt(chk):
+    br = m.get("branch") or "your task branch"
+    probs = "".join(f"- {p}\n" for p in chk.get("problems") or [])
+    cmd = sbx.test_cmd()
+    return (f"## Self-check before you finish: your branch is not ready\n"
+            f"This is the check the gate runs in a clean container; it would send the task back, so fix it now.\n{probs}"
+            f"\nTest output (`{cmd}`):\n```\n{chk.get('tail', '')[-3000:]}\n```\n"
+            f"Fix the cause - change a test only if the spec says the test itself is wrong, never skip or weaken one. Run "
+            f"`{cmd}` until it passes, then commit and push to `{br}`. Final reply: what you changed and the final test "
+            f"summary line.\n")
+
+
+def agent_cmd(prompt, conversation=None):
+    """(docker exec argv, stdin text) for one agent invocation of this worker's runtime. The budget of a later invocation (the
+    self-check's fix round) is what is left of the run's USD cap."""
+    left_min = max(1, int((timeout_s - (time.time() - t0)) // 60) + 1)
+    budget = float(m.get("budget_usd") or 0)
+    if budget:
+        budget = max(0.05, round(budget - ((stats()["result"] or {}).get("cost_usd") or 0), 2))
+    model = m.get("model") or (lim["WORKER_MODEL"] if RT == "agy" else "")
+    argv, stdin_text = runtimes.command(RT, prompt, model, conversation, left_min, budget)
+    env = []
+    if sbx.TEST_MODE and os.environ.get("AF_TEST_BASE_URL"):           # tests only: a fake model API instead of the real one
+        env = ["-e", "AF_BASE_URL=" + os.environ["AF_TEST_BASE_URL"]]
+    if runtimes.uses_endpoint(RT) and runtimes.endpoint_target(str(lim.get("COMPAT_BASE_URL") or "")):
+        env += ["-e", "AF_ENDPOINT=" + str(lim["COMPAT_BASE_URL"])]     # the owner's model server (validated URL, not a secret)
+    if RT == "aider":
+        env += ["-e", "AF_TEST_CMD=" + sbx.test_cmd()]                  # aider runs the project's tests after each edit
+    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec "$@"', '_'] + argv
+    return ["docker", "exec", "-i"] + env + ["-w", sbx.WORKER_CLONE, W] + inner, stdin_text
+
+
+def _over_cap():
+    st = stats()
+    return st["tokens"] >= cap or st["tools"] >= int(lim["RUN_MAX_TOOL_CALLS"])
+
+
+def watch(cmd, mode):
+    """Run one agent invocation (stream appended to the run's stream.jsonl) under the run's limits. Returns (reason, rc): reason
+    is None unless a limit stopped it. Timeout, token cap, tool-call cap and USD cap count for the whole run."""
+    global next_egress_check
+    cmd, stdin_text = cmd
+    reason = None
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                            stdout=open(run + "/stream.jsonl", mode), stderr=open(run + "/stderr.log", mode))
+    if stdin_text is not None:
+        def feed():
+            try:
+                proc.stdin.write(stdin_text.encode()); proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        threading.Thread(target=feed, daemon=True).start()
+    while proc.poll() is None:
+        time.sleep(lim["POLL_SEC"])
+        if proc.poll() is not None:
+            break
+        if time.time() - t0 > timeout_s:
+            reason = "timeout"
+        elif _over_cap():
+            reason = "token-cap"
+        elif sbx.killswitch_active():
+            reason = "killswitch"
+        elif os.path.exists(run + "/stop"):
+            reason = "stopped"                     # the owner cancelled this task (bin/foreman task <id> cancel)
+        elif EGRESS_CHECKS and time.time() >= next_egress_check:
+            next_egress_check = time.time() + 15
+            h = egress.proxy_health()
+            if not h["ok"]:
+                reason = "egress-not-enforced"
+                sbx.alert(f"run {m['run_id']} stopped: " + "; ".join(h["problems"]))
+        if reason:
+            with open(run + "/supervisor.log", "a") as f:
+                f.write(f"{sbx.now()} limit hit: {reason}; killing the run in {W}\n")
+            proc.terminate()
+            kill_in_container()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+    return reason, proc.poll()
+
+
+# ---- setup + launch
+if not runner:
+    # A worker can be left mid rebase/merge from an earlier rework attempt that was killed by a timeout/token-cap
+    # before it finished resolving - clear ONLY that first, so a stuck conflict does not fail every future dispatch
+    # to this worker forever. Deliberately NOT a blanket `git reset --hard`: a run that got token-capped right
+    # before committing (observed: staged with `git add`, never got to `git commit`) would have that real, almost-
+    # finished progress destroyed on the very next dispatch instead of just failing to commit once - a hard reset
+    # here punishes near-success harder than outright failure. Genuine uncommitted leftovers that actually block
+    # `git checkout main` still surface as setup-failed below, which the caller recovers from with `git stash -u`
+    # (keeps the work, does not delete it).
+    # a project's clone is created on first use (one clone per project inside the worker's HOME)
+    repo = m.get("repo") or sbx.FORGE_REPO
+    if not sbx.SAFE_ARG.fullmatch(repo):
+        open(run + "/stderr.log", "w").write("invalid repo in meta\n"); finish("setup-failed", 90)
+    sh("docker", "exec", W, "bash", "-c",
+       f'[ -d {sbx.WORKER_CLONE}/.git ] || {{ git clone -q "http://forgejo:3000/{repo}.git" {sbx.WORKER_CLONE} && '
+       f'git -C {sbx.WORKER_CLONE} config user.name "$FORGEJO_USER" && git -C {sbx.WORKER_CLONE} config user.email "$FORGEJO_USER@sandbox.local"; }}')
+    sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+       "if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ] || [ -f .git/MERGE_HEAD ]; then "
+       "git rebase --abort 2>/dev/null; git merge --abort 2>/dev/null; fi; true")
+    r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           "git fetch -q origin && git checkout -q main && git pull -q --ff-only")
+    open(run + "/setup.log", "w").write(r.stdout + r.stderr)
+    if r.returncode != 0:
+        open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")
+        finish("setup-failed", 90)
+    br = m.get("branch") or ""
+    if not runtimes.RUNTIMES.get(RT, {}).get("own_git", True) and sbx.SAFE_ARG.fullmatch(br) and br not in ("main", "master"):
+        # an agent that does not run git itself (aider) starts on its task branch: the earlier attempts' work, or a new branch
+        sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           f"if git rev-parse -q --verify origin/{br} >/dev/null; then git checkout -q -B {br} origin/{br}; else git checkout -q -B {br} origin/main; fi")
+    cmd = agent_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
+else:
+    inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
+    cmd = (["docker", "exec", "-i", W] + inner, None)
+reason, rc = watch(cmd, "w")
+
+# ---- self-check: the gate's test run, in the worker's own clone, before the run ends. A red suite is sent back by the gate
+# anyway - fixing it now, in the same agent conversation that still has the context, is far cheaper than a new attempt.
+if not runner and reason is None and rc == 0 and last_result_ok():
+    for i in range(int(m.get("self_check") or 0)):
+        chk = self_check()
+        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
+        if chk.get("ok"):
+            break
+        conv = conversation_id()
+        left_s, used = timeout_s - (time.time() - t0), stats()["tokens"]
+        if not conv or left_s < 8 * 60 or used > 0.8 * cap:
+            # not enough time / tokens left for a fix round: end the run as it is, the gate gives the feedback instead
+            SELF_CHECKS[-1]["skipped_fix"] = "no conversation" if not conv else f"{int(left_s // 60)} min / {100 * used // max(cap, 1)} % tokens used"
+            break
+        with open(run + "/supervisor.log", "a") as f:
+            f.write(f"{sbx.now()} self-check {i + 1} failed ({chk.get('summary', '')}); continuing the conversation to fix it\n")
+        reason, rc = watch(agent_cmd(fix_prompt(chk), conv), "a")
+        if reason is not None or rc != 0 or not last_result_ok():
+            break
+    else:
+        if SELF_CHECKS and not SELF_CHECKS[-1].get("ok"):
+            chk = self_check()                      # record whether the last fix made it green (CPU only, no tokens)
+            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
+finish(reason, rc)

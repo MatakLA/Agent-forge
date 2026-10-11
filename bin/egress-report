@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Usage: bin/egress-report [--since 24h|90m|7d|ISO] [--worker worker-N] [--json]   report on the egress proxy log
+       bin/egress-report --check [--trip]      alarms only; exit 0 none / 1 warnings / 2 HIGH; --trip switches the kill switch ON for HIGH
+       bin/egress-report --ack                 acknowledge everything up to now (do this after reviewing the alarms)
+       bin/egress-report --rotate [--force]    rotate the proxy logs when access.log > 5 MB (or always with --force)
+       bin/egress-report --baseline-add HOST   accept a denied host as known noise: stays blocked, no alarm (etc/egress-baseline.txt)
+       bin/egress-report --allow HOST | --unallow HOST   let the workers reach HOST / not any more (egress/allowlist.local.txt)
+Alarms: new-domain (denied host that is neither allowlisted nor baseline noise), private-range attempts (RFC1918, loopback, link-local,
+CGNAT/tailnet, also hostnames resolving to them), proxy not in enforce mode / unhealthy / wildcard in allowlist. Plain HTTP is a warning."""
+import json, os, re, sys, time
+from datetime import datetime, timezone
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress
+
+
+def parse_since(s):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd])", s)
+    if m:
+        return time.time() - float(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            pass
+    raise SystemExit(f"bad --since value: {s}")
+
+
+def iso(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+a = sys.argv[1:]
+if a and a[0] in ("-h", "--help"):
+    print(__doc__); sys.exit(0)
+if "--ack" in a:
+    egress.ack(); sbx.alert("egress alarms acknowledged"); print("acknowledged: events up to now no longer raise alarms"); sys.exit(0)
+if "--rotate" in a:
+    print(egress.rotate(force="--force" in a)); sys.exit(0)
+for flag, fn in (("--baseline-add", egress.ignore_host), ("--allow", egress.allow_host), ("--unallow", egress.unallow_host)):
+    if flag in a:
+        host = a[a.index(flag) + 1] if a.index(flag) + 1 < len(a) else ""
+        try:
+            msgs = fn(host)
+        except ValueError as e:
+            print(json.dumps({"ok": False, "message": str(e)}) if "--json" in a else f"refused: {e}"); sys.exit(2)
+        if flag != "--baseline-add":
+            sbx.alert(f"egress: {'allowed' if flag == '--allow' else 'removed from the allow-list'} {host.lower()} (owner)")
+        print(json.dumps({"ok": True, "message": "; ".join(msgs)}) if "--json" in a else "\n".join(msgs)); sys.exit(0)
+
+since = parse_since(a[a.index("--since") + 1]) if "--since" in a else time.time() - 86400
+worker = a[a.index("--worker") + 1] if "--worker" in a else None
+health = egress.proxy_health()
+res = egress.analyze(since=since, client=worker)
+al = egress.alarms(res, health)
+
+if "--check" in a:
+    for lvl, code, msg in al:
+        print(f"{lvl} {code}: {msg}")
+    if not al:
+        print("no egress alarms")
+    high = [x for x in al if x[0] == "HIGH"]
+    if high and "--trip" in a:
+        sbx.killswitch_on("egress alarm: " + high[0][2][:150], by="egress-report")
+        for lvl, code, msg in high:
+            sbx.alert(f"egress {code}: {msg}")
+        print("kill switch ON")
+    sys.exit(2 if high else (1 if al else 0))
+
+if "--json" in a:
+    print(json.dumps(dict(since=iso(since), health=health, allowed=res["allowed"], denied=res["denied"], noise=res["noise"],
+                          private=res["private"], new_domains={f"{w} {h}": n for (w, h), n in res["new_domains"].items()},
+                          plain_http={f"{w} {h}": n for (w, h), n in res["plain_http"].items()},
+                          alarms=[dict(level=l, code=c, message=m) for l, c, m in al], log_sizes=egress.log_sizes(),
+                          local_allowlist=egress.local_allowlist(), baseline=sorted(egress.baseline()),
+                          killswitch=sbx.killswitch_active()), indent=1))
+    sys.exit(2 if any(x[0] == "HIGH" for x in al) else 0)
+
+print(f"egress report since {iso(since)}" + (f" (worker {worker})" if worker else "") + f" - {res['events']} events")
+print(f"proxy: mode={health['mode']} running={health['running']} health={health['health']} -> " + ("OK" if health["ok"] else "PROBLEM"))
+print(f"allowed tunnels ({sum(res['allowed'].values())}):")
+for h, n in res["allowed"].most_common():
+    print(f"  {n:6d}  {h}")
+print(f"denied: {sum(res['denied'].values())} total, known noise {sum(res['noise'].values())}")
+for h, n in res["noise"].most_common():
+    print(f"  {n:6d}  {h}  (baseline noise)")
+print("alarms (unacknowledged events only):" if al else "alarms: none")
+for lvl, code, msg in al:
+    print(f"  {lvl:4} {code}: {msg}")
+print("log files: " + ", ".join(f"{k} {v//1024} KB" for k, v in sorted(egress.log_sizes().items())))

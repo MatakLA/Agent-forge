@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Usage: bin/upstream [--project NAME] check | status | import [--force] | sync
+The project's GitHub / GitLab repository (FORGE_KIND=github|gitlab, UPSTREAM_REPO, UPSTREAM_URL - see bin/lib/upstream.py).
+  check     the token reaches the repository and may push (read-only)
+  status    configuration, check, and how Forgejo's main relates to upstream's main
+  import    one-time: upstream main becomes Forgejo's main (replaces Forgejo's placeholder first commit; --force replaces
+            anything) and the orchestrator gets push rights on Forgejo's main for the ongoing fast-forward sync
+  sync      upstream main -> Forgejo main now (fast-forward only; the foreman does this every minute)
+Needs the forge-admin token (scripts/forge-bootstrap) for import, the orchestrator token for sync."""
+import json, os, sys, urllib.error, urllib.request
+
+a = sys.argv[1:]
+if "--project" in a:
+    i = a.index("--project"); os.environ["FORGE_PROJECT"] = a[i + 1] if i + 1 < len(a) else ""; del a[i:i + 2]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, upstream  # noqa: E402
+
+if not a or a[0] not in ("check", "status", "import", "sync"):
+    print(__doc__, file=sys.stderr); sys.exit(2)
+fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
+cfg = upstream.config()
+if cfg["kind"] == "forgejo":
+    print("FORGE_KIND is forgejo: this project lives only on the internal Forgejo (no upstream)."); sys.exit(0 if a[0] == "status" else 2)
+try:
+    up = upstream.Upstream(cfg)
+except upstream.UpstreamError as e:
+    print(f"✘ {e}", file=sys.stderr); sys.exit(2)
+
+
+def forgejo(method, path, body=None, token_file="forge-admin.token"):
+    tok = sbx.read(os.path.join(sbx.SECRETS, token_file))
+    if not tok:
+        raise SystemExit(f"✘ {token_file} missing (scripts/forge-bootstrap creates forge-admin)")
+    req = urllib.request.Request(f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "token " + tok, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:300]
+
+
+def protect_main():
+    """main on Forgejo: nobody pushes except the orchestrator (fast-forward sync from upstream), merges only by the orchestrator."""
+    rule = dict(rule_name="main", branch_name="main", enable_push=True, enable_push_whitelist=True, push_whitelist_usernames=["orchestrator"],
+                enable_merge_whitelist=True, merge_whitelist_usernames=["orchestrator"], required_approvals=0)
+    c, _ = forgejo("PATCH", "/branch_protections/main", rule)
+    if c == 404:
+        c, _ = forgejo("POST", "/branch_protections", rule)
+    return c in (200, 201)
+
+
+ok, msg = up.check()
+print(("✔ " if ok else "✘ ") + msg)
+if a[0] == "check":
+    sys.exit(0 if ok else 2)
+if not ok:
+    sys.exit(2)
+if a[0] == "status":
+    d = upstream.workdir(fd)
+    up_ref = upstream._git(d, "ls-remote", up.git_url, f"refs/heads/{cfg['branch']}", env=up.git_env())[1].split()[:1]
+    upstream._git(d, "fetch", "-q", "origin", env=upstream.forgejo_env())
+    fj = upstream._git(d, "rev-parse", "refs/remotes/origin/main")[1]
+    print(f"upstream {cfg['kind']} {cfg['repo']} {cfg['branch']}: {up_ref[0][:10] if up_ref else '?'}   forgejo main: {fj[:10]}")
+    sys.exit(0)
+if a[0] == "import":
+    d = upstream.workdir(fd)
+    upstream._git(d, "fetch", "-q", "origin", env=upstream.forgejo_env())
+    n = upstream._git(d, "rev-list", "--count", "refs/remotes/origin/main")[1]
+    if n.strip() not in ("", "0", "1") and "--force" not in a:
+        print(f"✘ Forgejo's main already has {n.strip()} commits - `bin/upstream import --force` replaces them with {cfg['kind']}'s main"); sys.exit(2)
+    c, _ = forgejo("DELETE", "/branch_protections/main")              # the one-time forced push needs main unprotected
+    try:
+        r = upstream.sync_main(up, fd, force=True)
+    finally:
+        protected = protect_main()
+    print(f"✔ imported {cfg['kind']} {cfg['repo']} ({cfg['branch']}) into Forgejo's main ({r}); "
+          + ("main protected again (only the orchestrator pushes/merges)" if protected else "✘ could not restore main's protection - run scripts/forge-bootstrap"))
+    sys.exit(0 if protected else 2)
+if a[0] == "sync":
+    r = upstream.sync_main(up, fd)
+    print({"uptodate": "✔ Forgejo's main is up to date", "synced": "✔ Forgejo's main fast-forwarded from upstream",
+           "diverged": "✘ Forgejo's main has commits upstream does not have - not overwritten (bin/upstream import --force replaces them)"}[r])
+    sys.exit(0 if r != "diverged" else 2)
