@@ -15,6 +15,7 @@ Important invariants:
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -179,6 +180,63 @@ class TestGooseRuntime(unittest.TestCase):
         assert "## Goose" in content
         assert "unknown" in content
         assert "Block" in content
+
+    def test_fake_goose_server_fixture_exists(self):
+        """tests/fixtures/fake-goose-server.js exists and is non-empty."""
+        fixture_path = os.path.join(ROOT, "tests", "fixtures", "fake-goose-server.js")
+        self.assertTrue(os.path.isfile(fixture_path))
+        self.assertGreater(os.path.getsize(fixture_path), 0)
+        assert os.path.isfile(fixture_path)
+        assert os.path.getsize(fixture_path) > 0
+
+    def test_goose_runtime_shell_script_exists_and_runs(self):
+        """tests/test_runtime_goose.sh runs successfully against fake server."""
+        script_path = os.path.join(ROOT, "tests", "test_runtime_goose.sh")
+        self.assertTrue(os.path.isfile(script_path))
+        assert os.path.isfile(script_path)
+        proc = subprocess.run(["bash", script_path], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("goose runtime tests: ALL OK", proc.stdout)
+        assert proc.returncode == 0
+        assert "goose runtime tests: ALL OK" in proc.stdout
+
+    def test_goose_scan_tool_count_arithmetic(self):
+        """scan('goose', ...) counts plain-text and JSON tool-call syntaxes correctly."""
+        tool_lines = [
+            "Tool call: git status",
+            "Invoking tool: bash with command pytest",
+            "Running tool: pytest",
+            json.dumps({"type": "tool_call", "name": "editor"}),
+            json.dumps({"type": "tool_use", "name": "shell"}),
+        ]
+        for line in tool_lines:
+            res = runtimes.scan("goose", [line])
+            self.assertEqual(res["tools"], 1)
+            assert res["tools"] == 1
+        stream = ["Starting session"] + tool_lines + ["All finished successfully."]
+        res = runtimes.scan("goose", stream)
+        self.assertEqual(res["tools"], len(tool_lines))
+        self.assertIsNone(res["tokens"])
+        self.assertIsInstance(res["result"], str)
+        self.assertEqual(res["result"], "All finished successfully.")
+        assert res["tools"] == len(tool_lines)
+        assert res["tokens"] is None
+        assert isinstance(res["result"], str)
+        assert res["result"] == "All finished successfully."
+
+    def test_goose_scan_error_output_string(self):
+        """scan('goose', ...) captures error message in result string."""
+        err_lines = [
+            "Starting Goose session",
+            "Error: Goose execution failed due to API error",
+        ]
+        res = runtimes.scan("goose", err_lines)
+        self.assertIsNone(res["tokens"])
+        self.assertIsInstance(res["result"], str)
+        self.assertIn("Error: Goose execution failed", res["result"])
+        assert res["tokens"] is None
+        assert isinstance(res["result"], str)
+        assert "Error: Goose execution failed" in res["result"]
 
 
 if __name__ == "__main__":
