@@ -12,6 +12,11 @@ for f in $PYSCRIPTS bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*
   $PY -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' "$f" || { echo "syntax error: $f"; exit 1; }
 done
 for f in $SHSCRIPTS; do bash -n "$f" || { echo "syntax error: $f"; exit 1; }; done
+if command -v node >/dev/null 2>&1; then
+  for f in tests/*.js web/static/js/*.js; do
+    node -c "$f" || { echo "syntax error: $f"; exit 1; };
+  done
+fi
 $PY bin/foreman --selftest | tail -1 | grep -q "ALL OK" || { $PY bin/foreman --selftest | grep -v '^ok'; exit 1; }
 $PY tests/test_web.py | tail -1
 $PY tests/test_upstream.py | tail -1
