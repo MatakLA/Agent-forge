@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Usage: bin/doctor [--project NAME] [--quick] [--json]
+Checks an Agent-Forge install end to end and says how to fix what is wrong. Read-only, spends no model quota
+(`agy /usage` is a local status call). --quick skips the per-worker quota check (slow: a few seconds per worker).
+--json prints every check as JSON (section, level, message, fix, fix_id - the dashboard's Health view offers a button for the
+fixes it can run safely). Exit code: 0 all good, 1 warnings only, 2 something is broken."""
+import json, os, re, shutil, subprocess, sys, time, urllib.request
+
+a = sys.argv[1:]
+if "--project" in a:
+    i = a.index("--project")
+    os.environ["FORGE_PROJECT"] = a[i + 1] if i + 1 < len(a) else ""
+    del a[i:i + 2]
+if a and a[0] in ("-h", "--help"):
+    print(__doc__); sys.exit(0)
+QUICK = "--quick" in a
+JSON = "--json" in a
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx  # noqa: E402
+
+BAD, WARN, CHECKS, SECTION = [], [], [], [""]
+
+
+def say(text=""):
+    if not JSON:
+        print(text)
+
+
+def section(name):
+    SECTION[0] = name
+    say(f"\n== {name}")
+
+
+def ok(msg):
+    CHECKS.append(dict(section=SECTION[0], level="ok", message=msg))
+    say(f"  ✔ {msg}")
+
+
+def warn(msg, fix="", fix_id=""):
+    WARN.append(msg); CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
+    say(f"  ! {msg}" + (f"\n      → {fix}" if fix else ""))
+
+
+def bad(msg, fix="", fix_id=""):
+    BAD.append(msg); CHECKS.append(dict(section=SECTION[0], level="bad", message=msg, fix=fix, fix_id=fix_id))
+    say(f"  ✘ {msg}" + (f"\n      → {fix}" if fix else ""))
+
+
+def sh(*c, timeout=30):
+    try:
+        r = subprocess.run(list(c), capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, "", str(e)
+
+
+def version(text):
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
+
+
+say(f"Agent-Forge doctor - {sbx.ROOT}" + (f" (project {sbx.PROJECT})" if sbx.PROJECT else ""))
+vf = os.path.join(sbx.ROOT, "VERSION")
+VERSION = open(vf).read().strip() if os.path.exists(vf) else "unknown"
+say(f"version {VERSION}")
+
+section("Tools")
+if sys.version_info >= (3, 10):
+    ok(f"python {sys.version.split()[0]}")
+else:
+    bad(f"python {sys.version.split()[0]} is too old", "Python 3.10 or newer")
+rc, out, _ = sh("git", "--version")
+if rc != 0:
+    bad("git is missing", "sudo apt install git")
+elif version(out) < (2, 31):
+    bad(f"{out.strip()} is too old (tokens are passed through GIT_CONFIG_* variables)", "git 2.31 or newer")
+else:
+    ok(out.strip())
+rc, out, err = sh("docker", "version", "--format", "{{.Server.Version}}")
+if rc != 0:
+    bad("docker does not answer: " + (err.strip().splitlines() or ["?"])[-1][:160],
+        "install Docker (scripts/vm-baseline-ubuntu.sh) and add your user to the docker group, then log in again")
+else:
+    ok(f"docker {out.strip()}")
+rc, out, _ = sh("docker", "compose", "version", "--short")
+ok(f"docker compose {out.strip()}") if rc == 0 else bad("docker compose plugin missing", "sudo apt install docker-compose-plugin")
+rc, out, _ = sh("claude", "--version")
+if rc == 0:
+    ok(f"Claude Code {out.strip()} (orchestrator provider claude-cli)")
+else:
+    warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
+         "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
+
+section("Configuration")
+try:
+    lim = sbx.load_limits()
+    ok(f"etc/limits.conf: {lim['MAX_PARALLEL']} parallel runs, token cap {lim['RUN_TOKEN_CAP']:,}, timeout {lim['RUN_TIMEOUT_MIN']:g} min")
+except SystemExit as e:
+    lim = None
+    bad(str(e), "cp etc/limits.example.conf etc/limits.conf")
+fc = os.path.join(sbx.ROOT, "etc", "foreman.conf")
+ok("etc/foreman.conf") if os.path.exists(fc) else warn("etc/foreman.conf missing - defaults are used", "cp etc/foreman.example.conf etc/foreman.conf")
+if sbx.PROJECT and not os.path.exists(os.path.join(sbx.ROOT, "projects", sbx.PROJECT, "project.conf")):
+    bad(f"projects/{sbx.PROJECT}/project.conf missing", f"bin/foreman init-project {sbx.PROJECT} --repo org/repo")
+conf = sbx.project_conf()
+vision = os.path.join(sbx.ROOT, "projects", sbx.PROJECT, conf.get("VISION_FILE", "vision.md")) if sbx.PROJECT else \
+    os.path.join(sbx.ROOT, conf.get("VISION_FILE", "docs/vision.md"))
+ok(f"vision file {os.path.relpath(vision, sbx.ROOT)}") if os.path.exists(vision) else \
+    warn("no vision file - the autopilot has nothing to plan from", f"write {os.path.relpath(vision, sbx.ROOT)} (docs/vision.example.md)")
+if conf.get("NOTIFY_URL") == "outbox":
+    ok("notifications go to runs/notify-outbox.jsonl (a relay outside this machine delivers them)")
+elif conf.get("NOTIFY_URL"):
+    shown = re.sub(r"(//[^/]+/).*", "\\1…", conf["NOTIFY_URL"])          # never print a webhook's secret path
+    ok(f"notifications to {shown} ({conf.get('NOTIFY_FORMAT', 'ntfy')})")
+else:
+    warn("no NOTIFY_URL - you are not told when a goal is done or a task is blocked", "set NOTIFY_URL (ntfy / Slack / Discord) in etc/foreman.conf",
+         "settings:NOTIFY_URL")
+
+section("Secrets")
+S = sbx.SECRETS
+if not os.path.isdir(S):
+    bad(f"{S} does not exist", "scripts/forge-bootstrap creates it")
+else:
+    mode = os.stat(S).st_mode & 0o777
+    ok(f"{S} (mode {mode:o})") if mode == 0o700 else bad(f"{S} has mode {mode:o}", f"chmod 700 {S}")
+    for n in ("monitor.token", "orchestrator.token"):
+        p = os.path.join(S, n)
+        if not os.path.exists(p):
+            bad(f"{n} missing", "scripts/forge-bootstrap")
+        elif os.stat(p).st_mode & 0o077:
+            bad(f"{n} is readable by others", f"chmod 600 {p}")
+        else:
+            ok(n)
+
+section("Forgejo")
+try:
+    urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=5).read()
+    ok(f"{sbx.FORGE_URL} answers")
+    tok = sbx.read(os.path.join(S, "monitor.token"))
+    req = urllib.request.Request(f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}", headers={"Authorization": "token " + tok})
+    try:
+        repo = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        ok(f"repository {sbx.FORGE_REPO} (default branch {repo.get('default_branch')})")
+    except Exception as e:
+        bad(f"repository {sbx.FORGE_REPO} not readable with the monitor token: {e}", f"FORGE_REPO={sbx.FORGE_REPO} scripts/forge-bootstrap")
+except Exception as e:
+    bad(f"Forgejo at {sbx.FORGE_URL} does not answer ({e})", "scripts/forge-bootstrap (starts it); docker ps | grep forgejo")
+
+section("Sandbox")
+rc, _, _ = sh("docker", "network", "inspect", "workers_internal")
+ok("network workers_internal") if rc == 0 else bad("network workers_internal missing", "bin/egress-up", "egress-up")
+try:
+    import egress
+    h = egress.proxy_health()
+    ok("egress proxy enforcing") if h.get("ok") else bad("egress proxy: " + "; ".join(h["problems"]), "bin/egress-up", "egress-up")
+except Exception as e:
+    bad(f"egress check failed: {e}")
+img = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
+rc, _, _ = sh("docker", "image", "inspect", img)
+ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: docker compose -f worker/docker-compose.yml build)")
+ks = sbx.killswitch_active()
+warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)", "continue") \
+    if ks else ok("kill switch off")
+
+section("Workers")
+rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
+ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)), key=lambda x: int(x[0].split("-")[1]))
+pool = sbx.project_pool()
+if pool:
+    ws = [w for w in ws if w[0] in pool]
+if not ws:
+    bad("no worker containers" + (f" of this project's pool ({', '.join(sorted(pool))})" if pool else ""), "bin/worker-add 1, then log it in")
+running = 0
+for name, state in ws:
+    if state != "running":
+        warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}", f"worker-up:{name.split('-')[1]}"); continue
+    running += 1
+    rt = sbx.worker_runtime(name)
+    if rt != "agy":
+        import runtimes
+        key = runtimes.RUNTIMES[rt]["key"]
+        if runtimes.uses_endpoint(rt):
+            url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+            server = re.sub(r"(//[^/]+).*", r"\1", url)          # scheme://host:port, never a path
+            if runtimes.endpoint_target(url):
+                ok(f"{name} runs {rt} on the model server {server}")
+            else:
+                bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                    "settings:COMPAT_BASE_URL")
+            continue
+        if not sbx.read(os.path.join(S, key)):
+            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                f"key:{key}")
+        else:
+            ok(f"{name} runs {rt} with an API key")
+        continue
+    if QUICK:
+        ok(f"{name} running"); continue
+    try:
+        rows = sbx.read_quota(name)
+    except Exception:
+        rows = []
+    if not rows:
+        bad(f"{name}: agy /usage unreadable - not logged in?", f"log it in: dashboard → Settings → log in, or docker exec -it {name} agy-run",
+            f"login:{name}")
+    else:
+        verdict = sbx.quota_verdict(rows, lim) if lim else (True, "")
+        fam = [r for r in rows if (lim or {}).get("QUOTA_MODEL_FILTER", "Gemini").lower() in r["model"].lower()]
+        ok(f"{name} logged in; " + ", ".join(f"{r['label']} {r['pct']:.0f}%" for r in fam[:2])) if verdict[0] else \
+            warn(f"{name}: {verdict[1]}")
+if lim:
+    spent = sbx.api_spent_today()
+    if spent:
+        (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
+    import runtimes
+    for rt, r in runtimes.RUNTIMES.items():
+        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
+            if r.get("endpoint"):
+                rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
+                if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
+                    bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",
+                        "save COMPAT_BASE_URL again in Settings (or bin/worker-add N --runtime " + rt + "), then bin/egress-up once")
+                elif rule and rule[0] == "allowlist" and rule[1] not in egress.allowlist():
+                    bad(f"egress allow-list lacks {rule[1]} for the {rt} workers", "save COMPAT_BASE_URL again in Settings")
+                rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
+                if rule and rule[0] == "local" and rc != 0:
+                    bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)", "egress-up")
+                continue
+            allowed = set(egress.allowlist())
+            missing = [h for h in r["hosts"] if h not in allowed]
+            if missing:
+                bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")
+if lim and running > lim["MAX_PARALLEL"]:
+    warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
+
+section("Foreman")
+fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
+try:
+    live = json.load(open(os.path.join(fd, "live.json")))
+    age = time.time() - live.get("at", 0)
+    ok(f"loop alive ({age:.0f} s ago)") if age < 120 else bad(f"loop last seen {age / 60:.0f} min ago",
+                                                            "sudo systemctl status agent-forge-foreman" + (f"-{sbx.PROJECT}" if sbx.PROJECT else ""),
+                                                            "restart-foreman")
+except FileNotFoundError:
+    bad("the foreman has never run for this project", "sudo scripts/install-services" + (f" --project {sbx.PROJECT}" if sbx.PROJECT else ""),
+        "restart-foreman")
+except Exception as e:
+    warn(f"live.json unreadable: {e}")
+if os.path.exists(os.path.join(fd, "PAUSED")):
+    warn("the foreman is paused", "bin/foreman resume", "resume")
+du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
+ok(f"{du.free / 2**30:.0f} GB free") if du.free > 5 * 2**30 else warn(f"only {du.free / 2**30:.1f} GB free", "old runs are compressed by maintenance; free space")
+
+if JSON:
+    print(json.dumps(dict(version=VERSION, project=sbx.PROJECT or "default", checks=CHECKS, bad=len(BAD), warn=len(WARN), at=time.time())))
+    sys.exit(2 if BAD else 1 if WARN else 0)
+say()
+if BAD:
+    print(f"✘ {len(BAD)} problem(s), {len(WARN)} warning(s)"); sys.exit(2)
+print(f"✔ all good" + (f" ({len(WARN)} warning(s))" if WARN else "")); sys.exit(1 if WARN else 0)

@@ -1,0 +1,91 @@
+#!/bin/bash
+# Usage: bin/worker-add N [--runtime agy|claude|codex|gemini|compat|aider]
+# One command for a new worker: Forgejo bot user + scoped token, team membership, HOME volume and container (own clone of
+# FORGE_REPO, made by the entrypoint). Idempotent.
+#   agy (default)     the worker logs into Antigravity once with its own Google account (dashboard → Settings, or
+#                     docker exec -it worker-N agy-run); it has a keyring password for that login
+#   claude/codex/gemini  pays per token with the provider's API key - store it first, from stdin:
+#                     printf '%s' "$KEY" | bin/secret-set anthropic.key   (openai.key / gemini.key)
+#                     The provider's API host is added to the egress allowlist (egress/allowlist.local.txt) and the proxy
+#                     reloads its configuration (running runs are not interrupted).
+#   compat/aider      the owner's own model server (COMPAT_BASE_URL in etc/limits.conf: Ollama, vLLM, LM Studio, OpenRouter...);
+#                     a key only if the server wants one (printf '%s' "$KEY" | bin/secret-set compat.key). Egress allows exactly
+#                     that server (egress/local-endpoint.conf for a private / plain-HTTP one).
+set -euo pipefail
+N="${1:?usage: worker-add N [--runtime agy|claude|codex|gemini|compat|aider]}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
+RT=agy; [ "${2:-}" = "--runtime" ] && RT="${3:?runtime}"
+[[ "$RT" =~ ^(agy|claude|codex|gemini|compat|aider)$ ]] || { echo "runtime must be agy, claude, codex, gemini, compat or aider" >&2; exit 2; }
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+U="worker-$N"; S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
+read -r FORGE_URL FORGE_ORG < <(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; print(sbx.FORGE_URL, sbx.FORGE_ORG)")
+read -r KEYF HOSTS OPTKEY ENDPOINT < <(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import runtimes as r, sbx
+x = r.RUNTIMES['$RT']; url = str(sbx.load_limits().get('COMPAT_BASE_URL') or '') if x.get('endpoint') else ''
+print(x['key'] or '-', ','.join(r.hosts('$RT', url)) or '-', int(bool(x.get('optional_key'))), url or '-')")
+if [ "$ENDPOINT" = "-" ] && [[ "$RT" =~ ^(compat|aider)$ ]]; then
+  echo "no model server yet: set COMPAT_BASE_URL in etc/limits.conf (e.g. http://192.168.1.20:11434/v1) - or the dashboard's add-worker dialog" >&2; exit 1
+fi
+if [ "$RT" != agy ] && [ ! -s "$S/$KEYF" ]; then
+  if [ "$OPTKEY" = 1 ]; then umask 077; mkdir -p "$S"; printf none > "$S/$KEYF"      # a local model server needs no key
+  else echo "no API key for $RT yet: printf '%s' \"\$KEY\" | bin/secret-set $KEYF   (or the dashboard's add-worker dialog)" >&2; exit 1; fi
+fi
+API="$FORGE_URL/api/v1"
+umask 077; mkdir -p "$S"
+# adding a team member needs org-admin rights: the forge-admin token from scripts/forge-bootstrap, else the orchestrator token
+OT=$(cat "$S/forge-admin.token" 2>/dev/null || cat "$S/orchestrator.token")
+auth() { printf 'Authorization: token %s' "$OT"; }     # curl reads it with -H @file: the token never appears in argv
+
+if docker exec forgejo forgejo admin user list | awk 'NR>1{print $2}' | grep -qx "$U"; then
+  echo "forgejo user $U exists"
+else
+  out=$(docker exec forgejo forgejo admin user create --username "$U" --email "$U@sandbox.local" --random-password \
+        --must-change-password=false --access-token --access-token-name "$U-bot" \
+        --access-token-scopes "write:repository,write:issue,read:user")
+  printf '%s' "$(grep -oP '(?<=random password is .)[^'"'"']+' <<<"$out")" > "$S/$U.password"
+  printf '%s' "$(grep -oP '(?<=successfully created\.\.\. )\S+' <<<"$out")" > "$S/$U.token"
+  echo "created forgejo user $U (token in $S/$U.token)"
+fi
+[ -s "$S/$U.token" ] || { echo "no token file for existing user $U" >&2; exit 1; }
+if [ "$RT" = agy ]; then
+  [ -s "$S/$U-keyring" ] || { openssl rand -base64 24 | tr -d '\n' > "$S/$U-keyring"; echo "created keyring password file"; }
+fi
+chmod 600 "$S"/"$U"*
+
+# every project's organisation has a team "workers" (scripts/forge-bootstrap): join all of them, so the worker can serve any project
+ORGS="$FORGE_ORG"
+if [ -s "$S/forge-admin.token" ]; then
+  ORGS=$(curl -fsS -H @<(auth) "$API/admin/orgs?limit=100" | python3 -c "import json,sys;print(' '.join(o['username'] for o in json.load(sys.stdin)))")
+fi
+for ORG in $ORGS; do
+  TEAM=$(curl -fsS -H @<(auth) "$API/orgs/$ORG/teams" | python3 -c "import json,sys;print(next((t['id'] for t in json.load(sys.stdin) if t['name']=='workers'), ''))")
+  [ -n "$TEAM" ] || continue
+  curl -fsS -o /dev/null -X PUT -H @<(auth) "$API/teams/$TEAM/members/$U"
+  echo "$U is a member of team workers in $ORG"
+done
+
+# remember the runtime (bin/worker-up recreates the container with it)
+touch "$ROOT/etc/workers.conf"
+grep -v "^$U=" "$ROOT/etc/workers.conf" > "$ROOT/etc/workers.conf.tmp" || true
+echo "$U=$RT" >> "$ROOT/etc/workers.conf.tmp"; mv "$ROOT/etc/workers.conf.tmp" "$ROOT/etc/workers.conf"
+
+# the provider's API host into the egress allowlist; squid reloads its configuration in place. The owner's model server
+# (compat / aider) goes through bin/lib/egress.py: a private or plain-HTTP server gets its exact address:port only.
+if [ "$ENDPOINT" != "-" ]; then
+  python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import egress; print('\n'.join(egress.set_endpoint(sys.argv[1])))" "$ENDPOINT"
+elif [ "$HOSTS" != "-" ]; then
+  L="$ROOT/egress/allowlist.local.txt"; touch "$L"; changed=0
+  for h in ${HOSTS//,/ }; do grep -qx "$h" "$L" || { printf '# runtime %s (bin/worker-add)\n%s\n' "$RT" "$h" >> "$L"; changed=1; }; done
+  if [ "$changed" = 1 ] && docker inspect egress-proxy >/dev/null 2>&1; then
+    if docker exec egress-proxy sh -c 'test -r /etc/squid/allowlist.local.txt'; then
+      docker exec egress-proxy sh -c 'squid -k reconfigure -f /etc/squid/squid.${EGRESS_MODE}.conf' && echo "egress: allowed $HOSTS (proxy reloaded)"
+    else
+      echo "egress: this proxy predates allowlist.local.txt - recreate it once: bin/egress-up" >&2
+    fi
+  fi
+fi
+
+"$ROOT/bin/worker-up" "$N"
+if [ "$RT" = agy ]; then
+  echo "container $U up. Next: log it in once (dashboard → Settings → sign in, or: docker exec -it $U agy-run)"
+else
+  echo "container $U up with runtime $RT (API key $KEYF). It works right away; spend is capped by API_RUN_BUDGET_USD / API_DAILY_BUDGET_USD."
+fi

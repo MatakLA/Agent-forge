@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Usage: bin/verify-token-refresh <worker> [--wait] [--force-now]
+Regression test for the V6 gap: a worker behind the egress gate must still work AFTER its OAuth access token has REALLY expired
+(the refresh goes through the proxy to oauth2.googleapis.com). Never simulates expiry.
+  default      refuses (exit 3) while the token is still valid and tells you when it expires
+  --wait       waits (up to ~65 min) until the real expiry + 30 s, then runs the check; the worker must stay idle (no runs) meanwhile
+  --force-now  runs even with a valid token (then usually INCONCLUSIVE: nothing needed refreshing)
+Runs one headless prompt (~12k tokens) directly in the worker (not via dispatch, so it is not counted in the ledger).
+Exit: 0 PASS, 1 FAIL, 3 not tested / inconclusive. Only expiry/mtime metadata of the token file is read, never secrets."""
+import json, os, re, subprocess, sys, time
+from datetime import datetime, timezone
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress
+
+a = sys.argv[1:]
+if not a or a[0].startswith("-") or not re.fullmatch(r"worker-\d+", a[0]):
+    print(__doc__); sys.exit(2)
+W = a[0]
+sh = egress.sh
+PROBE = "import json,os;p=os.path.expanduser('~/.gemini/antigravity-cli/antigravity-oauth-token');t=json.load(open(p))['token'];print(t['expiry'][:19]+'Z',int(os.path.getmtime(p)))"
+
+
+def token_meta():
+    r = sh("docker", "exec", W, "python3", "-c", PROBE)
+    exp, mt = r.stdout.split()
+    return datetime.strptime(exp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp(), int(mt), exp
+
+
+def fmt(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%FT%TZ")
+
+
+if any(sbx.is_running(d) and d.endswith("-" + W) for d in sbx.run_dirs()):
+    print(f"{W} has a run in progress; not touching it"); sys.exit(3)
+exp, mtime, exp_s = token_meta()
+if exp > time.time():
+    if "--wait" in a:
+        print(f"token valid until {exp_s}; waiting for the real expiry (keep {W} idle)...", flush=True)
+        while time.time() < exp + 30:
+            if any(sbx.is_running(d) and d.endswith("-" + W) for d in sbx.run_dirs()):
+                print("a run started meanwhile - it may refresh the token early; aborting"); sys.exit(3)
+            time.sleep(15)
+        exp2, mtime2, _ = token_meta()
+        if mtime2 != mtime:
+            print("token file changed while waiting (refreshed by something else) - inconclusive"); sys.exit(3)
+    elif "--force-now" not in a:
+        print(f"token still valid until {exp_s}; nothing to verify yet. Re-run after that time, or use --wait."); sys.exit(3)
+exp, mtime, exp_s = token_meta()
+expired = exp < time.time()
+print(f"{W}: token expiry {exp_s} ({'EXPIRED' if expired else 'still valid'}), starting headless prompt")
+start = time.time()
+r = sh("docker", "exec", W, "agy-run", "-p", "Reply with exactly one word: pong", "--output-format", "json", "--print-timeout", "120s", timeout=200)
+try:
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+except Exception:
+    res = {}
+exp2, mtime2, exp2_s = token_meta()
+ev = egress.analyze(since=start - 1, client=W, ack=False)
+refreshed = ev["allowed"].get("oauth2.googleapis.com", 0) > 0
+denied_oauth = ev["denied"].get("oauth2.googleapis.com", 0) > 0
+print(f"prompt: status={res.get('status')} response={res.get('response', '')!r}; oauth2 tunnels via proxy: {ev['allowed'].get('oauth2.googleapis.com', 0)}, "
+      f"oauth2 denied: {ev['denied'].get('oauth2.googleapis.com', 0)}; token expiry {exp_s} -> {exp2_s}, file rewritten: {mtime2 != mtime}")
+if res.get("status") == "SUCCESS" and expired and refreshed and exp2 > time.time() and mtime2 != mtime and not denied_oauth:
+    print("PASS: the worker refreshed an expired token through the proxy and completed a prompt"); sys.exit(0)
+if not expired:
+    print("INCONCLUSIVE: the token was still valid, so no refresh was needed"); sys.exit(3)
+print("FAIL: expired token was not refreshed or the prompt failed"); sys.exit(1)

@@ -1,0 +1,5 @@
+# Known, accepted DENIED hosts ("noise"): counted in reports but they do NOT raise a new-domain alarm (and so do not trip the
+# kill switch). They stay blocked - this file is about alarms, egress/allowlist.txt is about access.
+# Add a host only after a human decided that the denial is harmless. One hostname per line.
+# agy telemetry / crash-log streaming; blocked on purpose (agy works without it), retried ~130x per run.
+play.googleapis.com

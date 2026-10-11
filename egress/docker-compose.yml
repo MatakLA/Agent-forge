@@ -1,0 +1,39 @@
+# Egress gate (V6): workers live on an internal network with no route out; the only way out is this proxy.
+name: egress
+
+networks:
+  workers_internal:
+    name: workers_internal
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.250.0/24
+  egress_out:
+    name: egress_out
+
+volumes:
+  egress-logs:
+    name: egress_logs
+
+services:
+  egress-proxy:
+    build: .
+    image: sandbox-egress-proxy:7.2
+    container_name: egress-proxy
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      - EGRESS_MODE=${EGRESS_MODE:-enforce}
+    networks: [workers_internal, egress_out]
+    volumes:
+      - egress-logs:/var/log/squid
+      - ./allowlist.txt:/etc/squid/allowlist.txt:ro
+      - ./allowlist.local.txt:/etc/squid/allowlist.local.txt:ro
+      - ./local-endpoint.conf:/etc/squid/local-endpoint.conf:ro
+    tmpfs:
+      - /tmp
+      - /var/spool/squid

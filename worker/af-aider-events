@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""af-aider-events <conversation-id> <aider argv...> -- runs Aider and prints its plain-text output as JSON events, one per line:
+  aider.init   {conversation_id}         first, so a rework can continue this branch's chat history
+  aider.line   {text}                    every non-empty output line (the dashboard's live transcript)
+  aider.usage  {sent, received, cost}    from Aider's "Tokens: 2.1k sent, 117 received. Cost: $0.01 message, ..." lines
+  aider.result {status, exit_code, error} last; ERROR when Aider failed or only reported API errors without editing anything
+Aider has no machine-readable output mode; bin/lib/runtimes.py scans these events like any other runtime's stream."""
+import json, re, subprocess, sys
+
+API_ERR = re.compile(r"litellm\.\w*Error|AuthenticationError|RateLimitError|APIConnectionError|NotFoundError|BadRequestError|"
+                     r"InternalServerError|ServiceUnavailableError", re.I)
+
+
+def num(v, suffix):
+    x = float(v.replace(",", ""))
+    return int(x * {"k": 1e3, "m": 1e6}.get(suffix.lower(), 1))
+
+
+def emit(**e):
+    print(json.dumps(e, ensure_ascii=False), flush=True)
+
+
+emit(type="aider.init", conversation_id="aider:" + sys.argv[1])
+try:
+    p = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                         errors="replace", bufsize=1)
+except OSError as e:
+    emit(type="aider.result", status="ERROR", exit_code=127, error=f"cannot start aider: {e}")
+    sys.exit(127)
+edits, last_err = 0, ""
+for line in p.stdout:
+    line = line.rstrip("\n")
+    if not line.strip():
+        continue
+    emit(type="aider.line", text=line[:4000])
+    s = line.strip()
+    if s.startswith("Tokens:"):
+        parts = {k: num(v, suf) for v, suf, k in re.findall(r"([\d.,]+)([kKmM]?)\s+(sent|cache write|cache hit|received)", s)}
+        cost = re.search(r"Cost:\s*\$([\d.]+)\s*message", s)
+        emit(type="aider.usage", sent=parts.get("sent", 0), received=parts.get("received", 0), cost=float(cost.group(1)) if cost else 0.0)
+    elif s.startswith("Applied edit to "):
+        edits += 1
+    elif API_ERR.search(s):
+        last_err = s[:500]
+rc = p.wait()
+failed = rc != 0 or (last_err and not edits)
+emit(type="aider.result", status="ERROR" if failed else "SUCCESS", exit_code=rc, edits=edits,
+     error=(last_err or f"aider exited with {rc}") if failed else "")
+sys.exit(rc)

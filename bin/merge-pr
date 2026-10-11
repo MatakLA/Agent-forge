@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Usage: bin/merge-pr <number>     merge an open, mergeable PR (merge commit) as orchestrator - the only account allowed to merge.
+Merging stays a manual decision: in the permission profiles this command is ASK (interactive) / DENY (unattended)."""
+import json, os, sys, time, urllib.error, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx
+a = sys.argv[1:]
+if len(a) != 1 or not a[0].isdigit():
+    print(__doc__, file=sys.stderr); sys.exit(2)
+tok = open(os.path.join(sbx.SECRETS, "orchestrator.token")).read().strip()
+API = f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}"
+def call(method, path, data=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(data).encode() if data else None,
+                                 headers={"Authorization": "token " + tok, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:300]
+# Forgejo computes `mergeable` asynchronously: right after a PR is opened it is still false while the conflict check runs.
+# Reading it once made freshly opened, perfectly mergeable PRs look conflicted (and sent the task back to the worker).
+for i in range(15):
+    c, pr = call("GET", f"/pulls/{a[0]}")
+    if c != 200: print(f"PR #{a[0]} not found (HTTP {c})", file=sys.stderr); sys.exit(1)
+    if pr["merged"] or pr["state"] != "open": print(f"PR #{a[0]} is not open (state {pr['state']}, merged {pr['merged']})", file=sys.stderr); sys.exit(1)
+    if pr.get("mergeable"):
+        break
+    time.sleep(2)
+else:
+    print(f"PR #{a[0]} is not mergeable (still not after 30 s)", file=sys.stderr); sys.exit(1)
+for i in range(3):
+    c, r = call("POST", f"/pulls/{a[0]}/merge", {"Do": "merge"})
+    if c in (200, 204):
+        break
+    if c == 405 and "try again" in str(r).lower():      # Forgejo: the merge check is still running
+        time.sleep(5); continue
+    print(f"merge failed: HTTP {c} {r}" + (" (not mergeable)" if c in (405, 409) else ""), file=sys.stderr); sys.exit(1)
+else:
+    print(f"merge failed: HTTP {c} {r}", file=sys.stderr); sys.exit(1)
+print(f"merged PR #{a[0]} ({pr['head']['ref']} -> main)")

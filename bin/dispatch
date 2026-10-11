@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Usage: bin/dispatch <worker> <task-file> [minutes]     dispatch a task (background) with guards
+       bin/dispatch --check <worker>                     preflight only: print the verdict, start nothing
+
+Guards (etc/limits.conf): kill switch, one run per worker, max parallel runs, runs/day, daily token budget, for Antigravity
+workers the quota floor via `agy /usage` (fail closed), for API workers the USD budgets (install, project, worker); per-run
+timeout, token cap, tool-call cap and USD cap are enforced by bin/run-supervisor. Returns immediately.
+Exit codes: 0 dispatched/ok, 2 usage error, 3 refused by a guard."""
+import json, os, re, subprocess, sys, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress
+
+
+def _opt(name):
+    """Optional per-run settings bin/foreman passes in the environment; only plain identifiers are accepted."""
+    v = os.environ.get(name, "").strip()
+    return v if v and sbx.SAFE_ARG.fullmatch(v) else ""
+
+
+def refuse(msg, alert=False):
+    print(f"REFUSED: {msg}", file=sys.stderr)
+    if alert:
+        sbx.alert(f"dispatch refused: {msg}")
+    sys.exit(3)
+
+
+def container_running(w):
+    r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", w], capture_output=True, text=True)
+    return r.stdout.strip() == "true"
+
+
+def preflight(worker, lim, runner):
+    """Must be called with the dispatch lock held. Returns dict with the effective limits."""
+    ks = sbx.killswitch_active()
+    if ks:
+        refuse(f"kill switch is ON since {ks.get('at')} ({ks.get('reason')}); clear with bin/killswitch off")
+    if not container_running(worker):
+        refuse(f"container {worker} is not running")
+    running = [d for d in sbx.run_dirs() if sbx.is_running(d)]
+    if any(d.endswith("-" + worker) for d in running):
+        refuse(f"{worker} is busy (one run per worker)")
+    if len(running) >= lim["MAX_PARALLEL"]:
+        refuse(f"max parallel runs reached ({len(running)}/{lim['MAX_PARALLEL']})")
+    led = [e for e in sbx.read_ledger() if e.get("date") == sbx.today() and not e.get("test")]
+    real_running = [d for d in running if not sbx.meta(d).get("test")]
+    if len(led) + len(real_running) >= lim["MAX_RUNS_PER_DAY"]:
+        refuse(f"daily run limit reached ({len(led) + len(real_running)}/{lim['MAX_RUNS_PER_DAY']} runs today, UTC)", alert=True)
+    used = sum(e.get("tokens", 0) for e in led) + sum(sbx.stream_tokens(d + "/stream.jsonl") for d in real_running)
+    remaining = lim["DAILY_TOKEN_BUDGET"] - used
+    if remaining <= 0:
+        refuse(f"daily token budget exhausted ({used}/{lim['DAILY_TOKEN_BUDGET']} tokens today, UTC)", alert=True)
+    if not runner or os.environ.get("SBX_TEST_EGRESS"):
+        h = egress.proxy_health()
+        if not h["ok"]:
+            refuse("egress proxy problem: " + "; ".join(h["problems"]) + " (workers must only run behind an enforcing proxy)", alert=True)
+        pool = sbx.project_pool()
+        high = [m for lvl, code, m in egress.alarms(egress.analyze(since=time.time() - 86400)) if lvl == "HIGH"
+                and (pool is None or not re.findall(r"\bworker-\d+\b", m) or set(re.findall(r"\bworker-\d+\b", m)) & pool)]
+        if high:
+            refuse(f"{len(high)} unacknowledged HIGH egress alarm(s), e.g. {high[0]} - review with bin/egress-report, then bin/egress-report --ack", alert=True)
+    quota = None
+    rt = sbx.worker_runtime(worker)
+    if not runner and rt == "agy":
+        try:
+            rows = sbx.read_quota(worker)
+        except Exception as e:
+            refuse(f"cannot read quota for {worker}: {e} (fail closed)")
+        ok, msg = sbx.quota_verdict(rows, lim)
+        if not ok:
+            refuse(msg, alert=True)
+        quota = rows
+    elif not runner:
+        # an API runtime has no subscription quota - it has money budgets: per run, per day and month (install, project), per
+        # worker per day (sbx.budget_check); a runtime on the owner's model server needs that server configured
+        import runtimes
+        if runtimes.uses_endpoint(rt) and not runtimes.endpoint_target(str(lim.get("COMPAT_BASE_URL") or "")):
+            refuse(f"{worker} runs {rt} but no model server is set (COMPAT_BASE_URL in etc/limits.conf)")
+        ok, msg = sbx.budget_check(worker, lim)
+        if not ok:
+            refuse(msg, alert=True)
+    return dict(token_cap=min(lim["RUN_TOKEN_CAP"], remaining), tokens_used_today=used, runs_today=len(led) + len(real_running),
+                running=len(running), quota_before=quota, runtime=rt)
+
+
+def main():
+    a = sys.argv[1:]
+    runner = os.environ.get("DISPATCH_RUNNER")
+    if runner and not sbx.TEST_MODE:
+        print("DISPATCH_RUNNER is only allowed with SANDBOX_TEST=1", file=sys.stderr); sys.exit(2)
+    lim = sbx.load_limits()
+    if a[:1] == ["--check"] and len(a) == 2:
+        with sbx.lock():
+            info = preflight(a[1], lim, runner)
+        print(f"OK: would dispatch to {a[1]}: token cap {info['token_cap']}, timeout {lim['RUN_TIMEOUT_MIN']:g} min, "
+              f"runs today {info['runs_today']}/{lim['MAX_RUNS_PER_DAY']}, tokens today {info['tokens_used_today']}/{lim['DAILY_TOKEN_BUDGET']}")
+        return
+    if not (2 <= len(a) <= 3) or not re.fullmatch(r"worker-\d+", a[0]) or not os.path.isfile(a[1]):
+        print(__doc__, file=sys.stderr); sys.exit(2)
+    worker, task = a[0], a[1]
+    minutes = min(float(a[2]) if len(a) == 3 else lim["RUN_TIMEOUT_MIN"], lim["RUN_TIMEOUT_MAX_MIN"])
+    with sbx.lock():
+        info = preflight(worker, lim, runner)
+        run = os.path.join(sbx.RUNS, f"{sbx.time.strftime('%Y%m%dT%H%M%SZ', sbx.time.gmtime())}-{worker}")
+        os.makedirs(run)
+        prompt = open(task).read().split("\n## Orchestrator review checklist")[0]
+        open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
+        open(run + "/task", "w").write(os.path.realpath(task) + "\n")
+        json.dump(dict(run_id=os.path.basename(run), worker=worker, task=os.path.basename(task), test=bool(runner) and not os.environ.get('DISPATCH_RUNNER_COUNTS'), runner=runner,
+                       runtime=info["runtime"], budget_usd=float(lim["API_RUN_BUDGET_USD"]) if info["runtime"] != "agy" else 0,
+                       model=_opt("DISPATCH_MODEL") or (lim["WORKER_MODEL"] if info["runtime"] == "agy" else ""), project=sbx.PROJECT, repo=sbx.FORGE_REPO,
+                       branch=_opt("DISPATCH_BRANCH"), conversation=_opt("DISPATCH_CONVERSATION"), variant=_opt("DISPATCH_VARIANT"),
+                       self_check=min(3, int(_opt("DISPATCH_SELF_CHECK") or 0)) if (_opt("DISPATCH_SELF_CHECK") or "0").isdigit() else 0,
+                       limits=dict(timeout_min=minutes, token_cap=info["token_cap"], daily_budget=lim["DAILY_TOKEN_BUDGET"],
+                                   tokens_used_today_before=info["tokens_used_today"]),
+                       quota_before=info["quota_before"], dispatched=sbx.now()), open(run + "/meta.json", "w"), indent=1)
+        sup = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-supervisor")
+        p = subprocess.Popen([sys.executable, sup, run], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=open(run + "/supervisor.log", "w"), start_new_session=True, env=os.environ.copy())
+        open(run + "/pid", "w").write(str(p.pid))
+    print(f"dispatched {os.path.basename(task)} to {worker} -> {run} (timeout {minutes:g} min, token cap {info['token_cap']})")
+
+
+main()

@@ -1,0 +1,49 @@
+# Secrets and credentials
+*.key
+*.token
+*.keyring
+secrets/
+.secrets/
+.env
+.env.*
+
+# Temporary and runtime states
+runs/
+runs/**
+audit/
+audit/**
+*.sid
+*.log
+ALERT
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# Docker and container data
+volumes/
+data/
+
+# OS and Editor artifacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local configuration (copy from the *.example files)
+etc/foreman.conf
+etc/limits.conf
+etc/forge.conf
+etc/team-rules.md
+# Per-install projects (bin/foreman init-project) and their lessons
+projects/
+etc/lessons.md
+# per install: worker runtimes, the API runtimes' egress hosts
+etc/workers.conf
+egress/allowlist.local.txt
+egress/local-endpoint.conf

@@ -1,0 +1,46 @@
+# Worker container for an API-key runtime (claude / codex / gemini), parametrized by WORKER_N, WORKER_RUNTIME and
+# WORKER_KEY_FILE (use bin/worker-add N --runtime R / bin/worker-up N, not this file directly). Same isolation as an agy worker:
+# internal network only (egress through the allowlisting proxy), all capabilities dropped, no new privileges, CPU/RAM/PID caps.
+name: worker-${WORKER_N:?set WORKER_N}
+
+networks:
+  workers_internal:
+    external: true
+    name: workers_internal
+
+volumes:
+  home:
+    external: true
+    name: worker_worker-${WORKER_N}-home
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: agent-forge-worker-api:1
+    container_name: worker-${WORKER_N}
+    init: true
+    restart: unless-stopped
+    networks: [workers_internal]
+    cpus: ${WORKER_CPUS:-1.5}
+    mem_limit: ${WORKER_MEM:-2g}
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    labels:
+      agent-forge.runtime: ${WORKER_RUNTIME:?set WORKER_RUNTIME}
+    environment:
+      - FORGEJO_USER=worker-${WORKER_N}
+      - FORGE_REPO=${FORGE_REPO:-sandbox/playground}
+      - AF_RUNTIME=${WORKER_RUNTIME}
+      - HTTP_PROXY=http://egress-proxy:3128
+      - HTTPS_PROXY=http://egress-proxy:3128
+      - http_proxy=http://egress-proxy:3128
+      - https_proxy=http://egress-proxy:3128
+      - NO_PROXY=forgejo,egress-proxy,localhost,127.0.0.1
+      - no_proxy=forgejo,egress-proxy,localhost,127.0.0.1
+    volumes:
+      - home:/home/worker
+      - ${HOME}/.config/sandbox/secrets/worker-${WORKER_N}.token:/run/secrets/forgejo-token:ro
+      - ${HOME}/.config/sandbox/secrets/${WORKER_KEY_FILE:?set WORKER_KEY_FILE}:/run/secrets/api-key:ro

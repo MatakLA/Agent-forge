@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Usage: bin/report daily [--date YYYY-MM-DD] [--no-quota] [--out FILE]
+Writes a Markdown daily summary (UTC day) to reports/YYYY-MM-DD.md (git-ignored): runs, tokens/budget, quota, pull requests,
+egress (allowed, denied, alarms), alerts, kill switch, containers and VM resources, and a "needs attention" list.
+Rotates the proxy logs when they are large or the last rotation is older than 24 h. Read-only towards Forgejo."""
+import glob, json, os, re, subprocess, sys, time, urllib.request, shutil
+from datetime import datetime, timedelta, timezone
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import sbx, egress
+
+a = sys.argv[1:]
+if a[:1] != ["daily"] or "-h" in a or "--help" in a:
+    print(__doc__); sys.exit(0 if "-h" in a or "--help" in a else 2)
+day = a[a.index("--date") + 1] if "--date" in a else sbx.today()
+d0 = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+t0, t1 = d0.timestamp(), (d0 + timedelta(days=1)).timestamp()
+lim = sbx.load_limits()
+out_path = a[a.index("--out") + 1] if "--out" in a else os.path.join(sbx.ROOT, "reports", day + ".md")
+sh = egress.sh
+attention = []
+L = []
+w = L.append
+
+
+def table(rows, head):
+    w("| " + " | ".join(head) + " |"); w("|" + "|".join("---" for _ in head) + "|")
+    for r in rows:
+        w("| " + " | ".join(str(x) for x in r) + " |")
+    w("")
+
+
+w(f"# Sandbox daily report {day} (UTC)")
+w(f"Generated {sbx.now()} by bin/report. Limits: {lim['MAX_RUNS_PER_DAY']} runs/day, {lim['DAILY_TOKEN_BUDGET']} tokens/day, timeout {lim['RUN_TIMEOUT_MIN']:g} min, token cap {lim['RUN_TOKEN_CAP']}.\n")
+
+# ---- runs
+led = [e for e in sbx.read_ledger() if e.get("date") == day]
+real = [e for e in led if not e.get("test")]
+dirs = [d for d in sbx.run_dirs() if os.path.basename(d).startswith(day.replace("-", ""))]
+w("## Runs")
+rows = []
+for d in dirs:
+    m, e = sbx.meta(d), next((x for x in led if x.get("run_id") == os.path.basename(d)), {})
+    q = "-"
+    try:
+        f = lambda rows_: next(r["pct"] for r in rows_ if "Gemini" in r["model"] and "five hour" in r["label"].lower())
+        q = f"{f(m['quota_before']):.0f}% -> {f(m['quota_after']):.0f}%"
+    except Exception:
+        pass
+    reason = m.get("reason") or ("running" if sbx.is_running(d) else "legacy/unknown" if not os.path.exists(d + "/meta.json") else "no result")
+    if not os.path.exists(d + "/finished") and not sbx.is_running(d) and os.path.exists(d + "/pid"):
+        reason = "ORPHANED"; attention.append(f"orphaned run {os.path.basename(d)}")
+    rows.append((os.path.basename(d), m.get("worker", d.rsplit("-worker-", 1)[-1] and "worker-" + d.rsplit("-worker-", 1)[-1]), m.get("task", os.path.basename(sbx.read(d + "/task"))) + (" (test)" if m.get("test") else ""),
+                 reason, f"{m.get('duration_s', '-')}", m.get("tokens", sbx.stream_tokens(d + "/stream.jsonl")), m.get("tool_calls", "-"), q))
+if rows:
+    table(rows, ["run", "worker", "task", "result", "sec", "tokens", "tools", "Gemini 5h quota"])
+else:
+    w("No runs this day.\n")
+ok = [e for e in real if e["reason"] == "ok"]
+tok = sum(e.get("tokens", 0) for e in real)
+w(f"Non-test runs: **{len(real)}** ({len(ok)} ok, {len(real) - len(ok)} not ok) - tokens **{tok}** of {lim['DAILY_TOKEN_BUDGET']} ({100 * tok / lim['DAILY_TOKEN_BUDGET']:.0f}%) - "
+  f"runs {len(real)}/{lim['MAX_RUNS_PER_DAY']}. Test runs (scripted, excluded from budgets): {len(led) - len(real)}.\n")
+by = {}
+for e in real:
+    by.setdefault(e["reason"], 0); by[e["reason"]] += 1
+if by:
+    w("Reasons: " + ", ".join(f"{k}: {v}" for k, v in sorted(by.items())) + "\n")
+if len(real) - len(ok):
+    attention.append(f"{len(real) - len(ok)} run(s) did not end ok")
+if tok > 0.8 * lim["DAILY_TOKEN_BUDGET"]:
+    attention.append(f"token budget over 80% ({tok}/{lim['DAILY_TOKEN_BUDGET']})")
+
+# ---- quota
+w("## Quota (`agy /usage`, now)")
+if "--no-quota" in a:
+    w("Skipped (--no-quota).\n")
+else:
+    rows = []
+    for n in sorted(x for x in sh("docker", "ps", "--format", "{{.Names}}").stdout.split() if re.fullmatch(r"worker-\d+", x)):
+        if any(sbx.is_running(d) and d.endswith("-" + n) for d in sbx.run_dirs()):
+            rows.append((n, "busy (run in progress)", "", "")); continue
+        try:
+            q = sbx.read_quota(n)
+            okq, msg = sbx.quota_verdict(q, lim)
+            for r in q:
+                rows.append((n, r["model"], f"{r['label']}: {r['pct']:.0f}%", r["reset"]))
+            if not okq:
+                attention.append(f"{n}: {msg}")
+        except Exception as ex:
+            rows.append((n, "unavailable", str(ex)[:60], ""))
+    table(rows, ["worker", "model", "window", "resets (UTC)"])
+
+# ---- pull requests
+w(f"## Pull requests ({sbx.FORGE_REPO})")
+tokfile = next((p for p in (os.path.join(sbx.SECRETS, "monitor.token"), os.path.join(sbx.SECRETS, "orchestrator.token")) if os.path.exists(p)), None)
+try:
+    def api(path):
+        req = urllib.request.Request(sbx.FORGE_URL + "/api/v1" + path, headers={"Authorization": "token " + open(tokfile).read().strip()})
+        return json.load(urllib.request.urlopen(req, timeout=15))
+    def utc(s):
+        return datetime.fromisoformat(s).astimezone(timezone.utc).timestamp() if s else 0
+    prs = api(f"/repos/{sbx.FORGE_REPO}/pulls?state=all&limit=50&sort=recentupdate")
+    rows = []
+    for p in prs:
+        if t0 <= utc(p["created_at"]) < t1 or t0 <= utc(p.get("merged_at") or "") < t1:
+            by_ = api(f"/repos/{sbx.FORGE_REPO}/pulls/{p['number']}").get("merged_by") or {}
+            rows.append((f"#{p['number']}", p["title"][:60], p["user"]["login"], "merged by " + by_.get("login", "?") if p["merged"] else p["state"],
+                         datetime.fromtimestamp(utc(p["created_at"]), timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                         datetime.fromtimestamp(utc(p["merged_at"]), timezone.utc).strftime("%Y-%m-%d %H:%M") if p.get("merged_at") else ""))
+    table(rows, ["PR", "title", "author", "state", "created (UTC)", "merged (UTC)"]) if rows else w("No pull requests opened or merged this day.\n")
+    open_prs = [p for p in prs if p["state"] == "open"]
+    if open_prs:
+        w(f"Open PRs waiting for review/merge: {', '.join('#' + str(p['number']) for p in open_prs)}\n")
+        attention.append(f"{len(open_prs)} open PR(s) waiting for manual merge")
+    w(f"_(read with {'monitoring' if tokfile and 'monitor' in tokfile else 'orchestrator'} token)_\n")
+except Exception as ex:
+    w(f"Forgejo API unavailable: {ex}\n"); attention.append("Forgejo API unavailable")
+
+# ---- egress
+w("## Egress (proxy log)")
+health = egress.proxy_health()
+res = egress.analyze(since=t0, until=t1, ack=False)
+w(f"Proxy: mode `{health['mode']}`, running {health['running']}, health {health['health']} - " + ("OK" if health["ok"] else "**PROBLEM**: " + "; ".join(health["problems"])) + "\n")
+if not health["ok"]:
+    attention.append("egress proxy problem: " + "; ".join(health["problems"]))
+w(f"Events: {res['events']}. Allowed tunnels: {sum(res['allowed'].values())}, denied: {sum(res['denied'].values())} (known noise {sum(res['noise'].values())}).\n")
+if res["allowed"]:
+    table([(h, n) for h, n in res["allowed"].most_common()], ["allowed host", "tunnels"])
+if res["noise"]:
+    table([(h, n) for h, n in res["noise"].most_common()], ["denied, baseline noise", "count"])
+al = egress.alarms(res)
+open_ = {(l, c, m) for l, c, m in egress.alarms(egress.analyze(since=t0, until=t1, ack=True))}
+if al:
+    w("Alarms found in the day's log:")
+    for lvl, code, msg in al:
+        w(f"- **{lvl}** {code}: {msg}" + ("" if (lvl, code, msg) in open_ else " _(acknowledged)_"))
+    w("")
+    if any(x[0] == "HIGH" for x in open_):
+        attention.append("UNACKNOWLEDGED egress HIGH alarm(s) (new domain / private-range attempt) - review with bin/egress-report, then --ack")
+else:
+    w("No egress alarms.\n")
+sizes = egress.log_sizes()
+st = egress.state()
+if time.time() - st.get("last_rotate", 0) > 86400 or sizes.get("access.log", 0) > egress.ROTATE_BYTES:
+    rot = egress.rotate(force=True)
+else:
+    rot = egress.rotate(force=False)
+w(f"Log files: " + ", ".join(f"{k} {v // 1024} KB" for k, v in sorted(sizes.items())) + f". Rotation: {rot}.\n")
+
+# ---- alerts, kill switch
+w("## Alerts and kill switch")
+al_lines = [l for l in sbx.read(os.path.join(sbx.RUNS, "ALERT")).splitlines() if l.startswith(day)]
+w("\n".join("- " + l for l in al_lines) if al_lines else "No alerts this day.")
+w("")
+ks = sbx.killswitch_active()
+w(f"Kill switch now: **{'ON since ' + str(ks.get('at')) + ' - ' + str(ks.get('reason')) if ks else 'off'}**\n")
+if ks:
+    attention.append("kill switch is ON")
+
+# ---- containers / VM
+w("## Containers and VM")
+rows = []
+for n in ["forgejo", "egress-proxy"] + sorted(x for x in sh("docker", "ps", "-a", "--format", "{{.Names}}").stdout.split() if re.fullmatch(r"worker-\d+", x)):
+    r = sh("docker", "inspect", "-f", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.RestartCount}}|{{.State.StartedAt}}", n).stdout.strip().split("|")
+    if len(r) == 4:
+        rows.append((n, r[0], r[1] or "-", r[2], r[3][:19]))
+        if r[0] != "running":
+            attention.append(f"container {n} is {r[0]}")
+table(rows, ["container", "state", "health", "restarts", "started"])
+st_ = sh("docker", "stats", "--no-stream", "--format", "{{.Name}}: cpu {{.CPUPerc}}, mem {{.MemUsage}}").stdout.strip().splitlines()
+if st_:
+    w("Resources now: " + "; ".join(st_) + "\n")
+du = shutil.disk_usage("/")
+mem = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo") if ":" in l}
+runs_size = sh("du", "-sh", sbx.RUNS).stdout.split()[0]
+w(f"VM: disk {100 * du.used / du.total:.0f}% used ({du.free // 2**30} GB free), memory {mem['MemAvailable'] // 1024}/{mem['MemTotal'] // 1024} MB available, load {os.getloadavg()[0]:.2f}, runs/ {runs_size}.\n")
+if 100 * du.used / du.total > 85:
+    attention.append("disk over 85%")
+
+w("## Needs attention")
+w("\n".join("- " + x for x in attention) if attention else "Nothing.")
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+open(out_path, "w").write("\n".join(L) + "\n")
+print(f"{out_path}  ({len(real)} runs, {tok} tokens, {len(attention)} item(s) need attention)")
+for x in attention:
+    print("  ! " + x)
