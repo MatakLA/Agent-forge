@@ -10,6 +10,7 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `gemini` | Gemini API key, per token | `bin/worker-add N --runtime gemini` | `generativelanguage.googleapis.com` |
 | `compat` | your own model server (nothing, for a local one) - Codex CLI over the OpenAI Responses API | `bin/worker-add N --runtime compat` | that server only |
 | `aider` | your own model server - Aider over the OpenAI chat-completions API | `bin/worker-add N --runtime aider` | that server only |
+| `opencode` | SST's OpenCode CLI on your configured provider / subscription | `bin/worker-add N --runtime opencode` | configured provider host only |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
@@ -42,6 +43,14 @@ with the runtime `compat` or `aider`:
 - Nothing else is contacted: Aider would download litellm's price table and tokenizers at run time - the image ships the
   tokenizers and `af-agent` gives Aider the model's metadata from a local file. `tests/test_runtimes.sh` routes every other
   connection to a logging proxy and fails if a CLI tries one.
+
+## OpenCode
+OpenCode (SST's OpenCode CLI) runs inside the worker container using the standard agy worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local server the owner configures (Anthropic, OpenAI, OpenRouter, Ollama, etc.).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime opencode` (or in Settings → "+ Add worker" → OpenCode).
+- **Endpoint and Network**: OpenCode is endpoint-based and uses the configurable-endpoint mechanism (`COMPAT_BASE_URL`). The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A rework continues the existing session with `--session <conversation_id>`.
+- **Cost model**: The cost model is `unknown`. OpenCode's output stream does not expose token counts, so no USD figure is computed for it (`tokens: None`, no USD spend recorded).
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
@@ -92,6 +101,7 @@ no metadata for.
 claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model M --max-budget-usd B [--resume ID]
 codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check <quiet flags> -m M [resume ID] -
 gemini --output-format stream-json --yolo --skip-trust -m M [--resume ID] -p "Do the task described above."
+opencode run --format json [--model M] [--session ID]
 ```
 
 Skipping the CLIs' own permission prompts and sandboxes is intended: the container is the sandbox (no capabilities, internal
