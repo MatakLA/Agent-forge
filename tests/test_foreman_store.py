@@ -3,6 +3,8 @@
 Public interface: run directly via python3 tests/test_foreman_store.py or unittest discovery.
 Important invariants:
 - state_tx: concurrent transactions serialize read-modify-write cycles without lost updates across threads.
+- state_tx/locked: reentrant transactions within the same thread nest cleanly without deadlocking.
+- save_task/save_goal: concurrent delete vs save refuses to resurrect deleted files with stale in-memory data.
 - jsave: atomic writes via temp file and os.replace ensure crash-safety; failed writes leave target file intact.
 - jload: unparseable or missing files safely return default without unhandled exceptions.
 - event/tasks/goals: robust against injection payloads (SQLi, cmd injection, null bytes, unicode).
@@ -170,6 +172,101 @@ class TestForemanStore(unittest.TestCase):
 
         assert recovered_dump == {"key": "new_valid_data", "counter": 2}
         assert recorded_replace[0][0] == test_path + ".tmp"
+
+    def test_scenario_3_save_task_delete_race(self):
+        """Scenario 3: save_task and save_goal refuse to resurrect a file deleted after being read."""
+        # 1. Thread A creates task, Thread B deletes it, Thread A attempts save_task with stale in-memory copy
+        t = dict(id="0001-sample", title="Sample Task", status="pending", attempts=0)
+        saved = store.save_task(t)
+        self.assertTrue(saved, "Initial save_task for new task must succeed")
+        task_path = os.path.join(ctx.FD, "tasks", t["id"] + ".json")
+        self.assertTrue(os.path.exists(task_path), "Task file should exist after initial save")
+
+        # Thread B deletes the task file (simulating cancel/remove)
+        os.remove(task_path)
+        self.assertFalse(os.path.exists(task_path), "Task file should be deleted")
+
+        # Thread A attempts to save its stale in-memory copy
+        res_task = store.save_task(t)
+        self.assertFalse(res_task, "save_task must return False / refuse when task file was deleted")
+        self.assertFalse(os.path.exists(task_path), "save_task resurrected a deleted task file!")
+        self.assertEqual([x["id"] for x in store.tasks()], [], "Deleted task appeared in tasks()")
+
+        # 2. Thread A loads an existing task via tasks(), Thread B deletes it, Thread A saves stale copy
+        t2 = dict(id="0002-loaded", title="Loaded Task", status="pending")
+        self.assertTrue(store.save_task(t2))
+        t2_path = os.path.join(ctx.FD, "tasks", "0002-loaded.json")
+        loaded_tasks = store.tasks()
+        t2_loaded = [x for x in loaded_tasks if x["id"] == "0002-loaded"][0]
+        os.remove(t2_path)
+        self.assertFalse(os.path.exists(t2_path))
+        self.assertFalse(store.save_task(t2_loaded), "save_task from tasks() must not resurrect deleted file")
+        self.assertFalse(os.path.exists(t2_path))
+
+        # 3. Thread A loads an existing task via jload(), Thread B deletes it, Thread A saves stale copy
+        t3 = dict(id="0003-jload", title="Jload Task", status="pending")
+        self.assertTrue(store.save_task(t3))
+        t3_path = os.path.join(ctx.FD, "tasks", "0003-jload.json")
+        t3_loaded = store.jload(t3_path)
+        os.remove(t3_path)
+        self.assertFalse(os.path.exists(t3_path))
+        self.assertFalse(store.save_task(t3_loaded), "save_task from jload() must not resurrect deleted file")
+        self.assertFalse(os.path.exists(t3_path))
+
+        # 4. Goal concurrent delete vs save_goal guard
+        g = dict(id="G20261011-120000", text="Sample Goal", status="new")
+        saved_g = store.save_goal(g)
+        self.assertTrue(saved_g, "Initial save_goal must succeed")
+        goal_path = os.path.join(ctx.FD, "goals", g["id"] + ".json")
+        self.assertTrue(os.path.exists(goal_path))
+
+        # Thread B deletes the goal file
+        os.remove(goal_path)
+        self.assertFalse(os.path.exists(goal_path))
+
+        # Thread A attempts to save its stale in-memory goal
+        res_goal = store.save_goal(g)
+        self.assertFalse(res_goal, "save_goal must return False / refuse when goal was deleted")
+        self.assertFalse(os.path.exists(goal_path), "save_goal resurrected a deleted goal file!")
+        self.assertEqual([x["id"] for x in store.goals()], [], "Deleted goal appeared in goals()")
+
+        assert not os.path.exists(task_path)
+        assert not os.path.exists(goal_path)
+
+    def test_scenario_4_state_tx_reentrancy(self):
+        """Scenario 4: Reentrant state_tx() and locked() in the same thread works without deadlock."""
+        def reentrant_work():
+            with store.state_tx() as st1:
+                st1["outer"] = 1
+                with store.state_tx() as st2:
+                    st2["inner"] = 2
+                st1["outer_final"] = 3
+
+        # Bound test execution with timeout so deadlock fails loudly instead of hanging CI
+        th = threading.Thread(target=reentrant_work)
+        th.start()
+        th.join(timeout=5.0)
+        self.assertFalse(th.is_alive(), "Reentrant state_tx() deadlocked or timed out!")
+
+        # Verify direct filesystem storage preserves all updates
+        final_st = store.gstate()
+        self.assertEqual(final_st.get("outer"), 1)
+        self.assertEqual(final_st.get("inner"), 2)
+        self.assertEqual(final_st.get("outer_final"), 3)
+
+        # Also verify bare locked() reentrancy in a bounded thread
+        def reentrant_locked():
+            with store.locked():
+                with store.locked():
+                    pass
+
+        th_lock = threading.Thread(target=reentrant_locked)
+        th_lock.start()
+        th_lock.join(timeout=5.0)
+        self.assertFalse(th_lock.is_alive(), "Reentrant locked() deadlocked or timed out!")
+
+        assert final_st.get("inner") == 2
+        assert not th.is_alive()
 
     def test_security_injection_payloads(self):
         """Security: Injection payloads (SQLi, cmd injection, null bytes, unicode) are stored cleanly."""
