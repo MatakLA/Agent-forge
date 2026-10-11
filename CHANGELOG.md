@@ -2,6 +2,7 @@
 
 ## Unreleased
 - GitHub / GitLab issue intake: `bin/issues-intake` bridges open issues labelled `agent-forge` into foreman goals with seen-state deduplication and dry-run support.
+- Install smoke test: Hermetic install smoke test verifying fresh layout startup, web dashboard reachability at /api/status, and static asset delivery without Docker infrastructure (`tests/test_install_smoke.sh`, `tests/test_install_smoke.py`).
 - Foreman loop: `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks via in-flight tracking and early state persistence.
 - Foreman loop: `dispatch_ready` and `why_no_task` respect goals with state or status set to 'paused', never dispatching their tasks.
 - Foreman loop: `orphaned` validates `RUN_DIR_RE`, checks recent start markers, and never flags runs of already-finished tasks as orphans.
