@@ -19,8 +19,14 @@ os.environ["SANDBOX_RUNS_DIR"] = os.path.join(T, "runs")
 os.environ["LIMITS_FILE"] = os.path.join(T, "limits.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
-import sbx
-from foreman import ctx, pool
+try:
+    import sbx
+    import runtimes
+    from foreman import ctx
+    import foreman.pool as pool
+except ImportError as e:
+    sys.stderr.write(f"FATAL: failed to import foreman.pool: {e}\n")
+    sys.exit(1)
 
 
 class TestForemanPool(unittest.TestCase):
@@ -42,15 +48,34 @@ class TestForemanPool(unittest.TestCase):
         shutil.rmtree(T, ignore_errors=True)
 
     def setUp(self):
+        try:
+            assert pool is not None
+        except Exception as e:
+            sys.stderr.write(f"setUp import validation failed: {e}\n")
+            raise
         # Clear ledger and cooldowns before each test
+        os.makedirs(os.environ["SANDBOX_RUNS_DIR"], exist_ok=True)
         ledger_path = os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl")
         if os.path.exists(ledger_path):
             os.remove(ledger_path)
-        pool.COOLDOWN.clear()
-        pool.QUOTA_CACHE.clear()
-        pool.WORKER_RT.clear()
+        with open(ledger_path, "w") as f:
+            pass  # Ensure ledger file exists
+        if hasattr(pool, "COOLDOWN"):
+            pool.COOLDOWN.clear()
+        if hasattr(pool, "QUOTA_CACHE"):
+            pool.QUOTA_CACHE.clear()
+        if hasattr(pool, "WORKER_RT"):
+            pool.WORKER_RT.clear()
         ctx.C["PROJECT_DAILY_BUDGET_USD"] = 0.0
         ctx.C["PROJECT_MONTHLY_BUDGET_USD"] = 0.0
+        self._orig_workers = pool.workers
+        self._orig_api_budget_left = pool.api_budget_left
+        self._orig_runtime_of = pool.runtime_of
+
+    def tearDown(self):
+        pool.workers = self._orig_workers
+        pool.api_budget_left = self._orig_api_budget_left
+        pool.runtime_of = self._orig_runtime_of
 
     def _append_ledger(self, cost_usd, worker, project=""):
         entry = {
@@ -76,35 +101,43 @@ class TestForemanPool(unittest.TestCase):
         # Next run ($2.0) would make project spend $6.0 > $5.0.
         self._append_ledger(4.0, worker="worker-2", project="")
         # Worker-1 is under its own cap ($0 + $2 <= $10), but project exceeds ($4 + $2 > $5).
+        res1 = pool.api_budget_left("worker-1")
         self.assertFalse(
-            pool.api_budget_left("worker-1"),
+            res1,
             "Worker under its own cap but over the project cap must be refused",
         )
+        assert res1 is False
 
         # Case 2: Project cap has headroom ($5.0 cap, $0 spent),
         # but worker-1 has spent $9.0 (next run $2.0 -> $11.0 > $10.0 worker cap).
         os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
         self._append_ledger(9.0, worker="worker-1", project="")
+        res2 = pool.api_budget_left("worker-1")
         self.assertFalse(
-            pool.api_budget_left("worker-1"),
+            res2,
             "Worker exceeding its own worker cap must be refused",
         )
+        assert res2 is False
 
         # Case 3: Project cap and worker cap have headroom,
         # but install-wide cap ($100.0) is exceeded ($99.0 spent).
         os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
         self._append_ledger(99.0, worker="worker-other", project="other-project")
+        res3 = pool.api_budget_left("worker-1")
         self.assertFalse(
-            pool.api_budget_left("worker-1"),
+            res3,
             "Worker must be refused when install-wide cap is exceeded",
         )
+        assert res3 is False
 
         # Case 4: All caps satisfied: project ($0 spent), worker ($0 spent), install ($0 spent).
         os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        res4 = pool.api_budget_left("worker-1")
         self.assertTrue(
-            pool.api_budget_left("worker-1"),
+            res4,
             "Worker must be allowed when all applicable caps have headroom",
         )
+        assert res4 is True
 
     def test_has_quota_boundary_at_exact_floor(self):
         """has_quota must allow a worker at exactly floor% remaining (boundary: >= vs >)."""
@@ -114,20 +147,24 @@ class TestForemanPool(unittest.TestCase):
             {"model": "Gemini Models", "label": "Five Hour Limit Remaining", "pct": 2.0},
             {"model": "Gemini Models", "label": "Weekly Limit Remaining", "pct": 50.0},
         ]
+        res1 = pool.has_quota(rows_at_floor, "gemini", floor=floor)
         self.assertTrue(
-            pool.has_quota(rows_at_floor, "gemini", floor=floor),
+            res1,
             "Exactly floor% remaining must count as having quota (not exhausted)",
         )
+        assert res1 is True
 
         # Below floor% (1.9%) remaining in 5-hour window -> exhausted, refused
         rows_below_floor = [
             {"model": "Gemini Models", "label": "Five Hour Limit Remaining", "pct": 1.9},
             {"model": "Gemini Models", "label": "Weekly Limit Remaining", "pct": 50.0},
         ]
+        res2 = pool.has_quota(rows_below_floor, "gemini", floor=floor)
         self.assertFalse(
-            pool.has_quota(rows_below_floor, "gemini", floor=floor),
+            res2,
             "Below floor% remaining must count as exhausted",
         )
+        assert res2 is False
 
     def test_has_quota_unknown_quota_fails_open(self):
         """Unknown quota (family absent from rows or empty rows) fails open (allowed)."""
@@ -136,20 +173,25 @@ class TestForemanPool(unittest.TestCase):
             {"model": "Gemini Models", "label": "Five Hour Limit Remaining", "pct": 50.0},
             {"model": "Gemini Models", "label": "Weekly Limit Remaining", "pct": 50.0},
         ]
+        res1 = pool.has_quota(rows_gemini_only, "claude")
         self.assertTrue(
-            pool.has_quota(rows_gemini_only, "claude"),
+            res1,
             "Absent model family must fail open (allowed)",
         )
+        assert res1 is True
 
         # Entirely empty rows
+        res2 = pool.has_quota([], "claude")
         self.assertTrue(
-            pool.has_quota([], "claude"),
+            res2,
             "Empty quota rows must fail open (allowed)",
         )
+        assert res2 is True
 
     def test_pool_quota_out_cooldown_vs_exhaustion(self):
         """A pool where every worker is merely in a short cooldown must not be reported as quota-out."""
         pool.workers = lambda: ["worker-1"]
+        pool.runtime_of = lambda w: "agy"
         pool.WORKER_RT["worker-1"] = "agy"
         now = time.time()
 
@@ -165,34 +207,44 @@ class TestForemanPool(unittest.TestCase):
         # Case 1: Worker has healthy quota, but is paused in cooldown with "quota low" reason
         pool.QUOTA_CACHE["worker-1"] = (now, healthy_rows)
         pool.COOLDOWN["worker-1"] = (now + 60, "quota low: brief cooldown")
+        res1 = pool.pool_quota_out()
         self.assertFalse(
-            pool.pool_quota_out(),
+            res1,
             "Worker with healthy quota must not report pool quota-out even if in cooldown",
         )
+        assert res1 is False
 
         # Case 2: Worker in a short cooldown (<= 300s) even with quota low and unreadable/empty rows
         pool.QUOTA_CACHE["worker-1"] = (now, [])
         pool.COOLDOWN["worker-1"] = (now + 60, "quota low: brief 60s pause")
+        res2 = pool.pool_quota_out()
         self.assertFalse(
-            pool.pool_quota_out(),
+            res2,
             "Short cooldown (<= 300s) must not be reported as pool quota-out",
         )
+        assert res2 is False
 
         # Case 3: Worker in cooldown for non-quota reason (e.g. rate limit, container restart)
         pool.QUOTA_CACHE["worker-1"] = (now, [])
         pool.COOLDOWN["worker-1"] = (now + 600, "rate limit: cooling down")
+        res3 = pool.pool_quota_out()
         self.assertFalse(
-            pool.pool_quota_out(),
+            res3,
             "Non-quota cooldown must not be reported as pool quota-out",
         )
+        assert res3 is False
 
         # Case 4: True exhaustion: long cooldown (> 300s), quota low reason, exhausted rows
+        # Mock api_budget_left to False so it does not short-circuit before exhaustion check
+        pool.api_budget_left = lambda w="": False
         pool.QUOTA_CACHE["worker-1"] = (now, exhausted_rows)
         pool.COOLDOWN["worker-1"] = (now + 1800, "quota low: weekly limit exhausted")
+        res4 = pool.pool_quota_out()
         self.assertTrue(
-            pool.pool_quota_out(),
+            res4,
             "True exhaustion (> 300s with low quota) must be reported as quota-out",
         )
+        assert res4 is True
 
     def test_order_by_quota_lru_tiebreak(self):
         """Identical quota percentage ties must be broken by least-recently-used (smallest timestamp)."""
@@ -206,8 +258,9 @@ class TestForemanPool(unittest.TestCase):
         self.assertEqual(
             ordered,
             ["worker-2", "worker-1", "worker-3"],
-            "On tie, least-recently-used worker (smaller timestamp) must come first",
+            "On tie, least-recently-used worker (smallest timestamp) must come first",
         )
+        assert ordered == ["worker-2", "worker-1", "worker-3"]
 
         # Worker never used (not in last_used -> 0) comes before worker with positive timestamp
         last_used_partial = {"worker-1": 2000}
@@ -217,6 +270,7 @@ class TestForemanPool(unittest.TestCase):
             ["worker-2", "worker-1"],
             "Worker never used (0) must precede previously used worker on tied quota",
         )
+        assert ordered_partial == ["worker-2", "worker-1"]
 
 
 if __name__ == "__main__":
