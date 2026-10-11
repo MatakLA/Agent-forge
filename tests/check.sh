@@ -24,7 +24,7 @@ if [ -f tests/test_foreman_loop.py ]; then
   $PY tests/test_foreman_loop.py | tail -1
 fi
 if [ -f tests/test_foreman_merge.py ]; then
-  $PY tests/test_foreman_merge.py | tail -1
+  $PY tests/test_foreman_merge.py | tail -1 | grep "ALL OK" || { $PY tests/test_foreman_merge.py; exit 1; }
 fi
 if [ -f tests/test_foreman_settings.py ]; then
   $PY tests/test_foreman_settings.py | tail -1
