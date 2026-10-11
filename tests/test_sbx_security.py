@@ -9,6 +9,7 @@ Invariants:
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -342,21 +343,20 @@ class TestSbxSecurity(unittest.TestCase):
         self.assertFalse(bool(sbx.ROLE_RE.fullmatch("role; evil")))
         assert not sbx.ROLE_RE.fullmatch("role; evil")
         dispatch_bin = os.path.join(sbx.ROOT, "bin", "dispatch")
-        dummy_task = os.path.join(sbx.ROOT, "tests", "fixtures", "dummy-task.md")
-        os.makedirs(os.path.dirname(dummy_task), exist_ok=True)
-        with open(dummy_task, "w") as f:
-            f.write("# Task test\nSome content\n")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tf:
+            tf.write("# Task test\nSome content\n")
+            dummy_task = tf.name
         try:
             env = dict(os.environ, DISPATCH_MODEL="model; rm -rf /", SANDBOX_TEST="1")
             r = subprocess.run([sys.executable, dispatch_bin, "worker-1", dummy_task],
                                capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 3, "bin/dispatch must refuse malformed DISPATCH_MODEL with exit code 3")
-            assert r.returncode == 3
             self.assertIn("REFUSED: invalid DISPATCH_MODEL", r.stderr)
-            assert "REFUSED: invalid DISPATCH_MODEL" in r.stderr
         finally:
             if os.path.exists(dummy_task):
                 os.remove(dummy_task)
+        assert r.returncode == 3
+        assert "REFUSED: invalid DISPATCH_MODEL" in r.stderr
 
 
 if __name__ == "__main__":
