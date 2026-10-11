@@ -92,17 +92,17 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Abuse Scenario**: The `/healthz` endpoint dispatched and responded with `200 OK` before invoking `_allowed()`, bypassing `host_allowed()`. A malicious web page visited by a user on the LAN could use DNS rebinding (an attacker-controlled domain with a short TTL resolving to `127.0.0.1`) to send requests to `http://attacker.example:8171/healthz`. Because the Host header was unvalidated on this path, the attacker could detect and fingerprint the running Agent-Forge instance on localhost.
 - **Fix**: Check `host_allowed(self.headers.get("Host"))` at the very start of `do_GET` (and `do_HEAD`) before evaluating `/healthz` or other paths, immediately returning `403 Forbidden` for any disallowed host.
 
-### Finding 2: Host Header Port Injection and IPv6 Formatting Bypass in `host_allowed`
+### Finding 2: Host Header Port Injection, Empty Port String, and IPv6 Formatting Bypass in `host_allowed`
 - **Severity**: HIGH
 - **Location**: `web/server.py:host_allowed`
-- **Abuse Scenario**: `host_allowed` stripped ports using `host.rsplit(":", 1)[0]` and `host.split("]")[0] + "]"` without validating that the trailing portion was a numeric port. An attacker could craft a Host header such as `127.0.0.1:evil.com`, `localhost:evil.com`, `[::1]:evil.com`, or `[::1]evil.com`; the function stripped the suffix and matched the prefix against allowed hosts, bypassing Host filtering. Furthermore, `.ts.net` matched without requiring a subdomain prefix.
-- **Fix**: Strictly validate that if a colon is present in the host (or following a closing bracket in IPv6), the port portion consists solely of decimal digits. Reject malformed bracketed IPv6 strings and require `.ts.net` hostnames to have a valid non-empty subdomain.
+- **Abuse Scenario**: `host_allowed` stripped ports using `host.rsplit(":", 1)[0]` and `host.split("]")[0] + "]"` without validating that the trailing portion was a non-empty numeric port. An attacker could craft a Host header such as `127.0.0.1:evil.com`, `localhost:evil.com`, `[::1]:evil.com`, or `[::1]evil.com`; the function stripped the suffix and matched the prefix against allowed hosts, bypassing Host filtering. Furthermore, empty port strings like `127.0.0.1:` or `localhost:`, or malformed IPv6 brackets, could cause unexpected behavior.
+- **Fix**: Strictly validate that if a colon is present in the host (or following a closing bracket in IPv6), the port portion consists solely of decimal digits and is non-empty (`not port or not port.isdigit()`). Reject malformed bracketed IPv6 strings and require `.ts.net` hostnames to have a valid non-empty subdomain.
 
 ### Finding 3: Missing Origin and Referer CSRF Validation on State-Changing POST Requests
 - **Severity**: HIGH
 - **Location**: `web/server.py:Handler._allowed`
-- **Abuse Scenario**: Although `X-Agent-Forge: 1` is enforced for POST requests, the server failed to validate `Origin` or `Referer` headers. In scenarios where custom headers can be attached or sent across origins (e.g. browser extensions, misconfigured proxies, sandboxed pages, or CORS preflight bypasses), an attacker site could issue state-changing POST requests (such as task actions, killswitch triggers, settings changes, or egress modifications).
-- **Fix**: In `Handler._allowed(post=True)`, verify that if `Origin` is present or `Referer` is present, their parsed hostname/netloc satisfies `host_allowed()`. Reject any request with `403 Forbidden` if an untrusted Origin or Referer is supplied.
+- **Abuse Scenario**: Although `X-Agent-Forge: 1` is enforced for POST requests, the server failed to validate `Origin` or `Referer` headers. In scenarios where custom headers can be attached or sent across origins (e.g. browser extensions, misconfigured proxies, sandboxed pages, or CORS preflight bypasses), an attacker site could issue state-changing POST requests (such as task actions, killswitch triggers, settings changes, or egress modifications). Attackers could also send `Origin: null` from sandboxed iframes or data URLs to attempt CSRF bypasses.
+- **Fix**: In `Handler._allowed(post=True)`, verify that if `Origin` is present or `Referer` is present, their parsed hostname/netloc satisfies `host_allowed()`. Explicitly reject untrusted values including `null` and empty strings with `403 Forbidden`.
 
 ### Finding 4: Dashboard Token Constant-Time Comparison
 - **Severity**: LOW
