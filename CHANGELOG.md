@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- GitHub / GitLab issue intake: `bin/issues-intake` bridges open issues labelled `agent-forge` into foreman goals with seen-state deduplication and dry-run support.
 - Foreman loop: `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks via in-flight tracking and early state persistence.
 - Foreman loop: `dispatch_ready` and `why_no_task` respect goals with state or status set to 'paused', never dispatching their tasks.
 - Foreman loop: `orphaned` validates `RUN_DIR_RE`, checks recent start markers, and never flags runs of already-finished tasks as orphans.

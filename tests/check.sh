@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 PY=${PY:-python3}
 PYSCRIPTS="bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api
   bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set
-  scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py"
+  bin/issues-intake scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py"
 SHSCRIPTS="bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
   tools/fake-docker egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo tests/test_install_security.sh"
 for f in $PYSCRIPTS bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*.py; do
@@ -68,6 +68,9 @@ if [ -f tests/test_sbx_security.py ]; then
 fi
 if [ -f tests/test_foreman_store.py ]; then
   $PY tests/test_foreman_store.py || exit 1
+fi
+if [ -f tests/test_issues_intake.py ]; then
+  $PY tests/test_issues_intake.py || exit 1
 fi
 echo "check: ALL OK"
 
