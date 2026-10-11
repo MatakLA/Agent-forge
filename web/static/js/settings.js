@@ -220,16 +220,19 @@ function pageWorkers() {
   return h;
 }
 function addWorkerForm() {
+  if (typeof RTNAME !== 'undefined' && !RTNAME['qwen-code']) RTNAME['qwen-code'] = 'Qwen Code';
+  if (typeof RTDESC !== 'undefined' && !RTDESC['qwen-code']) RTDESC['qwen-code'] = 'Qwen Code CLI';
   if (typeof RTNAME !== 'undefined' && !RTNAME.opencode) RTNAME.opencode = 'OpenCode';
   if (typeof RTDESC !== 'undefined' && !RTDESC.opencode) RTDESC.opencode = 'your model server through OpenCode';
   if (typeof RTNAME !== 'undefined' && !RTNAME.goose) RTNAME.goose = 'Goose';
   if (typeof RTDESC !== 'undefined' && !RTDESC.goose) RTDESC.goose = 'your model server through Goose';
   const R = Object.assign({}, (S && S.runtimes) || {});
+  if (!R['qwen-code']) R['qwen-code'] = {label: 'Qwen Code CLI'};
   if (!R.opencode) R.opencode = {label: 'OpenCode on your model server', endpoint: true};
   if (!R.goose) R.goose = {label: 'Goose on your model server', endpoint: true};
   const sec = (S && S.secrets) || {};
   const rtEntries = Object.entries(R);
-  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block"><input type="radio" name="addw-rt" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k)) +
+  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block"><input type="radio" name="addw-rt" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k === 'qwen-code' ? 'Qwen Code' : k)) +
       '</b> <span class="muted">— ' + esc((typeof RTDESC !== 'undefined' && RTDESC[k]) || r.label) + '</span></label>').join('')
     : '<div class="empty">No runtimes available.</div>';
   return '<div id="addw-form" style="display:none" class="addw"><div class="muted small">What will the new worker run on?</div>' +
@@ -450,14 +453,14 @@ document.addEventListener('click', async e => {
 
 // ---- add a worker: an Antigravity account (signed in from the browser), an API key, or your model server
 function addwRt() {
-  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', R = (S && S.runtimes) || {}, r = R[rt] || (rt === 'opencode' || rt === 'goose' ? {endpoint: true} : {});
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', R = (S && S.runtimes) || {}, r = R[rt] || (rt === 'opencode' || rt === 'goose' ? {endpoint: true} : rt === 'qwen-code' ? {} : {});
   $('addw-url').style.display = r.endpoint ? '' : 'none';
   $('addw-key').style.display = r.key && !(S.secrets || {})[r.key] ? '' : 'none';
   $('addw-keyin').placeholder = r.optional_key ? 'API key, only if your server wants one (OpenRouter does, Ollama does not)' : 'API key (stored on the server only)';
 }
 document.addEventListener('change', e => { if (e.target.name === 'addw-rt') addwRt(); if (e.target.name === 'su-kind') suRefresh(); });
 async function addWorkerGo() {
-  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' ? {endpoint: true} : {});
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' ? {endpoint: true} : rt === 'qwen-code' ? {} : {});
   if (r.endpoint) {
     const url = $('addw-urlin').value.trim(), model = $('addw-model').value.trim(), changes = {};
     if (!url) { $('addw-urlin').focus(); return; }

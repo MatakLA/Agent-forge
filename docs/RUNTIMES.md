@@ -11,6 +11,7 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `compat` | your own model server (nothing, for a local one) - Codex CLI over the OpenAI Responses API | `bin/worker-add N --runtime compat` | that server only |
 | `aider` | your own model server - Aider over the OpenAI chat-completions API | `bin/worker-add N --runtime aider` | that server only |
 | `opencode` | SST's OpenCode CLI on your configured provider / subscription | `bin/worker-add N --runtime opencode` | configured provider host only |
+| `qwen-code` | Alibaba DashScope API key, per token | `bin/worker-add N --runtime qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
@@ -51,6 +52,13 @@ OpenCode (SST's OpenCode CLI) runs inside the worker container using the standar
 - **Endpoint and Network**: OpenCode is endpoint-based and uses the configurable-endpoint mechanism (`COMPAT_BASE_URL`). The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A rework continues the existing session with `--session <conversation_id>`.
 - **Cost model**: The cost model is `unknown`. OpenCode's output stream does not expose token counts, so no USD figure is computed for it (`tokens: None`, no USD spend recorded).
+
+## Qwen Code
+Qwen Code runs Alibaba's Qwen Code CLI (`qwen-code`) inside the worker container to interact with Alibaba Cloud DashScope models.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime qwen-code` (or in Settings → "+ Add worker" → Qwen Code). The owner installs and configures the Qwen Code CLI in the worker container and configures the DashScope authentication credentials (such as `DASHSCOPE_API_KEY`) so the CLI can authenticate against the model API.
+- **Egress and Network**: dashscope.aliyuncs.com and dashscope-intl.aliyuncs.com are added to the allow-list; verify the exact hostname against the Qwen Code CLI version you run before relying on it in production - do not claim certainty that isn't established. The egress proxy restricts outbound network traffic to verified endpoints only.
+- **Cost model**: The cost model is token-based if exposed by the CLI's usage output, else 'unknown' (reporting `tokens: None` and no USD spend if the stream does not yield token metrics).
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
