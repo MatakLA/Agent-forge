@@ -20,6 +20,10 @@ lh3.googleusercontent.com
 pypi.org
 files.pythonhosted.org
 
+# --- Qwen Code CLI (Alibaba DashScope) --- verify before production - exact Qwen Code CLI endpoint not confirmed
+dashscope.aliyuncs.com
+dashscope-intl.aliyuncs.com
+
 # Deliberately NOT allowed although agy contacts it: play.googleapis.com (telemetry / crash logs; agy works without it) -
 # listed in etc/egress-baseline.txt so its denials do not raise alarms.
 # The internal forge (Forgejo) is on the internal docker network and reached directly, not through this proxy.
