@@ -15,4 +15,8 @@ for f in $SHSCRIPTS; do bash -n "$f" || { echo "syntax error: $f"; exit 1; }; do
 $PY bin/foreman --selftest | tail -1 | grep -q "ALL OK" || { $PY bin/foreman --selftest | grep -v '^ok'; exit 1; }
 $PY tests/test_web.py | tail -1
 $PY tests/test_upstream.py | tail -1
+if [ -f tests/test_foreman_loop.py ]; then
+  $PY tests/test_foreman_loop.py | tail -1
+fi
 echo "check: ALL OK"
+
