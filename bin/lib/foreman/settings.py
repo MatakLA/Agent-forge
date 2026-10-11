@@ -61,10 +61,10 @@ EDITABLE = {
     "POLL_SEC": ((1, 60), "limits"),
     "OPENAI_API_BASE": (r"|https?://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?", "project"),
     "DIFF_MAX": ((1000, 1000000), "project"), "MAX_GOAL_ROUNDS": ((1, 20), "project"), "LESSONS_MAX": ((1, 500), "project"),
-    "LOOP_SEC": ((1, 300), "project"), "LOCAL_TZ": (r"[A-Za-z0-9_./+-]{1,60}", "project"),
-    "SHARED_FILES": (r"|[A-Za-z0-9._~/-]+(,[A-Za-z0-9._~/-]+)*", "project"),
-    "VISION_FILE": (r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
-    "PROJECT_DIR": (r"|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
+    "LOOP_SEC": ((1, 300), "project"), "LOCAL_TZ": (r"(?!/)(?!.*\.\.)[A-Za-z0-9_./+-]{1,60}", "project"),
+    "SHARED_FILES": (r"|(?!/)(?!.*\.\.)[A-Za-z0-9._~/-]+(,(?!/)(?!.*\.\.)[A-Za-z0-9._~/-]+)*", "project"),
+    "VISION_FILE": (r"(?!.*\.\.)[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
+    "PROJECT_DIR": (r"|(?!.*\.\.)[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
 }
 
 
@@ -76,6 +76,9 @@ def conf_path(scope):
 
 def write_conf(path, values):
     """Update KEY=VALUE lines in place (keeping comments and order), append keys that are not there yet."""
+    for k, v in values.items():
+        if any(c in "\r\n" for c in f"{k}{v}") or "=" in str(k):
+            raise ValueError(f"newline or '=' injection in config: {k!r}={v!r}")
     lines = open(path).read().splitlines() if os.path.exists(path) else []
     done = set()
     for i, l in enumerate(lines):
