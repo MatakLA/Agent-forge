@@ -86,14 +86,16 @@ def host_allowed(host):
             return False
         name, _, rest = host.partition("]")
         name = name + "]"
-        if rest and (not rest.startswith(":") or not rest[1:].isdigit()):
+        if rest and (not rest.startswith(":") or not rest[1:].isdigit() or len(rest) == 1):
             return False
     elif ":" in host:
         name, port = host.rsplit(":", 1)
-        if not port.isdigit():
+        if not port or not port.isdigit():
             return False
     else:
         name = host
+    if not name:
+        return False
     return (name in ("127.0.0.1", "localhost", "[::1]")
             or (name.endswith(".ts.net") and len(name) > 7 and not name.startswith("."))
             or name in DASHBOARD_HOSTS or host in DASHBOARD_HOSTS)
@@ -159,12 +161,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._deny(403, "missing X-Agent-Forge header"); return False
             origin = self.headers.get("Origin")
             if origin is not None:
-                o_host = urllib.parse.urlsplit(origin.strip()).netloc if "://" in origin else origin.strip()
+                origin = origin.strip()
+                if origin == "null" or not origin:
+                    self._deny(403, "origin not allowed"); return False
+                o_host = urllib.parse.urlsplit(origin).netloc if "://" in origin else origin
                 if not host_allowed(o_host):
                     self._deny(403, "origin not allowed"); return False
             referer = self.headers.get("Referer")
             if referer is not None:
-                r_host = urllib.parse.urlsplit(referer.strip()).netloc if "://" in referer else referer.strip()
+                referer = referer.strip()
+                if referer == "null" or not referer:
+                    self._deny(403, "referer not allowed"); return False
+                r_host = urllib.parse.urlsplit(referer).netloc if "://" in referer else referer
                 if not host_allowed(r_host):
                     self._deny(403, "referer not allowed"); return False
         return True
