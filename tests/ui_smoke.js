@@ -57,6 +57,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     !!d.querySelector('[data-egact="ignore"][data-host="pypi.org"]') && !d.querySelector('[data-egact="ignore"][data-host="stats.example.net"]') &&
     !!d.querySelector('[data-egact="unallow"][data-host="files.example.org"]') && !d.querySelector('[data-egact="unallow"][data-host="api.anthropic.com"]'));
   check('no page error shown', !txt('jserr'));
+  click('nav button[data-t="settings"]'); await sleep(800);
+  click('#settings-seg button[data-v="project"]'); await sleep(800);
+  const diffField = d.getElementById('set-DIFF_MAX');
+  const diffHelp = d.querySelector('[for="set-DIFF_MAX"] .help');
+  check('settings: newly added fields present with non-empty help',
+        !!diffField && !!diffHelp && diffHelp.textContent.trim().length > 0);
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);
