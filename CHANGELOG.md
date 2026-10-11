@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Foreman loop: `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks via in-flight tracking and early state persistence.
+- Foreman loop: `dispatch_ready` and `why_no_task` respect goals with state or status set to 'paused', never dispatching their tasks.
+- Foreman loop: `orphaned` validates `RUN_DIR_RE`, checks recent start markers, and never flags runs of already-finished tasks as orphans.
+- Foreman loop: `recover_orphan` clears task worker/run bindings to restore dispatchability and resets worker dispatch history in `LAST_DISPATCHED`.
+- Foreman loop: `feed_idle_workers` counts planning tasks toward pending capacity, preventing premature backlog goal pulls and idle spin.
+
 **Dashboard backend SSH command injection hardening.** Remote command generation in `web/dashboard/backend.py` validates all owner-supplied parameters against strict allowlists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and safely escapes shell arguments with `shlex.quote` (`create_project_job`, `add_worker_job`, `connect_upstream_job`, `pflag`).
 
 **PTY breakout protection.** `LoginSessions` validates worker names and strictly blocks terminal control sequences and newlines in `send(w, text)` to prevent breakout into secondary shell commands.
