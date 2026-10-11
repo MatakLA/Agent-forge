@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast checks, no Docker, no model calls: what `make check` runs and what a project gate can run (`bash tests/check.sh`).
-set -u
+set -eu -o pipefail
 cd "$(dirname "$0")/.."
 PY=${PY:-python3}
 PYSCRIPTS="bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api

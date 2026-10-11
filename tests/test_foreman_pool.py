@@ -272,10 +272,61 @@ class TestForemanPool(unittest.TestCase):
         )
         assert ordered_partial == ["worker-2", "worker-1"]
 
+    def test_pool_quota_out_api_worker_budget_conjunction(self):
+        """pool_quota_out must check each API worker's specific budget (api_budget_left(w)), not just global api_budget_left()."""
+        pool.workers = lambda: ["worker-1"]
+        pool.runtime_of = lambda w: "claude"
+
+        # Case 1: worker-1 has spent $9.0. Next run costs $2.0 -> $11.0 > $10.0 (worker cap).
+        # Global install cap ($100.0) has plenty of headroom.
+        # api_budget_left() (without args) is True, but api_budget_left("worker-1") is False.
+        self._append_ledger(9.0, worker="worker-1", project="")
+        self.assertTrue(pool.api_budget_left(), "Global install cap must have headroom")
+        assert pool.api_budget_left() is True
+        self.assertFalse(pool.api_budget_left("worker-1"), "Worker cap must be exceeded")
+        assert pool.api_budget_left("worker-1") is False
+
+        # pool_quota_out() must report True (pool is out of quota/budget because worker-1 cannot run)
+        res_exhausted = pool.pool_quota_out()
+        self.assertTrue(
+            res_exhausted,
+            "API worker exceeding its worker cap must cause pool_quota_out to return True",
+        )
+        assert res_exhausted is True
+
+        # Case 2: worker-1 has spent only $5.0. Next run costs $2.0 -> $7.0 <= $10.0.
+        # Both global cap and worker cap have headroom.
+        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        self._append_ledger(5.0, worker="worker-1", project="")
+        self.assertTrue(pool.api_budget_left("worker-1"), "Worker-1 has headroom")
+        assert pool.api_budget_left("worker-1") is True
+
+        res_available = pool.pool_quota_out()
+        self.assertFalse(
+            res_available,
+            "API worker within its worker cap must allow pool dispatch (pool_quota_out is False)",
+        )
+        assert res_available is False
+
+        # Case 3: Multiple API workers: worker-1 is over cap ($9 spent), worker-2 is under cap ($0 spent).
+        # pool_quota_out must return False because worker-2 can still run.
+        pool.workers = lambda: ["worker-1", "worker-2"]
+        os.remove(os.path.join(os.environ["SANDBOX_RUNS_DIR"], "ledger.jsonl"))
+        self._append_ledger(9.0, worker="worker-1", project="")
+        res_multi = pool.pool_quota_out()
+        self.assertFalse(
+            res_multi,
+            "Pool with at least one eligible API worker must not report quota-out",
+        )
+        assert res_multi is False
+
+
 
 if __name__ == "__main__":
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestForemanPool)
-    runner = unittest.TextTestRunner(stream=sys.stdout, verbosity=1)
-    res = runner.run(suite)
-    print("pool tests: " + ("ALL OK" if res.wasSuccessful() else f"{len(res.failures) + len(res.errors)} FAILED"))
-    sys.exit(0 if res.wasSuccessful() else 1)
+    runner = unittest.TextTestRunner(stream=sys.stdout)
+    result = unittest.main(testRunner=runner, exit=False)
+    if result.result.wasSuccessful():
+        print("pool tests: ALL OK")
+        sys.exit(0)
+    sys.exit(1)
+
