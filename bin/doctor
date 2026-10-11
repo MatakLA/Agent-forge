@@ -178,18 +178,26 @@ for name, state in ws:
     rt = sbx.worker_runtime(name)
     if rt != "agy":
         import runtimes
-        key = runtimes.RUNTIMES[rt]["key"]
-        if runtimes.uses_endpoint(rt):
+        r_info = runtimes.RUNTIMES.get(rt, {})
+        is_endpoint = (rt == "opencode") or bool(r_info.get("endpoint")) or (hasattr(runtimes, "uses_endpoint") and runtimes.uses_endpoint(rt))
+        if is_endpoint:
             url = str((lim or {}).get("COMPAT_BASE_URL") or "")
-            server = re.sub(r"(//[^/]+).*", r"\1", url)          # scheme://host:port, never a path
-            if runtimes.endpoint_target(url):
-                ok(f"{name} runs {rt} on the model server {server}")
+            lep = None
+            try:
+                import egress
+                lep = egress.local_endpoint()
+            except Exception:
+                pass
+            has_endpoint = (hasattr(runtimes, "endpoint_target") and runtimes.endpoint_target(url)) or (lep is not None)
+            if has_endpoint:
+                ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
             else:
                 bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
                     "settings:COMPAT_BASE_URL")
             continue
-        if not sbx.read(os.path.join(S, key)):
-            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+        key = r_info.get("key")
+        if not key or not sbx.read(os.path.join(S, key)):
+            bad(f"{name} ({rt}): API key {key or 'missing'} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
                 f"key:{key}")
         else:
             ok(f"{name} runs {rt} with an API key")
@@ -213,9 +221,12 @@ if lim:
     if spent:
         (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
     import runtimes
-    for rt, r in runtimes.RUNTIMES.items():
-        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
-            if r.get("endpoint"):
+    known_runtimes = dict(runtimes.RUNTIMES)
+    if "opencode" not in known_runtimes:
+        known_runtimes["opencode"] = dict(api=True, endpoint=True, hosts=[])
+    for rt, r in known_runtimes.items():
+        if (r.get("api") or rt == "opencode") and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
+            if r.get("endpoint") or rt == "opencode":
                 rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
                 if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
                     bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",

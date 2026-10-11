@@ -45,6 +45,9 @@ fi
 if [ -f tests/test_install_security.sh ]; then
   bash tests/test_install_security.sh || exit 1
 fi
+if [ -f tests/test_opencode_registries.py ]; then
+  $PY tests/test_opencode_registries.py || exit 1
+fi
 echo "check: ALL OK"
 
 
