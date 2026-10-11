@@ -7,7 +7,14 @@
 - Foreman loop: `recover_orphan` clears task worker/run bindings to restore dispatchability and resets worker dispatch history in `LAST_DISPATCHED`.
 - Foreman loop: `feed_idle_workers` counts planning tasks toward pending capacity, preventing premature backlog goal pulls and idle spin.
 
+**Secret store permission hardening.** `bin/secret-set` enforces mode 0600 on secrets files via `fchmod` and `chmod`, unlinks pre-existing temporary files with `O_NOFOLLOW` to prevent permission inheritance or symlink attacks, and confirms storage without echoing secret values.
+
+**Git credential helper trace suppression.** `worker/git-credential-forgejo` disables shell tracing (`set +x`, `set +v`) to prevent tokens leaking to stderr or debug logs, tolerates verbose flags, and strictly reads tokens from secrets files rather than argv.
+
+**Forgejo API URL query token protection.** `bin/forgejo-api` rejects requests containing tokens in URL query strings to avoid leaking secrets into access and egress proxy logs, strictly passing monitoring credentials via HTTP `Authorization` headers.
+
 **Dashboard backend SSH command injection hardening.** Remote command generation in `web/dashboard/backend.py` validates all owner-supplied parameters against strict allowlists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and safely escapes shell arguments with `shlex.quote` (`create_project_job`, `add_worker_job`, `connect_upstream_job`, `pflag`).
+
 
 **PTY breakout protection.** `LoginSessions` validates worker names and strictly blocks terminal control sequences and newlines in `send(w, text)` to prevent breakout into secondary shell commands.
 
