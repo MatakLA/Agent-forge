@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+**Dashboard backend SSH command injection hardening.** Remote command generation in `web/dashboard/backend.py` validates all owner-supplied parameters against strict allowlists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and safely escapes shell arguments with `shlex.quote` (`create_project_job`, `add_worker_job`, `connect_upstream_job`, `pflag`).
+
+**PTY breakout protection.** `LoginSessions` validates worker names and strictly blocks terminal control sequences and newlines in `send(w, text)` to prevent breakout into secondary shell commands.
+
+**Credentials over stdin.** Tokens, settings changes, and product vision markdown are verified to travel strictly over stdin (`inp=...`), never formatted into command line argv or exposed in `/proc/*/cmdline`.
+
 **Open source.** Agent-Forge is now licensed under the Apache License 2.0 (was: Sustainable Use License, source-available).
 Selling it, hosting it and building on it are allowed; the commercial license (`LICENSE_EE.md`) and the contributor license
 agreement are gone, contributions are accepted under Apache-2.0 (`git commit -s`).
