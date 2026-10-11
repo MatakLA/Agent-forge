@@ -90,6 +90,11 @@ if rc == 0:
 else:
     warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
          "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
+rc, out, _ = sh("goose", "--version")
+if rc == 0:
+    ok(f"Goose {out.strip()}")
+else:
+    warn("Goose CLI not found on PATH", "install Goose (https://github.com/block/goose)")
 
 section("Configuration")
 try:
@@ -179,9 +184,10 @@ for name, state in ws:
     if rt != "agy":
         import runtimes
         r_info = runtimes.RUNTIMES.get(rt, {})
-        is_endpoint = (rt == "opencode") or bool(r_info.get("endpoint")) or (hasattr(runtimes, "uses_endpoint") and runtimes.uses_endpoint(rt))
+        is_endpoint = (rt in ("opencode", "goose")) or bool(r_info.get("endpoint")) or (hasattr(runtimes, "uses_endpoint") and runtimes.uses_endpoint(rt))
         if is_endpoint:
             url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+            server = re.sub(r"(//[^/]+).*", r"\1", url) if url else ""
             lep = None
             try:
                 import egress
@@ -234,9 +240,11 @@ if lim:
         known_runtimes["opencode"] = dict(api=True, endpoint=True, hosts=[])
     if "qwen-code" not in known_runtimes:
         known_runtimes["qwen-code"] = dict(api=False, hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"])
+    if "goose" not in known_runtimes:
+        known_runtimes["goose"] = dict(api=False, endpoint=True, hosts=[])
     for rt, r in known_runtimes.items():
-        if (r.get("api") or rt in ("opencode", "qwen-code")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
-            if r.get("endpoint") or rt == "opencode":
+        if (r.get("api") or rt in ("opencode", "qwen-code", "goose")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
+            if r.get("endpoint") or rt in ("opencode", "goose"):
                 rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
                 if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
                     bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",
