@@ -6,6 +6,7 @@
 #   sudo bash scripts/vm-baseline-ubuntu.sh 2>&1 | tee vm-baseline.log
 # Safe to re-run. Takes 3–10 minutes.
 set -Eeuo pipefail
+umask 027
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 LC_ALL=C.UTF-8
 trap 'printf "\n✘ Failed at line %s: %s (exit %s). Fix the cause and re-run — it is safe.\n" "$LINENO" "$BASH_COMMAND" "$?"' ERR
 
@@ -63,12 +64,13 @@ Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
+chmod 0644 /etc/apt/sources.list.d/docker.sources
 aptg update -q
 aptg install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ok "$(docker --version) · $(docker compose version)"
 
 step "Docker log rotation"
-mkdir -p /etc/docker
+mkdir -p /etc/docker; chmod 0755 /etc/docker
 want='{
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" }
@@ -78,6 +80,7 @@ if [[ -f /etc/docker/daemon.json ]] && ! cmp -s <(printf '%s\n' "$want") /etc/do
   warn "Replaced an existing /etc/docker/daemon.json (backup kept next to it)"
 fi
 printf '%s\n' "$want" >/etc/docker/daemon.json
+chmod 0644 /etc/docker/daemon.json
 systemctl restart docker
 ok "json-file logs, max 3 × 10 MB per container"
 

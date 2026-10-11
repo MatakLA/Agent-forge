@@ -40,6 +40,8 @@ sandbox may not reach your notification server itself); the file can be deleted 
 `bin/lib/foreman/knowledge.py`: Enforce canonical `ROLE_SLUG` validation on role identifiers in `role_playbook` to prevent path traversal when loading role playbooks.
 `bin/lib/foreman/knowledge.py`: Enforce realpath containment verification (`commonpath`) in `doc_path` and `doc_reset` as defense-in-depth against directory traversal.
 
+**Security: Install scripts hardening.** `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` enforce restrictive umasks (`umask 077` and `umask 027`) and file permissions (mode 0700 for `etc/` and secrets directory, mode 0600 for configuration and secret files) so no secrets or configs are created world- or group-readable; static regression tests verify safe remote execution and secret handling (`tests/test_install_security.sh`).
+
 ## 0.11.0 - 2026-10-08
 **You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each
 reviewed branch can wait for your OK. Everything that waits for you is in one place - Overview → Needs you - with one or two

@@ -162,6 +162,7 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - **Location**: `bin/lib/foreman/knowledge.py:doc_path`, `doc_get`
 - **Abuse Scenario**: Even if a regular expression matches an unexpected pattern or symlinks exist within the configuration tree, unconfined path construction could allow escaping `CFG_DIR` or `roles/`.
 - **Fix**: Added canonical path resolution check verifying that `os.path.commonpath([base_dir, resolved]) == base_dir` and `resolved != base_dir`, ensuring target files remain strictly within their intended directory boundaries.
+
 ## Credential Handling (`bin/secret-set`, `worker/git-credential-forgejo`, `bin/forgejo-api`)
 
 ### Threat Model
@@ -198,3 +199,44 @@ This document records security audit findings, threat modeling, abuse scenarios,
 - Test tracing suppression: Run `bash -x worker/git-credential-forgejo get <<< "protocol=http"$'\n'"host=forgejo:3000"$'\n'` and verify the password value does not appear in stderr.
 - Test query token rejection: Run `bin/forgejo-api GET "/repos/sandbox/playground/pulls?token=test"` and verify exit code 2 and refusal message.
 - Verify static absence of argv/query credentials: `python3 -m unittest tests.test_credentials.TestForgejoApiSecurity.test_forgejo_api_source_code_uses_authorization_header_not_query`.
+
+## install scripts
+
+### Threat Model
+- **Input sources**: Installer command-line arguments (`--demo`), environment variables (`SANDBOX_SECRETS`, `DOCKER_KEY_FPR`, `SUDO_USER`), and remote resources fetched during machine provisioning (Docker signing key and apt packages).
+- **Sink / Reach**: Host filesystem (`/etc/docker/daemon.json`, `/etc/apt/sources.list.d/`, repository `etc/` configuration, `~/.config/sandbox/secrets`), Docker daemon commands, systemd unit files, and package management (`apt-get`).
+- **Sensitive data**: Internal Forgejo administrator passwords and bot tokens (`forge-admin.token`, `orchestrator.token`, `monitor.token`), worker API keys (`anthropic.key`, `openai.key`, `gemini.key`, `compat.key`), upstream forge tokens (`github.token`, `gitlab.token`), webhook/notification URLs and secrets in `etc/*.conf`.
+- **Attack surface / Threats**: Permissive file/directory permissions allowing other local users on a multi-user machine or VM to read sensitive configuration or credentials; unpinned remote code execution (`curl | bash`); token/password exposure in stdout, stderr, or cloud-init log files; silent security downgrades.
+- **Invariants**: All secret directories must have mode 0700 and secret/config files mode 0600; installer processes must enforce restrictive umask (077 for user install, 027 for system baseline); remote downloads must be cryptographically pinned (never piped directly into a shell); credentials and tokens must never be printed to stdout or logged to world-readable files.
+
+### Findings
+
+#### Finding 1: Unrestricted Default Umask and World-Readable Configuration in `scripts/install.sh`
+- **Severity**: HIGH
+- **Location**: `scripts/install.sh:Configuration`
+- **Abuse Scenario**: `scripts/install.sh` did not set `umask` and relied on standard shell defaults (commonly `0022` or `0002`). When copying example configurations (`cp etc/$f.example.conf etc/$f.conf`), files were created with mode `0644` (or `0664`), making configuration files world-readable. In Agent-Forge, configuration files in `etc/` (`foreman.conf`, `limits.conf`, `forge.conf`) and `projects/<name>/project.conf` contain notification webhook URLs (`NOTIFY_URL`), custom model server endpoints (`COMPAT_BASE_URL`), and architecture details. Any unprivileged local user or process on a multi-user VM could read the entire configuration. Furthermore, `etc/` directory itself was not restricted.
+- **Fix**: Enforced `umask 077` at the start of `scripts/install.sh`. Explicitly hardened the directory `etc/` to mode `0700` and restricted all configuration files (`etc/*.conf` and `etc/team-rules.md`) to mode `0600`.
+
+#### Finding 2: Unhardened Secrets Directory Permissions Default in `scripts/install.sh`
+- **Severity**: HIGH
+- **Location**: `scripts/install.sh:SECRETS`
+- **Abuse Scenario**: The secrets directory (`~/.config/sandbox/secrets` or `$SANDBOX_SECRETS`) stores sensitive credentials including Forgejo administrator tokens (`forge-admin.token`), orchestrator tokens (`orchestrator.token`), and worker API keys. While individual tools like `bin/secret-set` restrict their own file descriptors, `scripts/install.sh` did not pre-create or enforce restrictive permissions (`0700`) on `$SANDBOX_SECRETS` before delegating to downstream scripts. If created under a permissive umask, intermediate directories (e.g., `~/.config/sandbox`) could be left world-traversable or readable.
+- **Fix**: Pre-create and explicitly enforce mode `0700` on the secrets directory (`mkdir -p "$SECRETS" && chmod 700 "$SECRETS"`) and ensure `umask 077` applies to all downstream steps invoked by `scripts/install.sh`. Ensure any existing secret files are tightened to mode `0600`.
+
+#### Finding 3: Missing Umask in Root Baseline Script `scripts/vm-baseline-ubuntu.sh`
+- **Severity**: MEDIUM
+- **Location**: `scripts/vm-baseline-ubuntu.sh`
+- **Abuse Scenario**: `scripts/vm-baseline-ubuntu.sh` runs as root via `sudo` and creates system files such as `/etc/docker/daemon.json`, backup copies of daemon.json, and `/etc/apt/sources.list.d/docker.sources`. Without an explicit restrictive `umask`, files created by root could inherit a loose umask (e.g. if the invoking user environment had `umask 000` or `002`), potentially creating world-writable configuration files or permissive directories.
+- **Fix**: Enforced `umask 027` at the beginning of `scripts/vm-baseline-ubuntu.sh`. Ensured critical system files have secure, appropriate permissions (mode `0644` for apt sources and docker daemon configs, mode `0755` for apt keyrings) and are never world-writable.
+
+#### Finding 4: Remote Execution Pattern Review (`curl | bash` / `wget | sh`)
+- **Severity**: HIGH (Audit Verification - Confirmed Safe)
+- **Location**: `scripts/install.sh`, `scripts/vm-baseline-ubuntu.sh`
+- **Abuse Scenario**: Piping unreviewed remote scripts directly to a shell (`curl ... | bash` or `wget ... | sh`) without integrity checks exposes the host to man-in-the-middle attacks, DNS hijacking, or upstream compromise, resulting in immediate remote code execution with root privileges.
+- **Fix / Status**: Confirmed that neither `scripts/install.sh` nor `scripts/vm-baseline-ubuntu.sh` uses `curl | bash` or `wget | sh`. In `scripts/vm-baseline-ubuntu.sh`, Docker's signing key is fetched to a temporary file (`curl -fsSL ... -o /etc/apt/keyrings/docker.asc.tmp`) and strictly validated against a pinned cryptographic fingerprint (`DOCKER_KEY_FPR`, `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`) via `gpg --show-keys` before installation. If the fingerprint does not match, the file is deleted and the script terminates immediately. Static regression tests enforce that no piping of web downloads into shells is permitted in either script.
+
+#### Finding 5: Secrets Exposure in Stdout, Terminal, and Log Output
+- **Severity**: MEDIUM (Audit Verification - Confirmed Safe)
+- **Location**: `scripts/install.sh`, `scripts/vm-baseline-ubuntu.sh`
+- **Abuse Scenario**: Installer scripts often display or log generated credentials (such as database passwords, initial admin tokens, or API keys). If written to stdout, these secrets can be captured in terminal scrollback, CI artifacts, or cloud-init log files (`/home/forge/agent-forge/install.log` or `/var/log/cloud-init-output.log`), which may be readable by unauthorized users or monitoring tools.
+- **Fix / Status**: Confirmed that neither script prints passwords or tokens to stdout or stderr. Generated Forgejo passwords and access tokens are written directly to mode `0600` secret files by `scripts/forge-bootstrap` and referenced only by path. `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` output status indications without secret interpolation. Static analysis checks verify that neither script contains commands echoing or printing sensitive credentials.
