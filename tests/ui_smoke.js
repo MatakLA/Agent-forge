@@ -133,6 +133,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     txt('system').includes('stopped by an egress alarm') && !!d.querySelector('[data-egact="allow"][data-host="pypi.org"]') &&
     !!d.querySelector('[data-egact="ignore"][data-host="pypi.org"]') && !d.querySelector('[data-egact="ignore"][data-host="stats.example.net"]') &&
     !!d.querySelector('[data-egact="unallow"][data-host="files.example.org"]') && !d.querySelector('[data-egact="unallow"][data-host="api.anthropic.com"]'));
+  w.eval(`SUB.insights = 'money'; renderInsights(true);`);
+  check('insights: money view labels figures with USD and shows as-of indicator',
+    txt('insights').includes('USD') && txt('insights').includes('As of'));
+  w.eval(`SUB.insights = 'experiments'; renderInsights(true);`);
+  check('insights: experiments view explains confidence intervals and shows as-of indicator',
+    txt('insights').includes('95') && txt('insights').includes('As of'));
+  w.eval(`SYS.health = {bad: 1, checks: [{section: 'daemon', level: 'bad', message: 'egress proxy missing', fix_id: 'egress-up'}], at: Date.now()};
+    SUB.system = 'health'; renderSystem(true);`);
+  const fixBtn = d.querySelector('#t-system [data-fix="egress-up"]');
+  check('system: health fixButton is keyboard reachable and labeled',
+    !!fixBtn && fixBtn.tagName === 'BUTTON' && !!fixBtn.getAttribute('aria-label'));
+  check('system: collapsible checks panel exists with summary',
+    !!d.getElementById('all-checks') && !!d.querySelector('#all-checks summary'));
+  w.eval(`SYS.health = null; SYS.err.health = null; SYS.healthBusy = false; renderSystem(true);`);
+  check('system: health view shows explicit empty state when not yet run',
+    txt('system').includes('Health check not yet run'));
   check('no page error shown', !txt('jserr'));
   click('nav button[data-t="settings"]'); await sleep(800);
   click('#settings-seg button[data-v="project"]'); await sleep(800);
