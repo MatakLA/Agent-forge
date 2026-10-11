@@ -472,7 +472,7 @@ class Handler(BaseHTTPRequestHandler):
                 items = sorted(L.PANES.values(), key=lambda p: (order.get(p.kind, 9), p.title))
                 panes = [{"id": p.id, "title": p.title, "kind": p.kind, "state": p.state, "lines": list(p.lines)} for p in items]
             self._json({"roster": L.ROSTER.snapshot(), "panes": panes})
-        elif path == "/api/foreman":
+        elif path in ("/api/foreman", "/api/status"):
             e = B.FOREMAN_BY.get(proj) or {"data": None, "at": 0, "error": "unknown project or not loaded yet"}
             self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
         elif path == "/api/projects":
