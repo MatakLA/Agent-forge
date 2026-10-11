@@ -2,7 +2,7 @@
 
 **A self-hosted AI dev team that works through a queue on its own - inside a sandbox it cannot escape.**
 
-[![license: Sustainable Use (source-available)](https://img.shields.io/badge/license-Sustainable%20Use%20(source--available)-blue)](LICENSE)
+[![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![status: experimental](https://img.shields.io/badge/status-experimental-orange)
 ![python 3.10+](https://img.shields.io/badge/python-3.10%2B-informational)
 ![dependencies: stdlib only](https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen)
@@ -159,7 +159,5 @@ supervisor and of the real agent CLIs against a fake model API.
 
 ## License
 
-**Source-available ("fair-code"), not open source in the OSI sense.** Agent-Forge is licensed under the Sustainable Use License
-([LICENSE](LICENSE)): use it and change it for free - for yourself and inside your company - and share it free of charge for
-non-commercial purposes. Selling it, offering it as a hosted or paid service, or otherwise making money from Agent-Forge itself
-needs a commercial license ([LICENSE_EE.md](LICENSE_EE.md)). Contributions are welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
+Open source under the [Apache License 2.0](LICENSE): use it, change it, run it for your company, and redistribute it - including
+commercially. Contributions are welcome and are accepted under the same license: [CONTRIBUTING.md](CONTRIBUTING.md).

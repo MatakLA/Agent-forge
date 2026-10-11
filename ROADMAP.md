@@ -38,13 +38,11 @@ Still open, roughly by value:
 - Installable app (PWA) with browser push notifications, and a phone layout with a bottom tab bar.
 - A command palette (Ctrl+K): new goal, jump to a task, kill switch (search already opens with `/`).
 - Side-by-side diffs with syntax highlighting; a comment on a diff line goes back to the worker with the line.
-- Multi-user: sign-in, roles (viewer / operator / admin), an audit log of who changed what - a candidate for the commercial
-  edition.
+- Multi-user: sign-in, roles (viewer / operator / admin), an audit log of who changed what.
 - Accessibility pass (keyboard navigation, ARIA labels, contrast) and a light/dark switch (now: the system's setting).
 - Translations, if the community wants them (strings in separate files, not in code).
 
 ## Maintainers: release checklist
-- [ ] `LICENSE`: the copyright holder's legal name.
 - [ ] New public repository; `tools/publish-snapshot "Agent-Forge x.y.z"` then `git push <public> public:main` (no private
       history, no private e-mail).
 - [ ] The `install` workflow green on GitHub (a fresh VM installs it end to end, incl. tests/test_ui.sh).

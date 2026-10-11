@@ -7,18 +7,9 @@ Thanks for helping. Before you open a pull request:
    comments that say *why*.
 3. Never add secrets, tokens, real personal data or logs to the repository.
 
-## Contributor license agreement
+## License of contributions
 
-Agent-Forge is source-available under the Sustainable Use License (`LICENSE`) and also offered under commercial licenses
-(`LICENSE_EE.md`). To keep that possible, every contribution needs this agreement. By submitting a contribution (a pull
-request, patch or any other change) you agree that:
+Agent-Forge is open source under the Apache License 2.0 (`LICENSE`). By submitting a contribution (a pull request, a patch)
+you agree that it is licensed under the same license, as section 5 of the license says, and that you have the right to submit
+it. Please add a `Signed-off-by:` line to your commits (`git commit -s`) to confirm that.
 
-- you wrote it, or you have the right to submit it under these terms;
-- you grant the licensor named in `LICENSE`, and anyone who receives the software from the licensor, a perpetual, worldwide,
-  non-exclusive, no-charge, royalty-free, irrevocable license to use, reproduce, modify, publicly display, sublicense and
-  distribute your contribution and derivative works of it, under the Sustainable Use License, under commercial licenses,
-  or under any other license the licensor chooses;
-- you grant the same parties a patent license for your contribution on the same terms;
-- you are not expected to provide support for your contribution.
-
-Add this line to the description of your first pull request: `I agree to the contributor license agreement in CONTRIBUTING.md.`

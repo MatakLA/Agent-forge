@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+**Open source.** Agent-Forge is now licensed under the Apache License 2.0 (was: Sustainable Use License, source-available).
+Selling it, hosting it and building on it are allowed; the commercial license (`LICENSE_EE.md`) and the contributor license
+agreement are gone, contributions are accepted under Apache-2.0 (`git commit -s`).
+
 `NOTIFY_URL=outbox`: notifications are appended to `runs/notify-outbox.jsonl` for a relay outside the machine (when the
 sandbox may not reach your notification server itself); the file can be deleted at any time.
 
