@@ -40,7 +40,7 @@ if [ -f tests/test_knowledge_paths.py ]; then
   $PY tests/test_knowledge_paths.py || exit 1
 fi
 if [ -f tests/test_credentials.py ]; then
-  $PY tests/test_credentials.py | tail -1
+  $PY tests/test_credentials.py || exit 1
 fi
 echo "check: ALL OK"
 
