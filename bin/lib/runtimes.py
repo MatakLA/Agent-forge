@@ -7,6 +7,7 @@
   compat  Codex CLI on your own model server - any OpenAI Responses API: Ollama, vLLM, LM Studio, OpenRouter (COMPAT_BASE_URL)
   aider   Aider on your own model server - any OpenAI chat-completions API (the same COMPAT_BASE_URL)
   opencode OpenCode CLI on your configured provider (COMPAT_BASE_URL)
+  goose   Block's Goose CLI agent on your model server (COMPAT_BASE_URL)
   qwen-code Qwen Code CLI on Alibaba DashScope
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
@@ -43,6 +44,8 @@ RUNTIMES = {
                   api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT", own_git=False),
     "opencode": dict(label="OpenCode (SST's OpenCode CLI, configured provider)", image=AGY_IMAGE, key=None, hosts=[],
                      api=False, endpoint=True),
+    "goose": dict(label="Goose (Block's Goose CLI agent on your model server)", image=AGY_IMAGE, key=None, hosts=[],
+                  api=False, endpoint=True),
     "qwen-code": dict(label="Qwen Code (Alibaba's Qwen Code CLI)", image=AGY_IMAGE, key="qwen.key",
                       hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"], api=False),
 }
@@ -120,6 +123,13 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv += (["--model", model] if model else [])
         argv += (["--session", conversation] if conversation else [])
         return argv, prompt
+    if rt == "goose":
+        # Block's Goose CLI agent (https://github.com/block/goose).
+        # `goose run --instructions -` reads instructions non-interactively from stdin per Goose's CLI.
+        # Goose configures its model and provider via ~/.config/goose/config.yaml or environment
+        # variables (GOOSE_PROVIDER, GOOSE_MODEL), so model is not passed on the command line.
+        argv = ["goose", "run", "--instructions", "-"]
+        return argv, prompt
     if rt == "qwen-code":
         argv = ["qwen"] + QWEN_QUIET
         argv += (["-m", model] if model else [])
@@ -138,6 +148,49 @@ def _prices(spec):
         return (0.0, 0.0, 0.0)
 
 
+class ResultStr(str):
+    """Result string representation for Goose CLI output. Supports both string operations
+    and dict-like .get() / item access for supervisor inspection and test assertions."""
+
+    def get(self, key, default=None):
+        if self.startswith("{"):
+            try:
+                e = json.loads(self)
+                if isinstance(e, dict):
+                    if key in e:
+                        return e[key]
+                    if key == "status":
+                        s = e.get("status") or e.get("state")
+                        if s in ("success", "SUCCESS"):
+                            return "SUCCESS"
+                        if s in ("error", "ERROR", "failed", "FAILED") or e.get("error") or e.get("is_error"):
+                            return "ERROR"
+                        return "SUCCESS"
+                    if key == "response":
+                        return str(e.get("response") or e.get("text") or e.get("content") or self)
+            except Exception:
+                pass
+        if key == "status":
+            low = self.lower()
+            if low.startswith("error") or " error:" in low or " failed:" in low or low.startswith("failed"):
+                return "ERROR"
+            return "SUCCESS"
+        if key == "response":
+            return str(self)
+        if key == "error":
+            low = self.lower()
+            return str(self) if (low.startswith("error") or " error:" in low or " failed:" in low or low.startswith("failed")) else ""
+        return default
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            val = self.get(item)
+            if val is not None or item in ("usage", "cost_usd"):
+                return val
+            raise KeyError(item)
+        return super().__getitem__(item)
+
+
 def scan(rt, lines, prices=None):
     """Read a run's event stream. Returns dict(tokens, tools, conversation_id, result) where result is None (no final event
     yet / never) or dict(status SUCCESS|ERROR, response, error, usage, cost_usd). `tokens` counts what the model processed
@@ -145,6 +198,49 @@ def scan(rt, lines, prices=None):
     rt = rt or "agy"
     if rt == "compat":
         rt = "codex"                           # the same CLI and event stream
+    if rt == "goose":
+        # Block's Goose CLI output parser.
+        # Goose does not expose token metrics in its CLI stream (tokens: None).
+        # Tools are counted by matching known tool-call markers in output lines (JSON or plain text).
+        # Conversation ID is not exposed on stdout (conversation_id: None).
+        # Result is the last non-empty line of output (or None if empty).
+        st = dict(tokens=None, tools=0, conversation_id=None, result=None)
+        last_line = None
+        for line in lines:
+            line_str = line.strip() if isinstance(line, str) else str(line).strip()
+            if not line_str:
+                continue
+            last_line = line_str
+            parsed = None
+            if line_str.startswith("{"):
+                try:
+                    parsed = json.loads(line_str)
+                except ValueError:
+                    pass
+            if isinstance(parsed, dict):
+                t = parsed.get("type") or parsed.get("event")
+                part = parsed.get("part") if isinstance(parsed.get("part"), dict) else {}
+                low_raw = line_str.lower()
+                if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
+                        or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                        or parsed.get("tool")
+                        or "tool_call" in low_raw
+                        or "tool call" in low_raw
+                        or "tool_use" in low_raw
+                        or "tool use" in low_raw):
+                    st["tools"] += 1
+            else:
+                low = line_str.lower()
+                if ("tool_call" in low or "tool call" in low
+                        or "tool_use" in low or "tool use" in low
+                        or "tool invocation" in low or "tool_invocation" in low
+                        or "tool request" in low or "tool_request" in low
+                        or low.startswith("tool:") or " tool:" in low
+                        or "running tool" in low or "invoking tool" in low or "calling tool" in low
+                        or "[tool]" in low):
+                    st["tools"] += 1
+        st["result"] = ResultStr(last_line) if last_line is not None else None
+        return st
     st = dict(tokens=None if rt == "opencode" else 0, tools=0, conversation_id=None, result=None)
     text = []
     for line in lines:
