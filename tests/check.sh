@@ -59,6 +59,9 @@ fi
 if [ -f tests/test_runtime_goose.py ]; then
   $PY tests/test_runtime_goose.py || exit 1
 fi
+if [ -f tests/test_anthropic_compat_registry.py ]; then
+  $PY tests/test_anthropic_compat_registry.py || exit 1
+fi
 if [ -f tests/test_sbx_security.py ]; then
   $PY tests/test_sbx_security.py || exit 1
 fi
