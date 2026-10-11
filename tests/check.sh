@@ -84,6 +84,9 @@ fi
 if [ -f tests/test_demo_mode.py ]; then
   $PY tests/test_demo_mode.py || exit 1
 fi
+if [ -f tests/test_runtime_anthropic_compat.py ]; then
+  $PY tests/test_runtime_anthropic_compat.py || exit 1
+fi
 echo "check: ALL OK"
 
 
