@@ -1,0 +1,22 @@
+#!/bin/bash
+# Usage: bin/worker-up N   -- (re)create worker-N's container; keeps its HOME volume. Its runtime (agy | claude | codex | gemini)
+# comes from etc/workers.conf (written by bin/worker-add; no entry = agy). API runtimes use worker/docker-compose.api.yml and
+# mount their provider's key (anthropic.key / openai.key / gemini.key in the secrets directory) read-only.
+set -euo pipefail
+N="${1:?usage: worker-up N}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"; D="$ROOT/worker"
+S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
+RT="$(sed -n "s/^worker-$N=\([a-z]*\)$/\1/p" "$ROOT/etc/workers.conf" 2>/dev/null | tail -1)"; RT="${RT:-agy}"
+read -r IMAGE KEYF < <(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import runtimes as r; x = r.RUNTIMES['$RT']; print(x['image'], x['key'] or '-')")
+need=("worker-$N.token"); [ "$RT" = agy ] && need+=("worker-$N-keyring") || need+=("$KEYF")
+for f in "${need[@]}"; do [ -s "$S/$f" ] || { echo "missing secret $S/$f (bin/worker-add $N${RT:+ --runtime $RT}; API keys: bin/secret-set $KEYF)" >&2; exit 1; }; done
+docker volume inspect "worker_worker-$N-home" >/dev/null 2>&1 || docker volume create "worker_worker-$N-home" >/dev/null
+export WORKER_N="$N" WORKER_RUNTIME="$RT" WORKER_KEY_FILE="$KEYF"
+export FORGE_REPO="$(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; print(sbx.FORGE_REPO)")"
+docker image inspect sandbox-worker:1.2.11 >/dev/null 2>&1 || docker compose -f "$D/docker-compose.yml" build
+if [ "$RT" = agy ]; then
+  docker compose -f "$D/docker-compose.yml" up -d
+else
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || docker compose -f "$D/docker-compose.api.yml" build
+  docker compose -f "$D/docker-compose.api.yml" up -d
+fi

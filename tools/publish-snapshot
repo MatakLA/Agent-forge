@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Usage: tools/publish-snapshot "<message>"     (maintainers)
+# Records the current tree of `main` as ONE new commit on the local branch `public`, authored by a neutral identity, so the
+# public repository's history carries no private e-mail and none of the private development history. Then push it:
+#   git push <public-remote> public:main
+# Identity: PUBLIC_AUTHOR_NAME / PUBLIC_AUTHOR_EMAIL (default: MatakLA <MatakLA@users.noreply.github.com>; GitHub shows the
+# "<id>+<user>@users.noreply.github.com" address under Settings → Emails - use that one to have commits linked to the account).
+set -euo pipefail
+MSG="${1:?usage: tools/publish-snapshot \"<message>\"}"
+NAME="${PUBLIC_AUTHOR_NAME:-MatakLA}"; EMAIL="${PUBLIC_AUTHOR_EMAIL:-MatakLA@users.noreply.github.com}"
+cd "$(git rev-parse --show-toplevel)"
+git diff --quiet main -- && git diff --cached --quiet || { echo "commit your changes to main first" >&2; exit 1; }
+tree="$(git rev-parse 'main^{tree}')"
+parent="$(git rev-parse -q --verify refs/heads/public || true)"
+if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then echo "public already has this tree"; exit 0; fi
+commit="$(GIT_AUTHOR_NAME="$NAME" GIT_AUTHOR_EMAIL="$EMAIL" GIT_COMMITTER_NAME="$NAME" GIT_COMMITTER_EMAIL="$EMAIL" \
+          git commit-tree "$tree" ${parent:+-p "$parent"} -m "$MSG")"
+git update-ref refs/heads/public "$commit"
+echo "public -> $(git log --format='%h %an <%ae> %s' -1 public)"
+echo "push:   git push <public-remote> public:main"
