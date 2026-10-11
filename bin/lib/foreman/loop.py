@@ -1,6 +1,6 @@
 """The deterministic loop: every tick it applies finished steps, advances tasks and goals, dispatches ready tasks to
 free workers and keeps the idle ones fed. No LLM decides when anything happens."""
-import json, os, re, signal, sys, time, traceback
+import json, os, re, signal, sys, threading, time, traceback
 
 import sbx, runtimes
 
@@ -10,6 +10,12 @@ from .store import event, goals, gstate, jload, jsave, locked, new_goal_id, noti
 from .jobs import INFLIGHT, PHASE, POOL, SINCE, submit
 from .pool import (COOLDOWN, LAST_DISPATCHED, LAST_QUOTA_MSG, QUOTA_CACHE, RESERVED, api_budget_left, order_by_quota, pool_quota_out,
                    quota_pct, quota_rows, runtime_of, worker_busy, workers)
+
+DISPATCHING = set()           # task ids currently being dispatched
+DISPATCHING_FILES = set()     # files currently claimed by in-flight dispatches
+DISPATCHING_WORKERS = set()   # workers currently being dispatched to
+DISPATCH_LOCK = threading.RLock()
+RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z-(.+)$")
 from .repo import variant
 from .llm import Unavailable, llm_available
 from .prompts import worker_spec
@@ -36,8 +42,14 @@ def why_no_task(ts, gm, stopped="", running_n=0, max_parallel=99, planning=0, ba
         return stopped
     if running_n >= max_parallel:
         return f"{running_n} runs are already running - the limit (MAX_PARALLEL) is {max_parallel}"
+    gm_norm = {}
+    for gid, g in gm.items():
+        g_copy = dict(g)
+        if g_copy.get("state") == "paused" or g_copy.get("status") == "paused" or g_copy.get("paused"):
+            g_copy["paused"] = True
+        gm_norm[gid] = g_copy
     running_files = {f for t in ts if t["status"] == "running" for f in t.get("files", [])}
-    ready = ready_tasks(ts, running_files, gm)
+    ready = ready_tasks(ts, running_files, gm_norm)
     mine = [t for t in ready if not t.get("pin_worker") or t.get("pin_worker") == worker]
     if mine:
         return f"{mine[0]['id']} is ready - it starts on the next round"
@@ -47,7 +59,9 @@ def why_no_task(ts, gm, stopped="", running_n=0, max_parallel=99, planning=0, ba
     if waiting:
         t = waiting[0]
         more = f" ({len(waiting)} tasks wait)" if len(waiting) > 1 else ""
-        if (gm.get(t.get("goal")) or {}).get("paused"):
+        gid = t.get("goal") or t.get("goal_id")
+        g = gm_norm.get(gid) or {}
+        if g.get("paused"):
             return f"{t['id']} waits: its goal is paused{more}"
         done = {x["id"] for x in ts if x["status"] == "done"}
         deps = [d for d in t.get("depends_on", []) if d not in done]
@@ -122,123 +136,186 @@ def collect():
 
 
 def dispatch_ready():
-    ts = tasks()
-    running = [t for t in ts if t["status"] == "running"]
-    busy_files = set(f for t in running for f in t.get("files", []))
-    lim = sbx.load_limits()
-    free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
-    if len([d for d in sbx.run_dirs() if sbx.is_running(d)]) >= lim["MAX_PARALLEL"]:
-        return
-    # Each worker is its own account with its own quota: give work to the one with the most remaining worker-model quota, so
-    # all accounts drain evenly (overnight 2026-10-04 "least recently dispatched" still left worker-4 with zero runs).
-    fam = str(lim.get("QUOTA_MODEL_FILTER", "gemini"))
-    # API-key workers cost money per token: by default they come last ("overflow" - only when no subscription worker can take
-    # the task); API_WORKERS_POLICY=always puts them first
-    api_rank = 1000 if ctx.C["API_WORKERS_POLICY"] == "always" else -5
-    pct = lambda w: api_rank if runtimes.is_api(runtime_of(w)) else quota_pct(quota_rows(w, 120), fam)
-    by_quota = lambda ws: order_by_quota(ws, pct, LAST_DISPATCHED)
-    free = by_quota(free)
-    shared = {f.strip() for f in str(ctx.C.get("SHARED_FILES", "")).split(",") if f.strip()}
-    claimed_ids = {t["id"] for t in running}
-    claimed_keys = {t.get("key") for t in running if t.get("key")}
-    for t in ready_tasks(ts, busy_files, {g["id"]: g for g in goals()}):
-        if not free:
-            return
-        t_key = t.get("key")
-        # Invariant: do not dispatch tasks with overlapping files, duplicate keys, or already-claimed runs
-        if t["id"] in claimed_ids or (t_key and t_key in claimed_keys):
-            continue
-        if (set(t.get("files", [])) - shared) & busy_files:
-            continue
-        fresh = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json")) or {}
-        if fresh.get("status") != "pending" or fresh.get("worker"):
-            continue
-        if t.get("pin_worker"):                     # the owner assigned this task to one worker: wait for that one
-            if t["pin_worker"] not in free:
-                continue
-            w = t["pin_worker"]
-        else:
-            prev = (t.get("last_run") or {}).get("worker")
-            w = prev if t.get("feedback") and prev in free and ctx.C["CONTINUE_CONVERSATIONS"] else free[0]
-        rt = runtime_of(w)
-        if runtimes.is_api(rt):
-            rows = []
-            ok, msg = sbx.budget_check(w, lim, conf=sbx.project_conf())
-            msg = msg and "quota low: " + msg
-        else:
-            rows = quota_rows(w, 60)
-            ok, msg = sbx.quota_verdict(rows, lim)
-        if not ok and runtimes.is_api(rt):
-            COOLDOWN[w] = (time.time() + 3600, msg)
-            free.remove(w)
-            if LAST_QUOTA_MSG.get(w) != msg:
-                LAST_QUOTA_MSG[w] = msg
-                event(f"{w}: {msg} - checking again every 60 min")
-            continue
-        if not ok:
-            cd_sec = 180
-            resets = []
-            for r in rows:
-                if str(lim.get("QUOTA_MODEL_FILTER", "")).lower() in r.get("model", "").lower():
-                    rst = parse_limit(str(r.get("reset", ""))) or _iso_ts(r.get("reset"))
-                    if rst and rst > time.time():
-                        resets.append(rst)
-            soonest = min(resets) if resets else None
-            if soonest and soonest - time.time() <= 600:
-                cd_sec = max(30, int(soonest - time.time()) + 15)
-            elif soonest and soonest - time.time() > 3600:
-                cd_sec = 1800                       # a weekly limit days away: look again every 30 min, not every 3
-            COOLDOWN[w] = (time.time() + cd_sec, msg)
-            free.remove(w)
-            if LAST_QUOTA_MSG.get(w) != msg:        # say it once per change, not every few minutes for days
-                LAST_QUOTA_MSG[w] = msg
-                event(f"{w}: {msg} - checking quota again every {cd_sec // 60 or 1} min")
-            continue
-        LAST_QUOTA_MSG.pop(w, None)
-        lr = t.get("last_run") or {}
-        continuing = bool(ctx.C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and lr.get("conversation") and lr.get("reason") == "ok"
-                          and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
-        spec = os.path.join(ctx.FD, "tasks", t["id"] + ".md")
-        open(spec, "w").write(worker_spec(t, continuing))
-        v = variant(t)
-        model = t.get("model_override") or (ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"])
-        env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
-               "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(ctx.C["SELF_CHECK_ROUNDS"])),
-               "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"]}
-        rc, out, err = sh([os.path.join(ctx.BIN, "dispatch"), w, spec], timeout=300, env=env)
-        if rc != 0:
-            reason = (err or out).strip()[-200:]
-            # this gate is almost always global (egress alarm backlog, kill switch, max-parallel), not specific to
-            # w - blame every OTHER currently-idle worker too, so the dashboard does not show only one worker
-            # "paused" while the others sit there looking free when nothing can actually be dispatched to any of them
-            for w2 in free:
-                COOLDOWN[w2] = (time.time() + 1800, reason)
-            free.clear()
-            event(f"dispatch of {t['id']} to {w} refused: {reason} - retry in 30 min", task=t["id"])
-            continue
-        run = out.split("-> ")[-1].split(" (")[0].strip()
-        t.update(status="running", worker=w, run=run, dispatched=sbx.now())
-        save_task(t)
-        claimed_ids.add(t["id"])
-        if t_key:
-            claimed_keys.add(t_key)
-        LAST_DISPATCHED[w] = time.time()
-        QUOTA_CACHE.pop(w, None)
-        free.remove(w)
+    with DISPATCH_LOCK:
+        dispatched = []
+        ts = tasks()
+        running = [t for t in ts if t["status"] == "running"]
+        busy_files = set(f for t in running for f in t.get("files", [])) | set(DISPATCHING_FILES)
+        lim = sbx.load_limits()
+        free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and w not in DISPATCHING_WORKERS and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
+        if len([d for d in sbx.run_dirs() if sbx.is_running(d)]) >= lim["MAX_PARALLEL"]:
+            return dispatched
+        # Each worker is its own account with its own quota: give work to the one with the most remaining worker-model quota, so
+        # all accounts drain evenly (overnight 2026-10-04 "least recently dispatched" still left worker-4 with zero runs).
+        fam = str(lim.get("QUOTA_MODEL_FILTER", "gemini"))
+        # API-key workers cost money per token: by default they come last ("overflow" - only when no subscription worker can take
+        # the task); API_WORKERS_POLICY=always puts them first
+        api_rank = 1000 if ctx.C["API_WORKERS_POLICY"] == "always" else -5
+        pct = lambda w: api_rank if runtimes.is_api(runtime_of(w)) else quota_pct(quota_rows(w, 120), fam)
+        by_quota = lambda ws: order_by_quota(ws, pct, LAST_DISPATCHED)
         free = by_quota(free)
-        busy_files |= set(t.get("files", []))
-        event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else "") +
-              (" (continuing its conversation)" if continuing else "") + (f" ({rt})" if rt != "agy" else "") +
-              (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
+        shared = {f.strip() for f in str(ctx.C.get("SHARED_FILES", "")).split(",") if f.strip()}
+        claimed_ids = {t["id"] for t in running} | set(DISPATCHING)
+        claimed_keys = {t.get("key") for t in running if t.get("key")} | {t.get("key") for t in ts if t["id"] in DISPATCHING and t.get("key")}
+        gm = {}
+        for g in goals():
+            g_copy = dict(g)
+            if g_copy.get("state") == "paused" or g_copy.get("status") == "paused" or g_copy.get("paused"):
+                g_copy["paused"] = True
+            gm[g["id"]] = g_copy
+        for t in ready_tasks(ts, busy_files, gm):
+            if not free:
+                return dispatched
+            t_key = t.get("key")
+            gid = t.get("goal") or t.get("goal_id")
+            g = gm.get(gid) or {}
+            if g.get("paused") or g.get("state") == "paused" or g.get("status") == "paused":
+                continue
+            # Invariant: do not dispatch tasks with overlapping files, duplicate keys, or already-claimed runs
+            if t["id"] in claimed_ids or t["id"] in DISPATCHING or (t_key and t_key in claimed_keys):
+                continue
+            t_files = set(t.get("files", [])) - shared
+            if t_files & (busy_files | DISPATCHING_FILES):
+                continue
+            fresh = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json")) or {}
+            if fresh.get("status") != "pending" or fresh.get("worker"):
+                continue
+            if t.get("pin_worker"):                     # the owner assigned this task to one worker: wait for that one
+                if t["pin_worker"] not in free:
+                    continue
+                w = t["pin_worker"]
+            else:
+                prev = (t.get("last_run") or {}).get("worker")
+                w = prev if t.get("feedback") and prev in free and ctx.C["CONTINUE_CONVERSATIONS"] else free[0]
+            rt = runtime_of(w)
+            if runtimes.is_api(rt):
+                rows = []
+                ok, msg = sbx.budget_check(w, lim, conf=sbx.project_conf())
+                msg = msg and "quota low: " + msg
+            else:
+                rows = quota_rows(w, 60)
+                ok, msg = sbx.quota_verdict(rows, lim)
+            if not ok and runtimes.is_api(rt):
+                COOLDOWN[w] = (time.time() + 3600, msg)
+                free.remove(w)
+                if LAST_QUOTA_MSG.get(w) != msg:
+                    LAST_QUOTA_MSG[w] = msg
+                    event(f"{w}: {msg} - checking again every 60 min")
+                continue
+            if not ok:
+                cd_sec = 180
+                resets = []
+                for r in rows:
+                    if str(lim.get("QUOTA_MODEL_FILTER", "")).lower() in r.get("model", "").lower():
+                        rst = parse_limit(str(r.get("reset", ""))) or _iso_ts(r.get("reset"))
+                        if rst and rst > time.time():
+                            resets.append(rst)
+                soonest = min(resets) if resets else None
+                if soonest and soonest - time.time() <= 600:
+                    cd_sec = max(30, int(soonest - time.time()) + 15)
+                elif soonest and soonest - time.time() > 3600:
+                    cd_sec = 1800                       # a weekly limit days away: look again every 30 min, not every 3
+                COOLDOWN[w] = (time.time() + cd_sec, msg)
+                free.remove(w)
+                if LAST_QUOTA_MSG.get(w) != msg:        # say it once per change, not every few minutes for days
+                    LAST_QUOTA_MSG[w] = msg
+                    event(f"{w}: {msg} - checking quota again every {cd_sec // 60 or 1} min")
+                continue
+            LAST_QUOTA_MSG.pop(w, None)
+            lr = t.get("last_run") or {}
+            continuing = bool(ctx.C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and lr.get("conversation") and lr.get("reason") == "ok"
+                              and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
+            spec = os.path.join(ctx.FD, "tasks", t["id"] + ".md")
+            open(spec, "w").write(worker_spec(t, continuing))
+            v = variant(t)
+            model = t.get("model_override") or (ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"])
+            env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
+                   "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(ctx.C["SELF_CHECK_ROUNDS"])),
+                   "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"]}
+
+            DISPATCHING.add(t["id"])
+            DISPATCHING_FILES.update(t_files)
+            DISPATCHING_WORKERS.add(w)
+            claimed_ids.add(t["id"])
+            if t_key:
+                claimed_keys.add(t_key)
+            busy_files.update(t_files)
+            free.remove(w)
+            free = by_quota(free)
+
+            t.update(status="running", worker=w, dispatched=sbx.now())
+            save_task(t)
+
+            try:
+                rc, out, err = sh([os.path.join(ctx.BIN, "dispatch"), w, spec], timeout=300, env=env)
+                if rc != 0:
+                    reason = (err or out).strip()[-200:]
+                    t.update(status="pending")
+                    t.pop("worker", None)
+                    t.pop("run", None)
+                    t.pop("dispatched", None)
+                    save_task(t)
+                    claimed_ids.discard(t["id"])
+                    if t_key:
+                        claimed_keys.discard(t_key)
+                    busy_files.difference_update(t_files)
+                    for w2 in free + [w]:
+                        COOLDOWN[w2] = (time.time() + 1800, reason)
+                    free.clear()
+                    event(f"dispatch of {t['id']} to {w} refused: {reason} - retry in 30 min", task=t["id"])
+                    continue
+                run = out.split("-> ")[-1].split(" (")[0].strip()
+                t.update(status="running", worker=w, run=run, dispatched=sbx.now())
+                save_task(t)
+                LAST_DISPATCHED[w] = time.time()
+                QUOTA_CACHE.pop(w, None)
+                dispatched.append(t)
+                event(f"task {t['id']} ({t['role']}) dispatched to {w}" + (f", attempt {t['attempts'] + 1}" if t["attempts"] else "") +
+                      (" (continuing its conversation)" if continuing else "") + (f" ({rt})" if rt != "agy" else "") +
+                      (f" on {env['DISPATCH_MODEL']}" if env["DISPATCH_MODEL"] else ""), task=t["id"])
+            finally:
+                DISPATCHING.discard(t["id"])
+                DISPATCHING_FILES.difference_update(t_files)
+                DISPATCHING_WORKERS.discard(w)
+        return dispatched
 
 
 def orphaned(run):
     """A run whose supervisor died without finishing it (machine restart, OOM, killed by hand). A finished run is never
     an orphan; an actively running run is never an orphan. If it has neither finished nor is running, it is orphaned."""
-    # Invariant: a run is orphaned if and only if it has not finished and is not running
+    base = os.path.basename(run.rstrip("/"))
+    if not RUN_DIR_RE.match(base):
+        return False
     if os.path.exists(os.path.join(run, "finished")):
         return False
+    if os.path.exists(os.path.join(run, "exitcode")):
+        return False
+    m = sbx.meta(run)
+    if m.get("finished") or m.get("reason"):
+        return False
+    tid = m.get("task")
+    if tid:
+        tpath = os.path.join(ctx.FD, "tasks", tid + ".json")
+        t = jload(tpath) if os.path.exists(tpath) else None
+        if t and t.get("status") in ("done", "cancelled"):
+            return False
     if sbx.is_running(run):
+        return False
+    started_ts = None
+    started_file = os.path.join(run, "started")
+    if os.path.exists(started_file):
+        try:
+            started_ts = _iso_ts(open(started_file).read().strip())
+        except Exception:
+            pass
+    if not started_ts and m.get("dispatched"):
+        try:
+            started_ts = _iso_ts(m["dispatched"])
+        except Exception:
+            pass
+    pid_file = os.path.join(run, "pid")
+    has_live_pid = os.path.exists(pid_file) and sbx.alive(open(pid_file).read().strip())
+    if started_ts and (time.time() - started_ts < 60) and (has_live_pid or os.path.exists(started_file)):
         return False
     return True
 
@@ -246,22 +323,31 @@ def orphaned(run):
 def recover_orphan(t):
     """Close an orphaned run (stop whatever it left running in the worker, mark it finished) and re-queue its task without
     counting an attempt - before this, such a task stayed "running" forever and blocked its files and its goal."""
-    run, w = t["run"], t.get("worker", "")
+    run, w = t.get("run", ""), t.get("worker", "")
     if re.fullmatch(r"worker-\d+", w):
         sh(["docker", "exec", w, "bash", "-c", 'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pkill -TERM -s "$sid"; exit 0'], timeout=30)
-    m = sbx.meta(run)
-    m.update(reason="orphaned", finished=sbx.now())
-    try:
-        json.dump(m, open(os.path.join(run, "meta.json"), "w"), indent=1)
-        open(os.path.join(run, "exitcode"), "w").write("128\n")
-        open(os.path.join(run, "finished"), "w").write(sbx.now() + "\n")
-    except OSError:
-        pass
-    sbx.append_ledger(dict(run_id=os.path.basename(run), date=sbx.today(), at=sbx.now(), worker=w, task=m.get("task", ""), test=False,
-                           reason="orphaned", exit_code=128, tokens=sbx.stream_tokens(os.path.join(run, "stream.jsonl")), duration_s=0,
-                           tool_calls=0, egress_alarms=0))
+    if run:
+        m = sbx.meta(run)
+        m.update(reason="orphaned", finished=sbx.now())
+        try:
+            json.dump(m, open(os.path.join(run, "meta.json"), "w"), indent=1)
+            open(os.path.join(run, "exitcode"), "w").write("128\n")
+            open(os.path.join(run, "finished"), "w").write(sbx.now() + "\n")
+        except OSError:
+            pass
+        sbx.append_ledger(dict(run_id=os.path.basename(run), date=sbx.today(), at=sbx.now(), worker=w, task=m.get("task", ""), test=False,
+                               reason="orphaned", exit_code=128, tokens=sbx.stream_tokens(os.path.join(run, "stream.jsonl")), duration_s=0,
+                               tool_calls=0, egress_alarms=0))
     t.update(status="pending")
+    t.pop("worker", None)
+    t.pop("run", None)
+    t.pop("dispatched", None)
     save_task(t)
+    if w:
+        LAST_DISPATCHED.pop(w, None)
+        COOLDOWN.pop(w, None)
+        RESERVED.discard(w)
+        QUOTA_CACHE.pop(w, None)
     event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
           task=t["id"])
 
@@ -396,13 +482,14 @@ def feed_idle_workers():
         with state_tx() as st:
             st.pop("quota_out_since", None)
     running_files = set(f for t in ts if t["status"] == "running" for f in t.get("files", []))
-    planning = [g for g in goals() if g["status"] == "new"] + [k for k in INFLIGHT if k.startswith("roadmap")]
+    planning = [g for g in goals() if g["status"] == "new"] + [k for k in INFLIGHT if k.startswith(("goal:", "roadmap"))]
+    planning_tasks = sum(1 for t in ts if t.get("status") in ("planning", "splitting"))
     if ahead:
         slots = 2 * len(workers())
-        coming = sum(1 for t in ts if t["status"] in ("pending", "splitting")) + 2 * len(planning)
+        coming = sum(1 for t in ts if t["status"] in ("pending", "splitting", "planning")) + 2 * len(planning)
     else:
         slots = len(free)
-        coming = len(ready_tasks(ts, running_files)) + 2 * len(planning)
+        coming = len(ready_tasks(ts, running_files)) + planning_tasks + 2 * len(planning)
     unfinished = {t["goal"] for t in ts if t["status"] in ("pending", "running", "gate", "review", "splitting", "merging", "approval", "merge-ready")}
     live = [g for g in goals() if g["status"] in ("new", "approval") or (g["status"] == "active" and g["id"] in unfinished)]
     cap = max(int(ctx.C["MAX_ACTIVE_GOALS"]), 2 * len(workers()))

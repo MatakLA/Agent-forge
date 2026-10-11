@@ -23,7 +23,7 @@ os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 import sbx
-from foreman import ctx, loop, store, util
+from foreman import ctx, loop, pool, store, util
 
 
 class TestForemanLoop(unittest.TestCase):
@@ -41,6 +41,10 @@ class TestForemanLoop(unittest.TestCase):
         loop.RESERVED.clear()
         loop.LAST_DISPATCHED.clear()
         loop.QUOTA_CACHE.clear()
+        if hasattr(loop, "DISPATCHING"):
+            loop.DISPATCHING.clear()
+            loop.DISPATCHING_FILES.clear()
+            loop.DISPATCHING_WORKERS.clear()
 
         # Silence live event printing to sys.stderr during test runs
         def _silent_event(msg, **kw):
@@ -225,6 +229,249 @@ class TestForemanLoop(unittest.TestCase):
         assert created_goals[0]["text"] == "Goal A"
         self.assertEqual(remaining_backlog, ["Goal B"])
         assert remaining_backlog == ["Goal B"]
+
+    def test_dispatch_ready_no_double_dispatch_racing_ticks(self):
+        """Scenario 1: call dispatch_ready() twice in a row simulating racing ticks; task not given to 2 workers nor in pending & running."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        t1 = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=0,
+                  files=["a.py"], role="developer", branch="feat/0001-t1", spec="spec 1", depends_on=[])
+        store.save_task(t1)
+
+        calls = []
+        def fake_sh(cmd, timeout=300, env=None):
+            w = cmd[1]
+            tid = os.path.basename(cmd[2]).replace(".md", "")
+            calls.append((tid, w))
+            if len(calls) == 1:
+                # Simulate second tick racing before first run is persisted
+                loop.dispatch_ready()
+            run_dir = os.path.join(sbx.RUNS, f"20260101T000000Z-{w}")
+            os.makedirs(run_dir, exist_ok=True)
+            return 0, f"dispatched to {w} -> {run_dir} (ok)", ""
+
+        with patch.object(loop, "workers", return_value=["worker-1", "worker-2"]), \
+             patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", side_effect=fake_sh) as mock_sh, \
+             patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            loop.dispatch_ready()
+
+        self.assertEqual(len(calls), 1)
+        assert len(calls) == 1
+        self.assertEqual(calls[0][0], "0001-t1")
+        assert calls[0][0] == "0001-t1"
+        tasks_after = {t["id"]: t for t in store.tasks()}
+        self.assertEqual(tasks_after["0001-t1"]["status"], "running")
+        assert tasks_after["0001-t1"]["status"] == "running"
+        pending_ids = [t["id"] for t in store.tasks() if t["status"] == "pending"]
+        running_ids = [t["id"] for t in store.tasks() if t["status"] == "running"]
+        self.assertNotIn("0001-t1", pending_ids)
+        assert "0001-t1" not in pending_ids
+        self.assertIn("0001-t1", running_ids)
+        assert "0001-t1" in running_ids
+
+    def test_dispatch_ready_file_overlap_bypass_racing_calls(self):
+        """Scenario 2: two file-overlapping ready tasks must not be dispatched together even across racing calls."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        t1 = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=0,
+                  files=["common.py"], role="developer", branch="feat/0001-t1", spec="spec 1", depends_on=[])
+        t2 = dict(id="0002-t2", key="k2", title="Task 2", goal="G1", status="pending", attempts=0,
+                  files=["common.py"], role="developer", branch="feat/0002-t2", spec="spec 2", depends_on=[])
+        store.save_task(t1)
+        store.save_task(t2)
+
+        calls = []
+        def fake_sh(cmd, timeout=300, env=None):
+            w = cmd[1]
+            tid = os.path.basename(cmd[2]).replace(".md", "")
+            calls.append((tid, w))
+            if len(calls) == 1:
+                # Simulate second tick racing before first run is persisted
+                loop.dispatch_ready()
+            run_dir = os.path.join(sbx.RUNS, f"20260101T000000Z-{w}")
+            os.makedirs(run_dir, exist_ok=True)
+            return 0, f"dispatched to {w} -> {run_dir} (ok)", ""
+
+        with patch.object(loop, "workers", return_value=["worker-1", "worker-2"]), \
+             patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", side_effect=fake_sh) as mock_sh, \
+             patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            loop.dispatch_ready()
+
+        self.assertEqual(len(calls), 1)
+        assert len(calls) == 1
+        self.assertEqual(calls[0][0], "0001-t1")
+        assert calls[0][0] == "0001-t1"
+        tasks_after = {t["id"]: t for t in store.tasks()}
+        self.assertEqual(tasks_after["0001-t1"]["status"], "running")
+        assert tasks_after["0001-t1"]["status"] == "running"
+        self.assertEqual(tasks_after["0002-t2"]["status"], "pending")
+        assert tasks_after["0002-t2"]["status"] == "pending"
+
+    def test_dispatch_ready_paused_goal_never_dispatched(self):
+        """Scenario 3: a task whose goal has state 'paused' must never be returned or dispatched by dispatch_ready()."""
+        store.save_goal(dict(id="G1", text="goal 1", state="paused"))
+        t1 = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=0,
+                  files=["a.py"], role="developer", branch="feat/0001-t1", spec="spec 1", depends_on=[])
+        store.save_task(t1)
+
+        with patch.object(loop, "workers", return_value=["worker-1"]), \
+             patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", return_value=(0, "dispatched -> run (ok)", "")) as mock_sh, \
+             patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            dispatched = loop.dispatch_ready()
+
+        self.assertEqual(mock_sh.call_count, 0)
+        assert mock_sh.call_count == 0
+        self.assertEqual(dispatched or [], [])
+        assert dispatched == [] or dispatched is None
+        tasks_after = {t["id"]: t for t in store.tasks()}
+        self.assertEqual(tasks_after["0001-t1"]["status"], "pending")
+        assert tasks_after["0001-t1"]["status"] == "pending"
+
+    def test_orphaned_run_detection_and_safeguards(self):
+        """Scenario 4: detect dead runs without supervisor as orphaned; do not flag recent runs or runs of finished tasks."""
+        # Case A: RUN_DIR_RE matching run, task running in meta, no live supervisor -> orphaned
+        run_dead = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_dead, exist_ok=True)
+        t_active = dict(id="0001-t1", goal="G1", status="running", files=["a.py"], role="developer", branch="feat/0001-t1")
+        store.save_task(t_active)
+        json.dump(dict(task="0001-t1", status="running", worker="worker-1", dispatched="2026-10-10T00:00:00Z"),
+                  open(os.path.join(run_dead, "meta.json"), "w"))
+        open(os.path.join(run_dead, "pid"), "w").write("999999")
+        with patch.object(sbx, "alive", return_value=False), \
+             patch.object(sbx, "is_running", return_value=False):
+            is_dead_orphan = loop.orphaned(run_dead)
+            self.assertTrue(is_dead_orphan)
+            assert is_dead_orphan
+
+        # Case B: Genuinely in progress (started seconds ago, matching live markers) -> NOT orphaned
+        run_live = os.path.join(sbx.RUNS, "20261011T120001Z-worker-2")
+        os.makedirs(run_live, exist_ok=True)
+        json.dump(dict(task="0001-t1", status="running", worker="worker-2", dispatched=sbx.now()),
+                  open(os.path.join(run_live, "meta.json"), "w"))
+        open(os.path.join(run_live, "started"), "w").write(sbx.now() + "\n")
+        open(os.path.join(run_live, "pid"), "w").write("12345")
+        with patch.object(sbx, "alive", return_value=True), \
+             patch.object(sbx, "is_running", return_value=True):
+            is_live_orphan = loop.orphaned(run_live)
+            self.assertFalse(is_live_orphan)
+            assert not is_live_orphan
+
+        # Case C: Run of a different, already-finished task -> must NOT be re-flagged orphaned
+        run_old_finished = os.path.join(sbx.RUNS, "20261011T120002Z-worker-3")
+        os.makedirs(run_old_finished, exist_ok=True)
+        t_done = dict(id="0002-t2", goal="G1", status="done", files=["b.py"], role="developer", branch="feat/0002-t2")
+        store.save_task(t_done)
+        json.dump(dict(task="0002-t2", status="running", worker="worker-3", dispatched="2026-10-10T00:00:00Z"),
+                  open(os.path.join(run_old_finished, "meta.json"), "w"))
+        with patch.object(sbx, "is_running", return_value=False):
+            is_old_orphan = loop.orphaned(run_old_finished)
+            self.assertFalse(is_old_orphan)
+            assert not is_old_orphan
+
+        # Case D: Directory name not matching RUN_DIR_RE -> NOT orphaned
+        run_invalid = os.path.join(sbx.RUNS, "invalid-dir-format")
+        os.makedirs(run_invalid, exist_ok=True)
+        with patch.object(sbx, "is_running", return_value=False):
+            is_invalid_orphan = loop.orphaned(run_invalid)
+            self.assertFalse(is_invalid_orphan)
+            assert not is_invalid_orphan
+
+        assert is_dead_orphan and not is_live_orphan and not is_old_orphan and not is_invalid_orphan
+
+    def test_recover_orphan_restores_dispatchability_and_worker_usability(self):
+        """Scenario 5: recovered task is dispatchable and worker is immediately usable in pool.py."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 spec="spec 1", depends_on=[])
+        store.save_task(t)
+        pool.LAST_DISPATCHED["worker-1"] = 1790000000.0
+
+        loop.recover_orphan(t)
+
+        recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(recovered["status"], "pending")
+        assert recovered["status"] == "pending"
+        self.assertIsNone(recovered.get("worker"))
+        assert recovered.get("worker") is None
+        self.assertIsNone(recovered.get("run"))
+        assert recovered.get("run") is None
+
+        # Worker is usable immediately according to pool.py
+        self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
+        self.assertNotIn("worker-1", pool.LAST_DISPATCHED)
+        assert "worker-1" not in pool.LAST_DISPATCHED
+
+        # Assert task can be dispatched immediately to worker-1
+        with patch.object(loop, "workers", return_value=["worker-1"]), \
+             patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", return_value=(0, f"dispatched to worker-1 -> {run_orphan} (ok)", "")), \
+             patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            dispatched = loop.dispatch_ready()
+
+        self.assertEqual(len(dispatched or []), 1)
+        assert len(dispatched or []) == 1
+        dispatched_task = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(dispatched_task["status"], "running")
+        assert dispatched_task["status"] == "running"
+        self.assertEqual(dispatched_task["worker"], "worker-1")
+        assert dispatched_task["worker"] == "worker-1"
+
+    def test_feed_idle_workers_accounts_for_planning_and_backlog_exhaustion(self):
+        """Scenario 6: feed_idle_workers accounts for planning tasks and leaves idle workers alone when backlog exhausted."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        t1 = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending",
+                  files=["a.py"], role="developer", branch="feat/0001-t1", spec="spec 1", depends_on=[])
+        t2 = dict(id="0002-t2", key="k2", title="Task 2", goal="G1", status="planning",
+                  files=["b.py"], role="developer", branch="feat/0002-t2", spec="spec 2", depends_on=[])
+        t3 = dict(id="0003-t3", key="k3", title="Task 3", goal="G1", status="planning",
+                  files=["c.py"], role="developer", branch="feat/0003-t3", spec="spec 3", depends_on=[])
+        store.save_task(t1)
+        store.save_task(t2)
+        store.save_task(t3)
+
+        backlog_path = os.path.join(ctx.FD, "backlog.json")
+        store.jsave(backlog_path, ["Goal Backlog 1", "Goal Backlog 2"])
+
+        with patch.object(loop, "workers", return_value=["worker-1", "worker-2"]), \
+             patch.object(loop, "worker_busy", return_value=False):
+            loop.feed_idle_workers()
+
+        # 1 ready + 2 planning = 3 coming >= 2 idle slots: must not pull extra backlog goals
+        remaining_backlog = store.jload(backlog_path, [])
+        self.assertEqual(remaining_backlog, ["Goal Backlog 1", "Goal Backlog 2"])
+        assert remaining_backlog == ["Goal Backlog 1", "Goal Backlog 2"]
+        self.assertEqual(len(store.goals()), 1)
+        assert len(store.goals()) == 1
+
+        # Workers are not marked busy without an actual run starting
+        self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
+        self.assertFalse(pool.worker_busy("worker-2"))
+        assert not pool.worker_busy("worker-2")
+        self.assertNotIn("worker-1", pool.RESERVED)
+        assert "worker-1" not in pool.RESERVED
+        self.assertNotIn("worker-2", pool.RESERVED)
+        assert "worker-2" not in pool.RESERVED
+
+        # Exhaust backlog and assert idle workers are left alone (no retry loop or busy marks)
+        store.jsave(backlog_path, [])
+        with patch.object(loop, "workers", return_value=["worker-1", "worker-2"]), \
+             patch.object(loop, "worker_busy", return_value=False):
+            loop.feed_idle_workers()
+
+        self.assertEqual(len(store.goals()), 1)
+        assert len(store.goals()) == 1
+        self.assertFalse(pool.worker_busy("worker-1"))
+        assert not pool.worker_busy("worker-1")
+        self.assertFalse(pool.worker_busy("worker-2"))
+        assert not pool.worker_busy("worker-2")
 
 
 if __name__ == "__main__":
