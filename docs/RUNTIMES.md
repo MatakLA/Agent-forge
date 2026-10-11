@@ -11,6 +11,7 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `compat` | your own model server (nothing, for a local one) - Codex CLI over the OpenAI Responses API | `bin/worker-add N --runtime compat` | that server only |
 | `aider` | your own model server - Aider over the OpenAI chat-completions API | `bin/worker-add N --runtime aider` | that server only |
 | `opencode` | SST's OpenCode CLI on your configured provider / subscription | `bin/worker-add N --runtime opencode` | configured provider host only |
+| `goose` | Block's Goose CLI agent on your model server | `bin/worker-add N --runtime goose` | configured provider host only |
 | `qwen-code` | Alibaba DashScope API key, per token | `bin/worker-add N --runtime qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
@@ -52,6 +53,15 @@ OpenCode (SST's OpenCode CLI) runs inside the worker container using the standar
 - **Endpoint and Network**: OpenCode is endpoint-based and uses the configurable-endpoint mechanism (`COMPAT_BASE_URL`). The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A rework continues the existing session with `--session <conversation_id>`.
 - **Cost model**: The cost model is `unknown`. OpenCode's output stream does not expose token counts, so no USD figure is computed for it (`tokens: None`, no USD spend recorded).
+
+## Goose
+Goose (Block's open-source CLI agent, `goose`) runs inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local model server the owner configures (Ollama, vLLM, LM Studio, OpenRouter, or other OpenAI-compatible endpoints).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime goose` (or in Settings → "+ Add worker" → Goose).
+- **Endpoint and Network**: Goose is provider-agnostic and endpoint-based, requiring a pinned endpoint host exactly like Compat (refer to [Your own model server](#your-own-model-server-ollama-vllm-lm-studio-openrouter) for configuration of `COMPAT_BASE_URL` and egress allow-listing). Outbound traffic is restricted to the configured model server host only.
+- **Environment and Config**: Goose configures its target model, provider, and server endpoint through environment variables (such as `GOOSE_PROVIDER`, `GOOSE_MODEL`, and provider base URLs / keys) or via its configuration file (`~/.config/goose/config.yaml`), pointing at the configured endpoint.
+- **Invocation**: `bin/run-supervisor` starts Goose non-interactively using `goose run --instructions -`. The task prompt is supplied on stdin (per Goose CLI documentation) rather than in argv, preventing sensitive instructions and task data from leaking in `/proc/*/cmdline`.
+- **Cost model**: The cost model is `unknown`. Goose's CLI output does not expose standard token counts (`tokens: None`), so budgeting and per-token cost tracking are not available for goose runs.
 
 ## Qwen Code
 Qwen Code runs Alibaba's Qwen Code CLI (`qwen-code`) inside the worker container to interact with Alibaba Cloud DashScope models.
@@ -110,6 +120,7 @@ claude -p --output-format stream-json --verbose --dangerously-skip-permissions -
 codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check <quiet flags> -m M [resume ID] -
 gemini --output-format stream-json --yolo --skip-trust -m M [--resume ID] -p "Do the task described above."
 opencode run --format json [--model M] [--session ID]
+goose run --instructions -
 ```
 
 Skipping the CLIs' own permission prompts and sandboxes is intended: the container is the sandbox (no capabilities, internal
