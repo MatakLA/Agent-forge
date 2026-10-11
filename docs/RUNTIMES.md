@@ -13,6 +13,7 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `opencode` | SST's OpenCode CLI on your configured provider / subscription | `bin/worker-add N --runtime opencode` | configured provider host only |
 | `goose` | Block's Goose CLI agent on your model server | `bin/worker-add N --runtime goose` | configured provider host only |
 | `qwen-code` | Alibaba DashScope API key, per token | `bin/worker-add N --runtime qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` |
+| `anthropic-compat` | your own model server (nothing, for a local one) - Claude Code CLI over an Anthropic-compatible API | `bin/worker-add N --runtime anthropic-compat` | that server only |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
@@ -45,6 +46,14 @@ with the runtime `compat` or `aider`:
 - Nothing else is contacted: Aider would download litellm's price table and tokenizers at run time - the image ships the
   tokenizers and `af-agent` gives Aider the model's metadata from a local file. `tests/test_runtimes.sh` routes every other
   connection to a logging proxy and fails if a CLI tries one.
+
+## Anthropic-compatible endpoint
+An Anthropic-compatible endpoint connects worker containers running Claude Code CLI against your own model server, proxy, or provider implementing the Anthropic Messages API (e.g. LiteLLM, Cloudflare AI Gateway, OpenRouter, AWS Bedrock proxy, or local models).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime anthropic-compat` (or in Settings → "+ Add worker" → Anthropic-compatible endpoint). Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's Anthropic-compatible base URL.
+- **Endpoint and Network**: The owner pins the endpoint host via Settings > System > Egress exactly like `compat` (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Credentials**: Needs an API key secret (e.g. `compat.key`), set the same way as other API runtimes: in the dashboard under Settings → Workers, or from a shell with `printf '%s' "$KEY" | bin/secret-set compat.key`. For an unauthenticated local server, an empty key or local configuration is supported.
+- **Cost model**: The cost model is `unknown` unless the owner supplies a USD/1K-token price (or per million tokens via `PRICE_COMPAT`, input,cached,output), same as `compat` (`0,0,0` for your own hardware, or the provider's prices for OpenRouter/proxies). When unspecified, no USD estimate is recorded.
 
 ## OpenCode
 OpenCode (SST's OpenCode CLI) runs inside the worker container using the standard agy worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local server the owner configures (Anthropic, OpenAI, OpenRouter, Ollama, etc.).
