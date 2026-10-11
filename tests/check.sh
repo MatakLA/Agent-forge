@@ -18,5 +18,8 @@ $PY tests/test_upstream.py | tail -1
 if [ -f tests/test_foreman_loop.py ]; then
   $PY tests/test_foreman_loop.py | tail -1
 fi
+if [ -f tests/test_foreman_merge.py ]; then
+  $PY tests/test_foreman_merge.py | tail -1
+fi
 echo "check: ALL OK"
 
