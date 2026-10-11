@@ -9,6 +9,7 @@
 # --demo  puts the example vision (examples/demo) in place, so the autopilot has something to build right away.
 # Afterwards open the dashboard: choose where the code lives (internal / GitHub / GitLab), add workers, enter a goal.
 set -Eeuo pipefail
+umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 DEMO=0; for a in "$@"; do [ "$a" = "--demo" ] && DEMO=1; done
 step() { printf '\n==> %s\n' "$*"; }
@@ -35,9 +36,18 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || di
 git --version | awk '{split($3, v, "."); exit !(v[1] > 2 || (v[1] == 2 && v[2] >= 31))}' || die "git 2.31+ is needed."
 
 step "Configuration (examples copied only where nothing exists yet)"
-for f in limits foreman forge; do [ -f "etc/$f.conf" ] || { cp "etc/$f.example.conf" "etc/$f.conf"; ok "etc/$f.conf"; }; done
+mkdir -p etc
+chmod 700 etc
+for f in limits foreman forge; do
+  [ -f "etc/$f.conf" ] || { cp "etc/$f.example.conf" "etc/$f.conf"; ok "etc/$f.conf"; }
+  chmod 600 "etc/$f.conf"
+done
 [ -f etc/team-rules.md ] || { cp etc/team-rules.example.md etc/team-rules.md; ok "etc/team-rules.md (edit: your stack and conventions)"; }
+chmod 600 etc/team-rules.md
 if [ "$DEMO" = 1 ] && [ ! -f docs/vision.md ]; then cp examples/demo/vision.md docs/vision.md; ok "demo vision in docs/vision.md"; fi
+SECRETS="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
+mkdir -p "$SECRETS"
+chmod 700 "$SECRETS"
 ok "configuration in etc/"
 
 step "Egress proxy and the workers' internal network"
