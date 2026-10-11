@@ -126,6 +126,25 @@ def _selftest():
         check("settings_apply writes project keys in place (comments kept) and limits to etc/limits.conf",
               not ok_ and "# keep me" in fc and "CLAUDE_MODEL=opus" in fc and "CLAUDE_MODEL=sonnet" not in fc and "WORKERS=worker-1,worker-3" in fc
               and "MAX_PARALLEL=8" in lc and "MAX_PARALLEL=4" not in lc and "MAX_PARALLEL" not in fc)
+        new_bad = {
+            "DAILY_TOKEN_BUDGET": "99", "MAX_RUNS_PER_DAY": "0", "RUN_TIMEOUT_MAX_MIN": "2",
+            "QUOTA_MODEL_FILTER": "evil; rm -rf /", "POLL_SEC": "0", "OPENAI_API_BASE": "ftp://bad.example",
+            "DIFF_MAX": "10", "MAX_GOAL_ROUNDS": "0", "LESSONS_MAX": "0", "LOOP_SEC": "0",
+            "LOCAL_TZ": "bad; tz", "SHARED_FILES": "bad; file", "VISION_FILE": "/etc/passwd", "PROJECT_DIR": "/root"
+        }
+        errs_new = settings_apply(new_bad)
+        check("settings_apply rejects malformed/out-of-range values for all newly added keys",
+              set(errs_new) == set(new_bad))
+        new_good = {
+            "DAILY_TOKEN_BUDGET": "5000000", "MAX_RUNS_PER_DAY": "100", "RUN_TIMEOUT_MAX_MIN": "60",
+            "QUOTA_MODEL_FILTER": "Claude", "POLL_SEC": "5", "OPENAI_API_BASE": "https://api.openai.com/v1",
+            "DIFF_MAX": "50000", "MAX_GOAL_ROUNDS": "5", "LESSONS_MAX": "50", "LOOP_SEC": "15",
+            "LOCAL_TZ": "Europe/Prague", "SHARED_FILES": "reg.jsonl,notes.md", "VISION_FILE": "docs/vision.md", "PROJECT_DIR": "web"
+        }
+        errs_good = settings_apply(new_good)
+        fc2, lc2 = open(os.path.join(st_dir, "etc", "foreman.conf")).read(), open(os.path.join(st_dir, "etc", "limits.conf")).read()
+        check("settings_apply accepts valid values for all newly added keys and writes them",
+              not errs_good and "DIFF_MAX=50000" in fc2 and "DAILY_TOKEN_BUDGET=5000000" in lc2)
     finally:
         ctx.ROOT, ctx.FD = old_root, old_fd
         shutil.rmtree(st_dir, ignore_errors=True)
