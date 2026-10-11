@@ -1,0 +1,196 @@
+# Choosing an AI for Agent-Forge
+
+Agent-Forge automates software development through an autonomous loop of planning, coding, verification, and code review. Because it runs unattended, picking the right AI models and runtimes determines your operating cost, execution speed, code quality, and privacy.
+
+This guide provides an honest comparison of every supported worker runtime and orchestrator provider so you can choose the setup that fits your workflow and budget.
+
+---
+
+## Quick decision flowchart
+
+Use this flowchart to find the recommended configuration based on what subscriptions, API keys, or local infrastructure you already have:
+
+```mermaid
+flowchart TD
+    Start(["Start: What AI resources do you have?"]) --> Q_Priv{"Need 100% offline / data privacy?"}
+
+    Q_Priv -- Yes --> Privacy["Worker: compat or aider (local Ollama/vLLM)\nOrchestrator: openai-api (local endpoint)"]
+    Q_Priv -- No --> Q_Subs{"Do you have AI subscriptions?"}
+
+    Q_Subs -- "Claude (Anthropic)" --> ClaudeSub["Orchestrator: claude-cli (Claude Code on VM)\nWorker: claude (Anthropic API key, per token)\nor agy (if also Google subscriber)"]
+    Q_Subs -- "Google (Antigravity / Gemini)" --> GoogleSub["Worker: agy (Google subscription account)\nOrchestrator: agy-claude + agy-gemini\n(or claude-cli if available)"]
+    Q_Subs -- "Both Claude & Google" --> HybridSub["Recommended Hybrid:\nOrchestrator: claude-cli (planner) + agy-claude (reviewer)\nWorkers: agy (Gemini quota for high-volume coding)"]
+    Q_Subs -- "None / Prefer API billing" --> Q_API{"Which API keys do you have?"}
+
+    Q_API -- "Anthropic" --> AnthropicAPI["Orchestrator: anthropic-api\nWorker: claude (Anthropic API)"]
+    Q_API -- "OpenAI" --> OpenAIAPI["Orchestrator: openai-api\nWorker: codex (OpenAI API)"]
+    Q_API -- "Google Gemini" --> GeminiAPI["Orchestrator: gemini-api\nWorker: gemini (Gemini API)"]
+    Q_API -- "Alibaba Cloud" --> QwenAPI["Orchestrator: openai-api / anthropic-api\nWorker: qwen-code (DashScope)"]
+    Q_API -- "OpenRouter / Other Gateway" --> GatewayAPI["Worker: compat, aider, or anthropic-compat\nOrchestrator: openai-api (custom base URL)"]
+```
+
+---
+
+## Provider vs. runtime: the crucial distinction
+
+Agent-Forge separates high-level coordination from low-level code generation. They run in different places and can use entirely different AIs:
+
+> ### The Orchestrator Provider vs. Worker Runtime Explainer
+>
+> | Concept | Where it runs | What it does | Configured in | Examples |
+> |---|---|---|---|---|
+> | **Orchestrator Provider** | Foreman loop (on host machine or VM) | High-level reasoning: breaks goals into tasks (planner), reviews pull requests (reviewer), and verifies acceptance criteria. | `etc/foreman.conf`<br>(`PLAN_PROVIDERS`, `REVIEW_PROVIDERS`) | `claude-cli`, `agy-claude`, `agy-gemini`, `anthropic-api`, `openai-api`, `gemini-api` |
+> | **Worker Runtime** | Isolated Docker containers (`worker-N`) | Tactical coding: navigates code, runs terminal commands, edits files, and passes local tests on a task branch. | `bin/worker-add N --runtime <name>` or Settings &rarr; Workers | `agy`, `claude`, `codex`, `gemini`, `compat`, `aider`, `opencode`, `goose`, `qwen-code`, `anthropic-compat` |
+>
+> **You can mix and match.** For example, you can run Claude Code (`claude-cli`) on the host as the orchestrator planner and reviewer because of its strong architectural reasoning, while worker containers run Antigravity (`agy`) to write code against a flat-rate subscription quota without incurring per-token charges.
+
+---
+
+## Worker runtimes comparison
+
+Worker runtimes execute inside locked-down containers. Outbound network traffic is strictly mediated by an egress proxy: standard API runtimes may contact only their provider's public API, while local endpoint runtimes may reach only the configured model server address and port.
+
+| Runtime | One-sentence description | How you get it | Cost model | Egress hosts contacted | Doctor check exists? | Best for |
+|---|---|---|---|---|---|---|
+| `agy` | Google Antigravity CLI logged into a worker container. | Google account with Antigravity / Gemini subscription (log in once via URL + code). | Quota-based subscription (uses account Gemini/Claude quotas). | Google Antigravity hosts (`egress/allowlist.txt`). | Yes (`bin/doctor` checks `agy /usage` quota and login status). | Gemini subscribers who want unlimited coding runs within subscription limits. |
+| `claude` | Anthropic Claude Code CLI running non-interactively with budget controls. | Anthropic API key stored in `anthropic.key` secret. | Per-token (see provider pricing; enforced per-run cap `--max-budget-usd`). | `api.anthropic.com` | Yes (`bin/doctor` checks `anthropic.key` and egress allowlist). | Complex refactoring, highest coding reliability, and strict per-run USD caps. |
+| `codex` | OpenAI Codex CLI running non-interactively with quiet flags. | OpenAI API key stored in `openai.key` secret. | Per-token (see provider pricing; estimated via `PRICE_CODEX`). | `api.openai.com` | Yes (`bin/doctor` checks `openai.key` and egress allowlist). | Developers with OpenAI API credits using current OpenAI coding models. |
+| `gemini` | Google Gemini CLI running non-interactively with `--yolo` mode. | Gemini API key stored in `gemini.key` secret. | Per-token (see provider pricing; estimated via `PRICE_GEMINI`). | `generativelanguage.googleapis.com` | Yes (`bin/doctor` checks `gemini.key` and egress allowlist). | Pay-per-token Gemini users who do not want to manage Google account logins. |
+| `compat` | Codex CLI communicating over OpenAI Responses API to your model server. | Local model server (Ollama 0.13+, vLLM, LM Studio) or OpenRouter; optional `compat.key`. | Free tier / zero token cost on local hardware (`PRICE_COMPAT=0,0,0`); per-token on paid proxies. | Pinned model server host and port only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and egress rule). | Privacy-first setups using local models supporting the OpenAI Responses API. |
+| `aider` | Aider CLI connected to any standard OpenAI `/v1/chat/completions` API. | Local model server or OpenRouter; optional `compat.key`. | Free tier / zero token cost on local hardware (`PRICE_COMPAT=0,0,0`); per-token on paid proxies. | Pinned model server host and port only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and egress rule). | Local models lacking Responses API, leveraging Aider's repo-map and auto-test cycle. |
+| `opencode` | SST's OpenCode CLI executing tasks non-interactively with JSON streaming. | SST OpenCode installed in worker container; configured provider endpoint. | Unknown (CLI stream does not expose token counts; `tokens: None`). | Configured model server host only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and egress rule). | Teams standardized on SST's OpenCode agent toolchain. |
+| `goose` | Block's Goose CLI agent executing instructions from stdin on your server. | Block Goose agent; configured via environment or `~/.config/goose/config.yaml`. | Unknown (CLI stream does not expose token counts; `tokens: None`). | Configured model server host only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks host CLI presence, `COMPAT_BASE_URL`, and egress). | Teams using Block's Goose agent architecture with custom extensions. |
+| `qwen-code` | Alibaba Qwen Code CLI executing against DashScope models. | Alibaba DashScope API key stored in `qwen.key` secret. | Per-token if reported in CLI usage stats, else unknown (see provider pricing). | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` | Yes (`bin/doctor` checks `qwen.key` and DashScope allowlist). | Teams running Qwen-series coding models on Alibaba Cloud DashScope. |
+| `anthropic-compat` | Claude Code CLI routed to an Anthropic-compatible gateway or local server. | Model server implementing Anthropic Messages API (LiteLLM, vLLM, Cloudflare); optional `compat.key`. | Unknown unless `PRICE_COMPAT` is configured; zero cost on local hardware. | Pinned model server host and port only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks endpoint configuration and egress rule). | Claude Code workflows running through private enterprise gateways or local proxies. |
+
+---
+
+## Deep dive: the three most common choices
+
+### 1. Antigravity (`agy`) for Gemini subscribers
+
+If you subscribe to Google AI / Antigravity, `agy` is the default runtime and the most economical way to run workers.
+
+- **How it works**: Each worker runs inside a `sandbox-worker:1.2.11` container logged in to a dedicated Google account. The supervisor drives the agent using `agy-run` with non-interactive stream-json flags.
+- **Cost model**: Quota-based. You pay no per-token fees. Runs consume your subscription's Gemini quota. When quota runs low, `bin/dispatch` pauses that worker automatically until the reset window passes.
+- **Quota inspection**: Spend zero model quota checking status. `bin/doctor` queries the local `agy /usage` endpoint to report remaining Gemini and Claude quota percentages.
+- **Trade-offs**:
+  - Running multiple accounts for a single person's workload can conflict with provider terms (see terms note in [README.md](../README.md)).
+  - Account logins expire periodically (typically OAuth tokens refresh, but re-authentication via URL/code is occasionally needed).
+
+### 2. Claude Code (`claude`) for Anthropic subscribers
+
+If you need the highest code generation success rate or already have an Anthropic API key, `claude` is the premier API-based worker runtime.
+
+- **How it works**: Uses the Claude Code CLI inside the `agent-forge-worker-api:1` container. The API key is mounted into the container as a read-only secret (`/run/secrets/api-key`) and injected only into the agent's environment.
+- **Cost model**: Per-token billing (see provider pricing). Agent-Forge protects your wallet through defense-in-depth:
+  1. **Per-run cap**: Passed directly to the CLI via `--max-budget-usd` (default `$2.00` in `etc/limits.conf`).
+  2. **Daily budget**: `API_DAILY_BUDGET_USD` in `etc/limits.conf` (default `$10.00`). If daily spend reaches the cap, API worker dispatch halts immediately.
+  3. **Tool & token caps**: Hard cutoffs via `RUN_MAX_TOOL_CALLS` and `RUN_TOKEN_CAP`.
+- **Trade-offs**:
+  - Higher monetary cost than subscription quotas for continuous 24/7 background operation.
+  - Requires setting up API billing and workspace spending limits on the Anthropic Console.
+
+### 3. Local models via `compat` or `aider` for privacy & zero token cost
+
+If your company policy prohibits code leaving your network or you have local GPU hardware (e.g., an Ollama or vLLM workstation), use `compat` or `aider`.
+
+- **How it works**: Set `COMPAT_BASE_URL` in `etc/limits.conf` (e.g., `http://192.168.1.50:11434/v1`). The egress proxy creates a strict rule allowing workers to reach *only* that specific IP and port.
+- **Choosing between `compat` and `aider`**:
+  - Choose `compat` if your server supports the modern **OpenAI Responses API** (Ollama 0.13+, vLLM, LM Studio 0.3.29+). It runs the official Codex CLI configured against your endpoint.
+  - Choose `aider` if your server only supports standard `/v1/chat/completions`. Aider maintains a project repo-map, performs file editing, and automatically runs your test suite (`TEST_CMD`) after each edit.
+- **Cost model**: Free tier (`0,0,0` USD per million tokens) when running on your own hardware. If pointed at a commercial gateway (like OpenRouter), you can specify `PRICE_COMPAT` in `etc/limits.conf` to track dollar spend.
+- **Trade-offs**:
+  - Local models under 30B parameters frequently struggle with multi-file reasoning, repo map navigation, and strict test fixing.
+  - Recommended minimum local model: Qwen 2.5/3 Coder 32B Instruct or larger with 32k+ context window.
+
+---
+
+## Orchestrator providers comparison
+
+The orchestrator lives in `bin/foreman`. It calls LLMs sequentially from left to right as configured in `etc/foreman.conf` until one succeeds:
+
+```ini
+PLAN_PROVIDERS=claude-cli,agy-claude,agy-gemini
+REVIEW_PROVIDERS=agy-claude,claude-cli
+```
+
+| Provider | What it uses | Cost model | Strengths | Caveats & Gotchas |
+|---|---|---|---|---|
+| `claude-cli` | Claude Code (`claude -p`) on host machine. | Subscription-based (free with Claude subscription). | **Best planner.** Stable system prompt caching drastically reduces usage. | Requires Claude Code CLI logged in on the host OS (`claude` &rarr; `/login`). |
+| `agy-claude` | Claude via Antigravity worker container. | Quota-based ("Claude and GPT models" quota bucket). | **Best reviewer.** High-fidelity code reviews without paying per token. | The Antigravity Claude quota bucket is small; skips exhausted accounts automatically. |
+| `agy-gemini` | Gemini via Antigravity worker container. | Quota-based (uses worker Gemini quota bucket). | Reliable fallback when Claude quotas are temporarily exhausted. | Historically produced inconsistent review verdicts without JSON schema constraints. |
+| `anthropic-api` | Direct HTTP call to Anthropic Messages API. | Per-token (see provider pricing). | Unstoppable reliability. Does not depend on host CLI or browser auth. | Costs real money per planning/review call. Configure `ANTHROPIC_API_KEY`. |
+| `openai-api` | Direct HTTP call to OpenAI Chat Completions API. | Per-token (or free on local Ollama/vLLM). | Versatile; supports OpenAI models, OpenRouter, or local vLLM instances. | Set `OPENAI_API_BASE` for local/alternative endpoints. Configure `OPENAI_API_KEY`. |
+| `gemini-api` | Direct HTTP call to Google Gemini Developer API. | Per-token (see provider pricing). | Direct developer API access without subscription login requirements. | Configure `GEMINI_API_KEY` and `GEMINI_MODEL`. |
+
+---
+
+## Recommended orchestrator setups
+
+### Setup A: The subscription-first setup (Default & Recommended)
+
+Leverages subscriptions you already pay for. Costs $0 in API credits:
+
+```ini
+# etc/foreman.conf
+PLAN_PROVIDERS=claude-cli,agy-claude,agy-gemini
+REVIEW_PROVIDERS=agy-claude,claude-cli
+```
+
+- **Planning**: Uses host Claude Code (`claude-cli`) for superior decomposition of goals into tasks.
+- **Review**: Uses Antigravity's Claude quota (`agy-claude`) inside worker containers to review pull requests without burning host Claude usage.
+
+### Setup B: The API-backed production team
+
+Ensures the team never stops moving, falling back to paid APIs if subscriptions run out:
+
+```ini
+# etc/foreman.conf
+PLAN_PROVIDERS=claude-cli,anthropic-api
+REVIEW_PROVIDERS=agy-claude,claude-cli,anthropic-api
+ANTHROPIC_MODEL=claude-sonnet-5
+```
+
+- If Claude Code hits rate limits, the foreman falls back to `anthropic-api` using `ANTHROPIC_API_KEY` stored in `~/.config/sandbox/secrets/ANTHROPIC_API_KEY`.
+
+### Setup C: The 100% private / local setup
+
+No external network calls for planning or reviews:
+
+```ini
+# etc/foreman.conf
+PLAN_PROVIDERS=openai-api
+REVIEW_PROVIDERS=openai-api
+OPENAI_MODEL=qwen2.5-coder:32b
+OPENAI_API_BASE=http://192.168.1.50:11434/v1
+```
+
+- Uses a local server (Ollama, vLLM) for both orchestration decisions and worker coding. Set any non-empty string for `OPENAI_API_KEY`.
+
+---
+
+## What to do next
+
+Now that you have chosen your orchestrator providers and worker runtimes, set up your installation:
+
+1. **Review system prerequisites**: Read [docs/SETUP.md](SETUP.md) for VM sizing (Ubuntu 22.04+, 4+ vCPU, 8+ GB RAM) and baseline installation commands.
+2. **Configure limits and providers**: Copy `etc/limits.example.conf` to `etc/limits.conf` and `etc/foreman.example.conf` to `etc/foreman.conf`, adjusting your chosen `PLAN_PROVIDERS` and budgets.
+3. **Provision worker containers**:
+   - For Antigravity workers:
+     ```bash
+     bin/worker-add 1
+     docker exec -it worker-1 agy-run   # Authenticate with Google account
+     ```
+   - For Claude Code API workers:
+     ```bash
+     printf '%s' "$ANTHROPIC_API_KEY" | bin/secret-set anthropic.key
+     bin/worker-add 2 --runtime claude
+     ```
+   - For local model workers:
+     ```bash
+     # Set COMPAT_BASE_URL in etc/limits.conf, then:
+     bin/worker-add 3 --runtime compat   # or --runtime aider
+     ```
+4. **Validate with doctor**: Run `bin/doctor` to verify your tools, proxy enforcement, secret permissions, and worker quota states.
+5. **Start your project**: Follow the quickstart steps in [README.md](../README.md) to launch services with `sudo scripts/install-services` and post your first goal via `bin/foreman goal "..."`.
