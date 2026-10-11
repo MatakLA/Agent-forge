@@ -6,6 +6,7 @@
   gemini  Gemini CLI with a Gemini API key              (pay per token)
   compat  Codex CLI on your own model server - any OpenAI Responses API: Ollama, vLLM, LM Studio, OpenRouter (COMPAT_BASE_URL)
   aider   Aider on your own model server - any OpenAI chat-completions API (the same COMPAT_BASE_URL)
+  opencode OpenCode CLI on your configured provider (COMPAT_BASE_URL)
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
 a read-only file mount (/run/secrets/api-key) that worker/af-agent puts into the agent's environment only - it never appears in a
@@ -39,6 +40,8 @@ RUNTIMES = {
                    key="compat.key", hosts=[], api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT"),
     "aider": dict(label="Aider on your model server (any OpenAI-compatible chat API)", image=API_IMAGE, key="compat.key", hosts=[],
                   api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT", own_git=False),
+    "opencode": dict(label="OpenCode (SST's OpenCode CLI, configured provider)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True),
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -47,6 +50,8 @@ CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabl
 # Aider: no update check, no analytics, no release notes, no edits to .gitignore, plain output for the event filter in af-agent
 AIDER_QUIET = ["--yes-always", "--no-pretty", "--no-stream", "--no-fancy-input", "--no-check-update", "--no-show-release-notes",
                "--analytics-disable", "--no-gitignore", "--no-show-model-warnings", "--no-detect-urls"]
+# OpenCode: non-interactive JSON stream for scan(), quiet
+OPENCODE_QUIET = ["--format", "json"]
 GEMINI_TRAILER = "Do the task described above."
 ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?")
 
@@ -104,6 +109,11 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv = ["af-agent", "aider"] + AIDER_QUIET + (["--model", "openai/" + model] if model else [])
         argv += ["--restore-chat-history"] if conversation else []
         return argv, prompt
+    if rt == "opencode":
+        argv = ["opencode", "run"] + OPENCODE_QUIET
+        argv += (["--model", model] if model else [])
+        argv += (["--session", conversation] if conversation else [])
+        return argv, prompt
     raise ValueError(f"unknown runtime {rt!r}")
 
 
@@ -123,7 +133,7 @@ def scan(rt, lines, prices=None):
     rt = rt or "agy"
     if rt == "compat":
         rt = "codex"                           # the same CLI and event stream
-    st = dict(tokens=0, tools=0, conversation_id=None, result=None)
+    st = dict(tokens=None if rt == "opencode" else 0, tools=0, conversation_id=None, result=None)
     text = []
     for line in lines:
         line = line.strip()
@@ -232,6 +242,64 @@ def scan(rt, lines, prices=None):
                                     error="" if ok else str(e.get("error") or f"aider exited with {e.get('exit_code')}"),
                                     usage=dict(sent=st.get("aider_sent", 0), received=st.get("aider_recv", 0)),
                                     cost_usd=round(cost, 6) if cost is not None else None)
+        elif rt == "opencode":
+            t = e.get("type") or e.get("event")
+            sid = e.get("sessionID") or e.get("session_id") or e.get("sessionId") or e.get("conversation_id")
+            if not sid and isinstance(e.get("part"), dict):
+                sid = e["part"].get("sessionID") or e["part"].get("session_id") or e["part"].get("sessionId")
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+            if t in ("tool_use", "tool_call", "tool") or part.get("type") in ("tool", "tool_use", "tool_call") or part.get("tool"):
+                st["tools"] += 1
+            elif t == "text":
+                txt = part.get("text") or e.get("text") or e.get("content") or ""
+                if txt:
+                    text.append(str(txt))
+            elif t in ("message", "message.part.delta", "message.part.updated", "assistant.message"):
+                txt = part.get("text") or e.get("text") or e.get("content") or (e.get("message") or {}).get("content") or ""
+                if isinstance(txt, list):
+                    txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
+                if txt:
+                    text.append(str(txt))
+            u = part.get("tokens") or e.get("tokens") or e.get("usage")
+            if isinstance(u, dict):
+                if any(k in u for k in ("input", "output", "input_tokens", "output_tokens", "total_tokens")):
+                    inp = u.get("input") or u.get("input_tokens") or 0
+                    out = u.get("output") or u.get("output_tokens") or 0
+                    tot = u.get("total_tokens") or (inp + out)
+                    st["tokens"] = (st["tokens"] or 0) + max(0, tot)
+            elif isinstance(u, (int, float)) and u > 0:
+                st["tokens"] = (st["tokens"] or 0) + int(u)
+
+            if t == "step_finish":
+                reason = part.get("reason") or e.get("reason") or ""
+                if reason in ("stop", "end", "completed", "complete") or (not reason and not part.get("type") == "tool"):
+                    ok = not part.get("error") and not e.get("error") and not e.get("is_error")
+                    err = str(part.get("error") or e.get("error") or ("error" if not ok else ""))
+                    st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err,
+                                        usage=part.get("tokens") or e.get("tokens") or e.get("usage"),
+                                        cost_usd=None)
+                elif reason in ("error", "failed"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=str(part.get("error") or e.get("error") or reason),
+                                        usage=part.get("tokens") or e.get("tokens") or e.get("usage"),
+                                        cost_usd=None)
+            elif t == "result":
+                ok = e.get("status") in ("success", "SUCCESS") or e.get("subtype") == "success" or not (e.get("error") or e.get("is_error"))
+                err = str(e.get("error") or ("" if ok else "error"))
+                res = str(e.get("response") or e.get("result") or "\n".join(text))[-4000:]
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                    response=res,
+                                    error=err,
+                                    usage=e.get("usage") or e.get("tokens"),
+                                    cost_usd=None)
+            elif t == "error":
+                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("error") or e.get("message") or "error")
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err, usage=None, cost_usd=None)
     for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
         st.pop(k, None)
     return st
