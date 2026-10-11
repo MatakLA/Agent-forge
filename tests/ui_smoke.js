@@ -25,6 +25,35 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const iso = '2026-01-15T13:49:21Z', wantLocal = new Date(iso).toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'});
   check('quota reset timestamps are shown in the viewer\'s own time, not UTC',
         w.eval("tsloc('quota low: Gemini weekly 0% (resets " + iso + ")')") === 'quota low: Gemini weekly 0% (resets ' + wantLocal + ')');
+  w.eval(`
+    window._origOverviewState = {g: F.goals, bl: F.backlog, onb: F.onboarding, ts: F.tasks};
+    F.goals = []; F.backlog = []; F.onboarding = []; F.tasks = [];
+    renderOverview(true);
+  `);
+  check('overview: explicit empty states render when arrays are empty',
+        txt('inbox').includes('Nothing needs your approval') &&
+        txt('onboarding').includes('No onboarding steps') &&
+        txt('goals').includes('No goals yet') &&
+        txt('backlog').includes('Backlog is empty'));
+  w.eval(`
+    window._origF = F; window._origFerr = window._ferr;
+    F = null; window._ferr = 'network timeout';
+    renderOverview(true);
+  `);
+  check('overview: failed fetch shows visible error message',
+        txt('inbox').includes('Failed to load') &&
+        txt('team').includes('Could not load team') &&
+        txt('goals').includes('Could not load goals') &&
+        txt('backlog').includes('Could not load backlog'));
+  w.eval(`
+    F = window._origF; window._ferr = window._origFerr;
+    F.goals = window._origOverviewState.g; F.backlog = window._origOverviewState.bl;
+    F.onboarding = window._origOverviewState.onb; F.tasks = window._origOverviewState.ts;
+    renderOverview(true);
+  `);
+  const overAct = [...d.querySelectorAll('#t-overview [data-open], #t-overview [data-ta], #t-overview [data-ga], #t-overview [data-bledit]')];
+  check('overview: all interactive elements are buttons reachable by keyboard',
+        overAct.length > 0 && overAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
   const click = sel => { const el = d.querySelector(sel); if (!el) { errors.push('no element ' + sel); return false; } el.dispatchEvent(new w.MouseEvent('click', {bubbles: true})); return true; };
   for (const t of ['tasks', 'live', 'timeline', 'insights', 'system', 'settings', 'overview']) {
     click('nav button[data-t="' + t + '"]'); await sleep(700);
