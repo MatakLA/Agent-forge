@@ -54,7 +54,8 @@ def _roles():
         if os.path.isdir(d):
             for f in sorted(os.listdir(d)):
                 if f.endswith(".md") and ROLE_SLUG.fullmatch(f[:-3]):
-                    txt = open(os.path.join(d, f)).read()
+                    with open(os.path.join(d, f)) as fh:
+                        txt = fh.read()
                     first = next((l for l in txt.splitlines() if l.startswith("# ")), "# " + f[:-3])
                     out[f[:-3]] = (first[2:].strip(), txt)
     return dict(sorted(out.items()))
@@ -159,7 +160,8 @@ def doc_get(name):
     if not p:
         return None
     try:
-        text = open(p).read()
+        with open(p) as fh:
+            text = fh.read()
     except FileNotFoundError:
         text = ""
     return dict(name=name, text=text, customized=isinstance(name, str) and name.startswith("role:") and p == doc_path(name, write=True))
