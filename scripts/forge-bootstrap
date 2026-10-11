@@ -109,6 +109,8 @@ if not any(t["name"] == "workers" for t in teams or []):
 # a further project in a new organisation: put the existing worker accounts into this org's team too
 c, teams = api("GET", f"/orgs/{ORG}/teams", admin)
 wt = next(t for t in teams if t["name"] == "workers")
+# a team created for an earlier repository does not include later ones: add this repository explicitly
+api("PUT", f"/teams/{wt['id']}/repos/{ORG}/{REPO}", admin)
 _, users = api("GET", "/admin/users?limit=200", admin)
 for u in users or []:
     if re.fullmatch(r"worker-\d+", u.get("login", "")):
