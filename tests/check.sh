@@ -51,6 +51,9 @@ fi
 if [ -f tests/test_runtime_opencode.py ]; then
   $PY tests/test_runtime_opencode.py || exit 1
 fi
+if [ -f tests/test_goose_registry.py ]; then
+  $PY tests/test_goose_registry.py || exit 1
+fi
 echo "check: ALL OK"
 
 
