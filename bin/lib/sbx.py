@@ -267,6 +267,7 @@ def ledger_path(project=None):
     if project:
         if not PROJECT_RE.fullmatch(project) or ".." in project or "/" in project or "\\" in project:
             raise ValueError(f"invalid project {project!r}")
+        return os.path.join(RUNS, "projects", project, "ledger.jsonl")
     return os.path.join(RUNS, "ledger.jsonl")
 
 
