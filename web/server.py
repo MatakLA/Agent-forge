@@ -14,7 +14,7 @@ Live updates are pushed with Server-Sent Events (/api/stream): the foreman's sta
 Config (environment): BIND_PORT (8171), FORGE_DIR, VM_IP / VM_USER / VM_KEY / VM_KNOWN_HOSTS for remote mode, DASHBOARD_HOSTS,
 DASHBOARD_TOKEN (optional sign-in), FOREMAN_SERVICE / FOREMAN_SERVICE_PROJECT (systemd unit names), CLAUDE_PROJECT.
 """
-import atexit, json, os, re, shlex, signal, sys, threading, time, urllib.parse
+import atexit, hmac, json, os, re, shlex, signal, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WEB = os.path.dirname(os.path.abspath(__file__))
@@ -79,19 +79,37 @@ STATIC = load_static()
 
 def host_allowed(host):
     host = (host or "").strip().lower()
-    name = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]
-    return name in ("127.0.0.1", "localhost", "[::1]") or name.endswith(".ts.net") or name in DASHBOARD_HOSTS
+    if not host:
+        return False
+    if host.startswith("["):
+        if "]" not in host:
+            return False
+        name, _, rest = host.partition("]")
+        name = name + "]"
+        if rest and (not rest.startswith(":") or not rest[1:].isdigit() or len(rest) == 1):
+            return False
+    elif ":" in host:
+        name, port = host.rsplit(":", 1)
+        if not port or not port.isdigit():
+            return False
+    else:
+        name = host
+    if not name:
+        return False
+    return (name in ("127.0.0.1", "localhost", "[::1]")
+            or (name.endswith(".ts.net") and len(name) > 7 and not name.startswith("."))
+            or name in DASHBOARD_HOSTS or host in DASHBOARD_HOSTS)
 
 
 def token_ok(cookie_header, query_token=""):
     if not DASHBOARD_TOKEN:
         return True
-    import hmac
-    if query_token and hmac.compare_digest(query_token, DASHBOARD_TOKEN):
+    qtok = str(query_token or "").strip()
+    if qtok and hmac.compare_digest(qtok, DASHBOARD_TOKEN):
         return True
     for part in (cookie_header or "").split(";"):
         k, _, v = part.strip().partition("=")
-        if k == "af_token" and hmac.compare_digest(v, DASHBOARD_TOKEN):
+        if k.strip() == "af_token" and hmac.compare_digest(v.strip().strip('"'), DASHBOARD_TOKEN):
             return True
     return False
 
@@ -105,7 +123,10 @@ def as_json(out, err, rc):
     try:
         return json.loads(out)
     except ValueError:
-        return {"ok": False, "error": (err or out or f"exit {rc}").strip()[-400:]}
+        msg = (err or out or f"exit {rc}").strip()[-400:]
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+        return {"ok": False, "error": msg}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -120,6 +141,8 @@ class Handler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def _deny(self, code, msg):
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
         raw = msg.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -133,12 +156,31 @@ class Handler(BaseHTTPRequestHandler):
         qtok = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("token", [""])[0]
         if not token_ok(self.headers.get("Cookie"), qtok):
             self._deny(401, "sign in: open this page as /?token=<DASHBOARD_TOKEN>"); return False
-        if post and self.headers.get("X-Agent-Forge") != "1":
-            self._deny(403, "missing X-Agent-Forge header"); return False
+        if post:
+            if self.headers.get("X-Agent-Forge") != "1":
+                self._deny(403, "missing X-Agent-Forge header"); return False
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                origin = origin.strip()
+                if origin == "null" or not origin:
+                    self._deny(403, "origin not allowed"); return False
+                o_host = urllib.parse.urlsplit(origin).netloc if "://" in origin else origin
+                if not host_allowed(o_host):
+                    self._deny(403, "origin not allowed"); return False
+            referer = self.headers.get("Referer")
+            if referer is not None:
+                referer = referer.strip()
+                if referer == "null" or not referer:
+                    self._deny(403, "referer not allowed"); return False
+                r_host = urllib.parse.urlsplit(referer).netloc if "://" in referer else referer
+                if not host_allowed(r_host):
+                    self._deny(403, "referer not allowed"); return False
         return True
 
     def _json(self, obj, code=200):
         raw = json.dumps(obj).encode()
+        if DASHBOARD_TOKEN:
+            raw = raw.replace(DASHBOARD_TOKEN.encode(), b"[REDACTED]")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -146,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _raw(self, raw, ctype, cache="no-store"):
+        if DASHBOARD_TOKEN and isinstance(raw, (bytes, bytearray)):
+            raw = raw.replace(DASHBOARD_TOKEN.encode(), b"[REDACTED]")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
@@ -384,8 +428,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
     # ------------------------------------------------------------------------------------------------------- GET: reads
+    def do_HEAD(self):
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        self.send_response(405); self.end_headers()
+
     def do_GET(self):
-        if self.path == "/healthz":
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        if self.path.split("?")[0] == "/healthz":
             self._json({"ok": True}); return
         if not self._allowed():
             return
