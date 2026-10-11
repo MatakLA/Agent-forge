@@ -48,6 +48,9 @@ fi
 if [ -f tests/test_opencode_registries.py ]; then
   $PY tests/test_opencode_registries.py || exit 1
 fi
+if [ -f tests/test_runtime_opencode.py ]; then
+  $PY tests/test_runtime_opencode.py || exit 1
+fi
 echo "check: ALL OK"
 
 
