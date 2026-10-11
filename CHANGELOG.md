@@ -14,6 +14,9 @@ agreement are gone, contributions are accepted under Apache-2.0 (`git commit -s`
 `NOTIFY_URL=outbox`: notifications are appended to `runs/notify-outbox.jsonl` for a relay outside the machine (when the
 sandbox may not reach your notification server itself); the file can be deleted at any time.
 
+`worker/entrypoint.sh`: Validate `FORGEJO_USER` and `FORGE_REPO` against strict allow-patterns before execution, quote all shell variable expansions, set umask 077, strip group/other permissions on workspace and `.git`, and drop root privileges to unprivileged `worker` user.
+`egress/entrypoint.sh`: Validate `EGRESS_MODE` against allow-pattern `^(enforce|discovery)$`, set umask 027, verify enforce configuration parsing before daemon exec, and drop root privileges to unprivileged `proxy` user.
+
 ## 0.11.0 - 2026-10-08
 **You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each
 reviewed branch can wait for your OK. Everything that waits for you is in one place - Overview → Needs you - with one or two
