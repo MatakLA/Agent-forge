@@ -138,9 +138,21 @@ def dispatch_ready():
     pct = lambda w: api_rank if runtimes.is_api(runtime_of(w)) else quota_pct(quota_rows(w, 120), fam)
     by_quota = lambda ws: order_by_quota(ws, pct, LAST_DISPATCHED)
     free = by_quota(free)
+    shared = {f.strip() for f in str(ctx.C.get("SHARED_FILES", "")).split(",") if f.strip()}
+    claimed_ids = {t["id"] for t in running}
+    claimed_keys = {t.get("key") for t in running if t.get("key")}
     for t in ready_tasks(ts, busy_files, {g["id"]: g for g in goals()}):
         if not free:
             return
+        t_key = t.get("key")
+        # Invariant: do not dispatch tasks with overlapping files, duplicate keys, or already-claimed runs
+        if t["id"] in claimed_ids or (t_key and t_key in claimed_keys):
+            continue
+        if (set(t.get("files", [])) - shared) & busy_files:
+            continue
+        fresh = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json")) or {}
+        if fresh.get("status") != "pending" or fresh.get("worker"):
+            continue
         if t.get("pin_worker"):                     # the owner assigned this task to one worker: wait for that one
             if t["pin_worker"] not in free:
                 continue
@@ -207,6 +219,9 @@ def dispatch_ready():
         run = out.split("-> ")[-1].split(" (")[0].strip()
         t.update(status="running", worker=w, run=run, dispatched=sbx.now())
         save_task(t)
+        claimed_ids.add(t["id"])
+        if t_key:
+            claimed_keys.add(t_key)
         LAST_DISPATCHED[w] = time.time()
         QUOTA_CACHE.pop(w, None)
         free.remove(w)
@@ -218,18 +233,14 @@ def dispatch_ready():
 
 
 def orphaned(run):
-    """A run whose supervisor died without finishing it (machine restart, OOM, killed by hand). Checked in this order on
-    purpose: a supervisor writes `finished` and then exits, so 'pid dead' first, then 'still not finished'."""
-    pid = sbx.read(os.path.join(run, "pid"))
-    if not pid.isdigit():
+    """A run whose supervisor died without finishing it (machine restart, OOM, killed by hand). A finished run is never
+    an orphan; an actively running run is never an orphan. If it has neither finished nor is running, it is orphaned."""
+    # Invariant: a run is orphaned if and only if it has not finished and is not running
+    if os.path.exists(os.path.join(run, "finished")):
         return False
-    if sbx.alive(pid):
-        try:                                   # after a reboot the number may belong to an unrelated process
-            if b"run-supervisor" in open(f"/proc/{pid}/cmdline", "rb").read():
-                return False
-        except OSError:
-            return False
-    return not os.path.exists(os.path.join(run, "finished"))
+    if sbx.is_running(run):
+        return False
+    return True
 
 
 def recover_orphan(t):
@@ -256,11 +267,22 @@ def recover_orphan(t):
 
 
 def advance():
-    cancelled = {g["id"] for g in goals() if g["status"] == "cancelled"}
+    cancelled = {g["id"] for g in goals() if g.get("status") == "cancelled"}
+    known_goals = {g["id"] for g in goals()}
     can_think = llm_available()
     for t in tasks():
-        if t["goal"] in cancelled and t["status"] not in ("done", "cancelled") and not (t["status"] == "running" and not os.path.exists(os.path.join(t.get("run", ""), "finished"))):
-            t["status"] = "cancelled"; save_task(t); continue
+        gid = t.get("goal") or t.get("goal_id")
+        # Invariant: cancel tasks referencing missing or cancelled goals, protecting lookups from KeyError
+        if gid not in known_goals or gid in cancelled:
+            if t.get("status") not in ("done", "cancelled"):
+                if t.get("status") == "running" and not os.path.exists(os.path.join(t.get("run", ""), "finished")):
+                    pass
+                else:
+                    why = f"goal {gid} no longer exists" if gid not in known_goals else (t.get("cancelled_why") or "goal cancelled")
+                    t.update(status="cancelled", cancelled_why=why)
+                    save_task(t)
+                    event(f"task {t['id']}: {why}", task=t["id"])
+                    continue
         if t["status"] == "running" and t.get("run") and orphaned(t["run"]):
             recover_orphan(t); continue
         if t["status"] == "running" and t.get("cancel_requested") and os.path.exists(os.path.join(t.get("run", ""), "finished")):
@@ -311,37 +333,42 @@ def advance():
             submit("merge:" + t["id"], step_upstream_merge, t)
         if t["status"] == "merge-ready":           # the owner approved the merge (APPROVE=merge)
             submit("task:" + t["id"], step_owner_merge, t)
-    if not can_think:
-        return
     for g in goals():
-        if g["status"] == "new":
+        if g.get("status") == "new" and can_think:
             submit("goal:" + g["id"], step_plan, g)
-        elif g["status"] == "active":
-            mine = [t for t in tasks() if t["goal"] == g["id"]]
+        elif g.get("status") == "active":
+            mine = [t for t in tasks() if (t.get("goal") or t.get("goal_id")) == g["id"]]
             if not mine:
-                g.update(status="done", summary="no tasks generated"); save_goal(g); continue
-            all_ts = {t2["id"]: t2["status"] for t2 in tasks()}
+                g.update(status="done", summary="no tasks generated", finished=sbx.now()); save_goal(g); continue
+            all_ts = {t2["id"]: t2.get("status") for t2 in tasks()}
             for t in mine:
-                if t["status"] == "pending":
+                if t.get("status") == "pending":
                     bad_deps = [d for d in t.get("depends_on", []) if all_ts.get(d) in ("blocked", "cancelled")]
                     if bad_deps:
                         msg = "dependency " + ", ".join(bad_deps) + " blocked/cancelled"
                         t.update(status="blocked", blocked_why=msg)
                         save_task(t)
                         event("task " + t["id"] + " blocked: " + msg, task=t["id"])
-            if all(t["status"] in ("done", "blocked", "cancelled") for t in mine):
+            if all(t.get("status") in ("done", "blocked", "cancelled") for t in mine):
+                # Invariant: a goal must leave active state once all its tasks are done, blocked, or cancelled
+                if all(t.get("status") == "cancelled" for t in mine):
+                    g.update(status="cancelled", summary="all tasks cancelled", finished=sbx.now())
+                    save_goal(g); event(f"goal {g['id']} cancelled: all tasks cancelled", goal=g["id"]); continue
+                if all(t.get("status") in ("blocked", "cancelled") for t in mine):
+                    g.update(status="blocked", summary="all tasks blocked or cancelled", finished=sbx.now())
+                    save_goal(g); event(f"goal {g['id']} blocked: all tasks blocked or cancelled", goal=g["id"]); continue
                 max_rnd = int(ctx.C.get("MAX_GOAL_ROUNDS", 3))
-                if g.get("rounds", 0) >= max_rnd:
-                    g.update(status="cancelled" if all(t["status"] in ("blocked", "cancelled") for t in mine) else "done", summary="stopped after maximum planning rounds", finished=sbx.now())
-                    save_goal(g); event(f"goal {g['id']} closed after {g.get('rounds', 0)} rounds (blocked tasks handled automatically)", goal=g["id"]); continue
-                res = "\n".join(f"- {t['id']} {t['title']}: {t['status']}; {(t['history'] or [{}])[-1].get('feedback', '')[:300]}" for t in mine)
+                if g.get("rounds", 0) >= max_rnd or not can_think:
+                    g.update(status="done", summary="all tasks completed", finished=sbx.now())
+                    save_goal(g); event(f"goal {g['id']} closed after {g.get('rounds', 0)} rounds", goal=g["id"]); notify("goal_done", g); continue
+                res = "\n".join(f"- {t['id']} {t.get('title', t['id'])}: {t.get('status')}; {(t.get('history') or [{}])[-1].get('feedback', '')[:300]}" for t in mine)
                 PHASE[g["id"]] = "checking whether the goal is met"
                 submit("goal:" + g["id"], step_plan, g, res)
     for g in goals():
-        if g["status"] == "new" and "goal:" + g["id"] in INFLIGHT:
+        if g.get("status") == "new" and "goal:" + g["id"] in INFLIGHT:
             PHASE.setdefault(g["id"], "planning tasks")
     req = gstate().get("roadmap_request")
-    if req:
+    if req and can_think:
         PHASE["roadmap"] = "project roadmap"
         submit("roadmap:roadmap", step_roadmap, req)
     feed_idle_workers()
