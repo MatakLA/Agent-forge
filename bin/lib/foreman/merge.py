@@ -80,9 +80,10 @@ def requeue_gate(t, why):
         return
     t["regates"] = t.get("regates", 0) + 1
     t["history"].append(dict(at=sbx.now(), outcome="regate", why=why))
-    if t["regates"] > 4:
+    # Invariant: the 4-round cap blocks after exactly 4 rounds (not 3 or 5), per task budget.
+    if t["regates"] >= 4:
         save_task(t)
-        return block(t, f"approved but could not be merged after {t['regates'] - 1} tries (last: {why})")
+        return block(t, f"approved but could not be merged after {t['regates']} tries (last: {why})")
     t["status"] = "gate"
     t["not_before"] = time.time() + 30 * t["regates"]
     save_task(t)
@@ -135,6 +136,11 @@ def step_upstream_merge(t):
     if not up:
         return lambda: None
     n = (t.get("upstream_pr") or {}).get("number")
+    if not n:
+        p = up.find_pr(t["branch"], "any")
+        n = p.get("number") if p else None
+    if not n:
+        return lambda: block(t, f"could not locate {up.kind} PR for {t['branch']}")
     try:
         st = {}
         for _ in range(10):                     # GitHub computes mergeability asynchronously
@@ -144,7 +150,10 @@ def step_upstream_merge(t):
             time.sleep(3)
         if st["state"] == "open" and ctx.C["AUTO_MERGE"] and st["mergeable"]:
             ok, msg = up.merge(n)
-            st = up.pr_state(n) if ok else dict(st, why=msg)
+            # Invariant: external merge between polls - re-read pr_state on failure so manual/external merges are recognized immediately.
+            st = up.pr_state(n)
+            if not ok and st.get("state") != "merged":
+                st = dict(st, why=msg)
         if st["state"] == "merged":
             upstream.sync_main(up, ctx.FD)
             return lambda: finish(t, f"merged {up.kind} PR #{n}", t.get("merge_reviewer") or "foreman", t.get("merge_feedback") or "", n)
@@ -214,12 +223,22 @@ def already_merged_pr(branch):
         prs = json.loads(out)
     except Exception:
         return None
-    return next((p["number"] for p in prs if p.get("head", {}).get("ref") == branch and p.get("merged")), None)
+    if not isinstance(prs, list):
+        return None
+    # Invariant: PRs with head=None (e.g. deleted ref) must not raise AttributeError and hide merged PRs.
+    return next((p["number"] for p in prs if isinstance(p, dict) and (p.get("head") or {}).get("ref") == branch and p.get("merged")), None)
 
 
 def step_gate_review_merge(t):
     pr = already_merged_pr(t["branch"])
     if pr:
+        up = upstream_obj()
+        if up:
+            try:
+                import upstream
+                upstream.sync_main(up, ctx.FD)
+            except Exception:
+                pass
         return lambda: finish(t, f"already merged as PR #{pr} (recovered after an interruption)", "foreman", "", pr)
     PHASE[t["id"]] = "rebase onto main"
     rb = auto_rebase(t["branch"])
@@ -292,6 +311,10 @@ def step_gate_review_merge(t):
 def do_merge(t, who, fb, gate):
     """Merge an approved branch: a pull / merge request on GitHub or GitLab, or a PR on the internal Forgejo. Returns the
     function the loop applies (finish, or rework / requeue / block when the merge itself fails)."""
+    # Invariant: crash recovery / idempotency - retrying do_merge must detect prior merge and finish cleanly without duplicate PR.
+    pr = already_merged_pr(t["branch"])
+    if pr:
+        return lambda: finish(t, f"already merged as PR #{pr} (recovered after an interruption)", who or "foreman", fb, pr)
     up = upstream_obj()
     if up:
         return merge_upstream(t, up, who, fb, gate)
@@ -307,7 +330,7 @@ def do_merge(t, who, fb, gate):
     if not m:
         prs = sh([os.path.join(ctx.BIN, "forgejo-api"), "GET", f"/repos/{sbx.FORGE_REPO}/pulls?state=open&limit=50"], timeout=60)[1]
         try:
-            m2 = [p["number"] for p in json.loads(prs) if p["head"]["ref"] == t["branch"]]
+            m2 = [p["number"] for p in json.loads(prs) if isinstance(p, dict) and (p.get("head") or {}).get("ref") == t["branch"]]
         except Exception:
             m2 = []
         if not m2:
@@ -346,6 +369,10 @@ def await_owner(t, kind, who="", fb="", gate=""):
 def step_owner_merge(t):
     """The owner approved the merge. Main may have moved since the review: an auto-rebase that changed the branch sends it
     through the gate and the review again (it merges right after, the approval stays); a conflict goes back to the worker."""
+    # Invariant: crash recovery - detect prior merge before re-rebasing or duplicate merge.
+    pr = already_merged_pr(t["branch"])
+    if pr:
+        return lambda: finish(t, f"already merged as PR #{pr} (recovered after an interruption)", t.get("merge_reviewer") or "owner", t.get("merge_feedback") or "", pr)
     PHASE[t["id"]] = "merge (approved by you)"
     rb = auto_rebase(t["branch"])
     if rb == "conflict":
