@@ -49,11 +49,14 @@ def api(method, path, token, body=None, ok=(200, 201, 204), exists=(409, 422)):
 
 def user(name, scopes, admin=False):
     """Create a Forgejo user with a random password and an access token (kept in the secrets dir); no-op if the token exists."""
-    if secret(f"{name}.token"):
-        say(f"user {name}: token already in {S}"); return secret(f"{name}.token")
     users = subprocess.run(["docker", "exec", CT, "forgejo", "admin", "user", "list"], capture_output=True, text=True).stdout
-    if any(l.split()[1:2] == [name] for l in users.splitlines()[1:]):
+    exists = any(l.split()[1:2] == [name] for l in users.splitlines()[1:])
+    if secret(f"{name}.token") and exists:
+        say(f"user {name}: token already in {S}"); return secret(f"{name}.token")
+    if exists:
         sys.exit(f"✘ user {name} exists but {S}/{name}.token is missing - create a token for it in the web UI and save it there")
+    if secret(f"{name}.token"):
+        say(f"user {name}: the token in {S} belongs to no Forgejo user (left over from an older install) - creating the user, replacing it")
     cmd = ["docker", "exec", CT, "forgejo", "admin", "user", "create", "--username", name, "--email", f"{name}@agent-forge.local",
            "--random-password", "--must-change-password=false", "--access-token", "--access-token-name", f"{name}-agent-forge",
            "--access-token-scopes", scopes] + (["--admin"] if admin else [])
