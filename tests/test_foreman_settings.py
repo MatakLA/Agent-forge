@@ -61,6 +61,7 @@ class TestForemanSettings(unittest.TestCase):
         content = open(target).read()
         self.assertNotIn("AUTO_MERGE", content)
         self.assertEqual(content.strip(), "AUTOPILOT=1")
+        assert "AUTO_MERGE" not in content and content.strip() == "AUTOPILOT=1"
 
     def test_write_conf_safe_against_key_equals_injection(self):
         """write_conf must raise ValueError when a key contains '=' or newlines, preventing config corruption."""
@@ -77,6 +78,7 @@ class TestForemanSettings(unittest.TestCase):
         content = open(target).read()
         self.assertNotIn("INJECTED", content)
         self.assertEqual(content.strip(), "VALID_KEY=initial")
+        assert "INJECTED" not in content and content.strip() == "VALID_KEY=initial"
 
     def test_settings_apply_rejects_path_traversal(self):
         """settings_apply must reject path traversal and arbitrary files in VISION_FILE, PROJECT_DIR, and LOCAL_TZ."""
@@ -89,6 +91,7 @@ class TestForemanSettings(unittest.TestCase):
         self.assertIn("VISION_FILE", errs)
         self.assertIn("PROJECT_DIR", errs)
         self.assertIn("LOCAL_TZ", errs)
+        assert "VISION_FILE" in errs and "PROJECT_DIR" in errs and "LOCAL_TZ" in errs
 
     def test_settings_apply_returns_all_errors_in_one_pass(self):
         """settings_apply must collect and return errors for every invalid key simultaneously."""
@@ -102,6 +105,7 @@ class TestForemanSettings(unittest.TestCase):
         self.assertEqual(errs.get("MAX_PARALLEL"), "number 1-64")
         self.assertEqual(errs.get("UNKNOWN_KEY"), "not editable")
         self.assertEqual(len(errs), 3)
+        assert len(errs) == 3
 
     def test_notify_events_rejects_unknown_kind(self):
         """NOTIFY_EVENTS multi-select must reject unknown kinds while accepting valid ones."""
@@ -115,6 +119,7 @@ class TestForemanSettings(unittest.TestCase):
         self.assertEqual(errs_good, {})
         content = open(self.foreman_conf).read()
         self.assertIn("NOTIFY_EVENTS=goal_done,task_blocked,approval", content)
+        assert "NOTIFY_EVENTS=goal_done,task_blocked,approval" in content
 
     def test_settings_apply_routes_scopes_correctly(self):
         """settings_apply writes project keys to foreman.conf and limits to limits.conf."""
@@ -136,6 +141,7 @@ class TestForemanSettings(unittest.TestCase):
         self.assertIn("MAX_PARALLEL=8", limits_content)
         self.assertNotIn("CLAUDE_MODEL", limits_content)
         self.assertNotIn("AUTOPILOT", limits_content)
+        assert "CLAUDE_MODEL=opus" in foreman_content and "MAX_PARALLEL=8" in limits_content
 
     def test_settings_help_text_restart_accuracy(self):
         """Every EDITABLE key must have HELP text in settings.js stating it applies live, and restart keys must state so."""
