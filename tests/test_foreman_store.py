@@ -113,6 +113,22 @@ class TestForemanStore(unittest.TestCase):
         store.jsave(test_path, initial_data)
         self.assertEqual(store.jload(test_path), initial_data)
 
+        # Verify temp file location and suffix used during jsave:
+        # jsave must write to <path>.tmp in the same directory before replacing.
+        recorded_replace = []
+        orig_replace = os.replace
+
+        def track_replace(src, dst):
+            recorded_replace.append((src, dst))
+            return orig_replace(src, dst)
+
+        with mock.patch("os.replace", side_effect=track_replace):
+            store.jsave(test_path, {"key": "new_valid_data", "counter": 2})
+
+        self.assertEqual(recorded_replace, [(test_path + ".tmp", test_path)])
+        self.assertEqual(os.path.dirname(recorded_replace[0][0]), os.path.dirname(test_path))
+        self.assertTrue(recorded_replace[0][0].endswith(".tmp"))
+
         # 1. Monkeypatch json.dump to raise partway through writing
         def broken_dump(obj, fp, *args, **kwargs):
             fp.write('{"partial": "corrupted_content')
@@ -121,11 +137,17 @@ class TestForemanStore(unittest.TestCase):
 
         with mock.patch("json.dump", side_effect=broken_dump):
             with self.assertRaises(IOError):
-                store.jsave(test_path, {"key": "new_corrupted_data", "counter": 2})
+                store.jsave(test_path, {"key": "new_corrupted_data", "counter": 3})
 
         # Destination file must remain unchanged
         recovered_dump = store.jload(test_path, default={})
-        self.assertEqual(recovered_dump, initial_data, "jsave crash corrupted destination file")
+        self.assertEqual(recovered_dump, {"key": "new_valid_data", "counter": 2}, "jsave crash corrupted destination file")
+
+        # The partial write was flushed to test_path + ".tmp" in the same directory
+        expected_tmp = test_path + ".tmp"
+        self.assertTrue(os.path.exists(expected_tmp), f"Expected temporary file {expected_tmp} to exist")
+        self.assertFalse(os.path.exists(test_path + ".tmp.bak"), "Temporary file must not use .tmp.bak suffix")
+        os.remove(expected_tmp)
 
         # 2. Monkeypatch os.replace to raise before replacement completes
         def broken_replace(src, dst):
@@ -133,12 +155,15 @@ class TestForemanStore(unittest.TestCase):
 
         with mock.patch("os.replace", side_effect=broken_replace):
             with self.assertRaises(OSError):
-                store.jsave(test_path, {"key": "another_uncommitted_update", "counter": 3})
+                store.jsave(test_path, {"key": "another_uncommitted_update", "counter": 4})
 
         recovered_replace = store.jload(test_path, default={})
-        self.assertEqual(recovered_replace, initial_data, "os.replace failure corrupted destination file")
+        self.assertEqual(recovered_replace, {"key": "new_valid_data", "counter": 2}, "os.replace failure corrupted destination file")
+        if os.path.exists(expected_tmp):
+            os.remove(expected_tmp)
 
-        assert recovered_dump == initial_data
+        assert recovered_dump == {"key": "new_valid_data", "counter": 2}
+        assert recorded_replace[0][0] == test_path + ".tmp"
 
     def test_security_injection_payloads(self):
         """Security: Injection payloads (SQLi, cmd injection, null bytes, unicode) are stored cleanly."""
