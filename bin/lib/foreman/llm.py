@@ -5,16 +5,61 @@ Invariants:
 - providers_for resolves configured providers by decision kind with fallback to ORCHESTRATOR_PROVIDER.
 - llm validates JSON responses against schemas (REVIEW_SCHEMA, OBJECT_SCHEMA), extracting JSON from code fences and prose.
 - Provider errors or credential failures cascade to the next provider, raising Unavailable only on total exhaustion.
+- Raw API keys, tokens, and Authorization headers are stripped before logging, event recording, or exception re-raising.
 """
-import json, os, threading, time
+import json, os, re, threading, time, urllib.parse
 
 import sbx
 
 from . import ctx, util
 from .util import extract_json, fmt_ts, parse_limit, sh
-from .store import event, gstate, state_tx
+from .store import event as _raw_event, gstate, state_tx
 from .pool import RESERVED, has_quota, order_by_quota, quota_pct, quota_rows, runtime_of, worker_busy, workers
 from .knowledge import load_system_prompt
+
+
+def _sanitize_secrets(text):
+    """Strips API keys, bearer tokens, and Authorization/x-api-key headers from text."""
+    if not isinstance(text, str) or not text:
+        return text
+    secrets = set()
+    try:
+        import providers
+        for k in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+            try:
+                s = providers.get_secret(k)
+                if s and isinstance(s, str) and s.strip():
+                    secrets.add(s.strip())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for k in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+        val = os.environ.get(k, "").strip()
+        if val:
+            secrets.add(val)
+
+    for s in secrets:
+        if len(s) >= 3:
+            text = text.replace(s, "[REDACTED]")
+            try:
+                enc = urllib.parse.quote(s)
+                if enc != s:
+                    text = text.replace(enc, "[REDACTED]")
+            except Exception:
+                pass
+
+    text = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9_\-\.\:\+]+', 'Bearer [REDACTED]', text)
+    text = re.sub(r'''(?i)(['"](?:authorization|x-api-key|x-goog-api-key)['"]\s*:\s*['"])(?:Bearer\s+)?[^'"]+(['"])''', r'\1[REDACTED]\2', text)
+    text = re.sub(r'''(?i)(['"](?:authorization|x-api-key|x-goog-api-key)['"]\s*,\s*['"])(?:Bearer\s+)?[^'"]+(['"])''', r'\1[REDACTED]\2', text)
+    text = re.sub(r'(?i)\b(authorization)\s*:\s*(?:token\s+|basic\s+|bearer\s+)?([^\s,;\'"\}]+)', r'\1: [REDACTED]', text)
+    text = re.sub(r'(?i)\b(x-api-key|x-goog-api-key)\s*[:=]\s*[\'"]?[^\s,;\'"\}]+[\'"]?', r'\1: [REDACTED]', text)
+    text = re.sub(r'(?i)([?&](?:api_?key|key|token|secret)=)[^\s&\'"\}]+', r'\1[REDACTED]', text)
+    return text
+
+
+def event(msg, **kw):
+    _raw_event(_sanitize_secrets(str(msg)), **kw)
 
 
 # ---------------------------------------------------------------- LLM layer: free subscription providers first, paid APIs only if configured
@@ -171,7 +216,8 @@ def _via_paid_api(name, prompt, system):
     except ValueError:          # no key configured
         return None, None
     except Exception as e:
-        log_llm(KIND.k, who, 1, time.time() - t0, None, None, str(e)[:300])
+        safe_err = _sanitize_secrets(str(e))
+        log_llm(KIND.k, who, 1, time.time() - t0, None, None, safe_err[:300])
         return None, None
 
     if not isinstance(r, dict):
@@ -179,8 +225,9 @@ def _via_paid_api(name, prompt, system):
     is_err = r.get("is_error") or not (r.get("text") or "").strip()
     dur = r.get("duration_s")
     dur = (time.time() - t0) if dur is None else dur
-    log_llm(KIND.k, who, 1 if is_err else 0, dur, r.get("cost_usd"), r.get("usage"),
-            (r.get("text") or r.get("error") or "")[:300])
+    raw_head = r.get("text") or r.get("error") or ""
+    safe_head = _sanitize_secrets(raw_head)[:300]
+    log_llm(KIND.k, who, 1 if is_err else 0, dur, r.get("cost_usd"), r.get("usage"), safe_head)
     if is_err:
         return None, None
     return r["text"], who
@@ -231,10 +278,7 @@ def parse_and_validate(text, schema_str):
     return data
 
 
-def llm(kind, prompt, subject=""):
-    """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
-    tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code). `subject`: the task or
-    goal id the call is about (logged, for the cost of a task or goal)."""
+def _llm_inner(kind, prompt, subject=""):
     KIND.k, KIND.subject = kind, subject
     system = load_system_prompt()
     schema = schema_for(kind)
@@ -258,16 +302,30 @@ def llm(kind, prompt, subject=""):
             continue
         if text and parse_and_validate(text, schema) is not None:
             return text, who
-    raise Unavailable(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})")
+    raise Unavailable(_sanitize_secrets(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})"))
+
+
+def llm(kind, prompt, subject=""):
+    """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
+    tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code). `subject`: the task or
+    goal id the call is about (logged, for the cost of a task or goal)."""
+    try:
+        return _llm_inner(kind, prompt, subject)
+    except Unavailable as e:
+        raise Unavailable(_sanitize_secrets(str(e))) from None
+    except Exception as e:
+        safe_msg = _sanitize_secrets(str(e))
+        raise type(e)(safe_msg) from None
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
     if ctx.FD:
         os.makedirs(ctx.FD, exist_ok=True)
+    safe_head = _sanitize_secrets(head) if isinstance(head, str) else head
     with open(os.path.join(ctx.FD or ".", "llm.jsonl"), "a") as f:
         f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc,
                                 secs=round(secs, 1) if secs is not None else 0.0,
-                                cost_usd=cost, usage=usage, head=head,
+                                cost_usd=cost, usage=usage, head=safe_head,
                                 subject=KIND.subject or None), ensure_ascii=False) + "\n")
 
 
