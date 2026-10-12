@@ -48,13 +48,16 @@ class TestForemanLLM(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="af-llm-test-")
         self.old_fd = ctx.FD
         self.old_c = dict(ctx.C)
-        self.old_env_orch = os.environ.get("ORCHESTRATOR_PROVIDER")
+        self.old_env = {k: os.environ.get(k) for k in (
+            "ORCHESTRATOR_PROVIDER", "OPENAI_MODEL", "OPENAI_API_BASE", "GEMINI_MODEL", "ANTHROPIC_MODEL"
+        )}
 
         ctx.FD = os.path.join(self.tmp, "foreman")
         os.makedirs(ctx.FD, exist_ok=True)
 
-        if "ORCHESTRATOR_PROVIDER" in os.environ:
-            del os.environ["ORCHESTRATOR_PROVIDER"]
+        for k in self.old_env:
+            if k in os.environ:
+                del os.environ[k]
 
     def tearDown(self):
         """Restore global context and clean up temp files."""
@@ -62,10 +65,11 @@ class TestForemanLLM(unittest.TestCase):
         ctx.C.clear()
         ctx.C.update(self.old_c)
 
-        if self.old_env_orch is not None:
-            os.environ["ORCHESTRATOR_PROVIDER"] = self.old_env_orch
-        elif "ORCHESTRATOR_PROVIDER" in os.environ:
-            del os.environ["ORCHESTRATOR_PROVIDER"]
+        for k, v in self.old_env.items():
+            if v is not None:
+                os.environ[k] = v
+            elif k in os.environ:
+                del os.environ[k]
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -742,6 +746,68 @@ class TestForemanLLM(unittest.TestCase):
         self.assertIsNone(llm.parse_and_validate("   ", None))
         self.assertEqual(llm.parse_and_validate("plain text response", None), "plain text response")
         assert llm.parse_and_validate(None, llm.OBJECT_SCHEMA) is None
+
+    def test_providers_for_empty_list_orchestrator_falls_back_to_env(self):
+        """Test list with only empty strings in ORCHESTRATOR_PROVIDER falls back to os.environ."""
+        ctx.C.clear()
+        ctx.C["PLAN_PROVIDERS"] = ""
+        ctx.C["ORCHESTRATOR_PROVIDER"] = ["", "  "]
+        os.environ["ORCHESTRATOR_PROVIDER"] = "gemini-api"
+        provs = llm.providers_for("plan")
+        self.assertEqual(provs, ["gemini-api"])
+        assert provs == ["gemini-api"]
+
+    def test_dispatch_model_and_api_base_fallback_to_environ(self):
+        """Test openai-api model and api_base fallback to os.environ when not present in ctx.C."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C.pop("OPENAI_MODEL", None)
+        ctx.C.pop("OPENAI_API_BASE", None)
+        os.environ["OPENAI_MODEL"] = "gpt-4o-mini"
+        os.environ["OPENAI_API_BASE"] = "https://env.openai.test/v1"
+
+        mock_result = {
+            "text": '{"tasks": [], "done": true}',
+            "provider": "openai-api",
+            "model": "gpt-4o-mini",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("providers.call_openai_api", return_value=mock_result) as mock_call:
+            text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "openai-api:gpt-4o-mini")
+        self.assertTrue(mock_call.called)
+        call_kwargs = mock_call.call_args.kwargs
+        self.assertEqual(call_kwargs.get("api_base"), "https://env.openai.test/v1")
+        assert who == "openai-api:gpt-4o-mini"
+
+    def test_dispatch_gemini_model_fallback_to_environ(self):
+        """Test gemini-api model fallback to os.environ when not present in ctx.C."""
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        ctx.C.pop("GEMINI_MODEL", None)
+        os.environ["GEMINI_MODEL"] = "gemini-2.0-flash"
+
+        mock_result = {
+            "text": '{"verdict": "approve", "feedback": "Looks good"}',
+            "provider": "gemini-api",
+            "model": "gemini-2.0-flash",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("providers.call_gemini_api", return_value=mock_result) as mock_call:
+            text, who = llm.llm("review", "Review diff")
+
+        self.assertEqual(who, "gemini-api:gemini-2.0-flash")
+        self.assertTrue(mock_call.called)
+        call_args = mock_call.call_args
+        self.assertEqual(call_args.kwargs.get("model") or call_args.args[1], "gemini-2.0-flash")
+        assert who == "gemini-api:gemini-2.0-flash"
 
 
 if __name__ == "__main__":
