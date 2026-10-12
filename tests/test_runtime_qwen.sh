@@ -461,5 +461,9 @@ assert missing[\"result\"] is None
 check "fake server saw and logged requests" \
   'grep -q "session=" "$T/server.log"'
 
+# 11. Run Python unittest suite against the running fake server
+python3 "$ROOT/tests/test_runtime_qwen.py" || exit 1
+
 echo "qwen runtime tests: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
 exit $fail
+
