@@ -1,4 +1,4 @@
-"""Prompts: planning, goal checks, reviews and the worker's task spec."""
+"""Prompts: planning, goal checks, reviews, worker task spec, and orchestrator context with orphan task awareness."""
 import os
 
 import sbx, codemap
@@ -28,10 +28,91 @@ PLAN_EXAMPLE = """Example of a GOOD plan for 4 workers and the goal "add a conta
 Three tasks start at once; one waits for a real reason. A BAD plan chains store -> ops -> tests -> review -> docs."""
 
 
-def context_bundle():
+def orphan_section(ts=None):
+    """Orchestrator awareness of orphan-recovered tasks: tasks blocked by the orphan limit
+    with their log tail and diagnose instruction, plus early warning heads-up."""
+    if ts is None:
+        ts = tasks()
+    try:
+        warn_lim = int(ctx.C.get("ORPHAN_WARN", 3))
+    except (ValueError, TypeError):
+        warn_lim = 3
+    try:
+        block_lim = int(ctx.C.get("ORPHAN_LIMIT", 5))
+    except (ValueError, TypeError):
+        block_lim = 5
+
+    blocked = []
+    for t in ts:
+        if not isinstance(t, dict):
+            continue
+        if t.get("status") in ("done", "cancelled"):
+            continue
+        why = str(t.get("blocked_why") or t.get("why") or "")
+        if why.startswith("orphan limit reached: "):
+            blocked.append(t)
+
+    blocked_ids = {t["id"] for t in blocked if isinstance(t, dict) and "id" in t}
+
+    warn = []
+    for t in ts:
+        if not isinstance(t, dict):
+            continue
+        if t.get("id") in blocked_ids:
+            continue
+        if t.get("status") in ("blocked", "done", "cancelled"):
+            continue
+        try:
+            streak = int(t.get("orphan_streak") or 0)
+        except (ValueError, TypeError):
+            streak = 0
+        if warn_lim <= streak < block_lim:
+            warn.append(t)
+
+    if not blocked and not warn:
+        return ""
+
+    out = []
+    if blocked:
+        out.append("## Tasks blocked (orphan limit reached)")
+        for t in blocked:
+            t_id = t.get("id", "")
+            title = t.get("title", "")
+            hdr = f"- Task {t_id}: {title}" if title else f"- Task {t_id}"
+            out.append(hdr)
+            tail = str(t.get("orphan_log_tail") or "")
+            if not tail and "--- last log ---\n" in str(t.get("blocked_why") or ""):
+                tail = str(t.get("blocked_why")).split("--- last log ---\n", 1)[1]
+            tail_block = (tail if tail.endswith("\n") else f"{tail}\n") if tail else "(no log tail captured)\n"
+            out.append(f"  Log tail:\n```\n{tail_block}```")
+            out.append("  Instruction: Diagnose the underlying cause (e.g. a crash in the worker/supervisor) from the log tail before proposing anything - explicitly not to just re-create an identical task that will crash the same way.")
+
+    if warn:
+        if blocked:
+            out.append("\n### Early heads-up (approaching orphan limit)")
+        else:
+            out.append("## Tasks approaching orphan limit (early heads-up)")
+        for t in warn:
+            try:
+                streak = int(t.get("orphan_streak") or 0)
+            except (ValueError, TypeError):
+                streak = 0
+            t_id = t.get("id", "")
+            title = t.get("title", "")
+            title_str = f" ({title})" if title else ""
+            out.append(f"- Early heads-up: task {t_id}{title_str} has {streak} consecutive orphan recoveries (warn threshold: {warn_lim}, blocks at {block_lim}).")
+
+    return "\n".join(out)
+
+
+orphan_context = orphan_section
+
+
+def context_bundle(all_tasks=None):
     vf = os.path.join(ctx.PDIR or ctx.ROOT, ctx.C["VISION_FILE"])
     vision = open(vf).read()[:30000] if os.path.exists(vf) else "(none)"
-    hist = "\n".join(f"- {t['id']} [{t['status']}] {t['title']} ({t['role']})" for t in tasks()[-40:]) or "(none yet)"
+    ts = tasks() if all_tasks is None else all_tasks
+    hist = "\n".join(f"- {t.get('id', '')} [{t.get('status', '')}] {t.get('title', '')} ({t.get('role', '')})" for t in ts[-40:]) or "(none yet)"
     active = "\n".join(f"- [{g['status']}] {g['text'][:200]}" for g in goals() if g["status"] in ("new", "active")) or "(none)"
     tree = repo_tree()
     pd = ctx.C["PROJECT_DIR"].strip("/")
@@ -41,10 +122,11 @@ def context_bundle():
     mods += f"\n\nTest files: {', '.join(tests)}" if tests else ""
     agents = read_repo((pd + "/AGENTS.md") if pd else "AGENTS.md", 8000) or "(none)"
     dec = decisions()
+    orphans = orphan_section(ts)
     return (f"## Owner's vision ({ctx.C['VISION_FILE']})\n{vision}\n\n" + (f"## Owner's decisions (binding)\n{dec}\n\n" if dec else "") +
             f"## AGENTS.md (every worker reads it)\n{agents}\n\n"
             f"## Repository files on main\n{tree}\n\n## Code map (purpose + interface of every module on main)\n{mods}\n## Goals in progress (do not duplicate them)\n{active}\n\n"
-            f"## Tasks so far\n{hist}\n")
+            f"## Tasks so far\n{hist}\n" + (f"\n{orphans}\n" if orphans else ""))
 
 
 def plan_prompt(g, followup=None):
