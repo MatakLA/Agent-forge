@@ -44,6 +44,7 @@ RUNTIMES = {
                   api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT", own_git=False),
     "opencode": dict(label="OpenCode (SST's OpenCode CLI, configured provider)", image=AGY_IMAGE, key=None, hosts=[],
                      api=False, endpoint=True),
+    # Goose: provider-configurable on model server (endpoint runtime, resolves host via uses_endpoint/hosts)
     "goose": dict(label="Goose (Block's Goose CLI agent on your model server)", image=AGY_IMAGE, key=None, hosts=[],
                   api=False, endpoint=True),
     "qwen-code": dict(label="Qwen Code (Alibaba's Qwen Code CLI)", image=AGY_IMAGE, key="qwen.key",
@@ -58,7 +59,7 @@ AIDER_QUIET = ["--yes-always", "--no-pretty", "--no-stream", "--no-fancy-input",
                "--analytics-disable", "--no-gitignore", "--no-show-model-warnings", "--no-detect-urls"]
 # OpenCode: non-interactive JSON stream for scan(), quiet
 OPENCODE_QUIET = ["--format", "json"]
-# Goose: non-interactive execution via goose run --instructions -
+# Goose: non-interactive execution via goose run --instructions - (empty: goose run is already headless; -q suppresses scan() tool calls)
 GOOSE_QUIET = []
 # Qwen Code: non-interactive stream-json, auto-approve tool execution
 QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
