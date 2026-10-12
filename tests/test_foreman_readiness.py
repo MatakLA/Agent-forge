@@ -5,16 +5,19 @@ Public interface:
 - Run directly: python3 tests/test_foreman_readiness.py
 - Run via unittest: python3 -m unittest tests/test_foreman_readiness.py
 
-Invariants:
+Important invariants:
 - runtime_items() matches keys of RUNTIMES in order.
 - provider_items() matches PROVIDERS_ALL in order.
 - all_status() includes every runtime and provider entry.
 - State priority when both missing setting and missing egress apply: missing_setting wins.
 - Inapplicable settings (e.g. claude-cli, agy) report state 'ok' with empty missing lists.
 - Secrets are never leaked into any return value or status dictionary.
+- Provider requirements are derived generically from settings.EDITABLE and verified unmocked.
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -40,7 +43,7 @@ class TestForemanReadiness(unittest.TestCase):
     def setUp(self):
         """Prepare clean test environment and state for each test method."""
         self.orig_env = dict(os.environ)
-        # Clear common environment variables that affect checks
+        # Clear environment variables that might interfere with clean unconfigured state
         for k in (
             "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DASHSCOPE_API_KEY",
             "anthropic.key", "openai.key", "gemini.key", "qwen.key", "compat.key",
@@ -48,8 +51,14 @@ class TestForemanReadiness(unittest.TestCase):
         ):
             os.environ.pop(k, None)
 
+        self.tmp_dir = tempfile.mkdtemp(prefix="af-readiness-test-")
+        self.orig_secrets = getattr(sbx, "SECRETS", "")
+        sbx.SECRETS = self.tmp_dir
+
     def tearDown(self):
-        """Restore environment after test completion."""
+        """Restore environment and directories after test completion."""
+        sbx.SECRETS = self.orig_secrets
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
         os.environ.clear()
         os.environ.update(self.orig_env)
 
@@ -159,50 +168,104 @@ class TestForemanReadiness(unittest.TestCase):
             self.assertEqual(results[prov]["missing_egress"], [])
         assert all(results[p]["state"] == "ok" and results[p]["missing_settings"] == [] for p in ("claude-cli", "agy-claude", "agy-gemini"))
 
-    def test_openai_api_provider_missing_model_and_key(self):
-        """Invariant: openai-api missing model and key reports missing_setting with both in missing_settings."""
-        with patch.object(readiness, "_get_conf_value", return_value=""), \
-             patch.object(readiness, "_has_secret", return_value=False):
-            st = readiness.status_of("provider", "openai-api")
+    def test_real_registry_provider_claude_cli(self):
+        """Invariant: claude-cli provider checked against real registry without mocks reports state ok."""
+        st = readiness.status_of("provider", "claude-cli")
+        self.assertEqual(st["state"], "ok")
+        self.assertEqual(st["missing_settings"], [])
+        self.assertEqual(st["missing_egress"], [])
+        assert st["state"] == "ok" and st["missing_settings"] == [] and st["missing_egress"] == []
+
+    def test_real_registry_provider_agy_claude(self):
+        """Invariant: agy-claude provider checked against real registry without mocks reports state ok."""
+        st = readiness.status_of("provider", "agy-claude")
+        self.assertEqual(st["state"], "ok")
+        self.assertEqual(st["missing_settings"], [])
+        self.assertEqual(st["missing_egress"], [])
+        assert st["state"] == "ok" and st["missing_settings"] == [] and st["missing_egress"] == []
+
+    def test_real_registry_provider_agy_gemini(self):
+        """Invariant: agy-gemini provider checked against real registry without mocks reports state ok."""
+        st = readiness.status_of("provider", "agy-gemini")
+        self.assertEqual(st["state"], "ok")
+        self.assertEqual(st["missing_settings"], [])
+        self.assertEqual(st["missing_egress"], [])
+        assert st["state"] == "ok" and st["missing_settings"] == [] and st["missing_egress"] == []
+
+    def test_real_registry_provider_openai_api(self):
+        """Invariant: openai-api derives OPENAI_MODEL, OPENAI_API_KEY, OPENAI_API_BASE from real registry."""
+        # 1. Unconfigured: missing_setting with both OPENAI_MODEL and OPENAI_API_KEY
+        st_unconf = readiness.status_of("provider", "openai-api")
+        self.assertEqual(st_unconf["state"], "missing_setting")
+        self.assertIn("OPENAI_MODEL", st_unconf["missing_settings"])
+        self.assertIn("OPENAI_API_KEY", st_unconf["missing_settings"])
+        assert "OPENAI_MODEL" in st_unconf["missing_settings"] and "OPENAI_API_KEY" in st_unconf["missing_settings"]
+
+        # 2. Configured credentials: host api.openai.com is checked against egress allowlist
+        os.environ["OPENAI_MODEL"] = "gpt-4o"
+        os.environ["OPENAI_API_KEY"] = "sk-test-openai-key"
+        st_conf = readiness.status_of("provider", "openai-api")
+        self.assertEqual(st_conf["missing_settings"], [])
+        self.assertEqual(st_conf["state"], "missing_egress")
+        self.assertIn("api.openai.com", st_conf["missing_egress"])
+        assert st_conf["state"] == "missing_egress" and "api.openai.com" in st_conf["missing_egress"]
+
+    def test_real_registry_provider_gemini_api(self):
+        """Invariant: gemini-api derives GEMINI_MODEL and GEMINI_API_KEY from real registry without mocks."""
+        # 1. Unconfigured: missing_setting with both GEMINI_MODEL and GEMINI_API_KEY
+        st_unconf = readiness.status_of("provider", "gemini-api")
+        self.assertEqual(st_unconf["state"], "missing_setting")
+        self.assertIn("GEMINI_MODEL", st_unconf["missing_settings"])
+        self.assertIn("GEMINI_API_KEY", st_unconf["missing_settings"])
+        assert "GEMINI_MODEL" in st_unconf["missing_settings"] and "GEMINI_API_KEY" in st_unconf["missing_settings"]
+
+        # 2. Fully configured: reports state ok
+        os.environ["GEMINI_MODEL"] = "gemini-2.5-pro"
+        os.environ["GEMINI_API_KEY"] = "gemini-test-secret-key"
+        st_conf = readiness.status_of("provider", "gemini-api")
+        self.assertEqual(st_conf["state"], "ok")
+        self.assertEqual(st_conf["missing_settings"], [])
+        self.assertEqual(st_conf["missing_egress"], [])
+        assert st_conf["state"] == "ok" and st_conf["missing_settings"] == []
+
+    def test_real_registry_provider_anthropic_api(self):
+        """Invariant: anthropic-api derives ANTHROPIC_MODEL and ANTHROPIC_API_KEY from real registry without mocks."""
+        # 1. Unconfigured: missing_setting with ANTHROPIC_MODEL and ANTHROPIC_API_KEY
+        st_unconf = readiness.status_of("provider", "anthropic-api")
+        self.assertEqual(st_unconf["state"], "missing_setting")
+        self.assertIn("ANTHROPIC_MODEL", st_unconf["missing_settings"])
+        self.assertIn("ANTHROPIC_API_KEY", st_unconf["missing_settings"])
+        assert "ANTHROPIC_MODEL" in st_unconf["missing_settings"] and "ANTHROPIC_API_KEY" in st_unconf["missing_settings"]
+
+        # 2. Fully configured: reports state ok
+        os.environ["ANTHROPIC_MODEL"] = "claude-3-7-sonnet"
+        os.environ["ANTHROPIC_API_KEY"] = "ant-test-secret-key"
+        st_conf = readiness.status_of("provider", "anthropic-api")
+        self.assertEqual(st_conf["state"], "ok")
+        self.assertEqual(st_conf["missing_settings"], [])
+        self.assertEqual(st_conf["missing_egress"], [])
+        assert st_conf["state"] == "ok" and st_conf["missing_settings"] == []
+
+    def test_provider_secret_from_sbx_secrets_dir(self):
+        """Invariant: Secret present as file in sbx.SECRETS is recognized without mocking."""
+        key_file = os.path.join(self.tmp_dir, "OPENAI_API_KEY")
+        with open(key_file, "w") as f:
+            f.write("sk-real-file-key")
+        os.environ["OPENAI_MODEL"] = "gpt-4o"
+        st = readiness.status_of("provider", "openai-api")
+        self.assertNotIn("OPENAI_API_KEY", st["missing_settings"])
+        self.assertNotIn("OPENAI_MODEL", st["missing_settings"])
+        assert "OPENAI_API_KEY" not in st["missing_settings"]
+
+    def test_provider_invalid_base_url_reports_missing_setting(self):
+        """Invariant: An invalid base URL for a provider reports the base key in missing_settings."""
+        os.environ["OPENAI_MODEL"] = "gpt-4o"
+        os.environ["OPENAI_API_KEY"] = "sk-valid-key"
+        os.environ["OPENAI_API_BASE"] = "invalid url with spaces"
+        st = readiness.status_of("provider", "openai-api")
         self.assertEqual(st["state"], "missing_setting")
-        self.assertIn("OPENAI_MODEL", st["missing_settings"])
-        self.assertIn("OPENAI_API_KEY", st["missing_settings"])
-        assert st["state"] == "missing_setting" and "OPENAI_MODEL" in st["missing_settings"]
-
-    def test_openai_api_provider_configured_but_missing_egress(self):
-        """Invariant: openai-api with model and key configured but host absent from egress reports missing_egress."""
-        def fake_conf(k):
-            return "gpt-4o" if k == "OPENAI_MODEL" else ("https://api.openai.com/v1" if k == "OPENAI_API_BASE" else "")
-
-        with patch.object(readiness, "_get_conf_value", side_effect=fake_conf), \
-             patch.object(readiness, "_has_secret", return_value=True), \
-             patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
-             patch.object(readiness, "_local_endpoint_host", return_value=""):
-            st = readiness.status_of("provider", "openai-api")
-        self.assertEqual(st["state"], "missing_egress")
-        self.assertEqual(st["missing_settings"], [])
-        self.assertIn("api.openai.com", st["missing_egress"])
-        assert st["state"] == "missing_egress" and "api.openai.com" in st["missing_egress"]
-
-    def test_gemini_api_provider_configured_is_ok(self):
-        """Invariant: gemini-api configured with model and key reports ok."""
-        with patch.object(readiness, "_get_conf_value", return_value="gemini-1.5-pro"), \
-             patch.object(readiness, "_has_secret", return_value=True):
-            st = readiness.status_of("provider", "gemini-api")
-        self.assertEqual(st["state"], "ok")
-        self.assertEqual(st["missing_settings"], [])
-        self.assertEqual(st["missing_egress"], [])
-        assert st["state"] == "ok" and st["missing_settings"] == []
-
-    def test_anthropic_api_provider_configured_is_ok(self):
-        """Invariant: anthropic-api configured with model and key reports ok."""
-        with patch.object(readiness, "_get_conf_value", return_value="claude-3-5-sonnet"), \
-             patch.object(readiness, "_has_secret", return_value=True):
-            st = readiness.status_of("provider", "anthropic-api")
-        self.assertEqual(st["state"], "ok")
-        self.assertEqual(st["missing_settings"], [])
-        self.assertEqual(st["missing_egress"], [])
-        assert st["state"] == "ok" and st["missing_settings"] == []
+        self.assertIn("OPENAI_API_BASE", st["missing_settings"])
+        assert "OPENAI_API_BASE" in st["missing_settings"]
 
     def test_qwen_runtime_readiness(self):
         """Invariant: qwen-code runtime checks qwen.key presence and DashScope egress."""
