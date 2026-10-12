@@ -5,6 +5,15 @@ The orchestrator in Agent-Forge makes three kinds of high-level decisions:
 2. **Review** (`review`): Examines pull request diffs produced by workers, evaluates test compliance, and outputs strict JSON review verdicts (`approve`, `rework`, or `reject`).
 3. **Ask / Verification** (`ask`): Answers user queries about project status and verifies overarching goal criteria.
 
+## Checking readiness
+
+`bin/doctor` now prints, for every provider, one of three states:
+- `ok` ('Ready'): fully configured and ready to use.
+- `missing_setting`: a required config value or secret is not set.
+- `missing_egress`: its host is not yet in the egress allowlist.
+
+The same summary is shown on the dashboard's Settings page, so the owner no longer has to cross-check these docs by hand to see what is configured. Point to this live check as the source of truth for current status.
+
 ## How provider fallback works
 
 The orchestrator tries providers sequentially from left to right as configured in `etc/foreman.conf` until one answers successfully:
