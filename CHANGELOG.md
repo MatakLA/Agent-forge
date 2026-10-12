@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Add examples/sample-project/: public example project pairing vision.md, project.conf, seed-repo/, and README.md
 - Add docs/CHOOSING-AN-AI.md: honest comparison of all supported runtimes and providers
 - Add docs/DEMO.md: Docker-only demo mode design and user guide
 - GitHub / GitLab issue intake: `bin/issues-intake` bridges open issues labelled `agent-forge` into foreman goals with seen-state deduplication and dry-run support.
