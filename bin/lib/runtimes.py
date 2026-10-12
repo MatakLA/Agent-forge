@@ -411,22 +411,24 @@ def scan(rt, lines, prices=None):
         elif rt == "qwen-code":
             t = e.get("type") or e.get("event")
             sid = e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("conversation_id")
-            if (t == "init" or sid) and sid and not st["conversation_id"]:
+            if sid and not st["conversation_id"]:
                 st["conversation_id"] = str(sid)
-            elif t in ("tool_use", "tool_call", "tool"):
+            if t in ("tool_use", "tool_call", "tool"):
                 st["tools"] += 1
             elif t == "message" and (e.get("role") == "assistant" or not e.get("role")):
                 text.append(str(e.get("content") or e.get("text") or ""))
             elif t == "text":
                 text.append(str(e.get("text") or e.get("content") or ""))
             elif t == "error":
-                st["last_error"] = str(e.get("message") or e.get("error") or e)[:500]
+                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("message") or e.get("error") or e)[:500]
+                st["last_error"] = err
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=err, usage=None, cost_usd=None)
             elif t == "result":
                 s = e.get("stats") or e.get("usage") or {}
                 tot = s.get("total_tokens") or ((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0))
                 cached = s.get("cached") or s.get("cached_tokens") or s.get("cached_input_tokens") or 0
                 st["tokens"] = max(0, (tot or 0) - cached)
-                ok = e.get("status") in ("success", "SUCCESS") or (not e.get("status") and not e.get("error") and not e.get("is_error"))
+                ok = (e.get("status") in ("success", "SUCCESS") or not e.get("status")) and not (e.get("error") or e.get("is_error"))
                 p = _prices(prices or "")
                 cost = ((s.get("input_tokens") or 0) - cached) * p[0] + cached * p[1] + (s.get("output_tokens") or 0) * p[2]
                 res = "".join(text)[-4000:] if text else str(e.get("response") or e.get("result") or "")[-4000:]
