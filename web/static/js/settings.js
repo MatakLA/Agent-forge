@@ -35,7 +35,8 @@ let S = null, sLoadedFor = null, sMsg = '';
 const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback (Gemini)',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', ANTHROPIC_MODEL: 'Anthropic API model (paid)',
-  OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', GEMINI_MODEL: 'Gemini API model (paid)', OWNER_LANG: 'Your language',
+  OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', OPENAI_API_KEY: 'OpenAI API key',
+  GEMINI_MODEL: 'Gemini API model (paid)', GEMINI_API_BASE: 'Gemini API base URL', GEMINI_API_KEY: 'Gemini API key', OWNER_LANG: 'Your language',
   LOCAL_TZ: 'Local timezone', PROJECT_DIR: 'Project subdirectory', VISION_FILE: 'Vision file path', SHARED_FILES: 'Shared registry files',
   LOOP_SEC: 'Loop interval (sec)', WORKERS: 'Worker pool', AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically',
   CONTINUE_CONVERSATIONS: 'A rework continues the worker\'s conversation', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most',
@@ -71,9 +72,12 @@ const HELP = {
   WORKER_MODEL: 'Default Antigravity model for routine worker tasks. Empty uses etc/limits.conf. Applies live.',
   WORKER_MODEL_RISKY: 'Stronger worker model for risky tasks (security, money, migrations). Empty uses default. Applies live.',
   ANTHROPIC_MODEL: 'Model name when using paid Anthropic API (e.g. claude-3-7-sonnet-20250219). Empty if unused. Applies live.',
-  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Empty if unused. Applies live.',
-  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Empty for default. Applies live.',
-  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Empty if unused. Applies live.',
+  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  OPENAI_API_KEY: 'API key is set on the host with bin/secret-set (openai.key) and is not editable from the dashboard.',
+  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  GEMINI_API_BASE: 'Base URL for Google Gemini API (e.g. https://generativelanguage.googleapis.com). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  GEMINI_API_KEY: 'API key is set on the host with bin/secret-set (gemini.key) and is not editable from the dashboard.',
   OWNER_LANG: 'Language for generated goals, notes, and questions (e.g. English, German). Applies live.',
   LOCAL_TZ: 'Timezone for timestamps and deadlines (e.g. UTC, Europe/Prague, America/New_York). Applies live.',
   PROJECT_DIR: 'Subdirectory of repository the team works in. Empty = entire repository. Applies live.',
@@ -177,8 +181,33 @@ const multi = (k, opts) => { const on = String(V()[k] || '').split(',').filter(B
 function provEditor(k) {
   const on = String(V()[k] || '').split(',').filter(Boolean), all = on.concat(((S && S.providers) || []).filter(p => !on.includes(p)));
   if (!all.length) return '<div class="provlist" id="set-' + k + '" data-kind="prov"><div class="empty">No providers configured</div></div>';
-  return '<div class="provlist" id="set-' + k + '" data-kind="prov">' + all.map(p => '<div class="prov" data-p="' + esc(p) + '"><label><input type="checkbox"' +
-    (on.includes(p) ? ' checked' : '') + '> ' + esc(PROVLABEL[p] || p) + '</label><span><button class="iconbtn sm" data-mv="-1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' up">↑</button><button class="iconbtn sm" data-mv="1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' down">↓</button></span></div>').join('') + '</div>';
+  const sec = (S && S.secrets) || {};
+  return '<div class="provlist" id="set-' + k + '" data-kind="prov">' + all.map(p => {
+    let sub = '';
+    if (p === 'openai-api') {
+      sub = '<div class="provsub" style="width:100%;margin:4px 0 4px 18px;padding-left:8px;border-left:2px solid var(--line)">' +
+        field('OPENAI_API_BASE', txt('OPENAI_API_BASE', 'https://api.openai.com/v1'), HELP.OPENAI_API_BASE) +
+        field('OPENAI_MODEL', txt('OPENAI_MODEL', 'e.g. gpt-4o'), HELP.OPENAI_MODEL) +
+        '<div class="setrow"><label>' + esc(LABEL.OPENAI_API_KEY) + '<span class="help">' + esc(HELP.OPENAI_API_KEY) + '</span></label>' +
+        '<div><code>openai.key</code> ' + (sec['openai.key'] ? '<b class="plus">✓</b> ' : '<span class="muted">—</span> ') +
+        '<span class="muted small">(file-only: set on host with <code>bin/secret-set openai.key</code> — not editable from dashboard)</span></div></div>' +
+        '</div>';
+    } else if (p === 'gemini-api') {
+      sub = '<div class="provsub" style="width:100%;margin:4px 0 4px 18px;padding-left:8px;border-left:2px solid var(--line)">' +
+        field('GEMINI_API_BASE', txt('GEMINI_API_BASE', 'https://generativelanguage.googleapis.com'), HELP.GEMINI_API_BASE) +
+        field('GEMINI_MODEL', txt('GEMINI_MODEL', 'e.g. gemini-2.5-pro'), HELP.GEMINI_MODEL) +
+        '<div class="setrow"><label>' + esc(LABEL.GEMINI_API_KEY) + '<span class="help">' + esc(HELP.GEMINI_API_KEY) + '</span></label>' +
+        '<div><code>gemini.key</code> ' + (sec['gemini.key'] ? '<b class="plus">✓</b> ' : '<span class="muted">—</span> ') +
+        '<span class="muted small">(file-only: set on host with <code>bin/secret-set gemini.key</code> — not editable from dashboard)</span></div></div>' +
+        '</div>';
+    }
+    return '<div class="prov" data-p="' + esc(p) + '" style="flex-wrap:wrap">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;width:100%">' +
+      '<label><input type="checkbox"' + (on.includes(p) ? ' checked' : '') + '> ' + esc(PROVLABEL[p] || p) + '</label>' +
+      '<span><button class="iconbtn sm" data-mv="-1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' up">↑</button>' +
+      '<button class="iconbtn sm" data-mv="1" aria-label="Move ' + esc(PROVLABEL[p] || p) + ' down">↓</button></span>' +
+      '</div>' + sub + '</div>';
+  }).join('') + '</div>';
 }
 function modelSel(k, allowEmpty, emptyLabel) {
   const v = V()[k], ms = ((S && S.models) || []).map(m => m.id), opts = (allowEmpty ? [''] : []).concat(ms.includes(v) || !v ? ms : [v].concat(ms));
@@ -261,11 +290,8 @@ function pageModels() {
       field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL'), HELP.AGY_PLAN_MODEL) +
       field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL'), HELP.AGY_REVIEW_MODEL) +
       field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL'), HELP.AGY_FALLBACK_MODEL) +
-      '<details><summary class="muted">Paid APIs (only when ticked above and a key is set)</summary>' +
-      field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL'), HELP.ANTHROPIC_MODEL) +
-      field('OPENAI_MODEL', txt('OPENAI_MODEL'), HELP.OPENAI_MODEL) +
-      field('OPENAI_API_BASE', txt('OPENAI_API_BASE', 'https://api.openai.com/v1'), HELP.OPENAI_API_BASE) +
-      field('GEMINI_MODEL', txt('GEMINI_MODEL'), HELP.GEMINI_MODEL) + '</details>',
+      '<details><summary class="muted">Anthropic API (only when ticked above and a key is set)</summary>' +
+      field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL'), HELP.ANTHROPIC_MODEL) + '</details>',
       'Tried in order; one out of quota is skipped until its reset.') +
     card('Worker models (Antigravity)', field('WORKER_MODEL', modelSel('WORKER_MODEL', true, 'default (' + (S.limits_worker_model || '') + ')'), HELP.WORKER_MODEL) +
       field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', true, 'same as the others'), HELP.WORKER_MODEL_RISKY) +
@@ -420,7 +446,9 @@ function renderSettings(force) {
 }
 async function saveSettings() {
   const changes = {};
-  for (const k of Object.keys(V())) { const v = sval(k); if (v !== null && String(v) !== String(V()[k])) changes[k] = v; }
+  const knownKeys = new Set(Object.keys(V()));
+  if ($('set-GEMINI_API_BASE')) knownKeys.add('GEMINI_API_BASE');
+  for (const k of knownKeys) { const v = sval(k); if (v !== null && String(v) !== String(V()[k] || '')) changes[k] = v; }
   if (!Object.keys(changes).length) { sMsg = 'nothing changed'; $('save-msg').textContent = sMsg; return; }
   let r;
   try { r = await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, changes})})).json(); }
@@ -430,9 +458,25 @@ async function saveSettings() {
   if (r.ok) { toast('Settings saved'); document.activeElement && document.activeElement.blur(); await loadSettings(true); return; }
   // keep everything the owner typed: only mark the bad fields
   document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
-  for (const [k, msg] of Object.entries(errs)) { const el = $('set-' + k); if (el) el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>'); }
+  for (const [k, msg] of Object.entries(errs)) {
+    const els = document.querySelectorAll('#settings [id="set-' + k + '"]');
+    if (els.length) {
+      els.forEach(el => {
+        const det = el.closest('details');
+        if (det) det.open = true;
+        el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
+      });
+    }
+  }
   $('save-msg').textContent = sMsg;
 }
+document.addEventListener('input', e => {
+  if (e.target && e.target.id && (e.target.id.startsWith('set-OPENAI_') || e.target.id.startsWith('set-GEMINI_'))) {
+    document.querySelectorAll('#settings [id="' + e.target.id + '"]').forEach(el => {
+      if (el !== e.target) el.value = e.target.value;
+    });
+  }
+});
 document.addEventListener('click', async e => {
   const mv = e.target.closest('[data-mv]');
   if (mv) { const row = mv.closest('.prov'), d = Number(mv.dataset.mv);

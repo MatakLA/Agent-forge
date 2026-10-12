@@ -220,6 +220,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / models: OPENAI_API_BASE present as input with help stating live reload',
         !!oaiBase && !!oaiHelp && oaiHelp.textContent.trim().length > 0 && oaiHelp.textContent.toLowerCase().includes('applies live'));
 
+  // Settings / Models: task 0078 provider fields and file-only note
+  const oaiRow = d.querySelector('.prov[data-p="openai-api"]');
+  const geminiRow = d.querySelector('.prov[data-p="gemini-api"]');
+  const oaiInputs = !!oaiRow && !!oaiRow.querySelector('#set-OPENAI_API_BASE') && !!oaiRow.querySelector('#set-OPENAI_MODEL');
+  const geminiInputs = !!geminiRow && !!geminiRow.querySelector('#set-GEMINI_API_BASE') && !!geminiRow.querySelector('#set-GEMINI_MODEL');
+  const oaiNote = !!oaiRow && oaiRow.textContent.toLowerCase().includes('file-only') && oaiRow.textContent.includes('bin/secret-set');
+  const geminiNote = !!geminiRow && geminiRow.textContent.toLowerCase().includes('file-only') && geminiRow.textContent.includes('bin/secret-set');
+  const oaiHelpText = !!oaiRow && !!oaiRow.querySelector('[for="set-OPENAI_API_BASE"] .help') && !!oaiRow.querySelector('[for="set-OPENAI_MODEL"] .help');
+  const geminiHelpText = !!geminiRow && !!geminiRow.querySelector('[for="set-GEMINI_API_BASE"] .help') && !!geminiRow.querySelector('[for="set-GEMINI_MODEL"] .help');
+  check('settings / models: openai-api and gemini-api rows render with editable base/model inputs, help text, and file-only API-key note',
+        oaiInputs && geminiInputs && oaiNote && geminiNote && oaiHelpText && geminiHelpText);
+
+  // Settings / Models: validation errors display inline next to provider fields
+  w.eval(`
+    document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
+    const errs = {OPENAI_MODEL: 'invalid model name', OPENAI_API_BASE: 'invalid URL'};
+    for (const [k, msg] of Object.entries(errs)) {
+      const els = document.querySelectorAll('#settings [id="set-' + k + '"]');
+      if (els.length) {
+        els.forEach(el => el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>'));
+      }
+    }
+  `);
+  const oaiModelErr = d.querySelector('#set-OPENAI_MODEL + .seterr.live');
+  const oaiBaseErr = d.querySelector('#set-OPENAI_API_BASE + .seterr.live');
+  check('settings / models: validation errors display inline next to provider fields',
+        !!oaiModelErr && oaiModelErr.textContent.includes('invalid model name') &&
+        !!oaiBaseErr && oaiBaseErr.textContent.includes('invalid URL'));
+  w.eval("document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());");
+
   // Settings / Money: task 0024 PROJECT_* budget fields
   click('#settings-seg button[data-v="money"]'); await sleep(800);
   const moneyKeys0024 = ['PROJECT_DAILY_BUDGET_USD', 'PROJECT_MONTHLY_BUDGET_USD'];
