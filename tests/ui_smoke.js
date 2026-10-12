@@ -203,6 +203,50 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   });
   check('settings / project: task 0024 fields present as inputs with help stating live reload', projOk);
 
+  // Settings / Project: task 0119 orphan settings fields
+  const orphanKeys = ['ORPHAN_LIMIT', 'ORPHAN_WARN'];
+  const orphanFieldsOk = orphanKeys.every(k => {
+    const el = d.getElementById('set-' + k);
+    const help = d.querySelector('[for="set-' + k + '"] .help');
+    return !!el && el.tagName === 'INPUT' && el.type === 'number' &&
+      !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
+  });
+  const orphanHelpWarn = (d.querySelector('[for="set-ORPHAN_WARN"] .help') || {}).textContent || '';
+  const orphanHelpLimit = (d.querySelector('[for="set-ORPHAN_LIMIT"] .help') || {}).textContent || '';
+  const orphanHelpOk = orphanHelpWarn.includes('before a warning is raised') &&
+                       orphanHelpLimit.includes('before the task is blocked');
+  const orphanInputs = orphanKeys.map(k => d.getElementById('set-' + k)).filter(Boolean);
+  const orphanKeyboardOk = orphanInputs.length === 2 && orphanInputs.every(el =>
+    el.tabIndex >= 0 || ['INPUT', 'SELECT', 'BUTTON', 'TEXTAREA'].includes(el.tagName)
+  );
+  const elLimit = d.getElementById('set-ORPHAN_LIMIT');
+  const elWarn = d.getElementById('set-ORPHAN_WARN');
+  const orphanDefaultsOk = elLimit && elLimit.value === '5' && elWarn && elWarn.value === '3';
+  check('settings / project: ORPHAN_LIMIT and ORPHAN_WARN present as number inputs with help text, defaults, and reachable by keyboard',
+        orphanFieldsOk && orphanHelpOk && orphanKeyboardOk && orphanDefaultsOk);
+
+  // Settings / Project: changing ORPHAN_LIMIT or ORPHAN_WARN posts to generic settings endpoint
+  let postedBody = null;
+  const origFetch = w.fetch;
+  w.fetch = async (url, opts) => {
+    if (String(url).includes('/api/settings') && opts && opts.method === 'POST') {
+      try { postedBody = JSON.parse(opts.body); } catch (e) {}
+      return { json: async () => ({ ok: true }) };
+    }
+    return origFetch(url, opts);
+  };
+  if (elLimit) elLimit.value = '7';
+  await w.saveSettings();
+  const limitSaved = postedBody && postedBody.changes && postedBody.changes.ORPHAN_LIMIT === '7';
+
+  postedBody = null;
+  if (elWarn) elWarn.value = '4';
+  await w.saveSettings();
+  const warnSaved = postedBody && postedBody.changes && postedBody.changes.ORPHAN_WARN === '4';
+  w.fetch = origFetch;
+  check('settings / project: changing ORPHAN_LIMIT and ORPHAN_WARN posts to generic settings endpoint',
+        limitSaved && warnSaved);
+
   // Settings / Limits: task 0024 fields
   click('#settings-seg button[data-v="limits"]'); await sleep(800);
   const limitsKeys0024 = ['DAILY_TOKEN_BUDGET', 'MAX_RUNS_PER_DAY', 'RUN_TIMEOUT_MAX_MIN', 'QUOTA_MODEL_FILTER', 'POLL_SEC'];
