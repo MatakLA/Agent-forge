@@ -340,7 +340,7 @@ if not runner:
         # an agent that does not run git itself (aider) starts on its task branch: the earlier attempts' work, or a new branch
         sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
            f"if git rev-parse -q --verify origin/{br} >/dev/null; then git checkout -q -B {br} origin/{br}; else git checkout -q -B {br} origin/main; fi")
-    cmd = agent_cmd(open(run + "/prompt.md").read(), m.get("conversation"))   # a rework may continue the worker's own conversation
+    cmd = agent_cmd(sbx.no_nul(open(run + "/prompt.md").read()), m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
     cmd = (["docker", "exec", "-i", W] + inner, None)

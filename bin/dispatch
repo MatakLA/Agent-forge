@@ -128,7 +128,7 @@ def main():
         info = preflight(worker, lim, runner)
         run = os.path.join(sbx.RUNS, f"{sbx.time.strftime('%Y%m%dT%H%M%SZ', sbx.time.gmtime())}-{worker}")
         os.makedirs(run)
-        prompt = open(task).read().split("\n## Orchestrator review checklist")[0]
+        prompt = sbx.no_nul(open(task).read().split("\n## Orchestrator review checklist")[0])
         open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
         open(run + "/task", "w").write(os.path.realpath(task) + "\n")
         effective_model = model or (lim["WORKER_MODEL"] if info["runtime"] == "agy" else "")
