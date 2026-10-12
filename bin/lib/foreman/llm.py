@@ -10,7 +10,7 @@ import json, os, threading, time
 
 import sbx
 
-from . import ctx
+from . import ctx, util
 from .util import extract_json, fmt_ts, parse_limit, sh
 from .store import event, gstate, state_tx
 from .pool import RESERVED, has_quota, order_by_quota, quota_pct, quota_rows, runtime_of, worker_busy, workers
@@ -225,7 +225,7 @@ def parse_and_validate(text, schema_str):
         return None
     if not schema_str:
         return text if bool(text.strip()) else None
-    data = extract_json(text)
+    data = util.extract_json(text)
     if data is None or not validate_schema(data, schema_str):
         return None
     return data
@@ -262,8 +262,9 @@ def llm(kind, prompt, subject=""):
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
-    os.makedirs(ctx.FD, exist_ok=True)
-    with open(os.path.join(ctx.FD, "llm.jsonl"), "a") as f:
+    if ctx.FD:
+        os.makedirs(ctx.FD, exist_ok=True)
+    with open(os.path.join(ctx.FD or ".", "llm.jsonl"), "a") as f:
         f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc,
                                 secs=round(secs, 1) if secs is not None else 0.0,
                                 cost_usd=cost, usage=usage, head=head,
