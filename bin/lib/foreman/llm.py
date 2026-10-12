@@ -164,6 +164,8 @@ def _via_paid_api(name, prompt, system):
         log_llm(KIND.k, who, 1, time.time() - t0, None, None, str(e)[:300])
         return None, None
 
+    if not isinstance(r, dict):
+        return None, None
     is_err = r.get("is_error") or not (r.get("text") or "").strip()
     dur = r.get("duration_s")
     dur = (time.time() - t0) if dur is None else dur
@@ -209,8 +211,10 @@ def validate_schema(data, schema):
 
 def parse_and_validate(text, schema_str):
     """Extracts JSON and validates against schema. Returns parsed dict, or text for schemaless, or None if invalid."""
+    if not text:
+        return None
     if not schema_str:
-        return text if bool(text and text.strip()) else None
+        return text if bool(text.strip()) else None
     data = extract_json(text)
     if data is None or not validate_schema(data, schema_str):
         return None
