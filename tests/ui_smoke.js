@@ -1,6 +1,6 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
-// sub-view renders, each kind of sheet opens (task, goal, run replay, search, document), the graph finds the critical path,
-// and no script error happens on the way. Exit code 0 = all ok.
+// sub-view renders, readiness summary on Settings checks runtimes and providers, each kind of sheet opens (task, goal, run
+// replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
 let failed = 0;
@@ -321,6 +321,89 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     SUB.settings = 'project';
     renderSettings(true);
   `);
+
+  // Settings / Readiness: Runtimes & providers summary
+  w.eval(`
+    window._origREADINESS = READINESS;
+    window._origReadinessErr = readinessErr;
+    window._origReadinessBusy = readinessBusy;
+    READINESS = {
+      runtimes: {
+        claude: {state: 'ok', detail: 'Claude Code CLI installed and configured'},
+        codex: {state: 'missing_setting', detail: 'OPENAI_API_KEY is not set'}
+      },
+      providers: {
+        'claude-cli': {state: 'ok', detail: 'Claude subscription ready'},
+        'gemini-api': {state: 'missing_egress', detail: 'generativelanguage.googleapis.com missing from egress allowlist'}
+      }
+    };
+    readinessErr = null;
+    readinessBusy = false;
+    readinessAt = Date.now();
+    renderSettings(true);
+  `);
+  const readRows = [...d.querySelectorAll('.readiness-row')];
+  const readNames = readRows.map(r => r.dataset.name);
+  const expectedNames = ['claude', 'codex', 'claude-cli', 'gemini-api'];
+  check('settings: readiness summary renders a row for every runtime/provider in mocked response',
+        readRows.length === 4 && expectedNames.every(n => readNames.includes(n)));
+
+  const readyBadges = [...d.querySelectorAll('.readiness-row .badge.ok')].filter(b => b.textContent.includes('Ready'));
+  const missingBadges = [...d.querySelectorAll('.readiness-row .badge.warn')].filter(b =>
+    b.textContent.includes('Missing setting') || b.textContent.includes('Missing egress')
+  );
+  check('settings: readiness summary renders visible Ready badge and Missing setting/egress badge text in DOM',
+        readyBadges.length > 0 && missingBadges.length > 0);
+
+  const rowClaude = d.querySelector('.readiness-row[data-name="claude"]');
+  const rowCodex = d.querySelector('.readiness-row[data-name="codex"]');
+  const rowGemini = d.querySelector('.readiness-row[data-name="gemini-api"]');
+  const claudeBadge = rowClaude ? rowClaude.querySelector('.badge') : null;
+  const codexBadge = rowCodex ? rowCodex.querySelector('.badge') : null;
+  const geminiBadge = rowGemini ? rowGemini.querySelector('.badge') : null;
+  check('settings: missing_setting and missing_egress visually distinguished from ok by class and text',
+        !!claudeBadge && claudeBadge.classList.contains('ok') && claudeBadge.textContent.trim() === 'Ready' &&
+        !!codexBadge && codexBadge.classList.contains('warn') && codexBadge.textContent.trim() === 'Missing setting' &&
+        !!geminiBadge && geminiBadge.classList.contains('warn') && geminiBadge.textContent.trim() === 'Missing egress');
+
+  // Loading state
+  w.eval(`
+    READINESS = null;
+    readinessErr = null;
+    readinessBusy = true;
+    renderSettings(true);
+  `);
+  check('settings: loading placeholder shown before readiness fetch resolves',
+        txt('settings').includes('loading…'));
+
+  // Empty state when endpoint returns {}
+  w.eval(`
+    READINESS = {};
+    readinessErr = null;
+    readinessBusy = false;
+    renderSettings(true);
+  `);
+  check('settings: readiness summary shows explicit message when endpoint returns empty',
+        txt('settings').includes('Readiness check unavailable') && !d.querySelector('.readiness-row'));
+
+  // Error state when endpoint fails
+  w.eval(`
+    READINESS = null;
+    readinessErr = 'HTTP 500';
+    readinessBusy = false;
+    renderSettings(true);
+  `);
+  check('settings: readiness summary shows explicit message when endpoint fails',
+        txt('settings').includes('Readiness check unavailable') || txt('settings').includes('HTTP 500'));
+
+  // Restore readiness state
+  w.eval(`
+    READINESS = window._origREADINESS;
+    readinessErr = window._origReadinessErr;
+    readinessBusy = window._origReadinessBusy;
+    renderSettings(true);
+  `);
+
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);
