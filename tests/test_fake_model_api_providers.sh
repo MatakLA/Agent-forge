@@ -58,6 +58,8 @@ done
 export OPENAI_API_BASE="http://127.0.0.1:$PORT/v1"
 export OPENAI_API_KEY="test-key"
 export GEMINI_API_KEY="test-key"
+export OPENAI_MODEL="gpt-4o"
+export GEMINI_MODEL="gemini-1.5-pro"
 export FAKE_MODEL_PORT="$PORT"
 
 # Execute test suite and propagate exit status explicitly
