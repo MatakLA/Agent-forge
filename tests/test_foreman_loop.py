@@ -6,6 +6,7 @@ Invariants:
 - orphaned: detects dead supervisors without false negatives (missing pid) or false positives (alive runs).
 - advance: active goals leave active state once all tasks terminate; tasks for missing goals are safely cancelled.
 """
+import datetime as dt
 import json
 import os
 import shutil
@@ -23,7 +24,7 @@ os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 import sbx
-from foreman import ctx, loop, pool, store, util
+from foreman import ctx, loop, merge, pool, store, util
 
 
 class TestForemanLoop(unittest.TestCase):
@@ -41,6 +42,7 @@ class TestForemanLoop(unittest.TestCase):
         loop.RESERVED.clear()
         loop.LAST_DISPATCHED.clear()
         loop.QUOTA_CACHE.clear()
+        loop.STARTUP_GRACE_DONE = False
         if hasattr(loop, "DISPATCHING"):
             loop.DISPATCHING.clear()
             loop.DISPATCHING_FILES.clear()
@@ -472,6 +474,216 @@ class TestForemanLoop(unittest.TestCase):
         assert not pool.worker_busy("worker-1")
         self.assertFalse(pool.worker_busy("worker-2"))
         assert not pool.worker_busy("worker-2")
+
+    def test_recover_orphan_increments_streak_and_captures_log_tail_after_startup_grace(self):
+        """Invariant: recover_orphan increments orphan_streak and captures log tail for no-progress orphans after startup grace."""
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        log_content = "\n".join([f"line {i}" for i in range(50)])
+        with open(os.path.join(run_orphan, "supervisor.log"), "w") as f:
+            f.write(log_content)
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1")
+        store.save_task(t)
+
+        loop.STARTUP_GRACE_DONE = True
+        loop.recover_orphan(t)
+
+        recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["orphan_streak"], 1)
+        self.assertIn("line 49", recovered["orphan_log_tail"])
+        self.assertNotIn("line 5\n", recovered["orphan_log_tail"])
+        assert recovered["status"] == "pending"
+        assert recovered["orphan_streak"] == 1
+        assert "line 49" in recovered["orphan_log_tail"]
+
+    def test_recover_orphan_startup_grace_exemption_does_not_increment_counter(self):
+        """Invariant: orphans discovered in first pass after startup do not increment or reset orphan_streak."""
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 orphan_streak=2)
+        store.save_task(t)
+
+        loop.STARTUP_GRACE_DONE = False
+        loop.recover_orphan(t)
+
+        recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["orphan_streak"], 2)
+        assert recovered["status"] == "pending"
+        assert recovered["orphan_streak"] == 2
+
+    def test_advance_startup_grace_processes_all_first_pass_orphans_then_sets_done(self):
+        """Invariant: advance exempts all orphans in the first scan pass, then marks STARTUP_GRACE_DONE=True."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        run_1 = os.path.join(sbx.RUNS, "20261011T120001Z-worker-1")
+        run_2 = os.path.join(sbx.RUNS, "20261011T120002Z-worker-2")
+        os.makedirs(run_1, exist_ok=True)
+        os.makedirs(run_2, exist_ok=True)
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_1, "meta.json"), "w"))
+        json.dump(dict(task="0002-t2", worker="worker-2"), open(os.path.join(run_2, "meta.json"), "w"))
+
+        t1 = dict(id="0001-t1", goal="G1", status="running", worker="worker-1", run=run_1, files=["a.py"], role="dev", orphan_streak=1)
+        t2 = dict(id="0002-t2", goal="G1", status="running", worker="worker-2", run=run_2, files=["b.py"], role="dev", orphan_streak=2)
+        store.save_task(t1)
+        store.save_task(t2)
+
+        loop.STARTUP_GRACE_DONE = False
+        with patch.object(sbx, "is_running", return_value=False), \
+             patch.object(loop, "llm_available", return_value=True):
+            loop.advance()
+
+        self.assertTrue(loop.STARTUP_GRACE_DONE)
+        t1_after = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        t2_after = store.jload(os.path.join(ctx.FD, "tasks", "0002-t2.json"))
+        self.assertEqual(t1_after["orphan_streak"], 1)
+        self.assertEqual(t2_after["orphan_streak"], 2)
+        self.assertEqual(t1_after["status"], "pending")
+        self.assertEqual(t2_after["status"], "pending")
+        assert loop.STARTUP_GRACE_DONE is True
+        assert t1_after["orphan_streak"] == 1
+        assert t2_after["orphan_streak"] == 2
+
+    def test_recover_orphan_progress_resets_orphan_streak(self):
+        """Invariant: run that ran longer than ORPHAN_PROGRESS_SEC before being orphaned resets orphan_streak to 0."""
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        started_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(os.path.join(run_orphan, "started"), "w") as f:
+            f.write(started_iso + "\n")
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 orphan_streak=4, orphan_log_tail="previous crash log")
+        store.save_task(t)
+
+        loop.STARTUP_GRACE_DONE = True
+        loop.recover_orphan(t)
+
+        recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["orphan_streak"], 0)
+        self.assertEqual(recovered["orphan_log_tail"], "")
+        assert recovered["status"] == "pending"
+        assert recovered["orphan_streak"] == 0
+        assert recovered["orphan_log_tail"] == ""
+
+    def test_advance_real_supervisor_result_resets_orphan_streak(self):
+        """Invariant: real supervisor result in advance resets orphan_streak and clears orphan_log_tail."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        run_done = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_done, exist_ok=True)
+        open(os.path.join(run_done, "finished"), "w").write(sbx.now() + "\n")
+        open(os.path.join(run_done, "exitcode"), "w").write("0\n")
+        json.dump(dict(task="0001-t1", worker="worker-1", reason="ok", tokens=1000),
+                  open(os.path.join(run_done, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_done, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 orphan_streak=3, orphan_log_tail="old error log")
+        store.save_task(t)
+
+        with patch.object(loop, "llm_available", return_value=True):
+            loop.advance()
+
+        task_after = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(task_after["status"], "gate")
+        self.assertEqual(task_after["orphan_streak"], 0)
+        self.assertEqual(task_after["orphan_log_tail"], "")
+        assert task_after["status"] == "gate"
+        assert task_after["orphan_streak"] == 0
+        assert task_after["orphan_log_tail"] == ""
+
+    def test_orphan_warn_threshold_notifies_once_and_leaves_pending(self):
+        """Invariant: reaching ORPHAN_WARN sends task_blocked notification once and leaves task pending."""
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 orphan_streak=2)
+        store.save_task(t)
+
+        loop.STARTUP_GRACE_DONE = True
+        with patch.object(store, "notify") as mock_notify:
+            loop.recover_orphan(t)
+
+        recovered = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["orphan_streak"], 3)
+        mock_notify.assert_called_once_with(
+            "task_blocked",
+            obj=recovered,
+            text=f"task 0001-t1 is close to the orphan limit (3/{ctx.C['ORPHAN_LIMIT']} consecutive crashes with no progress)"
+        )
+        assert recovered["status"] == "pending"
+        assert recovered["orphan_streak"] == 3
+        assert mock_notify.call_count == 1
+
+        with patch.object(store, "notify") as mock_notify_2:
+            loop.recover_orphan(recovered)
+        self.assertEqual(mock_notify_2.call_count, 0)
+        assert mock_notify_2.call_count == 0
+
+    def test_orphan_limit_blocks_task_with_captured_tail_and_no_requeue(self):
+        """Invariant: reaching ORPHAN_LIMIT blocks the task via merge.block with log tail and does not re-queue."""
+        run_orphan = os.path.join(sbx.RUNS, "20261011T120000Z-worker-1")
+        os.makedirs(run_orphan, exist_ok=True)
+        with open(os.path.join(run_orphan, "supervisor.log"), "w") as f:
+            f.write("FATAL: segmentation fault in runner\nexit code 139\n")
+        json.dump(dict(task="0001-t1", worker="worker-1"), open(os.path.join(run_orphan, "meta.json"), "w"))
+
+        t = dict(id="0001-t1", goal="G1", status="running", worker="worker-1",
+                 run=run_orphan, attempts=0, files=["a.py"], role="developer", branch="feat/0001-t1",
+                 orphan_streak=4, history=[])
+        store.save_task(t)
+
+        loop.STARTUP_GRACE_DONE = True
+        with patch.object(merge, "block", wraps=merge.block) as spy_block:
+            loop.recover_orphan(t)
+
+        task_after = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(task_after["status"], "blocked")
+        self.assertEqual(task_after["orphan_streak"], 5)
+        self.assertTrue(task_after["blocked_why"].startswith("orphan limit reached: "))
+        self.assertIn("FATAL: segmentation fault in runner", task_after["blocked_why"])
+        self.assertIn("FATAL: segmentation fault in runner", task_after["orphan_log_tail"])
+        self.assertTrue(spy_block.called)
+        assert task_after["status"] == "blocked"
+        assert task_after["orphan_streak"] == 5
+        assert task_after["blocked_why"].startswith("orphan limit reached: ")
+        assert "FATAL: segmentation fault in runner" in task_after["blocked_why"]
+
+    def test_capture_orphan_log_tail_fallback_and_truncation(self):
+        """Invariant: supervisor.log preferred, stderr.log fallback if supervisor.log empty, truncated to 40 lines/4000 chars."""
+        run_fallback = os.path.join(sbx.RUNS, "20261011T120000Z-fallback")
+        os.makedirs(run_fallback, exist_ok=True)
+        with open(os.path.join(run_fallback, "supervisor.log"), "w") as f:
+            f.write("   \n")
+        with open(os.path.join(run_fallback, "stderr.log"), "w") as f:
+            f.write("Error from worker stderr\n")
+        tail_fallback = loop.capture_orphan_log_tail(run_fallback)
+        self.assertEqual(tail_fallback, "Error from worker stderr")
+        assert tail_fallback == "Error from worker stderr"
+
+        run_long = os.path.join(sbx.RUNS, "20261011T120001Z-long")
+        os.makedirs(run_long, exist_ok=True)
+        with open(os.path.join(run_long, "supervisor.log"), "w") as f:
+            f.write("X" * 150 * 50)
+        tail_long = loop.capture_orphan_log_tail(run_long)
+        self.assertTrue(len(tail_long) <= 4000)
+        self.assertTrue(len(tail_long.splitlines()) <= 40)
+        assert len(tail_long) <= 4000
+        assert len(tail_long.splitlines()) <= 40
 
 
 if __name__ == "__main__":

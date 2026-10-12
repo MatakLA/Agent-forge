@@ -1,15 +1,18 @@
 """The deterministic loop: every tick it applies finished steps, advances tasks and goals, dispatches ready tasks to
-free workers and keeps the idle ones fed. No LLM decides when anything happens."""
+free workers, recovers orphaned runs with streak limits, and keeps the idle ones fed. No LLM decides when anything happens."""
 import json, os, re, signal, sys, threading, time, traceback
 
 import sbx, runtimes
 
-from . import ctx
+from . import ctx, merge, store
 from .util import _iso_ts, fmt_ts, parse_limit, ready_tasks, sh
 from .store import event, goals, gstate, jload, jsave, locked, new_goal_id, notify, save_goal, save_task, state_tx, tasks
 from .jobs import INFLIGHT, PHASE, POOL, SINCE, submit
 from .pool import (COOLDOWN, LAST_DISPATCHED, LAST_QUOTA_MSG, QUOTA_CACHE, RESERVED, api_budget_left, order_by_quota, pool_quota_out,
                    quota_pct, quota_rows, runtime_of, worker_busy, workers)
+
+ORPHAN_PROGRESS_SEC = 90
+STARTUP_GRACE_DONE = False
 
 DISPATCHING = set()           # task ids currently being dispatched
 DISPATCHING_FILES = set()     # files currently claimed by in-flight dispatches
@@ -320,9 +323,76 @@ def orphaned(run):
     return True
 
 
-def recover_orphan(t):
+def run_duration_sec(run, t=None):
+    """How many seconds the run lasted before being lost / orphaned."""
+    if not run:
+        return 0.0
+    if os.path.isdir(run):
+        m = sbx.meta(run)
+        if m.get("duration_s") and isinstance(m["duration_s"], (int, float)) and m["duration_s"] > 0:
+            return float(m["duration_s"])
+        started_file = os.path.join(run, "started")
+        started_ts = None
+        if os.path.exists(started_file):
+            try:
+                started_ts = _iso_ts(open(started_file).read().strip())
+            except Exception:
+                pass
+        if not started_ts:
+            if m.get("started"):
+                started_ts = _iso_ts(m["started"])
+            elif m.get("dispatched"):
+                started_ts = _iso_ts(m["dispatched"])
+        if started_ts:
+            return max(0.0, time.time() - started_ts)
+    if t and t.get("dispatched"):
+        started_ts = _iso_ts(t["dispatched"])
+        if started_ts:
+            return max(0.0, time.time() - started_ts)
+    return 0.0
+
+
+def capture_orphan_log_tail(run):
+    """Last ~40 lines of the orphaned run's supervisor stderr/log, or the run's log file if stderr is empty, truncated to ~4000 chars."""
+    if not run or not os.path.isdir(run):
+        return ""
+    candidates = ["supervisor.log", "stderr.log", "run.log", "setup.log"]
+    content = ""
+    for name in candidates:
+        p = os.path.join(run, name)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    data = f.read().strip()
+                if data:
+                    content = data
+                    break
+            except Exception:
+                pass
+    if not content:
+        try:
+            for f in sorted(os.listdir(run)):
+                if f.endswith(".log") and f not in candidates:
+                    p = os.path.join(run, f)
+                    if os.path.isfile(p):
+                        with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                            data = fh.read().strip()
+                        if data:
+                            content = data
+                            break
+        except Exception:
+            pass
+    if not content:
+        return ""
+    lines = content.splitlines()
+    tail = "\n".join(lines[-40:])
+    return tail[-4000:]
+
+
+def recover_orphan(t, startup_grace=None):
     """Close an orphaned run (stop whatever it left running in the worker, mark it finished) and re-queue its task without
-    counting an attempt - before this, such a task stayed "running" forever and blocked its files and its goal."""
+    counting an attempt - before this, such a task stayed "running" forever and blocked its files and its goal.
+    Tracks consecutive orphan recoveries without progress, warning at ORPHAN_WARN and blocking via merge.block at ORPHAN_LIMIT."""
     run, w = t.get("run", ""), t.get("worker", "")
     if re.fullmatch(r"worker-\d+", w):
         sh(["docker", "exec", w, "bash", "-c", 'sid=$(cat /tmp/run.sid 2>/dev/null); [ -n "$sid" ] && pkill -TERM -s "$sid"; exit 0'], timeout=30)
@@ -338,21 +408,68 @@ def recover_orphan(t):
         sbx.append_ledger(dict(run_id=os.path.basename(run), date=sbx.today(), at=sbx.now(), worker=w, task=m.get("task", ""), test=False,
                                reason="orphaned", exit_code=128, tokens=sbx.stream_tokens(os.path.join(run, "stream.jsonl")), duration_s=0,
                                tool_calls=0, egress_alarms=0))
-    t.update(status="pending")
-    t.pop("worker", None)
-    t.pop("run", None)
-    t.pop("dispatched", None)
-    save_task(t)
     if w:
         LAST_DISPATCHED.pop(w, None)
         COOLDOWN.pop(w, None)
         RESERVED.discard(w)
         QUOTA_CACHE.pop(w, None)
-    event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
-          task=t["id"])
+
+    dur = run_duration_sec(run, t)
+    shows_progress = dur > ORPHAN_PROGRESS_SEC
+    is_startup_exempt = (not STARTUP_GRACE_DONE) if startup_grace is None else startup_grace
+
+    if shows_progress:
+        t["orphan_streak"] = 0
+        t["orphan_log_tail"] = ""
+        t.update(status="pending")
+        t.pop("worker", None)
+        t.pop("run", None)
+        t.pop("dispatched", None)
+        save_task(t)
+        event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
+              task=t["id"])
+        return
+
+    if is_startup_exempt:
+        t.update(status="pending")
+        t.pop("worker", None)
+        t.pop("run", None)
+        t.pop("dispatched", None)
+        save_task(t)
+        event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
+              task=t["id"])
+        return
+
+    streak = int(t.get("orphan_streak") or 0) + 1
+    t["orphan_streak"] = streak
+    tail = capture_orphan_log_tail(run)
+    t["orphan_log_tail"] = tail
+    t.pop("worker", None)
+    t.pop("run", None)
+    t.pop("dispatched", None)
+    save_task(t)
+
+    warn_limit = int(ctx.C.get("ORPHAN_WARN", 3))
+    block_limit = int(ctx.C.get("ORPHAN_LIMIT", 5))
+
+    if streak == warn_limit:
+        warn_text = f"task {t['id']} is close to the orphan limit ({streak}/{block_limit} consecutive crashes with no progress)"
+        store.notify("task_blocked", obj=t, text=warn_text)
+
+    if streak >= block_limit:
+        why = f"orphan limit reached: {block_limit} consecutive crash-and-orphan cycles with no progress\n--- last log ---\n{tail}"
+        merge.block(t, why)
+        store.notify("task_blocked", obj=t, text=why)
+        t.update(status="blocked", blocked_why=why)
+    else:
+        t.update(status="pending")
+        save_task(t)
+        event(f"task {t['id']}: its run on {w} ended without its supervisor (machine restart or crash) - re-queued, no attempt counted",
+              task=t["id"])
 
 
 def advance():
+    global STARTUP_GRACE_DONE
     cancelled = {g["id"] for g in goals() if g.get("status") == "cancelled"}
     known_goals = {g["id"] for g in goals()}
     can_think = llm_available()
@@ -402,6 +519,9 @@ def advance():
                       f"{t['worker']} rests 30 min", task=t["id"]); continue
             t["last_run"] = dict(worker=t["worker"], conversation=m.get("conversation_id"), tokens=m.get("tokens", 0), reason=reason,
                                  salvage=m.get("salvage"))
+            if t.get("orphan_streak") or t.get("orphan_log_tail"):
+                t["orphan_streak"] = 0
+                t["orphan_log_tail"] = ""
             if reason in ("token-cap", "timeout"):
                 t["caps"] = t.get("caps", 0) + 1
             saved = " (WIP auto-saved to the branch)" if (m.get("salvage") or {}).get("rc") == 0 else ""
@@ -419,6 +539,8 @@ def advance():
             submit("merge:" + t["id"], step_upstream_merge, t)
         if t["status"] == "merge-ready":           # the owner approved the merge (APPROVE=merge)
             submit("task:" + t["id"], step_owner_merge, t)
+    if not STARTUP_GRACE_DONE:
+        STARTUP_GRACE_DONE = True
     for g in goals():
         if g.get("status") == "new" and can_think:
             submit("goal:" + g["id"], step_plan, g)
