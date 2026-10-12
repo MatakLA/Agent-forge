@@ -21,6 +21,10 @@ WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
 
+DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
+if DEMO_MODE or B.DEMO_MODE:
+    L.ssh_run = B.local_run
+
 
 def shutdown(*_a):
     with L.PANES_LOCK:
@@ -78,6 +82,8 @@ STATIC = load_static()
 
 
 def host_allowed(host):
+    if (DEMO_MODE or B.DEMO_MODE) and not DASHBOARD_HOSTS:
+        return True
     host = (host or "").strip().lower()
     if not host:
         return False
@@ -116,7 +122,8 @@ def token_ok(cookie_header, query_token=""):
 
 def foreman(pf, args, inp=None, timeout=60):
     """bin/foreman for a project ("" or " --project NAME"): (rc, stdout, stderr). Owner text only ever as `inp` (stdin)."""
-    return B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/foreman{pf} {args}", timeout=timeout, inp=inp)
+    run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+    return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {args}", timeout=timeout, inp=inp)
 
 
 def as_json(out, err, rc):
@@ -157,6 +164,8 @@ class Handler(BaseHTTPRequestHandler):
         if not token_ok(self.headers.get("Cookie"), qtok):
             self._deny(401, "sign in: open this page as /?token=<DASHBOARD_TOKEN>"); return False
         if post:
+            if DEMO_MODE or B.DEMO_MODE:
+                return True
             if self.headers.get("X-Agent-Forge") != "1":
                 self._deny(403, "missing X-Agent-Forge header"); return False
             origin = self.headers.get("Origin")
@@ -213,6 +222,9 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------------------------------------------- POST: writes
     def do_POST(self):
         if not self._allowed(post=True):
+            return
+        if DEMO_MODE or B.DEMO_MODE:
+            self._json({"error": "Demo mode: read-only"}, 403)
             return
         body = self._body()
         proj = str(body.get("project", "default"))
@@ -472,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
                 items = sorted(L.PANES.values(), key=lambda p: (order.get(p.kind, 9), p.title))
                 panes = [{"id": p.id, "title": p.title, "kind": p.kind, "state": p.state, "lines": list(p.lines)} for p in items]
             self._json({"roster": L.ROSTER.snapshot(), "panes": panes})
-        elif path in ("/api/foreman", "/api/status"):
+        elif path in ("/api/foreman", "/api/status", "/api/dashboard"):
             e = B.FOREMAN_BY.get(proj) or {"data": None, "at": 0, "error": "unknown project or not loaded yet"}
             self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
         elif path == "/api/projects":
@@ -512,8 +524,9 @@ class Handler(BaseHTTPRequestHandler):
             if not L.RUN_ID.fullmatch(rid):
                 self._json({"error": "bad run id"}, 400); return
             d = f"{B.FORGE_DIR}/runs/{rid}"
-            rc, out, err = B.ssh_run_full(f"cat {d}/meta.json 2>/dev/null; echo; echo '<<AF>>'; "
-                                          f"cat {d}/stream.jsonl 2>/dev/null || zcat {d}/stream.jsonl.gz 2>/dev/null", timeout=60)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cat {d}/meta.json 2>/dev/null; echo; echo '<<AF>>'; "
+                                  f"cat {d}/stream.jsonl 2>/dev/null || zcat {d}/stream.jsonl.gz 2>/dev/null", timeout=60)
             meta_txt, _, stream = out.partition("<<AF>>\n")
             try:
                 meta = json.loads(meta_txt.strip() or "{}")
@@ -523,13 +536,15 @@ class Handler(BaseHTTPRequestHandler):
                                                                         "duration_s", "cost_usd", "dispatched", "finished", "variant")},
                         "lines": L.render_run(stream), "missing": not stream.strip()})
         elif path == "/api/health":
-            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if q.get("full") else " --quick"), timeout=300)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if q.get("full") else " --quick"), timeout=300)
             self._json(as_json(out, err, rc))
         elif path == "/api/egress":
             since = q.get("since", "24h")
             if not re.fullmatch(r"\d{1,3}[hd]", since):
                 since = "24h"
-            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
             self._json(as_json(out, err, rc))
         elif path == "/api/disk":
             rc, out, err = foreman(pf, "disk", timeout=120)
