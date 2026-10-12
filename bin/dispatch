@@ -102,7 +102,7 @@ def main():
         info = preflight(worker, lim, runner)
         run = os.path.join(sbx.RUNS, f"{sbx.time.strftime('%Y%m%dT%H%M%SZ', sbx.time.gmtime())}-{worker}")
         os.makedirs(run)
-        prompt = open(task).read().split("\n## Orchestrator review checklist")[0]
+        prompt = sbx.no_nul(open(task).read().split("\n## Orchestrator review checklist")[0])
         open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
         open(run + "/task", "w").write(os.path.realpath(task) + "\n")
         json.dump(dict(run_id=os.path.basename(run), worker=worker, task=os.path.basename(task), test=bool(runner) and not os.environ.get('DISPATCH_RUNNER_COUNTS'), runner=runner,

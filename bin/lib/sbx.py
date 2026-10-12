@@ -190,6 +190,12 @@ def notify_payload(fmt, event, title, message):
         {"Content-Type": "application/json"}
 
 
+def no_nul(text):
+    """A NUL byte cannot be part of an argv (subprocess raises "embedded null byte"); test output that quotes a hostile payload
+    reaches the next attempt's prompt, so it is spelled out instead of passed on."""
+    return str(text).replace("\x00", "\\x00")
+
+
 def notify_outbox_path():
     return os.path.join(RUNS, "notify-outbox.jsonl")
 
