@@ -76,11 +76,12 @@ OpenCode (SST's OpenCode CLI) runs inside the worker container using the standar
 ## Goose
 Goose (Block's open-source CLI agent, `goose`) runs inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local model server the owner configures (Ollama, vLLM, LM Studio, OpenRouter, or other OpenAI-compatible endpoints).
 
-- **Setup**: Add workers with `bin/worker-add N --runtime goose` (or in Settings → "+ Add worker" → Goose).
-- **Endpoint and Network**: Goose is provider-agnostic and endpoint-based, requiring a pinned endpoint host exactly like Compat (refer to [Your own model server](#your-own-model-server-ollama-vllm-lm-studio-openrouter) for configuration of `COMPAT_BASE_URL` and egress allow-listing). Outbound traffic is restricted to the configured model server host only.
+- **Setup**: Add workers with `bin/worker-add N --runtime goose` (or in Settings → "+ Add worker" → Goose). Configure the model server or provider endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`).
+- **Endpoint and Network**: Goose is provider-agnostic and endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Environment and Config**: Goose configures its target model, provider, and server endpoint through environment variables (such as `GOOSE_PROVIDER`, `GOOSE_MODEL`, and provider base URLs / keys) or via its configuration file (`~/.config/goose/config.yaml`), pointing at the configured endpoint.
-- **Invocation**: `bin/run-supervisor` starts Goose non-interactively using `goose run --instructions -`. The task prompt is supplied on stdin (per Goose CLI documentation) rather than in argv, preventing sensitive instructions and task data from leaking in `/proc/*/cmdline`.
-- **Cost model**: The cost model is `unknown`. Goose's CLI output does not expose standard token counts (`tokens: None`), so budgeting and per-token cost tracking are not available for goose runs.
+- **Invocation**: `bin/run-supervisor` starts Goose non-interactively using `goose run --instructions -` (using `GOOSE_QUIET` flags). The task prompt is supplied on stdin (per Goose CLI documentation) rather than in argv, preventing sensitive instructions and task data from leaking in `/proc/*/cmdline`.
+- **Cost model**: The cost model is honest: it reports tokens when available in stream usage metrics (returning `tokens: None` when omitted), and cost is unknown otherwise (`cost_usd: None`, no USD spend recorded, runs do not count against API budget caps).
+- **Testing**: Tested offline against `tests/fixtures/fake-goose-server.js` with zero real network calls in `tests/test_runtime_goose.sh`.
 
 ## Qwen Code
 Qwen Code runs Alibaba's Qwen Code CLI (`qwen`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`) to interact with Alibaba Cloud DashScope models.
