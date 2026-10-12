@@ -82,11 +82,12 @@ Goose (Block's open-source CLI agent, `goose`) runs inside the worker container 
 - **Cost model**: The cost model is `unknown`. Goose's CLI output does not expose standard token counts (`tokens: None`), so budgeting and per-token cost tracking are not available for goose runs.
 
 ## Qwen Code
-Qwen Code runs Alibaba's Qwen Code CLI (`qwen-code`) inside the worker container to interact with Alibaba Cloud DashScope models.
+Qwen Code runs Alibaba's Qwen Code CLI (`qwen`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`) to interact with Alibaba Cloud DashScope models.
 
-- **Setup**: Add workers with `bin/worker-add N --runtime qwen-code` (or in Settings → "+ Add worker" → Qwen Code). The owner installs and configures the Qwen Code CLI in the worker container and configures the DashScope authentication credentials (such as `DASHSCOPE_API_KEY`) so the CLI can authenticate against the model API.
-- **Egress and Network**: dashscope.aliyuncs.com and dashscope-intl.aliyuncs.com are added to the allow-list; verify the exact hostname against the Qwen Code CLI version you run before relying on it in production - do not claim certainty that isn't established. The egress proxy restricts outbound network traffic to verified endpoints only.
-- **Cost model**: The cost model is token-based if exposed by the CLI's usage output, else 'unknown' (reporting `tokens: None` and no USD spend if the stream does not yield token metrics).
+- **Setup**: Add workers with `bin/worker-add N --runtime qwen-code` (or in Settings → "+ Add worker" → Qwen Code). The worker requires a DashScope API key secret (`qwen.key`), configured via `printf '%s' "$KEY" | bin/secret-set qwen.key` or in Settings → Workers, which is mounted into the container as a read-only secret.
+- **Egress and Network**: Egress is allowed via pinned entries in `egress/allowlist.txt` (`dashscope.aliyuncs.com` and `dashscope-intl.aliyuncs.com`) rather than through the dynamic endpoint mechanism. The egress proxy restricts outbound network traffic to these verified DashScope API hosts only.
+- **Invocation**: `bin/run-supervisor` starts the CLI non-interactively using `qwen --output-format stream-json --yolo` (the `QWEN_QUIET` flags) with the prompt supplied on stdin and `-p "Do the task described above."` (`QWEN_TRAILER`) appended. This keeps prompts and sensitive instructions out of `/proc/*/cmdline`. A rework continues the existing conversation with `--resume <conversation_id>`, and an optional model is passed with `-m <model>`.
+- **Cost model**: The cost model is `unknown/not tracked`. `RUNTIMES['qwen-code']` sets `api=False` and has no price table configured (`prices: None`), so `bin/lib/runtimes.py` does not compute a real USD cost (`cost_usd: None`), and runs do not count against API budget caps.
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
