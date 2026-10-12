@@ -1,7 +1,8 @@
-// Settings, in six short pages: Workers (kill switch, the pool, adding workers, keys and your model server), Models (who plans
-// and reviews, worker models, routing, experiments), Project (where the code lives, approvals, behaviour, tests,
-// notifications), Money (budgets and prices), Knowledge (vision, team rules, decisions, lessons, roles) and Limits (all
-// projects). Also: where the code lives (dialog), a worker's Antigravity sign-in, a new project.
+// Settings: Runtimes & providers readiness summary (doctor check), followed by six short pages: Workers (kill switch,
+// the pool, adding workers, keys and your model server), Models (who plans and reviews, worker models, routing, experiments),
+// Project (where the code lives, approvals, behaviour, tests, notifications), Money (budgets and prices), Knowledge (vision,
+// team rules, decisions, lessons, roles) and Limits (all projects). Also: where the code lives (dialog), a worker's Antigravity
+// sign-in, a new project.
 
 // ---- kill switch (per project; "all" = every project)
 let ksBusy = false;
@@ -30,8 +31,18 @@ document.addEventListener('click', e => {
   if (act) act();
 });
 
-// ---- settings data
 let S = null, sLoadedFor = null, sMsg = '';
+let READINESS = null, readinessBusy = false, readinessErr = null, readinessAt = 0;
+const READINESS_RTNAME = {
+  agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI',
+  compat: 'Codex · own server', aider: 'Aider · own server', opencode: 'OpenCode',
+  goose: 'Goose', 'qwen-code': 'Qwen Code', 'anthropic-compat': 'Anthropic-compatible endpoint'
+};
+const READINESS_PROVLABEL = {
+  'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity',
+  'agy-gemini': 'Gemini via Antigravity', 'anthropic-api': 'Anthropic API (paid)',
+  'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'
+};
 const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback (Gemini)',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', ANTHROPIC_MODEL: 'Anthropic API model (paid)',
@@ -152,10 +163,33 @@ const HELP = {
   FORGE_REPO: 'Forgejo repository path for this project. Set in etc/forge.conf or project.conf at bootstrap — requires restarting the foreman service to change.'};
 const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
   'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
+async function loadReadiness(force) {
+  if (readinessBusy) return;
+  if (!force && READINESS !== null && Date.now() - readinessAt < 30000) return;
+  readinessBusy = true;
+  try {
+    const data = await getJSON('/api/readiness');
+    if (data && data.error && !data.runtimes && !data.providers) {
+      readinessErr = data.error;
+      READINESS = null;
+    } else {
+      READINESS = data || {};
+      readinessErr = null;
+    }
+  } catch (e) {
+    readinessErr = String(e && e.message ? e.message : e);
+    if (!READINESS) READINESS = null;
+  } finally {
+    readinessBusy = false;
+    readinessAt = Date.now();
+  }
+  schedule(true);
+}
 async function loadSettings(force) {
   if (!force && sLoadedFor === project && S) return;
   sLoadedFor = project;
   try { S = await (await fetch('/api/settings?project=' + encodeURIComponent(project))).json(); } catch (e) { S = {error: String(e)}; }
+  loadReadiness(force);
   schedule(true);
 }
 function sval(k) {
@@ -191,6 +225,58 @@ function modelSel(k, allowEmpty, emptyLabel) {
 }
 const field = (k, inner, help) => '<div class="setrow"><label for="set-' + k + '">' + esc(LABEL[k] || k) + ((help || HELP[k]) ? '<span class="help">' + esc(help || HELP[k]) + '</span>' : '') + '</label><div>' + inner + '</div></div>';
 const card = (title, body, intro) => '<div class="setcard"><h3>' + title + '</h3>' + (intro ? '<div class="muted small intro">' + intro + '</div>' : '') + body + '</div>';
+
+// ---- Runtimes & providers readiness summary
+function readinessBadge(state) {
+  const s = String(state || '').trim().toLowerCase();
+  if (s === 'ok') return '<span class="badge ok" data-state="ok">Ready</span>';
+  if (s === 'missing_setting') return '<span class="badge warn" data-state="missing_setting">Missing setting</span>';
+  if (s === 'missing_egress') return '<span class="badge warn" data-state="missing_egress">Missing egress</span>';
+  return '<span class="badge" data-state="' + esc(state) + '">' + esc(state || 'unknown') + '</span>';
+}
+function readinessRow(kind, name, info) {
+  info = info || {};
+  const state = info.state || 'unknown';
+  const detail = info.detail != null ? String(info.detail) : '';
+  const label = kind === 'runtime'
+    ? ((typeof RTNAME !== 'undefined' && RTNAME[name]) || READINESS_RTNAME[name] || name)
+    : ((typeof PROVLABEL !== 'undefined' && PROVLABEL[name]) || READINESS_PROVLABEL[name] || name);
+  const nameHtml = '<b>' + esc(label) + '</b>' + (label !== name ? ' <span class="muted small">(' + esc(name) + ')</span>' : '');
+  const kindLabel = kind === 'runtime' ? 'Runtime' : 'Provider';
+  return '<tr class="readiness-row" data-kind="' + esc(kind) + '" data-name="' + esc(name) + '" data-state="' + esc(state) + '">' +
+    '<td class="muted small">' + esc(kindLabel) + '</td>' +
+    '<td>' + nameHtml + '</td>' +
+    '<td>' + readinessBadge(state) + '</td>' +
+    '<td style="white-space:normal;word-break:break-word;">' + esc(detail) + '</td>' +
+    '</tr>';
+}
+function readinessCard() {
+  if (READINESS === null && !readinessBusy && !readinessErr) {
+    loadReadiness();
+  }
+  let body = '';
+  if (readinessBusy && !READINESS) {
+    body = '<div class="empty">loading…</div>';
+  } else if (readinessErr && !READINESS) {
+    body = '<div class="empty bad">Readiness check unavailable: ' + esc(readinessErr) + '</div>';
+  } else {
+    const R = READINESS || {};
+    const rtEntries = Object.entries(R.runtimes || {});
+    const provEntries = Object.entries(R.providers || {});
+    if (!rtEntries.length && !provEntries.length) {
+      body = '<div class="empty">Readiness check unavailable.</div>';
+    } else {
+      const rows = [
+        ...rtEntries.map(([name, info]) => readinessRow('runtime', name, info)),
+        ...provEntries.map(([name, info]) => readinessRow('provider', name, info))
+      ].join('');
+      body = '<div class="tablewrap"><table class="m readiness-table" id="readiness-table">' +
+        '<thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>';
+    }
+  }
+  return card('Runtimes & providers', body, 'Doctor check for worker runtimes and orchestrator providers.');
+}
 
 // ---- the six pages
 function pageWorkers() {
@@ -428,7 +514,7 @@ function settingsHtml() {
   if (S.error) return '<div class="empty bad">Could not load settings: ' + esc(S.error) + '</div>';
   const p = SUB.settings;
   const body = p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
-  return body + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
+  return readinessCard() + body + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
 }
 function renderSettings(force) {
   const el = $('settings');
@@ -465,6 +551,7 @@ document.addEventListener('click', async e => {
     if (d < 0 && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
     if (d > 0 && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); return; }
   if (e.target.id === 'save-settings') { saveSettings(); return; }
+  if (e.target.id === 'refresh-readiness') { loadReadiness(true); return; }
   if (e.target.id === 'refresh-models') { e.target.textContent = 'loading…';
     try { await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, refresh_models: true})}); } catch (err) {}
     loadSettings(true); return; }
@@ -606,4 +693,4 @@ async function createProject() {
   await loadProjects(true);
   if (j.state !== 'failed') { project = body.name; store('af-project', project); }
 }
-projectResets.push(() => { S = null; sLoadedFor = null; sMsg = ''; DOCS.list = null; });
+projectResets.push(() => { S = null; sLoadedFor = null; sMsg = ''; DOCS.list = null; READINESS = null; readinessErr = null; readinessAt = 0; });
