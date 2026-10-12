@@ -361,6 +361,28 @@ def main():
         if rt != "agy":
             import runtimes
             r_info = runtimes.RUNTIMES.get(rt, {})
+            if rt == "anthropic-compat":
+                url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+                lep = None
+                try:
+                    import egress
+                    lep = egress.local_endpoint()
+                except Exception:
+                    pass
+                has_endpoint = (hasattr(runtimes, "endpoint_target") and runtimes.endpoint_target(url)) or (lep is not None)
+                server = re.sub(r"(//[^/]+).*", r"\1", url) if url else ""
+                if has_endpoint:
+                    ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
+                else:
+                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                        "settings:COMPAT_BASE_URL")
+                key = r_info.get("key") or "compat.key"
+                if not sbx.read(os.path.join(S, key)):
+                    bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                        f"key:{key}")
+                else:
+                    ok(f"{name} runs {rt} with an API key")
+                continue
             is_endpoint = (rt in ("opencode", "goose")) or bool(r_info.get("endpoint")) or (hasattr(runtimes, "uses_endpoint") and runtimes.uses_endpoint(rt))
             if is_endpoint:
                 url = str((lim or {}).get("COMPAT_BASE_URL") or "")
@@ -419,6 +441,8 @@ def main():
             known_runtimes["qwen-code"] = dict(api=False, hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"])
         if "goose" not in known_runtimes:
             known_runtimes["goose"] = dict(api=False, endpoint=True, hosts=[])
+        if "anthropic-compat" not in known_runtimes:
+            known_runtimes["anthropic-compat"] = dict(api=True, endpoint=True, hosts=[])
         for rt, r in known_runtimes.items():
             if (r.get("api") or rt in ("opencode", "qwen-code", "goose")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
                 if r.get("endpoint") or rt in ("opencode", "goose"):
