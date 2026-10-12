@@ -30,12 +30,16 @@ def providers_for(kind):
         provs = [p.strip() for p in str(order or "").split(",") if p.strip()]
     if not provs:
         fallback = ctx.C.get("ORCHESTRATOR_PROVIDER")
-        if not fallback or (isinstance(fallback, str) and not fallback.strip()):
-            fallback = os.environ.get("ORCHESTRATOR_PROVIDER", "")
         if isinstance(fallback, (list, tuple)):
             provs = [str(p).strip() for p in fallback if str(p).strip()]
         else:
             provs = [p.strip() for p in str(fallback or "").split(",") if p.strip()]
+        if not provs:
+            env_fallback = os.environ.get("ORCHESTRATOR_PROVIDER", "")
+            if isinstance(env_fallback, (list, tuple)):
+                provs = [str(p).strip() for p in env_fallback if str(p).strip()]
+            else:
+                provs = [p.strip() for p in str(env_fallback or "").split(",") if p.strip()]
     return provs
 
 
@@ -143,6 +147,12 @@ def _via_paid_api(name, prompt, system):
         ctx.C.get("OPENAI_MODEL") if name == "openai-api" else
         ctx.C.get("GEMINI_MODEL") if name == "gemini-api" else ""
     )
+    if not str(model or "").strip():
+        model = (
+            os.environ.get("ANTHROPIC_MODEL") if name == "anthropic-api" else
+            os.environ.get("OPENAI_MODEL") if name == "openai-api" else
+            os.environ.get("GEMINI_MODEL") if name == "gemini-api" else ""
+        )
     model = str(model or "").strip()
     if not model:
         return None, None
@@ -152,7 +162,7 @@ def _via_paid_api(name, prompt, system):
         if name == "anthropic-api":
             r = providers.call_anthropic_api(prompt, model, system=system)
         elif name == "openai-api":
-            api_base = str(ctx.C.get("OPENAI_API_BASE") or "").strip() or "https://api.openai.com/v1"
+            api_base = str(ctx.C.get("OPENAI_API_BASE") or "").strip() or os.environ.get("OPENAI_API_BASE", "").strip() or "https://api.openai.com/v1"
             r = providers.call_openai_api(prompt, model, system=system, api_base=api_base)
         elif name == "gemini-api":
             r = providers.call_gemini_api(prompt, model, system=system)
