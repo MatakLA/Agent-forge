@@ -16,6 +16,7 @@
 - Foreman loop: `orphaned` validates `RUN_DIR_RE`, checks recent start markers, and never flags runs of already-finished tasks as orphans.
 - Foreman loop: `recover_orphan` clears task worker/run bindings to restore dispatchability and resets worker dispatch history in `LAST_DISPATCHED`.
 - Foreman loop: `feed_idle_workers` counts planning tasks toward pending capacity, preventing premature backlog goal pulls and idle spin.
+- Foreman loop: orphan-loop detection blocks tasks after consecutive crash-and-orphan cycles with no progress via `ORPHAN_LIMIT` (default 5) and raises warnings/notifications via `ORPHAN_WARN` (default 3).
 - Foreman merge: `auto_rebase` aborts rebase cleanly on conflict or failure, cleaning temporary files and leaving no `.git/rebase-merge` state behind.
 - Foreman merge: `requeue_gate` blocks tasks exceeding the retry cap with a clear reason, and merge helpers guard against silently merging blocked or cancelled tasks.
 - Foreman merge: `step_gate_review_merge` and merge steps clear in-memory `PHASE` tracking on completion or mid-step failure, preventing dangling phases without active jobs.
