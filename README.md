@@ -20,6 +20,8 @@ until it is right. Then the next goal starts, from your backlog or from your pro
 > it at repositories where an AI merging code is acceptable to you, and read [SECURITY.md](SECURITY.md) first. It was extracted
 > from a setup that ran a 4-worker team for two weeks (~400 worker runs, ~190 merged pull requests) - expect rough edges.
 
+**Try the demo:** To evaluate the dashboard in minutes without setting up a VM or API keys, run `bash scripts/demo.sh` to start a read-only Docker demo on http://localhost:8171 with synthetic team activity (see [docs/DEMO.md](docs/DEMO.md)).
+
 ## Why it is different
 
 Most parallel-agent tools run agents on your machine in git worktrees and leave the review and the merging to you. Agent-Forge

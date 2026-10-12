@@ -14,7 +14,7 @@ This document contains two parts:
 
 The demo mode simulates a fully populated Agent-Forge installation working on the `tasks` CLI demo project ([examples/demo/vision.md](../examples/demo/vision.md)). It executes offline using mock worker transcripts, pre-baked team state, and an internal Git forge.
 
-The target implementation packages all components into a single Docker Compose manifest at `examples/demo/docker-compose.yml` (do not create this file yet; this section specifies its design).
+The implementation packages the demo dashboard into a Docker Compose manifest at `demo/docker-compose.yml` launched via `scripts/demo.sh`.
 
 ```
  ┌────────────────────────────────────────────────────────────────────────┐
@@ -122,15 +122,20 @@ When `DEMO=1`:
 The entire demo environment starts with a single command:
 
 ```bash
-docker compose -f examples/demo/docker-compose.yml up
+bash scripts/demo.sh
+```
+
+To bind to a custom host port instead of the default port 8171, pass `--port N`:
+```bash
+bash scripts/demo.sh --port 8182
 ```
 
 ### What Happens on Launch
-1. Docker Compose pulls or builds the lightweight service containers.
-2. The initialization step executes `tools/demo_state.py /af` inside the shared volume.
-3. Forgejo starts, initializes its SQLite database, and creates the demo repository `acme/tasks-cli`.
-4. The dashboard server begins listening on `http://127.0.0.1:8171`.
-5. The foreman stub initiates the replay loop.
+1. Verifies prerequisites: requires only Docker and Docker Compose.
+2. Prepares a temporary isolated workspace and populates it with synthetic demo data using `python3 tools/demo_state.py`.
+3. Starts the container named `dashboard` using `demo/docker-compose.yml`.
+4. The dashboard server begins listening on `http://localhost:8171` (or the chosen `--port`).
+5. Enforces read-only mode via `DEMO_MODE=1`: blocks every action that would touch real infrastructure, requiring no secrets, no egress proxy, and no real worker containers.
 
 ### What the User Sees
 - **Dashboard URL**: Printed in stdout logs: `http://127.0.0.1:8171`.
@@ -193,24 +198,40 @@ cd agent-forge
 ```
 
 ### Step 2: Start Demo Mode
-Run the single compose command from the repository root:
+Run the single demo command from the repository root (requiring only Docker):
 ```bash
-docker compose -f examples/demo/docker-compose.yml up
+bash scripts/demo.sh
+```
+
+To run on a custom port instead of the default port 8171, pass `--port N`:
+```bash
+bash scripts/demo.sh --port 8182
 ```
 
 Expected output:
 ```text
-[+] Running 4/4
- ✔ Network demo_internal        Created
- ✔ Container demo-forgejo-1     Started
- ✔ Container demo-foreman-1     Started
- ✔ Container demo-dashboard-1   Started
-demo-dashboard-1  | Agent-Forge web server listening on http://127.0.0.1:8171
+==> Checking prerequisites
+  ✔ Docker and Docker Compose are available
+
+==> Preparing demo workspace
+  ✔ Workspace prepared at /tmp/...
+
+==> Populating synthetic demo state
+  ✔ Demo state populated in /tmp/.../runs/
+
+==> Starting demo
+Demo running at http://localhost:8171 (Ctrl-C to stop)
+[+] Running 1/1
+ ✔ Container demo-dashboard-1  Started
 ```
+
+The script starts a container named `dashboard` on **http://localhost:8171** (or your chosen port) showing synthetic goals, tasks, and workers from `tools/demo_state.py`.
+
+The demo is strictly **read-only**: `DEMO_MODE` blocks every action that would touch real infrastructure (such as adding workers, logging in, toggling the killswitch, changing settings, or modifying tasks and goals) with a clear read-only message. It requires no secrets (`~/.config/sandbox/secrets` or API keys), no egress proxy, and no real worker containers.
 
 ### Step 3: Open the Dashboard
 Open your web browser and navigate to:
-**[http://127.0.0.1:8171](http://127.0.0.1:8171)**
+**[http://localhost:8171](http://localhost:8171)** (or your specified port).
 
 You will see the Agent-Forge dashboard loaded with the active demo project.
 
@@ -258,18 +279,18 @@ What to observe:
 
 ---
 
-## 4. Stopping and Cleaning Up
+## 4. Stopping the Demo
 
 To stop the demo:
-- In the terminal where docker-compose is running, press `Ctrl+C`.
+- In the terminal where `bash scripts/demo.sh` is running, press `Ctrl+C`.
 - Or run from another terminal:
   ```bash
-  docker compose -f examples/demo/docker-compose.yml down
+  docker compose -f demo/docker-compose.yml down
   ```
 
-To wipe the demo containers and reset the demo volume state completely:
+`scripts/demo.sh` automatically cleans up its temporary workspace directory on exit. To also remove the demo container and volume state, run:
 ```bash
-docker compose -f examples/demo/docker-compose.yml down -v
+docker compose -f demo/docker-compose.yml down -v
 ```
 
 ---
@@ -278,10 +299,9 @@ docker compose -f examples/demo/docker-compose.yml down -v
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `bind: address already in use` (port 8171) | Another local service is using port 8171. | Set a custom port: `BIND_PORT=8182 docker compose -f examples/demo/docker-compose.yml up` and visit `http://127.0.0.1:8182`. |
-| `bind: address already in use` (port 3000) | Another service (such as Gitea/Grafana) is using port 3000. | Set a custom forge port: `FORGE_HTTP_PORT=3002 docker compose -f examples/demo/docker-compose.yml up`. |
+| `bind: address already in use` (port 8171) | Another local service is using port 8171. | Set a custom port: `bash scripts/demo.sh --port 8182` and visit `http://localhost:8182`. |
 | `Cannot connect to the Docker daemon` | Docker daemon is stopped or not responding. | Start Docker Desktop, or run `sudo systemctl start docker` on Linux. |
-| WSL2 cannot reach `http://127.0.0.1:8171` | Windows port forwarding is blocked or inactive. | Ensure `localhostForwarding=true` in `~/.wslconfig`, or browse to your WSL2 IP address (`ip addr show eth0`). |
+| WSL2 cannot reach `http://localhost:8171` | Windows port forwarding is blocked or inactive. | Ensure `localhostForwarding=true` in `~/.wslconfig`, or browse to your WSL2 IP address (`ip addr show eth0`). |
 | Permission denied creating files in volume | File permissions conflict on the mounted volume. | Ensure your user has write access to the checkout directory: `chmod -R u+rw .`. |
 | Dashboard displays "not loaded yet" | Services are still completing initial state seeding. | Wait 5–10 seconds for the foreman stub to complete initial JSON state generation. |
 
