@@ -2,15 +2,16 @@
 and executes background jobs (new worker, new project, connecting upstream) and pty login sessions.
 
 Public interface: ssh_run, ssh_run_full, local_run, local_run_full, pflag, add_worker_job, create_project_job,
-connect_upstream_job, LOGIN (LoginSessions), foreman_loop.
+connect_upstream_job, LOGIN (LoginSessions), foreman_loop, readiness_summary.
 
 Invariants:
 - All owner-supplied parameters formatted into shell strings are strictly allowlisted.
 - Vision text and configuration secrets travel strictly via stdin, never in command line or argv.
 - LoginSessions validates worker names and rejects pty control sequences to prevent breakout.
 - In DEMO_MODE, ssh_run and ssh_run_full are never called and all write actions return read-only errors.
+- readiness_summary returns core readiness status without secrets and degrades to error JSON on import failure.
 """
-import atexit, collections, json, os, re, shlex, signal, subprocess, threading, time
+import atexit, collections, json, os, re, shlex, signal, subprocess, sys, threading, time
 
 
 DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
@@ -37,6 +38,32 @@ VM_IP = "" if DEMO_MODE else os.environ.get("VM_IP", "")
 
 
 FORGE_DIR = os.environ.get("FORGE_DIR", "~/sandbox" if VM_IP else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+try:
+    _backend_dir = os.path.dirname(os.path.abspath(__file__))
+    _repo_root = os.path.dirname(os.path.dirname(_backend_dir))
+    for _cand in [
+        os.path.join(_repo_root, "bin", "lib"),
+        os.path.abspath(os.path.expanduser(os.path.join(FORGE_DIR, "bin", "lib"))),
+    ]:
+        if os.path.isdir(_cand) and _cand not in sys.path:
+            sys.path.insert(0, _cand)
+    for _cand in [_repo_root, os.path.abspath(os.path.expanduser(FORGE_DIR))]:
+        if os.path.isdir(_cand) and _cand not in sys.path:
+            sys.path.insert(0, _cand)
+    import bin.lib.foreman.readiness as readiness
+except Exception:
+    try:
+        from foreman import readiness
+    except Exception:
+        readiness = None
+
+if readiness is not None:
+    if "bin.lib.foreman.readiness" not in sys.modules:
+        sys.modules["bin.lib.foreman.readiness"] = readiness
+    if "readiness" not in sys.modules:
+        sys.modules["readiness"] = readiness
 
 
 if VM_IP:
@@ -465,3 +492,13 @@ def foreman_loop():
             for e2 in FOREMAN_BY.values():
                 e2["error"] = f"foreman_loop crashed: {e}"
         time.sleep(FOREMAN_INTERVAL)
+
+
+def readiness_summary():
+    """Return readiness status for all runtimes and providers; degrades gracefully on error."""
+    try:
+        if readiness is None:
+            raise ImportError("bin.lib.foreman.readiness module unavailable")
+        return readiness.all_status()
+    except Exception as e:
+        return {"runtimes": {}, "providers": {}, "error": str(e) or type(e).__name__}
