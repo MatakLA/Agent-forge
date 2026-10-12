@@ -67,10 +67,11 @@ An Anthropic-compatible endpoint connects worker containers running Claude Code 
 ## OpenCode
 OpenCode (SST's OpenCode CLI) runs inside the worker container using the standard agy worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local server the owner configures (Anthropic, OpenAI, OpenRouter, Ollama, etc.).
 
-- **Setup**: Add workers with `bin/worker-add N --runtime opencode` (or in Settings → "+ Add worker" → OpenCode).
-- **Endpoint and Network**: OpenCode is endpoint-based and uses the configurable-endpoint mechanism (`COMPAT_BASE_URL`). The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
-- **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A rework continues the existing session with `--session <conversation_id>`.
-- **Cost model**: The cost model is `unknown`. OpenCode's output stream does not expose token counts, so no USD figure is computed for it (`tokens: None`, no USD spend recorded).
+- **Setup**: Add workers with `bin/worker-add N --runtime opencode` (or in Settings → "+ Add worker" → OpenCode). Configure the model server or provider endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`).
+- **Endpoint and Network**: OpenCode is endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A model can be passed via `--model`, and a rework continues the existing session with `--session <conversation_id>`.
+- **Cost model**: The cost model is honest: it reports tokens when available in stream usage metrics (returning `tokens: None` when omitted), and cost is unknown otherwise (`cost_usd: None`, no USD spend recorded).
+- **Testing**: Tested offline against `tests/fixtures/fake-opencode-server.js` with zero real network calls in `tests/test_runtime_opencode.sh`.
 
 ## Goose
 Goose (Block's open-source CLI agent, `goose`) runs inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local model server the owner configures (Ollama, vLLM, LM Studio, OpenRouter, or other OpenAI-compatible endpoints).
