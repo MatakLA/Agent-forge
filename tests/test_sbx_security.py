@@ -5,6 +5,7 @@ Invariants:
 - Path helpers reject directory traversal sequences (..) and separators, returning safe paths.
 - Project configurations reject malicious TEST_CMD and GATE_IMAGE entries, failing safe.
 - Dispatch preflight enforces worker naming, model, and role formats before container execution.
+- Dispatch prompt reading escapes hostile NUL bytes into literal \\x00, preventing supervisor crashes.
 """
 import inspect
 import os
@@ -12,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +33,7 @@ assert hasattr(sbx, "run_path")
 assert hasattr(sbx, "secret_path")
 assert hasattr(sbx, "test_cmd")
 assert hasattr(sbx, "gate_image")
+assert hasattr(sbx, "no_nul")
 
 
 class TestSbxSecurity(unittest.TestCase):
@@ -414,6 +417,83 @@ class TestSbxSecurity(unittest.TestCase):
                 os.remove(dummy_task)
         assert r.returncode == 3
         assert "REFUSED: invalid DISPATCH_MODEL" in r.stderr
+
+    def test_sbx_no_nul_escapes_embedded_nul_byte(self):
+        """Invariant: sbx.no_nul replaces raw '\\x00' bytes with literal '\\x00' string."""
+        self.assertEqual(sbx.no_nul("hello\x00world"), r"hello\x00world")
+        assert sbx.no_nul("hello\x00world") == r"hello\x00world"
+        self.assertEqual(sbx.no_nul("clean string"), "clean string")
+        assert sbx.no_nul("clean string") == "clean string"
+        self.assertEqual(sbx.no_nul("\x00\x00"), r"\x00\x00")
+        assert sbx.no_nul("\x00\x00") == r"\x00\x00"
+
+    def test_dispatch_escapes_nul_bytes_in_prompt(self):
+        """Invariant: bin/dispatch wraps task prompts with sbx.no_nul, replacing NUL bytes with literal '\\x00'."""
+        dispatch_bin = os.path.join(sbx.ROOT, "bin", "dispatch")
+        with tempfile.TemporaryDirectory() as td:
+            fake_docker = os.path.join(td, "docker")
+            with open(fake_docker, "w") as f:
+                f.write("#!/bin/sh\necho true\n")
+            os.chmod(fake_docker, 0o755)
+
+            limits_file = os.path.join(td, "limits.conf")
+            with open(limits_file, "w") as f:
+                f.write(
+                    "RUN_TIMEOUT_MIN=30\nRUN_TOKEN_CAP=1500000\nMAX_PARALLEL=4\nPOLL_SEC=1\n"
+                    "DAILY_TOKEN_BUDGET=3000000\nMAX_RUNS_PER_DAY=10\nCONSEC_FAIL_TRIP=3\n"
+                )
+
+            runs_dir = os.path.join(td, "runs")
+            os.makedirs(runs_dir)
+
+            task_file = os.path.join(td, "task.md")
+            with open(task_file, "w") as f:
+                f.write("# Adversarial Task\nPayload with null: hello\x00world\n## Orchestrator review checklist\ncheck\n")
+
+            env = dict(
+                os.environ,
+                PATH=f"{td}:{os.environ.get('PATH', '')}",
+                SANDBOX_TEST="1",
+                SANDBOX_RUNS_DIR=runs_dir,
+                LIMITS_FILE=limits_file,
+                DISPATCH_RUNNER="true",
+            )
+
+            r = subprocess.run([sys.executable, dispatch_bin, "worker-1", task_file],
+                               capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, f"bin/dispatch failed: {r.stderr}")
+            assert r.returncode == 0
+
+            runs = [d for d in os.listdir(runs_dir) if d.endswith("-worker-1")]
+            self.assertEqual(len(runs), 1, "expected exactly one run directory created")
+            assert len(runs) == 1
+
+            prompt_file = os.path.join(runs_dir, runs[0], "prompt.md")
+            self.assertTrue(os.path.isfile(prompt_file), f"missing prompt.md in {runs[0]}")
+            assert os.path.isfile(prompt_file)
+
+            with open(prompt_file, "r") as pf:
+                prompt_content = pf.read()
+
+            self.assertNotIn("\x00", prompt_content, "prompt.md must not contain raw NUL byte")
+            assert "\x00" not in prompt_content
+
+            self.assertIn(r"hello\x00world", prompt_content, "prompt.md must contain escaped \\x00")
+            assert r"hello\x00world" in prompt_content
+
+            pid_file = os.path.join(runs_dir, runs[0], "pid")
+            if os.path.isfile(pid_file):
+                try:
+                    with open(pid_file, "r") as f:
+                        sup_pid = int(f.read().strip())
+                    for _ in range(20):
+                        try:
+                            os.kill(sup_pid, 0)
+                            time.sleep(0.05)
+                        except OSError:
+                            break
+                except (ValueError, OSError):
+                    pass
 
 
 if __name__ == "__main__":
