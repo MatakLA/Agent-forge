@@ -343,6 +343,75 @@ class TestLLMProvidersSecurity(unittest.TestCase):
         assert SENTINEL_INJECTION not in llm_content
         assert SENTINEL_INJECTION not in exc_msg
 
+    def test_generic_provider_exception_does_not_leak_secret(self):
+        """Unexpected provider exceptions during API calls must sanitize secrets in logs and events."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+
+        def _fake_get_secret(name, default=""):
+            if name == "OPENAI_API_KEY":
+                return SENTINEL_OPENAI
+            return default
+
+        with mock.patch("providers.get_secret", side_effect=_fake_get_secret):
+            with mock.patch("urllib.request.urlopen", side_effect=RuntimeError(f"SSL handshake error: token={SENTINEL_OPENAI} Bearer {SENTINEL_OPENAI}")):
+                with self.assertRaises(llm.Unavailable) as cm:
+                    llm.llm("plan", "Generate schema")
+
+        exc_msg = str(cm.exception)
+        llm_content = self._read_llm_jsonl()
+
+        for head in self.captured_heads:
+            self.assertNotIn(SENTINEL_OPENAI, head)
+            assert SENTINEL_OPENAI not in head
+
+        self.assertNotIn(SENTINEL_OPENAI, llm_content)
+        self.assertNotIn(SENTINEL_OPENAI, exc_msg)
+        assert SENTINEL_OPENAI not in llm_content
+        assert SENTINEL_OPENAI not in exc_msg
+
+    def test_log_llm_sanitizes_secrets_in_head(self):
+        """log_llm() must sanitize secrets, bearer tokens, and headers before persisting to llm.jsonl."""
+        def _fake_get_secret(name, default=""):
+            if name == "OPENAI_API_KEY":
+                return SENTINEL_OPENAI
+            if name == "GEMINI_API_KEY":
+                return SENTINEL_GEMINI
+            return default
+
+        with mock.patch("providers.get_secret", side_effect=_fake_get_secret):
+            llm.log_llm(
+                "plan",
+                "openai-api:gpt-4o",
+                1,
+                0.2,
+                None,
+                None,
+                f"Request failed: Authorization: Bearer {SENTINEL_OPENAI} x-goog-api-key: {SENTINEL_GEMINI}",
+            )
+
+        llm_content = self._read_llm_jsonl()
+        self.assertNotIn(SENTINEL_OPENAI, llm_content)
+        self.assertNotIn(SENTINEL_GEMINI, llm_content)
+        self.assertIn("[REDACTED]", llm_content)
+        assert SENTINEL_OPENAI not in llm_content
+        assert SENTINEL_GEMINI not in llm_content
+
+    def test_event_sanitizes_secrets(self):
+        """llm.event() must sanitize secrets, tokens, and credentials before writing to events.jsonl."""
+        def _fake_get_secret(name, default=""):
+            if name == "OPENAI_API_KEY":
+                return SENTINEL_OPENAI
+            return default
+
+        with mock.patch("providers.get_secret", side_effect=_fake_get_secret):
+            llm.event(f"Provider failed with Authorization: Bearer {SENTINEL_OPENAI}")
+
+        events_content = self._read_events_jsonl()
+        self.assertNotIn(SENTINEL_OPENAI, events_content)
+        self.assertIn("[REDACTED]", events_content)
+        assert SENTINEL_OPENAI not in events_content
+
 
 if __name__ == "__main__":
     unittest.main()
