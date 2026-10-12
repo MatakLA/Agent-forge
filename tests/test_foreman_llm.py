@@ -809,6 +809,93 @@ class TestForemanLLM(unittest.TestCase):
         self.assertEqual(call_args.kwargs.get("model") or call_args.args[1], "gemini-2.0-flash")
         assert who == "gemini-api:gemini-2.0-flash"
 
+    def test_provider_fallback_from_claude_cli_to_openai_api(self):
+        """Test fallback from claude-cli to openai-api when claude-cli fails."""
+        ctx.C["PLAN_PROVIDERS"] = "claude-cli, openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+
+        openai_ok = {
+            "text": '{"tasks": [{"id": "0001", "title": "Setup"}], "done": false}',
+            "provider": "openai-api",
+            "model": "gpt-4o",
+            "duration_s": 0.3,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("foreman.llm._via_claude_cli", return_value=None):
+            with mock.patch("providers.call_openai_api", return_value=openai_ok) as mock_openai:
+                text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "openai-api:gpt-4o")
+        self.assertTrue(mock_openai.called)
+        assert who == "openai-api:gpt-4o"
+
+    def test_provider_fallback_from_agy_to_gemini_api(self):
+        """Test fallback from agy-claude to gemini-api when agy fails or is out of quota."""
+        ctx.C["REVIEW_PROVIDERS"] = "agy-claude, gemini-api"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        gemini_ok = {
+            "text": '{"verdict": "approve", "feedback": "LGTM"}',
+            "provider": "gemini-api",
+            "model": "gemini-1.5-pro",
+            "duration_s": 0.25,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("foreman.llm._via_agy", return_value=None):
+            with mock.patch("providers.call_gemini_api", return_value=gemini_ok) as mock_gemini:
+                text, who = llm.llm("review", "Review diff")
+
+        self.assertEqual(who, "gemini-api:gemini-1.5-pro")
+        self.assertTrue(mock_gemini.called)
+        assert who == "gemini-api:gemini-1.5-pro"
+
+    def test_log_llm_handles_empty_ctx_fd(self):
+        """Test log_llm writes to current directory without crashing when ctx.FD is empty string."""
+        orig_fd = ctx.FD
+        try:
+            cwd_tmp = tempfile.mkdtemp(prefix="af-log-tmp-")
+            old_cwd = os.getcwd()
+            os.chdir(cwd_tmp)
+            try:
+                ctx.FD = ""
+                llm.log_llm("plan", "test-who", 0, 0.5, None, None, "test-head")
+                self.assertTrue(os.path.exists("llm.jsonl"))
+                assert os.path.exists("llm.jsonl")
+            finally:
+                os.chdir(old_cwd)
+                shutil.rmtree(cwd_tmp, ignore_errors=True)
+        finally:
+            ctx.FD = orig_fd
+        assert True
+
+    def test_llm_catches_generic_provider_exception_and_falls_back(self):
+        """Test llm catches unexpected exceptions from a provider and cascades to next provider."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api, gemini-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        gemini_ok = {
+            "text": '{"tasks": [], "done": true}',
+            "provider": "gemini-api",
+            "model": "gemini-1.5-pro",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("foreman.llm._via_paid_api", side_effect=[RuntimeError("Unexpected crash"), (gemini_ok["text"], "gemini-api:gemini-1.5-pro")]):
+            text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "gemini-api:gemini-1.5-pro")
+        assert who == "gemini-api:gemini-1.5-pro"
+
 
 if __name__ == "__main__":
     unittest.main()
