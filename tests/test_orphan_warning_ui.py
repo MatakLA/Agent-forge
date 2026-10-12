@@ -17,6 +17,8 @@ try:
     import shutil
     import tempfile
     import unittest
+    import warnings
+    warnings.filterwarnings("ignore", category=ResourceWarning)
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.environ.setdefault("LIMITS_FILE", os.path.join(ROOT, "etc", "limits.example.conf"))
     if os.path.join(ROOT, "bin", "lib") not in sys.path:
@@ -32,6 +34,7 @@ except Exception as e:
 
 class TestOrphanWarningUI(unittest.TestCase):
     def setUp(self):
+        warnings.simplefilter("ignore", ResourceWarning)
         self.tmp = tempfile.mkdtemp(prefix="orphan-warn-test-")
         self.old_fd = ctx.FD
         ctx.FD = self.tmp
