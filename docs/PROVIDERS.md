@@ -55,9 +55,150 @@ Use these if you want the orchestrator queue to keep moving when subscription qu
 
 | Provider | Configuration keys | Credential key | Endpoint / Network |
 |---|---|---|---|
-| `openai-api` | `OPENAI_MODEL`, optional `OPENAI_API_BASE` | `OPENAI_API_KEY` | `api.openai.com`, `openrouter.ai`, or local HTTP model server |
-| `gemini-api` | `GEMINI_MODEL` | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` |
-| `anthropic-api` | `ANTHROPIC_MODEL` | `ANTHROPIC_API_KEY` | `api.anthropic.com` |
+| [`openai-api`](#orchestrator-provider-openai-api) | `OPENAI_MODEL`, optional `OPENAI_API_BASE` | `OPENAI_API_KEY` (`openai.key`) | `api.openai.com`, `openrouter.ai`, or local HTTP model server |
+| [`gemini-api`](#orchestrator-provider-gemini-api) | `GEMINI_MODEL` | `GEMINI_API_KEY` (`gemini.key`) | `generativelanguage.googleapis.com` |
+| `anthropic-api` | `ANTHROPIC_MODEL` | `ANTHROPIC_API_KEY` (`anthropic.key`) | `api.anthropic.com` |
+
+---
+
+## Orchestrator provider: openai-api
+
+The `openai-api` adapter connects the foreman orchestrator (`bin/lib/foreman/llm.py`) directly to any OpenAI-compatible Chat Completions HTTP endpoint (`/chat/completions`) using the standard library implementation in `bin/lib/providers.py` (`call_openai_api()`). It can execute architectural planning (`kind="plan"`) and code review decisions (`kind="review"`) against official OpenAI endpoints (`api.openai.com`), aggregation routers (such as OpenRouter), or self-hosted local model servers (such as Ollama, vLLM, LM Studio, or llama.cpp).
+
+### Setup
+
+To point the orchestrator at an OpenAI-compatible provider:
+
+1. **Provider chain (`PLAN_PROVIDERS` / `REVIEW_PROVIDERS`)**:
+   Add `openai-api` to the comma-separated provider lists in `etc/foreman.conf` (or `project.conf` for a specific project), or configure it in the web dashboard under **Settings &rarr; Models** in the **Who plans (in order)** (`PLAN_PROVIDERS`) and **Who reviews (in order)** (`REVIEW_PROVIDERS`) fields:
+   ```ini
+   PLAN_PROVIDERS=openai-api
+   REVIEW_PROVIDERS=openai-api
+   ```
+   If omitted, the orchestrator falls back to `ORCHESTRATOR_PROVIDER`. Configured provider tokens are validated against `bin/lib/foreman/settings.py`'s `PROVIDERS_ALL` list (`claude-cli`, `agy-claude`, `agy-gemini`, `anthropic-api`, `openai-api`, `gemini-api`).
+
+2. **Model setting field (`OPENAI_MODEL`)**:
+   Specify the model identifier in `etc/foreman.conf` (or `project.conf`), or enter it in the dashboard under **Settings &rarr; Models** in the **OpenAI-compatible model (paid)** field:
+   ```ini
+   OPENAI_MODEL=gpt-4o
+   ```
+   For OpenRouter, provide the full repository model string (e.g. `anthropic/claude-3.5-sonnet`). For local servers, supply the model tag (e.g. `qwen2.5-coder:32b`). In `bin/lib/foreman/settings.py`, `OPENAI_MODEL` cannot be blank when `openai-api` is configured in `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`.
+
+3. **Base URL setting field (`OPENAI_API_BASE`)**:
+   Specify the HTTP endpoint in `etc/foreman.conf` (or `project.conf`), or set it in the dashboard under **Settings &rarr; Models** in the **OpenAI API base URL** field:
+   ```ini
+   OPENAI_API_BASE=https://api.openai.com/v1
+   ```
+   - Direct OpenAI: defaults to `https://api.openai.com/v1` if empty or omitted.
+   - OpenRouter: `https://openrouter.ai/api/v1`
+   - Local model server: e.g. `http://192.168.1.50:11434/v1` (Ollama) or `http://192.168.1.50:8000/v1` (vLLM).
+
+4. **API key configuration (`bin/secret-set`)**:
+   Set the API key securely on the host using `bin/secret-set`:
+   ```bash
+   printf '%s' "sk-YOUR_API_KEY" | bin/secret-set openai.key
+   ```
+   `bin/secret-set` reads the secret value strictly from standard input (preventing exposure in shell history or process listings) and writes it with mode `0600` into `~/.config/sandbox/secrets/openai.key` within a mode `0700` secrets directory.
+
+   Alternatively, supply the key via the environment variable (`export OPENAI_API_KEY="sk-YOUR_API_KEY"`).
+
+   > [!IMPORTANT]
+   > **Credential storage invariants**:
+   > API keys must **never** be placed in `etc/foreman.conf`, `project.conf`, or committed to git. In the web dashboard under **Settings &rarr; Models**, the credential setting field (`OPENAI_API_KEY`) is strictly file-only: it displays whether `openai.key` is present on disk, but never accepts or edits raw tokens in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw values with `***`, and `mask_log_value()` ensures secrets are never recorded in settings event logs.
+
+### Cost and quota caveats
+
+- **Paid-per-token API with no quota window**: Unlike Antigravity providers (`agy-claude` and `agy-gemini`), which draw from subscription worker quota pools with recurring quota reset windows and cooldown tracking, `openai-api` is a paid-per-token API. Every planning and review request consumes tokens immediately against the target account or server. There is no quota window or automatic reset cooldown.
+- **Honest cost tracking**: For self-hosted model servers or third-party OpenAI-compatible endpoints, the cost per call recorded in `runs/foreman/llm.jsonl` and displayed in the dashboard is recorded as **unknown** (`cost_usd: null`) unless the installation configures explicit per-token pricing (such as `PRICE_CODEX` or `PRICE_COMPAT` in `etc/limits.conf`). In `bin/lib/providers.py`, `call_openai_api()` parses token metrics from the API's `usage` response (`prompt_tokens`, `completion_tokens`, `total_tokens`), but does not calculate or return a `cost_usd` figure.
+
+### Limitations
+
+1. **Schema validation (`REVIEW_SCHEMA` and `OBJECT_SCHEMA`)**:
+   All responses received by `bin/lib/foreman/llm.py` are strictly validated using `parse_and_validate()`:
+   - **Code reviews (`kind="review"`)**: Must strictly comply with `REVIEW_SCHEMA`. The output must be a JSON object with a mandatory `"verdict"` property whose value is restricted to enum `["approve", "rework", "reject"]` and a mandatory string property `"feedback"`. Optional properties are `"lesson"` (string) and `"mutations"` (array of objects with required fields `"name"`, `"file"`, `"old"`, `"new"`).
+   - **Plans (`kind="plan"`)**: Must comply with `OBJECT_SCHEMA` (`{"type": "object"}`).
+   If the model emits conversational preamble, markdown backtick fences wrapping malformed text, non-conforming verdict strings (such as `"pass"` or `"looks good"`), or omits required fields, validation fails (`None`). The orchestrator treats this as a provider failure and cascades to the next provider in `PLAN_PROVIDERS` / `REVIEW_PROVIDERS` or raises `Unavailable`.
+2. **Base URL validation (`validate_url()`)**:
+   `OPENAI_API_BASE` is strictly validated by `validate_url()` in `bin/lib/foreman/settings.py`:
+   - **Scheme**: Must be `http://` or `https://`.
+   - **Hostname**: Must match regex `^[A-Za-z0-9.-]+$` and cannot start or end with a dot (`.`).
+   - **Port**: Optional; if present, must be an integer between 1 and 65535 (`1 <= port <= 65535`).
+   - **Path**: Optional; if present, must match regex `(/[A-Za-z0-9._~/-]*)?`.
+   - **Rejected inputs**: Path traversal (`..`), URL credentials (`@`), query strings (`?`), fragments (`#`), whitespace, and shell metacharacters (`\r`, `\n`, `\t`, space, `` ` ``, `$`, `;`, `|`, `&`, `<`, `>`, `'`, `"`, `\`) are strictly forbidden.
+3. **Model name validation (`ORCHESTRATOR_MODEL_RE`)**:
+   `OPENAI_MODEL` is validated in `bin/lib/foreman/settings.py` against `ORCHESTRATOR_MODEL_RE` (`rf"({MODEL_RE})|({SERVER_MODEL_RE})"`):
+   - Standard model identifiers match `MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"` (1 to 64 alphanumeric characters, dots, dashes, and brackets).
+   - Server model identifiers match `SERVER_MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,99}"` (1 to 100 characters starting with an alphanumeric character, allowing `.`, `_`, `:`, `/`, `@`, `-` for OpenRouter model slugs or Ollama tags).
+   - `OPENAI_MODEL` cannot be blank when `openai-api` is configured in `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`.
+
+### Testing note
+
+The `openai-api` orchestrator provider is exercised completely offline against `tests/fixtures/fake-model-api.js` via `tests/test_fake_model_api_providers.py` and `tests/test_fake_model_api_providers.sh`. The test fixture launches a local HTTP server mocking the OpenAI `/chat/completions` endpoint on port 8099. No real API key and no network connection are needed to run these tests.
+
+---
+
+## Orchestrator provider: gemini-api
+
+The `gemini-api` adapter connects the foreman orchestrator (`bin/lib/foreman/llm.py`) directly to Google's official Gemini API (`:generateContent` endpoint) via the standard library adapter in `bin/lib/providers.py` (`call_gemini_api()`). It allows planning and code review to run on Google AI Studio / Gemini models (such as `gemini-1.5-pro` or `gemini-2.0-flash`) directly from the host machine without requiring Antigravity worker container logins or consuming worker Antigravity quotas.
+
+### Setup
+
+To point the orchestrator at the Gemini API provider:
+
+1. **Provider chain (`PLAN_PROVIDERS` / `REVIEW_PROVIDERS`)**:
+   Add `gemini-api` to `PLAN_PROVIDERS` and/or `REVIEW_PROVIDERS` in `etc/foreman.conf` (or `project.conf`), or configure it in the web dashboard under **Settings &rarr; Models** in the **Who plans (in order)** (`PLAN_PROVIDERS`) and **Who reviews (in order)** (`REVIEW_PROVIDERS`) fields:
+   ```ini
+   PLAN_PROVIDERS=gemini-api
+   REVIEW_PROVIDERS=gemini-api
+   ```
+   If omitted, the orchestrator falls back to `ORCHESTRATOR_PROVIDER`. Provider tokens are validated against `PROVIDERS_ALL` in `bin/lib/foreman/settings.py`.
+
+2. **Model setting field (`GEMINI_MODEL`)**:
+   Specify the Gemini model in `etc/foreman.conf` (or `project.conf`), or enter it in the dashboard under **Settings &rarr; Models** in the **Gemini API model (paid)** field:
+   ```ini
+   GEMINI_MODEL=gemini-1.5-pro
+   ```
+   Supported models include `gemini-1.5-pro`, `gemini-2.0-flash`, and `gemini-1.5-flash`. In `bin/lib/foreman/settings.py`, `GEMINI_MODEL` cannot be blank when `gemini-api` is configured in `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`.
+
+3. **Base URL (`GEMINI_API_BASE`)**:
+   The `gemini-api` adapter in `bin/lib/providers.py` connects directly to Google's official endpoint `https://generativelanguage.googleapis.com` (using path `/v1beta/models/{model}:generateContent`). The dashboard under **Settings &rarr; Models** displays this endpoint as `GEMINI_API_BASE` (`https://generativelanguage.googleapis.com`). Unlike `openai-api`, there is no custom base URL override field in `settings.py`'s `EDITABLE` dictionary.
+
+4. **API key configuration (`bin/secret-set`)**:
+   Set the Google AI Studio API key securely on the host using `bin/secret-set`:
+   ```bash
+   printf '%s' "AIzaSyYOUR_API_KEY" | bin/secret-set gemini.key
+   ```
+   `bin/secret-set` reads the secret from standard input (preventing exposure in shell history or process listings) and stores it with mode `0600` into `~/.config/sandbox/secrets/gemini.key` within a mode `0700` secrets directory.
+
+   Alternatively, supply the key via the environment variable (`export GEMINI_API_KEY="AIzaSyYOUR_API_KEY"`).
+
+   > [!IMPORTANT]
+   > **Credential storage invariants**:
+   > Never store API keys in `etc/foreman.conf`, `project.conf`, or dashboard inputs. The dashboard's **Settings &rarr; Models** page marks `GEMINI_API_KEY` as file-only: it indicates whether `gemini.key` is set on disk, but is not editable in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw keys with `***`, and `mask_log_value()` ensures sensitive tokens never appear in event logs.
+
+### Cost and quota caveats
+
+- **Paid-per-token API with no quota window**: `gemini-api` calls Google's API directly and bills per token on your Google AI Studio or Google Cloud billing account. Unlike Antigravity (`agy-gemini`), it does not draw from worker Antigravity quotas and has no quota reset window or worker cooldown timer. Every planning and review call incurs token usage immediately.
+- **Honest cost tracking**: Cost per call recorded in `runs/foreman/llm.jsonl` and displayed in the dashboard is recorded as **unknown** (`cost_usd: null`) unless per-token pricing is explicitly configured (such as `PRICE_GEMINI` in `etc/limits.conf`). In `bin/lib/providers.py`, `call_gemini_api()` parses token counts from Google's `usageMetadata` object (`promptTokenCount`, `candidatesTokenCount`, `totalTokenCount`), but does not return a calculated dollar amount (`cost_usd` is not returned).
+
+### Limitations
+
+1. **Schema validation (`REVIEW_SCHEMA` and `OBJECT_SCHEMA`)**:
+   All responses received by `bin/lib/foreman/llm.py` pass through `parse_and_validate()`:
+   - **Code reviews (`kind="review"`)**: Must strictly comply with `REVIEW_SCHEMA`: JSON object containing a mandatory `"verdict"` property restricted to enum `["approve", "rework", "reject"]` and a mandatory `"feedback"` string. Optional properties are `"lesson"` (string) and `"mutations"` (array of objects with `"name"`, `"file"`, `"old"`, `"new"`).
+   - **Plans (`kind="plan"`)**: Must comply with `OBJECT_SCHEMA` (`{"type": "object"}`).
+   Non-conforming outputs (conversational text, markdown formatting without clean JSON, unapproved verdict strings, or missing required fields) fail validation and trigger failover to the next provider in `PLAN_PROVIDERS` / `REVIEW_PROVIDERS` or raise `Unavailable`.
+2. **Model name validation (`ORCHESTRATOR_MODEL_RE`)**:
+   `GEMINI_MODEL` is validated in `bin/lib/foreman/settings.py` against `ORCHESTRATOR_MODEL_RE` (`rf"({MODEL_RE})|({SERVER_MODEL_RE})"`):
+   - Standard model identifiers match `MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"` (1 to 64 alphanumeric characters, dots, dashes, and brackets).
+   - Server model identifiers match `SERVER_MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,99}"` (1 to 100 characters starting with an alphanumeric character, allowing `.`, `_`, `:`, `/`, `@`, `-`).
+   - `GEMINI_MODEL` cannot be blank when `gemini-api` is configured in `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`.
+3. **Network egress**:
+   The orchestrator connects from the host machine to `generativelanguage.googleapis.com` over HTTPS. If worker containers also contact Gemini (e.g. the `gemini` runtime), verify that `generativelanguage.googleapis.com` is present in `egress/allowlist.txt`.
+
+### Testing note
+
+The `gemini-api` orchestrator provider is exercised completely offline against `tests/fixtures/fake-model-api.js` via `tests/test_fake_model_api_providers.py` and `tests/test_fake_model_api_providers.sh`. The test fixture emulates the Gemini `:generateContent` endpoint locally on port 8099. No real API key and no network connection are needed to run these tests.
 
 ---
 
