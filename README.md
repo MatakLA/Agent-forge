@@ -54,6 +54,8 @@ About 20 minutes: Docker, the egress proxy, an internal Forgejo, the worker imag
 2. **Add workers** - see below.
 3. **Enter a goal** - or let the autopilot build the demo project in [`examples/demo`](examples/demo).
 
+To try a realistic goal on an existing repository, see [`examples/sample-project/README.md`](examples/sample-project/README.md).
+
 `bin/doctor` checks the whole install and tells you how to fix what is wrong. All steps by hand: [docs/SETUP.md](docs/SETUP.md).
 
 ## Workers: API keys or a subscription
