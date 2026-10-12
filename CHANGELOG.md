@@ -19,6 +19,7 @@
 - Foreman merge: `requeue_gate` blocks tasks exceeding the retry cap with a clear reason, and merge helpers guard against silently merging blocked or cancelled tasks.
 - Foreman merge: `step_gate_review_merge` and merge steps clear in-memory `PHASE` tracking on completion or mid-step failure, preventing dangling phases without active jobs.
 - Foreman merge: `step_upstream_merge` and gate steps recover tasks stuck in status 'merging' with no PR reference back to 'gate'.
+- Foreman merge: audited gate output and review feedback path; verified safe from subprocess argv injection (PR bodies pass via files and API payloads), and noted ANSI control sequences bypass terminal stripping in dashboard feedback rendering.
 - Foreman store: serialize read-modify-write via `state_tx()` locking and ensure crash-safe atomic updates via temporary file replacement in `jsave()`.
 - Foreman store: prevent resurrection of deleted tasks and goals in `save_task()` and `save_goal()` by refusing to recreate files removed after being read.
 - Foreman store: support reentrant `state_tx()` and `locked()` in the same thread without deadlocking on nested file locks.
