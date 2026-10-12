@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -144,6 +145,7 @@ class TestForemanLoop(unittest.TestCase):
             assert mock_is_running.called
             self.assertTrue(is_orphan)
             assert is_orphan is True
+        assert is_orphan is True
 
     def test_orphaned_alive_run_not_treated_as_orphan(self):
         """Invariant: an actively running run is never treated as an orphan (false-positive guard against double dispatch)."""
@@ -155,6 +157,7 @@ class TestForemanLoop(unittest.TestCase):
             assert mock_is_running.called
             self.assertFalse(is_orphan)
             assert is_orphan is False
+        assert is_orphan is False
 
     def test_orphaned_finished_run_not_treated_as_orphan(self):
         """Invariant: a finished run is never treated as an orphan."""
@@ -684,6 +687,202 @@ class TestForemanLoop(unittest.TestCase):
         self.assertTrue(len(tail_long.splitlines()) <= 40)
         assert len(tail_long) <= 4000
         assert len(tail_long.splitlines()) <= 40
+
+    def test_orphan_recovery_five_consecutive_cycles_block_with_log_tail(self):
+        """Invariant: 5 consecutive no-progress orphan recoveries block the task with reason starting 'orphan limit reached: ' and log tail."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        t_id = "0121-block"
+        task = dict(id=t_id, goal="G1", status="pending", attempts=0, files=["core.py"],
+                    role="developer", branch="feat/0121-block", history=[], orphan_streak=0)
+        store.save_task(task)
+
+        loop.STARTUP_GRACE_DONE = True
+
+        for cycle in range(1, 6):
+            run_dir = os.path.join(sbx.RUNS, f"20261012T00000{cycle}Z-worker-1")
+            os.makedirs(run_dir, exist_ok=True)
+            with open(os.path.join(run_dir, "supervisor.log"), "w") as f:
+                f.write(f"runner initialization\nworker cycle {cycle}\nfatal segmentation fault in runner\nexit code 139\n")
+            with open(os.path.join(run_dir, "meta.json"), "w") as f:
+                json.dump(dict(task=t_id, worker="worker-1"), f)
+
+            current_task = store.jload(os.path.join(ctx.FD, "tasks", f"{t_id}.json"))
+            current_task.update(status="running", run=run_dir, worker="worker-1")
+            store.save_task(current_task)
+
+            loop.recover_orphan(current_task)
+
+            saved = store.jload(os.path.join(ctx.FD, "tasks", f"{t_id}.json"))
+            if cycle < 5:
+                self.assertEqual(saved["status"], "pending")
+                self.assertEqual(saved["orphan_streak"], cycle)
+                self.assertIn("fatal segmentation fault", saved["orphan_log_tail"])
+                self.assertNotIn("worker", saved)
+                self.assertNotIn("run", saved)
+            else:
+                self.assertEqual(saved["status"], "blocked")
+                self.assertEqual(saved["orphan_streak"], 5)
+                self.assertTrue(saved["blocked_why"].startswith("orphan limit reached: "))
+                self.assertIn("fatal segmentation fault", saved["blocked_why"])
+                self.assertIn("fatal segmentation fault", saved["orphan_log_tail"])
+
+        final_task = store.jload(os.path.join(ctx.FD, "tasks", f"{t_id}.json"))
+        self.assertEqual(final_task["status"], "blocked")
+        self.assertEqual(final_task["orphan_streak"], 5)
+        self.assertTrue(final_task["blocked_why"].startswith("orphan limit reached: "))
+        self.assertIn("fatal segmentation fault", final_task["blocked_why"])
+        self.assertIn("fatal segmentation fault", final_task["orphan_log_tail"])
+        assert final_task["status"] == "blocked"
+        assert final_task["orphan_streak"] == 5
+        assert final_task["blocked_why"].startswith("orphan limit reached: ")
+        assert "fatal segmentation fault" in final_task["blocked_why"]
+        assert "fatal segmentation fault" in final_task["orphan_log_tail"]
+
+    def test_orphan_recovery_progress_resets_streak_for_both_duration_and_supervisor_result(self):
+        """Invariant: progress events (run duration > ORPHAN_PROGRESS_SEC or real supervisor result) reset orphan_streak to 0."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+
+        # Progress Case 1: Run lasting longer than ORPHAN_PROGRESS_SEC (90 s) resets streak to 0
+        run_long = os.path.join(sbx.RUNS, "20261012T010000Z-worker-1")
+        os.makedirs(run_long, exist_ok=True)
+        started_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=150)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(os.path.join(run_long, "started"), "w") as f:
+            f.write(started_iso + "\n")
+        with open(os.path.join(run_long, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-progress-dur", worker="worker-1"), f)
+
+        t_dur = dict(id="0121-progress-dur", goal="G1", status="running", worker="worker-1",
+                     run=run_long, attempts=0, files=["a.py"], role="developer",
+                     orphan_streak=4, orphan_log_tail="stale log from previous crash")
+        store.save_task(t_dur)
+
+        loop.STARTUP_GRACE_DONE = True
+        loop.recover_orphan(t_dur)
+
+        saved_dur = store.jload(os.path.join(ctx.FD, "tasks", "0121-progress-dur.json"))
+        self.assertEqual(saved_dur["status"], "pending")
+        self.assertEqual(saved_dur["orphan_streak"], 0)
+        self.assertEqual(saved_dur["orphan_log_tail"], "")
+
+        # Non-progress Case: Short run (<= ORPHAN_PROGRESS_SEC, e.g. 20 s) does NOT reset streak
+        run_short = os.path.join(sbx.RUNS, "20261012T010001Z-worker-1")
+        os.makedirs(run_short, exist_ok=True)
+        started_short = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(os.path.join(run_short, "started"), "w") as f:
+            f.write(started_short + "\n")
+        with open(os.path.join(run_short, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-short", worker="worker-1"), f)
+
+        t_short = dict(id="0121-short", goal="G1", status="running", worker="worker-1",
+                       run=run_short, attempts=0, files=["b.py"], role="developer",
+                       orphan_streak=2, orphan_log_tail="previous log")
+        store.save_task(t_short)
+
+        loop.recover_orphan(t_short)
+        saved_short = store.jload(os.path.join(ctx.FD, "tasks", "0121-short.json"))
+        self.assertEqual(saved_short["status"], "pending")
+        self.assertEqual(saved_short["orphan_streak"], 3)
+
+        # Progress Case 2: Real supervisor result in advance() resets streak to 0 and clears log tail
+        run_sup = os.path.join(sbx.RUNS, "20261012T010002Z-worker-2")
+        os.makedirs(run_sup, exist_ok=True)
+        with open(os.path.join(run_sup, "finished"), "w") as f:
+            f.write(sbx.now() + "\n")
+        with open(os.path.join(run_sup, "exitcode"), "w") as f:
+            f.write("0\n")
+        with open(os.path.join(run_sup, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-progress-sup", worker="worker-2", reason="ok", tokens=800), f)
+
+        t_sup = dict(id="0121-progress-sup", goal="G1", status="running", worker="worker-2",
+                     run=run_sup, attempts=0, files=["c.py"], role="developer",
+                     orphan_streak=4, orphan_log_tail="previous crash log",
+                     not_before=time.time() + 3600)
+        store.save_task(t_sup)
+
+        with patch.object(loop, "llm_available", return_value=True), \
+             patch.object(sbx, "is_running", return_value=False):
+            loop.advance()
+
+        saved_sup = store.jload(os.path.join(ctx.FD, "tasks", "0121-progress-sup.json"))
+        self.assertEqual(saved_sup["status"], "gate")
+        self.assertEqual(saved_sup["orphan_streak"], 0)
+        self.assertEqual(saved_sup["orphan_log_tail"], "")
+
+        assert saved_dur["orphan_streak"] == 0
+        assert saved_dur["orphan_log_tail"] == ""
+        assert saved_dur["status"] == "pending"
+        assert saved_short["orphan_streak"] == 3
+        assert saved_sup["orphan_streak"] == 0
+        assert saved_sup["orphan_log_tail"] == ""
+        assert saved_sup["status"] == "gate"
+
+    def test_orphan_recovery_startup_grace_exemption_and_transition(self):
+        """Invariant: STARTUP_GRACE_DONE=False exempts all initial orphans from streak increment, transitioning to True."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+
+        # Task 1: Direct recover_orphan during startup grace
+        run_1 = os.path.join(sbx.RUNS, "20261012T020001Z-worker-1")
+        os.makedirs(run_1, exist_ok=True)
+        with open(os.path.join(run_1, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-grace-1", worker="worker-1"), f)
+        t1 = dict(id="0121-grace-1", goal="G1", status="running", worker="worker-1",
+                  run=run_1, attempts=0, files=["x.py"], role="developer", orphan_streak=2)
+        store.save_task(t1)
+
+        loop.STARTUP_GRACE_DONE = False
+        loop.recover_orphan(t1)
+        t1_after = store.jload(os.path.join(ctx.FD, "tasks", "0121-grace-1.json"))
+        self.assertEqual(t1_after["status"], "pending")
+        self.assertEqual(t1_after["orphan_streak"], 2)
+
+        # Task 2: advance() first pass with STARTUP_GRACE_DONE=False exempts task with streak=4
+        run_2 = os.path.join(sbx.RUNS, "20261012T020002Z-worker-2")
+        os.makedirs(run_2, exist_ok=True)
+        with open(os.path.join(run_2, "supervisor.log"), "w") as f:
+            f.write("crash log\n")
+        with open(os.path.join(run_2, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-grace-2", worker="worker-2"), f)
+        t2 = dict(id="0121-grace-2", goal="G1", status="running", worker="worker-2",
+                  run=run_2, attempts=0, files=["y.py"], role="developer", orphan_streak=4, history=[])
+        store.save_task(t2)
+
+        loop.STARTUP_GRACE_DONE = False
+        with patch.object(sbx, "is_running", return_value=False), \
+             patch.object(loop, "llm_available", return_value=True):
+            loop.advance()
+
+        self.assertTrue(loop.STARTUP_GRACE_DONE)
+        t2_first_pass = store.jload(os.path.join(ctx.FD, "tasks", "0121-grace-2.json"))
+        self.assertEqual(t2_first_pass["status"], "pending")
+        self.assertEqual(t2_first_pass["orphan_streak"], 4)
+
+        # Subsequent orphan recovery (now that STARTUP_GRACE_DONE=True) increments streak 4 -> 5 and blocks task
+        run_2_subsequent = os.path.join(sbx.RUNS, "20261012T020003Z-worker-2")
+        os.makedirs(run_2_subsequent, exist_ok=True)
+        with open(os.path.join(run_2_subsequent, "supervisor.log"), "w") as f:
+            f.write("second crash log: unrecoverable\n")
+        with open(os.path.join(run_2_subsequent, "meta.json"), "w") as f:
+            json.dump(dict(task="0121-grace-2", worker="worker-2"), f)
+
+        t2_second = dict(t2_first_pass)
+        t2_second.update(status="running", run=run_2_subsequent, worker="worker-2")
+        store.save_task(t2_second)
+
+        loop.recover_orphan(t2_second)
+        t2_post_grace = store.jload(os.path.join(ctx.FD, "tasks", "0121-grace-2.json"))
+        self.assertEqual(t2_post_grace["status"], "blocked")
+        self.assertEqual(t2_post_grace["orphan_streak"], 5)
+        self.assertTrue(t2_post_grace["blocked_why"].startswith("orphan limit reached: "))
+        self.assertIn("second crash log", t2_post_grace["blocked_why"])
+
+        assert t1_after["orphan_streak"] == 2
+        assert t1_after["status"] == "pending"
+        assert t2_first_pass["orphan_streak"] == 4
+        assert t2_first_pass["status"] == "pending"
+        assert loop.STARTUP_GRACE_DONE is True
+        assert t2_post_grace["orphan_streak"] == 5
+        assert t2_post_grace["status"] == "blocked"
+        assert t2_post_grace["blocked_why"].startswith("orphan limit reached: ")
 
 
 if __name__ == "__main__":
