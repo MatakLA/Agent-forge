@@ -35,7 +35,8 @@ let S = null, sLoadedFor = null, sMsg = '';
 const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback (Gemini)',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', ANTHROPIC_MODEL: 'Anthropic API model (paid)',
-  OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', GEMINI_MODEL: 'Gemini API model (paid)', OWNER_LANG: 'Your language',
+  OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', OPENAI_API_KEY: 'OpenAI API key',
+  GEMINI_MODEL: 'Gemini API model (paid)', GEMINI_API_BASE: 'Gemini API base URL', GEMINI_API_KEY: 'Gemini API key', OWNER_LANG: 'Your language',
   LOCAL_TZ: 'Local timezone', PROJECT_DIR: 'Project subdirectory', VISION_FILE: 'Vision file path', SHARED_FILES: 'Shared registry files',
   LOOP_SEC: 'Loop interval (sec)', WORKERS: 'Worker pool', AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically',
   CONTINUE_CONVERSATIONS: 'A rework continues the worker\'s conversation', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most',
@@ -71,9 +72,12 @@ const HELP = {
   WORKER_MODEL: 'Default Antigravity model for routine worker tasks. Empty uses etc/limits.conf. Applies live.',
   WORKER_MODEL_RISKY: 'Stronger worker model for risky tasks (security, money, migrations). Empty uses default. Applies live.',
   ANTHROPIC_MODEL: 'Model name when using paid Anthropic API (e.g. claude-3-7-sonnet-20250219). Empty if unused. Applies live.',
-  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Empty if unused. Applies live.',
-  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Empty for default. Applies live.',
-  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Empty if unused. Applies live.',
+  OPENAI_MODEL: 'Model name when using paid OpenAI-compatible API (e.g. gpt-4o). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  OPENAI_API_BASE: 'Base URL for OpenAI-compatible API (e.g. https://api.openai.com/v1). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  OPENAI_API_KEY: 'API key is set on the host with bin/secret-set (openai.key) and is not editable from the dashboard. Applies live.',
+  GEMINI_MODEL: 'Model name when using paid Google Gemini API (e.g. gemini-2.5-pro). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  GEMINI_API_BASE: 'Base URL for Google Gemini API (e.g. https://generativelanguage.googleapis.com). Server/base URL and model are configured here, but the API key itself is set on the host with bin/secret-set and is not editable from the dashboard. Applies live.',
+  GEMINI_API_KEY: 'API key is set on the host with bin/secret-set (gemini.key) and is not editable from the dashboard. Applies live.',
   OWNER_LANG: 'Language for generated goals, notes, and questions (e.g. English, German). Applies live.',
   LOCAL_TZ: 'Timezone for timestamps and deadlines (e.g. UTC, Europe/Prague, America/New_York). Applies live.',
   PROJECT_DIR: 'Subdirectory of repository the team works in. Empty = entire repository. Applies live.',
@@ -255,6 +259,7 @@ function addWorkerForm() {
 function pageModels() {
   if (!S) return window._ferr ? '<div class="empty bad">Could not load models: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
   if (S.error) return '<div class="empty bad">Could not load models: ' + esc(S.error) + '</div>';
+  const sec = (S && S.secrets) || {};
   return card('Orchestrator - who plans and reviews', field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS'), HELP.PLAN_PROVIDERS) +
       field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS'), HELP.REVIEW_PROVIDERS) +
       field('CLAUDE_MODEL', sel('CLAUDE_MODEL', [...new Set(['sonnet', 'opus', 'haiku', 'fable', V().CLAUDE_MODEL].filter(Boolean))]), HELP.CLAUDE_MODEL) +
@@ -263,9 +268,21 @@ function pageModels() {
       field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL'), HELP.AGY_FALLBACK_MODEL) +
       '<details><summary class="muted">Paid APIs (only when ticked above and a key is set)</summary>' +
       field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL'), HELP.ANTHROPIC_MODEL) +
-      field('OPENAI_MODEL', txt('OPENAI_MODEL'), HELP.OPENAI_MODEL) +
+      '<div class="prov-row" data-p="openai-api">' +
       field('OPENAI_API_BASE', txt('OPENAI_API_BASE', 'https://api.openai.com/v1'), HELP.OPENAI_API_BASE) +
-      field('GEMINI_MODEL', txt('GEMINI_MODEL'), HELP.GEMINI_MODEL) + '</details>',
+      field('OPENAI_MODEL', txt('OPENAI_MODEL', 'e.g. gpt-4o'), HELP.OPENAI_MODEL) +
+      '<div class="setrow"><label>' + esc(LABEL.OPENAI_API_KEY) + '<span class="help">' + esc(HELP.OPENAI_API_KEY) + '</span></label>' +
+      '<div><code>openai.key</code> ' + (sec['openai.key'] ? '<b class="plus">✓</b> ' : '<span class="muted">—</span> ') +
+      '<span class="muted small">(file-only: set on host with <code>bin/secret-set openai.key</code> — not editable from dashboard)</span></div></div>' +
+      '</div>' +
+      '<div class="prov-row" data-p="gemini-api">' +
+      field('GEMINI_API_BASE', txt('GEMINI_API_BASE', 'https://generativelanguage.googleapis.com'), HELP.GEMINI_API_BASE) +
+      field('GEMINI_MODEL', txt('GEMINI_MODEL', 'e.g. gemini-2.5-pro'), HELP.GEMINI_MODEL) +
+      '<div class="setrow"><label>' + esc(LABEL.GEMINI_API_KEY) + '<span class="help">' + esc(HELP.GEMINI_API_KEY) + '</span></label>' +
+      '<div><code>gemini.key</code> ' + (sec['gemini.key'] ? '<b class="plus">✓</b> ' : '<span class="muted">—</span> ') +
+      '<span class="muted small">(file-only: set on host with <code>bin/secret-set gemini.key</code> — not editable from dashboard)</span></div></div>' +
+      '</div>' +
+      '</details>',
       'Tried in order; one out of quota is skipped until its reset.') +
     card('Worker models (Antigravity)', field('WORKER_MODEL', modelSel('WORKER_MODEL', true, 'default (' + (S.limits_worker_model || '') + ')'), HELP.WORKER_MODEL) +
       field('WORKER_MODEL_RISKY', modelSel('WORKER_MODEL_RISKY', true, 'same as the others'), HELP.WORKER_MODEL_RISKY) +
@@ -420,7 +437,9 @@ function renderSettings(force) {
 }
 async function saveSettings() {
   const changes = {};
-  for (const k of Object.keys(V())) { const v = sval(k); if (v !== null && String(v) !== String(V()[k])) changes[k] = v; }
+  const knownKeys = new Set(Object.keys(V()));
+  if ($('set-GEMINI_API_BASE')) knownKeys.add('GEMINI_API_BASE');
+  for (const k of knownKeys) { const v = sval(k); if (v !== null && String(v) !== String(V()[k] || '')) changes[k] = v; }
   if (!Object.keys(changes).length) { sMsg = 'nothing changed'; $('save-msg').textContent = sMsg; return; }
   let r;
   try { r = await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, changes})})).json(); }
@@ -430,7 +449,14 @@ async function saveSettings() {
   if (r.ok) { toast('Settings saved'); document.activeElement && document.activeElement.blur(); await loadSettings(true); return; }
   // keep everything the owner typed: only mark the bad fields
   document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
-  for (const [k, msg] of Object.entries(errs)) { const el = $('set-' + k); if (el) el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>'); }
+  for (const [k, msg] of Object.entries(errs)) {
+    const el = $('set-' + k);
+    if (el) {
+      const det = el.closest('details');
+      if (det) det.open = true;
+      el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
+    }
+  }
   $('save-msg').textContent = sMsg;
 }
 document.addEventListener('click', async e => {
