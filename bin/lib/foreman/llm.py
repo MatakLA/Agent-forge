@@ -29,7 +29,9 @@ def providers_for(kind):
     else:
         provs = [p.strip() for p in str(order or "").split(",") if p.strip()]
     if not provs:
-        fallback = ctx.C.get("ORCHESTRATOR_PROVIDER") or os.environ.get("ORCHESTRATOR_PROVIDER", "")
+        fallback = ctx.C.get("ORCHESTRATOR_PROVIDER")
+        if not fallback or (isinstance(fallback, str) and not fallback.strip()):
+            fallback = os.environ.get("ORCHESTRATOR_PROVIDER", "")
         if isinstance(fallback, (list, tuple)):
             provs = [str(p).strip() for p in fallback if str(p).strip()]
         else:
@@ -141,6 +143,7 @@ def _via_paid_api(name, prompt, system):
         ctx.C.get("OPENAI_MODEL") if name == "openai-api" else
         ctx.C.get("GEMINI_MODEL") if name == "gemini-api" else ""
     )
+    model = str(model or "").strip()
     if not model:
         return None, None
     who = f"{name}:{model}"
@@ -149,7 +152,7 @@ def _via_paid_api(name, prompt, system):
         if name == "anthropic-api":
             r = providers.call_anthropic_api(prompt, model, system=system)
         elif name == "openai-api":
-            api_base = ctx.C.get("OPENAI_API_BASE") or "https://api.openai.com/v1"
+            api_base = str(ctx.C.get("OPENAI_API_BASE") or "").strip() or "https://api.openai.com/v1"
             r = providers.call_openai_api(prompt, model, system=system, api_base=api_base)
         elif name == "gemini-api":
             r = providers.call_gemini_api(prompt, model, system=system)
@@ -162,7 +165,9 @@ def _via_paid_api(name, prompt, system):
         return None, None
 
     is_err = r.get("is_error") or not (r.get("text") or "").strip()
-    log_llm(KIND.k, who, 1 if is_err else 0, r.get("duration_s", time.time() - t0), r.get("cost_usd"), r.get("usage"),
+    dur = r.get("duration_s")
+    dur = (time.time() - t0) if dur is None else dur
+    log_llm(KIND.k, who, 1 if is_err else 0, dur, r.get("cost_usd"), r.get("usage"),
             (r.get("text") or r.get("error") or "")[:300])
     if is_err:
         return None, None
@@ -182,7 +187,12 @@ def validate_schema(data, schema):
     if not isinstance(data, dict):
         return False
     if isinstance(schema, str):
-        schema = json.loads(schema)
+        try:
+            schema = json.loads(schema)
+        except Exception:
+            return False
+    if not isinstance(schema, dict):
+        return False
     if schema.get("type") == "object":
         if not isinstance(data, dict):
             return False
@@ -240,7 +250,9 @@ def llm(kind, prompt, subject=""):
 def log_llm(kind, who, rc, secs, cost, usage, head):
     os.makedirs(ctx.FD, exist_ok=True)
     with open(os.path.join(ctx.FD, "llm.jsonl"), "a") as f:
-        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc, secs=round(secs, 1), cost_usd=cost, usage=usage, head=head,
+        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc,
+                                secs=round(secs, 1) if secs is not None else 0.0,
+                                cost_usd=cost, usage=usage, head=head,
                                 subject=KIND.subject or None), ensure_ascii=False) + "\n")
 
 
