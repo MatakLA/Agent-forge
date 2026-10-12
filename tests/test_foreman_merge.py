@@ -41,6 +41,7 @@ class TestForemanMerge(unittest.TestCase):
         self.old_repo = ctx.REPO
         self.old_c = dict(ctx.C)
         self.old_sh = merge.sh
+        self.old_sbx_sh = sbx.sh
         self.old_already_merged_pr = merge.already_merged_pr
         self.old_upstream_obj = merge.upstream_obj
         self.old_forge_url = sbx.FORGE_URL
@@ -74,6 +75,7 @@ class TestForemanMerge(unittest.TestCase):
         sbx.SECRETS = self.old_sbx_secrets
         sbx.RUNS = self.old_sbx_runs
         merge.sh = self.old_sh
+        sbx.sh = self.old_sbx_sh
         merge.already_merged_pr = self.old_already_merged_pr
         merge.upstream_obj = self.old_upstream_obj
         sbx.FORGE_URL = self.old_forge_url
@@ -655,6 +657,222 @@ class TestForemanMerge(unittest.TestCase):
         nul_in_argv = [arg for cmd in invoked_commands for arg in cmd if "\x00" in str(arg)]
         self.assertEqual(nul_in_argv, [], f"raw NUL byte found in subprocess argv: {nul_in_argv}")
         assert not nul_in_argv, "subprocess argv derived from gate/review path must never contain raw NUL byte"
+
+    def test_do_merge_control_characters_in_feedback_never_reach_subprocess_argv(self):
+        """Invariant: do_merge writes feedback and gate_tail containing NUL and control characters
+        (\x00, \x1b, \x07, \r, \x08) to a markdown file on disk; no subprocess call receives this
+        dangerous text in argv or raises ValueError (embedded null byte)."""
+        adversarial_fb = "review\x00feedback \x1b[31;1mred\x1b[0m \x07bell \rreturn \x08backspace 🚀"
+        adversarial_gate = "gate tests:\x00failure \x1b[32mgreen\x1b[0m \x07alert \r\nline2 \t tab"
+
+        invoked_commands = []
+
+        def verifying_sh(cmd, *a, **kw):
+            # Assert command is an argv list (never a shell string)
+            assert isinstance(cmd, (list, tuple)), f"Command must be argv list, got {type(cmd).__name__}: {cmd!r}"
+            assert not isinstance(cmd, str), "Command must not be passed as a shell string"
+            for arg in cmd:
+                assert isinstance(arg, (str, bytes, int, float, os.PathLike)), f"Invalid argv element type: {type(arg)}"
+                arg_str = str(arg)
+                # Catch if dangerous content leaked into argv
+                assert "\x00" not in arg_str, f"Raw NUL byte leaked into subprocess argv: {arg_str!r}"
+                assert adversarial_fb not in arg_str, f"Adversarial feedback leaked into subprocess argv: {arg_str!r}"
+                assert adversarial_gate not in arg_str, f"Adversarial gate output leaked into subprocess argv: {arg_str!r}"
+
+            # Pass cmd through real subprocess runner with 'true' to verify Python's subprocess machinery
+            # accepts the argv list without raising ValueError ('embedded null byte')
+            subprocess.run(["true", *[str(c) for c in cmd]], check=True)
+
+            invoked_commands.append(list(cmd))
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "open-pr" in cmd_str:
+                return (0, "opened PR #125\n", "")
+            if "merge-pr" in cmd_str:
+                return (0, "merged\n", "")
+            if "forgejo-api" in cmd_str:
+                return (0, "[]", "")
+            return (0, "", "")
+
+        merge.sh = verifying_sh
+        sbx.sh = verifying_sh
+
+        t = dict(id="0125-ctrl-merge", history=[], status="gate", branch="feat/0125-ctrl",
+                 role="qa-developer", goal="G20261012", title="test control char do_merge", attempts=0)
+        merge.save_task(t)
+        merge.already_merged_pr = lambda b: None
+        merge.upstream_obj = lambda: None
+        ctx.C["AUTO_MERGE"] = 1
+
+        fn_merge = merge.do_merge(t, "qa-reviewer", adversarial_fb, adversarial_gate)
+        self.assertTrue(callable(fn_merge), "do_merge must return a callable finish function")
+        assert callable(fn_merge)
+
+        # Drive the merge completion function - must not raise ValueError: embedded null byte
+        fn_merge()
+
+        t_after = merge.live_task(t)
+        self.assertEqual(t_after["status"], "done")
+        assert t_after["status"] == "done"
+        self.assertEqual(t_after["pr"], 125)
+        assert t_after["pr"] == 125
+
+        # Verify PR markdown file was written to disk and contains literal control characters
+        pr_md_path = os.path.join(ctx.FD, "tasks", t["id"] + ".pr.md")
+        self.assertTrue(os.path.isfile(pr_md_path), f"PR body markdown file must exist at {pr_md_path}")
+        assert os.path.isfile(pr_md_path)
+
+        with open(pr_md_path, "r", encoding="utf-8", newline="") as f:
+            pr_content = f.read()
+
+        self.assertIn(adversarial_fb, pr_content, "PR body must contain literal adversarial feedback")
+        assert adversarial_fb in pr_content
+        self.assertIn("review\x00feedback", pr_content)
+        assert "review\x00feedback" in pr_content
+        self.assertIn("\x1b[31;1mred\x1b[0m", pr_content)
+        assert "\x1b[31;1mred\x1b[0m" in pr_content
+        self.assertIn("\x07", pr_content)
+        assert "\x07" in pr_content
+        self.assertIn("\r", pr_content)
+        assert "\r" in pr_content
+        self.assertIn("\x08", pr_content)
+        assert "\x08" in pr_content
+        self.assertIn(adversarial_gate[-2500:], pr_content)
+        assert adversarial_gate[-2500:] in pr_content
+
+        # Verify that subprocess calls were made and none contained dangerous content
+        self.assertGreater(len(invoked_commands), 0, "do_merge must have executed at least one subprocess call")
+        assert len(invoked_commands) > 0
+        self.assertTrue(all(isinstance(cmd, list) for cmd in invoked_commands))
+        assert all(isinstance(cmd, list) for cmd in invoked_commands)
+
+        # Confirm the open-pr command received the markdown file path and title, but never raw feedback text
+        open_pr_calls = [c for c in invoked_commands if any("open-pr" in str(x) for x in c)]
+        self.assertEqual(len(open_pr_calls), 1)
+        assert len(open_pr_calls) == 1
+        open_pr_cmd = open_pr_calls[0]
+        self.assertIn(pr_md_path, open_pr_cmd, "open-pr argv must receive the markdown file path")
+        assert pr_md_path in open_pr_cmd
+        self.assertNotIn(adversarial_fb, open_pr_cmd, "open-pr argv must never receive adversarial feedback text")
+        assert adversarial_fb not in open_pr_cmd
+
+    def test_merge_upstream_control_characters_in_feedback_never_reach_subprocess_argv(self):
+        """Invariant: merge_upstream passes feedback and gate_tail containing NUL and control characters
+        (\x00, \x1b, \x07, \r) as an HTTP API payload to Upstream.open_pr(), never to subprocess argv."""
+        adversarial_fb = "upstream\x00feedback \x1b[35mpurple\x1b[0m \x07bell \rreturn"
+        adversarial_gate = "upstream gate:\x00log \x1b[33myellow\x1b[0m \x07ring \rline"
+
+        invoked_commands = []
+
+        def verifying_sh(cmd, *a, **kw):
+            assert isinstance(cmd, (list, tuple)), f"Command must be argv list, got {type(cmd).__name__}: {cmd!r}"
+            assert not isinstance(cmd, str), "Command must not be passed as a shell string"
+            for arg in cmd:
+                assert isinstance(arg, (str, bytes, int, float, os.PathLike)), f"Invalid argv element type: {type(arg)}"
+                arg_str = str(arg)
+                assert "\x00" not in arg_str, f"Raw NUL byte leaked into subprocess argv: {arg_str!r}"
+                assert adversarial_fb not in arg_str, f"Adversarial feedback leaked into subprocess argv: {arg_str!r}"
+                assert adversarial_gate not in arg_str, f"Adversarial gate leaked into subprocess argv: {arg_str!r}"
+
+            subprocess.run(["true", *[str(c) for c in cmd]], check=True)
+            invoked_commands.append(list(cmd))
+            return (0, "", "")
+
+        merge.sh = verifying_sh
+        sbx.sh = verifying_sh
+
+        class FakeUpstream:
+            kind = "github"
+            c = {"branch": "main", "repo": "test/upstream-repo"}
+
+            def __init__(self):
+                self.pr_calls = []
+
+            def open_pr(self, branch, title, body):
+                self.pr_calls.append((branch, title, body))
+                return {"number": 99, "url": "https://github.com/test/upstream-repo/pull/99"}
+
+        fake_up = FakeUpstream()
+        import upstream
+        old_push_branch = getattr(upstream, "push_branch", None)
+        def fake_push_branch(up, fd, branch, *extra):
+            verifying_sh(["git", "push", "-q", "origin", f"HEAD:{branch}", *[str(x) for x in extra]])
+
+        upstream.push_branch = fake_push_branch
+        try:
+            t = dict(id="0125-up-ctrl", history=[], status="gate", branch="feat/0125-up-ctrl",
+                     role="qa-engineer", goal="G20261012", title="test upstream control chars", attempts=0)
+            merge.save_task(t)
+            ctx.C["AUTO_MERGE"] = 1
+
+            fn_up = merge.merge_upstream(t, fake_up, "qa-reviewer", adversarial_fb, adversarial_gate)
+            self.assertTrue(callable(fn_up), "merge_upstream must return a callable wait function")
+            assert callable(fn_up)
+
+            fn_up()
+
+            t_after = merge.live_task(t)
+            self.assertEqual(t_after["status"], "merging")
+            assert t_after["status"] == "merging"
+            self.assertEqual(t_after["upstream_pr"]["number"], 99)
+            assert t_after["upstream_pr"]["number"] == 99
+
+            # Upstream.open_pr must receive the body with literal control characters intact
+            self.assertEqual(len(fake_up.pr_calls), 1)
+            assert len(fake_up.pr_calls) == 1
+            branch_call, title_call, body_call = fake_up.pr_calls[0]
+            self.assertEqual(branch_call, "feat/0125-up-ctrl")
+            assert branch_call == "feat/0125-up-ctrl"
+            self.assertIn("0125-up-ctrl: test upstream control chars", title_call)
+            assert "0125-up-ctrl: test upstream control chars" in title_call
+            self.assertIn(adversarial_fb, body_call)
+            assert adversarial_fb in body_call
+            self.assertIn("upstream\x00feedback", body_call)
+            assert "upstream\x00feedback" in body_call
+            self.assertIn("\x1b[35mpurple\x1b[0m", body_call)
+            assert "\x1b[35mpurple\x1b[0m" in body_call
+            self.assertIn("\x07", body_call)
+            assert "\x07" in body_call
+            self.assertIn("\r", body_call)
+            assert "\r" in body_call
+            self.assertIn(adversarial_gate[-2500:], body_call)
+            assert adversarial_gate[-2500:] in body_call
+
+            # Verify no subprocess call received any control characters or feedback content
+            self.assertGreater(len(invoked_commands), 0)
+            assert len(invoked_commands) > 0
+            for cmd in invoked_commands:
+                self.assertIsInstance(cmd, list)
+                assert isinstance(cmd, list)
+                for arg in cmd:
+                    self.assertNotIn("\x00", str(arg))
+                    assert "\x00" not in str(arg)
+                    self.assertNotIn(adversarial_fb, str(arg))
+                    assert adversarial_fb not in str(arg)
+                    self.assertNotIn(adversarial_gate, str(arg))
+                    assert adversarial_gate not in str(arg)
+        finally:
+            if old_push_branch is not None:
+                upstream.push_branch = old_push_branch
+
+    def test_control_character_feedback_in_subprocess_argv_raises_embedded_null_byte(self):
+        """Invariant: subprocess.run and foreman.util.sh raise ValueError when argv contains NUL bytes,
+        proving that feedback with NUL cannot be safely passed via subprocess argv."""
+        from foreman.util import sh as real_sh
+        adversarial_fb = "bad\x00feedback"
+        assert "\x00" in adversarial_fb
+
+        with self.assertRaises(ValueError) as ctx_err:
+            subprocess.run(["true", adversarial_fb])
+        err_msg = str(ctx_err.exception)
+        self.assertIn("embedded null byte", err_msg)
+        assert "embedded null byte" in err_msg
+
+        # Also confirm foreman.util.sh propagates the ValueError
+        with self.assertRaises(ValueError) as ctx_sh_err:
+            real_sh(["true", adversarial_fb])
+        sh_err_msg = str(ctx_sh_err.exception)
+        self.assertIn("embedded null byte", sh_err_msg)
+        assert "embedded null byte" in sh_err_msg
 
 
 
