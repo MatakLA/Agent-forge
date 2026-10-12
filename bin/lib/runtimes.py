@@ -58,6 +58,8 @@ AIDER_QUIET = ["--yes-always", "--no-pretty", "--no-stream", "--no-fancy-input",
                "--analytics-disable", "--no-gitignore", "--no-show-model-warnings", "--no-detect-urls"]
 # OpenCode: non-interactive JSON stream for scan(), quiet
 OPENCODE_QUIET = ["--format", "json"]
+# Goose: non-interactive execution via goose run --instructions -
+GOOSE_QUIET = []
 # Qwen Code: non-interactive stream-json, auto-approve tool execution
 QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
 GEMINI_TRAILER = "Do the task described above."
@@ -128,7 +130,7 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         # `goose run --instructions -` reads instructions non-interactively from stdin per Goose's CLI.
         # Goose configures its model and provider via ~/.config/goose/config.yaml or environment
         # variables (GOOSE_PROVIDER, GOOSE_MODEL), so model is not passed on the command line.
-        argv = ["goose", "run", "--instructions", "-"]
+        argv = ["goose", "run"] + GOOSE_QUIET + ["--instructions", "-"]
         return argv, prompt
     if rt == "qwen-code":
         argv = ["qwen"] + QWEN_QUIET
