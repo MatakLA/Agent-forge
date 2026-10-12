@@ -202,47 +202,259 @@ def scan(rt, lines, prices=None):
     if rt == "compat":
         rt = "codex"                           # the same CLI and event stream
     if rt == "goose":
-        # Block's Goose CLI output parser.
-        # Goose does not expose token metrics in its CLI stream (tokens: None).
-        # Tools are counted by matching known tool-call markers in output lines (JSON or plain text).
-        # Conversation ID is not exposed on stdout (conversation_id: None).
-        # Result is the last non-empty line of output (or None if empty).
+        # Block's Goose CLI output and SSE event stream parser.
+        # Goose runs against model endpoints and can stream SSE events (event: / data:)
+        # as emitted by fake-goose-server.js, or standard plain-text / JSON-lines CLI output.
+        # Tokens are accumulated if reported in usage/stats (else None for unknown).
+        # Tools are counted from tool calls/invocations across all stream formats.
+        # Result becomes a ResultStr only on a genuine terminal event (or last non-empty line for non-SSE).
+        # Malformed/partial SSE frames are skipped safely without raising.
+        if lines is None:
+            lines = []
         st = dict(tokens=None, tools=0, conversation_id=None, result=None)
-        last_line = None
-        for line in lines:
-            line_str = line.strip() if isinstance(line, str) else str(line).strip()
-            if not line_str:
-                continue
-            last_line = line_str
-            parsed = None
-            if line_str.startswith("{"):
-                try:
-                    parsed = json.loads(line_str)
-                except ValueError:
-                    pass
-            if isinstance(parsed, dict):
-                t = parsed.get("type") or parsed.get("event")
-                part = parsed.get("part") if isinstance(parsed.get("part"), dict) else {}
-                low_raw = line_str.lower()
-                if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
-                        or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
-                        or parsed.get("tool")
-                        or "tool_call" in low_raw
-                        or "tool call" in low_raw
-                        or "tool_use" in low_raw
-                        or "tool use" in low_raw):
-                    st["tools"] += 1
+        seen_sse = False
+        text = []
+        current_event = None
+        current_data = []
+        terminal_reached = False
+        terminal_error = None
+        last_non_empty = None
+
+        def dispatch_sse(ev, d_str):
+            nonlocal terminal_reached, terminal_error
+            if not d_str:
+                if ev in ("stop", "message_stop", "done"):
+                    terminal_reached = True
+                elif ev in ("error", "turn.failed", "step_failed"):
+                    terminal_reached = True
+                    if not terminal_error:
+                        terminal_error = "error"
+                return
+            if d_str.strip() == "[DONE]":
+                terminal_reached = True
+                return
+            try:
+                e = json.loads(d_str)
+            except Exception:
+                return
+            if not isinstance(e, dict):
+                return
+
+            sid = (e.get("conversation_id") or e.get("session_id")
+                   or e.get("sessionId") or e.get("thread_id"))
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+
+            # Tool usage counting
+            cb = e.get("content_block") or {}
+            it = e.get("item") or {}
+            t = e.get("type") or e.get("event") or ev
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+
+            if isinstance(cb, dict) and cb.get("type") in ("tool_use", "tool_call"):
+                st["tools"] += 1
+            elif ((ev == "response.output_item.added" or t == "response.output_item.added")
+                  and isinstance(it, dict) and it.get("type") in ("function_call", "tool_call", "tool_use", "custom_tool_call")):
+                st["tools"] += 1
             else:
-                low = line_str.lower()
-                if ("tool_call" in low or "tool call" in low
-                        or "tool_use" in low or "tool use" in low
-                        or "tool invocation" in low or "tool_invocation" in low
-                        or "tool request" in low or "tool_request" in low
-                        or low.startswith("tool:") or " tool:" in low
-                        or "running tool" in low or "invoking tool" in low or "calling tool" in low
-                        or "[tool]" in low):
-                    st["tools"] += 1
-        st["result"] = ResultStr(last_line) if last_line is not None else None
+                counted_choices = False
+                for choice in (e.get("choices") or []):
+                    if isinstance(choice, dict):
+                        delta = choice.get("delta") or choice.get("message") or {}
+                        if isinstance(delta, dict):
+                            tcs = delta.get("tool_calls") or []
+                            if tcs:
+                                st["tools"] += len(tcs)
+                                counted_choices = True
+                            elif delta.get("function_call"):
+                                st["tools"] += 1
+                                counted_choices = True
+                if not counted_choices:
+                    if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
+                            or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                            or e.get("tool")):
+                        st["tools"] += 1
+
+            # Token accumulation
+            u = (e.get("usage") or e.get("stats") or e.get("tokens")
+                 or (e.get("message") if isinstance(e.get("message"), dict) else {}).get("usage")
+                 or (e.get("response") if isinstance(e.get("response"), dict) else {}).get("usage")
+                 or (e.get("part") if isinstance(e.get("part"), dict) else {}).get("usage"))
+            if isinstance(u, dict):
+                inp = u.get("input_tokens") or u.get("prompt_tokens") or u.get("input") or 0
+                out = u.get("output_tokens") or u.get("completion_tokens") or u.get("output") or 0
+                tot = u.get("total_tokens") or u.get("total")
+                if tot is not None:
+                    st["tokens"] = (st["tokens"] or 0) + max(0, int(tot))
+                elif inp or out:
+                    st["tokens"] = (st["tokens"] or 0) + max(0, int(inp) + int(out))
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = (st["tokens"] or 0) + int(u)
+
+            # Text accumulation
+            delta = e.get("delta") if isinstance(e.get("delta"), dict) else {}
+            txt = delta.get("text_delta") or delta.get("text") or ""
+            if txt:
+                text.append(str(txt))
+            if isinstance(cb, dict) and cb.get("text"):
+                text.append(str(cb["text"]))
+            if isinstance(it, dict) and it.get("type") == "message" and (ev in ("response.output_item.added", "response.output_item.done") or t in ("response.output_item.added", "response.output_item.done")):
+                for c in (it.get("content") or []):
+                    if isinstance(c, dict) and c.get("text"):
+                        text.append(str(c["text"]))
+            for choice in (e.get("choices") or []):
+                if isinstance(choice, dict):
+                    cdelta = choice.get("delta") or choice.get("message") or {}
+                    if isinstance(cdelta, dict) and cdelta.get("content"):
+                        text.append(str(cdelta["content"]))
+            ptxt = (part.get("text") if isinstance(part, dict) else "") or e.get("text") or ""
+            if ptxt and t not in ("tool_use", "tool_call"):
+                text.append(str(ptxt))
+
+            # Terminal event checking
+            err_raw = None
+            if ev in ("error", "turn.failed", "step_failed", "failed"):
+                err_raw = e.get("error") or e.get("message") or ev
+            elif t in ("error", "turn.failed", "step_failed"):
+                err_raw = e.get("error") or e.get("message") or t
+            elif e.get("error") or e.get("is_error"):
+                err_raw = e.get("error") or "error"
+            elif isinstance(part, dict) and (part.get("error") or part.get("reason") in ("error", "failed", "failure")):
+                err_raw = part.get("error") or part.get("reason")
+            elif isinstance(e.get("response"), dict) and e["response"].get("status") in ("failed", "error", "cancelled"):
+                err_raw = e["response"].get("error") or e["response"].get("status")
+            elif e.get("status") in ("failed", "error", "FAILED", "ERROR"):
+                err_raw = e.get("error") or e.get("message") or e.get("status")
+            else:
+                for choice in (e.get("choices") or []):
+                    if isinstance(choice, dict) and choice.get("finish_reason") in ("error", "failed"):
+                        err_raw = choice.get("error") or choice.get("finish_reason")
+
+            if err_raw:
+                terminal_reached = True
+                err_msg = (err_raw.get("message") or err_raw.get("error") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                terminal_error = err_msg or "error"
+            else:
+                if ev in ("stop", "message_stop", "response.completed", "step_finish", "result", "done"):
+                    terminal_reached = True
+                elif t in ("stop", "message_stop", "response.completed", "step_finish", "result"):
+                    terminal_reached = True
+                elif isinstance(e.get("response"), dict) and e["response"].get("status") == "completed":
+                    terminal_reached = True
+                elif isinstance(delta, dict) and delta.get("stop_reason") in ("end_turn", "stop_sequence", "max_tokens", "stop"):
+                    terminal_reached = True
+                elif e.get("finish_reason") in ("stop", "end_turn", "completed", "length"):
+                    terminal_reached = True
+                elif e.get("stop_reason") in ("stop", "end_turn", "completed", "length"):
+                    terminal_reached = True
+                else:
+                    for choice in (e.get("choices") or []):
+                        if isinstance(choice, dict) and choice.get("finish_reason") in ("stop", "end_turn", "completed", "length"):
+                            terminal_reached = True
+
+        def flush_data_if_valid():
+            nonlocal current_event, current_data
+            if current_data:
+                joined = "\n".join(current_data)
+                try:
+                    json.loads(joined)
+                    dispatch_sse(current_event, joined)
+                    current_event = None
+                    current_data = []
+                except Exception:
+                    pass
+
+        for item in lines:
+            if isinstance(item, bytes):
+                try:
+                    item = item.decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+            elif not isinstance(item, str):
+                continue
+            sublines = item.splitlines() if ("\n" in item or "\r" in item) else [item]
+            for line in sublines:
+                line_str = line.strip()
+                if not line_str:
+                    if current_data or current_event:
+                        dispatch_sse(current_event, "\n".join(current_data))
+                        current_event = None
+                        current_data = []
+                    continue
+
+                last_non_empty = line_str
+
+                if line_str.startswith("event:"):
+                    seen_sse = True
+                    if current_data or current_event:
+                        dispatch_sse(current_event, "\n".join(current_data))
+                        current_data = []
+                    current_event = line_str[6:].strip()
+                    continue
+
+                if line_str.startswith("data:"):
+                    seen_sse = True
+                    d_content = line_str[5:].strip()
+                    flush_data_if_valid()
+                    current_data.append(d_content)
+                    continue
+
+                if line_str.startswith(":"):
+                    seen_sse = True
+                    continue
+
+                if current_data or current_event:
+                    dispatch_sse(current_event, "\n".join(current_data))
+                    current_event = None
+                    current_data = []
+
+                parsed = None
+                if line_str.startswith("{"):
+                    try:
+                        parsed = json.loads(line_str)
+                    except ValueError:
+                        pass
+                if isinstance(parsed, dict):
+                    t = parsed.get("type") or parsed.get("event")
+                    part = parsed.get("part") if isinstance(parsed.get("part"), dict) else {}
+                    low_raw = line_str.lower()
+                    if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
+                            or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                            or parsed.get("tool")
+                            or "tool_call" in low_raw
+                            or "tool call" in low_raw
+                            or "tool_use" in low_raw
+                            or "tool use" in low_raw):
+                        st["tools"] += 1
+                else:
+                    low = line_str.lower()
+                    if ("tool_call" in low or "tool call" in low
+                            or "tool_use" in low or "tool use" in low
+                            or "tool invocation" in low or "tool_invocation" in low
+                            or "tool request" in low or "tool_request" in low
+                            or low.startswith("tool:") or " tool:" in low
+                            or "running tool" in low or "invoking tool" in low or "calling tool" in low
+                            or "[tool]" in low):
+                        st["tools"] += 1
+
+        if current_data or current_event:
+            dispatch_sse(current_event, "\n".join(current_data))
+            current_data = []
+
+        if seen_sse:
+            if terminal_reached:
+                if terminal_error:
+                    err_prefix = terminal_error if terminal_error.lower().startswith("error") else f"Error: {terminal_error}"
+                    resp = "".join(text).strip()
+                    err_str = err_prefix if not resp else f"{err_prefix}\n{resp}"
+                    st["result"] = ResultStr(err_str)
+                else:
+                    resp = "".join(text).strip() if text else "Task completed successfully."
+                    st["result"] = ResultStr(resp)
+            else:
+                st["result"] = None
+        else:
+            st["result"] = ResultStr(last_non_empty) if last_non_empty is not None else None
         return st
     if lines is None:
         lines = []
