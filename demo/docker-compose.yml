@@ -1,0 +1,29 @@
+# ==============================================================================
+# Agent-Forge Demo Mode Docker Compose Configuration
+# Runs the Agent-Forge dashboard against synthetic state in DEMO_DATA_DIR.
+# Exactly one service (dashboard), no worker containers, no egress proxy,
+# no daemon socket mount, and zero API credentials required.
+# ==============================================================================
+name: demo
+
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile
+    image: agent-forge-demo:1
+    restart: unless-stopped
+    ports:
+      - "8171:8171"
+    environment:
+      - DEMO_MODE=1
+      - FORGE_DIR=/demo-data
+      - BIND_PORT=8171
+    volumes:
+      - "${DEMO_DATA_DIR}:/demo-data"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8171/api/status')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
