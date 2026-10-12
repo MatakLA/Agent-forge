@@ -73,6 +73,47 @@ class TestGooseRuntime(unittest.TestCase):
         assert prompt not in argv
         assert argv == ["goose", "run", "--instructions", "-"]
 
+    def test_goose_command_and_quiet_flags(self):
+        """command('goose', ...) includes GOOSE_QUIET, passes prompt on stdin, and omits secrets/model."""
+        self.assertTrue(hasattr(runtimes, "GOOSE_QUIET"))
+        self.assertIsInstance(runtimes.GOOSE_QUIET, list)
+        prompt = "Confidential instructions with unicode: 修复测试漏洞"
+        model = "gpt-4o"
+        conv = "session-test-456"
+        argv, stdin_text = runtimes.command("goose", prompt, model, conv, 15, 1.5)
+        self.assertEqual(stdin_text, prompt)
+        self.assertEqual(argv[:2], ["goose", "run"])
+        for flag in runtimes.GOOSE_QUIET:
+            self.assertIn(flag, argv)
+        self.assertEqual(argv, ["goose", "run"] + runtimes.GOOSE_QUIET + ["--instructions", "-"])
+        self.assertNotIn(prompt, argv)
+        self.assertNotIn(model, argv)
+        self.assertNotIn(conv, argv)
+        assert hasattr(runtimes, "GOOSE_QUIET")
+        assert stdin_text == prompt
+        assert argv == ["goose", "run"] + runtimes.GOOSE_QUIET + ["--instructions", "-"]
+        assert prompt not in argv
+
+    def test_goose_egress_endpoint_wiring(self):
+        """hosts('goose', url) derives egress host dynamically via endpoint mechanism."""
+        self.assertTrue(runtimes.uses_endpoint("goose"))
+        self.assertEqual(runtimes.RUNTIMES["goose"]["hosts"], [])
+        test_cases = [
+            ("http://127.0.0.1:8099/v1", ["127.0.0.1"]),
+            ("https://api.openai.com/v1", ["api.openai.com"]),
+            ("http://model-server.local:8000/v1", ["model-server.local"]),
+            ("http://192.168.1.50:11434", ["192.168.1.50"]),
+            ("", []),
+            ("ftp://invalid-proto", []),
+            ("not-a-valid-url", []),
+        ]
+        for url, expected in test_cases:
+            resolved = runtimes.hosts("goose", url)
+            self.assertEqual(resolved, expected)
+            assert runtimes.hosts("goose", url) == expected
+        assert runtimes.uses_endpoint("goose") is True
+        assert runtimes.RUNTIMES["goose"]["hosts"] == []
+
     def test_goose_scan_tokens_none_and_heuristic_tools(self):
         """scan('goose', ...) returns tokens=None, conversation_id=None, and counted tools."""
         lines = [
