@@ -49,7 +49,7 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   OPENAI_MODEL: 'OpenAI-compatible model (paid)', OPENAI_API_BASE: 'OpenAI API base URL', OPENAI_API_KEY: 'OpenAI API key',
   GEMINI_MODEL: 'Gemini API model (paid)', GEMINI_API_BASE: 'Gemini API base URL', GEMINI_API_KEY: 'Gemini API key', OWNER_LANG: 'Your language',
   LOCAL_TZ: 'Local timezone', PROJECT_DIR: 'Project subdirectory', VISION_FILE: 'Vision file path', SHARED_FILES: 'Shared registry files',
-  LOOP_SEC: 'Loop interval (sec)', WORKERS: 'Worker pool', AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically',
+  LOOP_SEC: 'Loop interval (sec)', ORPHAN_LIMIT: 'Orphan limit', ORPHAN_WARN: 'Orphan warning', WORKERS: 'Worker pool', AUTOPILOT: 'Autopilot - picks the next goal from the vision when idle', AUTO_MERGE: 'Merge automatically',
   CONTINUE_CONVERSATIONS: 'A rework continues the worker\'s conversation', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most',
   MAX_GOAL_ROUNDS: 'Goal rounds, at most', DIFF_MAX: 'Maximum diff size (bytes)', LESSONS_MAX: 'Lessons kept in prompt, at most',
   SPLIT_AFTER_CAPS: 'Split a task after N token caps', TASK_TOKEN_BUDGET: 'Target task size (tokens)', MAX_PARALLEL: 'Parallel runs, at most',
@@ -95,6 +95,8 @@ const HELP = {
   VISION_FILE: 'Path to product vision document relative to project root (e.g. docs/vision.md). Applies live.',
   SHARED_FILES: 'Comma-separated relative files multiple tasks may edit concurrently (e.g. registry.jsonl). Empty = none. Applies live.',
   LOOP_SEC: 'Foreman loop tick interval in seconds (1-300). Applies live.',
+  ORPHAN_LIMIT: 'Consecutive crash-and-orphan cycles with no progress before the task is blocked. Applies live.',
+  ORPHAN_WARN: 'Consecutive crash-and-orphan cycles with no progress before a warning is raised. Applies live.',
   WORKERS: 'Comma-separated worker containers assigned to this project (e.g. worker-1,worker-2). Empty = all workers. Applies live.',
   AUTOPILOT: '1 to automatically pick the next goal from vision file when idle, 0 to disable. Applies live.',
   AUTO_MERGE: '1 to automatically merge approved branches that pass all tests, 0 to hold. Applies live.',
@@ -205,7 +207,7 @@ function sval(k) {
   return el.value.trim();
 }
 const V = () => (S && S.values) || {};
-const num = k => '<input type="number" id="set-' + k + '" value="' + esc(V()[k]) + '">';
+const num = (k, def) => '<input type="number" id="set-' + k + '" value="' + esc(V()[k] != null && V()[k] !== '' ? V()[k] : (def != null ? def : '')) + '"' + (def != null ? ' placeholder="' + esc(def) + '"' : '') + '>';
 const txt = (k, ph) => '<input type="text" id="set-' + k + '" value="' + esc(V()[k]) + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + '>';
 const tog = k => '<label class="switch"><input type="checkbox" id="set-' + k + '"' + (String(V()[k]) === '1' ? ' checked' : '') + '><i></i></label>';
 const sel = (k, opts) => '<select id="set-' + k + '">' + opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o];
@@ -409,6 +411,8 @@ function pageProject() {
       field('VISION_FILE', txt('VISION_FILE', 'docs/vision.md'), HELP.VISION_FILE) +
       field('SHARED_FILES', txt('SHARED_FILES', ''), HELP.SHARED_FILES) +
       field('LOOP_SEC', num('LOOP_SEC'), HELP.LOOP_SEC) +
+      field('ORPHAN_LIMIT', num('ORPHAN_LIMIT', 5), HELP.ORPHAN_LIMIT) +
+      field('ORPHAN_WARN', num('ORPHAN_WARN', 3), HELP.ORPHAN_WARN) +
       '<details><summary class="muted">Task size and retries</summary>' +
       field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET'), HELP.TASK_TOKEN_BUDGET) +
       field('MAX_TASK_FILES', num('MAX_TASK_FILES'), HELP.MAX_TASK_FILES) +
@@ -525,7 +529,14 @@ async function saveSettings() {
   const changes = {};
   const knownKeys = new Set(Object.keys(V()));
   if ($('set-GEMINI_API_BASE')) knownKeys.add('GEMINI_API_BASE');
-  for (const k of knownKeys) { const v = sval(k); if (v !== null && String(v) !== String(V()[k] || '')) changes[k] = v; }
+  if ($('set-ORPHAN_LIMIT')) knownKeys.add('ORPHAN_LIMIT');
+  if ($('set-ORPHAN_WARN')) knownKeys.add('ORPHAN_WARN');
+  const defVal = k => (k === 'ORPHAN_LIMIT' ? 5 : k === 'ORPHAN_WARN' ? 3 : '');
+  for (const k of knownKeys) {
+    const v = sval(k);
+    const orig = V()[k] != null && V()[k] !== '' ? String(V()[k]) : String(defVal(k));
+    if (v !== null && String(v) !== orig) changes[k] = v;
+  }
   if (!Object.keys(changes).length) { sMsg = 'nothing changed'; $('save-msg').textContent = sMsg; return; }
   let r;
   try { r = await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, changes})})).json(); }
