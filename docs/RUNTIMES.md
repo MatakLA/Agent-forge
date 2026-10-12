@@ -17,6 +17,15 @@ Each worker is one container running one agent CLI. You can mix them in one team
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
+## Checking readiness
+
+`bin/doctor` now prints, for every runtime, one of three states:
+- `ok` ('Ready'): fully configured and ready to use.
+- `missing_setting`: a required config value or secret is not set.
+- `missing_egress`: its host is not yet in the egress allowlist.
+
+The same summary is shown on the dashboard's Settings page, so the owner no longer has to cross-check these docs by hand to see what is configured. Point to this live check as the source of truth for current status.
+
 ## Your own model server: Ollama, vLLM, LM Studio, OpenRouter
 Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
 with the runtime `compat` or `aider`:
