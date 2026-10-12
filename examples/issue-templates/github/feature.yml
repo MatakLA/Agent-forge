@@ -1,0 +1,53 @@
+# Agent-Forge issue template: New Feature (GitHub Issue Form)
+#
+# Grounding in bin/issues-intake:
+# - Label matching: bin/issues-intake polls upstream issues with label 'agent-forge' (default: --label agent-forge).
+#   The 'agent-forge' label is read and required by bin/issues-intake.
+#   The 'feature' label is a human-only hint for maintainer triage; bin/issues-intake does not inspect or filter on it.
+# - Goal generation: bin/issues-intake does not parse or extract individual body section names.
+#   It strips HTML tags (<[^>]+>), concatenates "{clean_title}\n\n{clean_body}", truncates the total string
+#   to 4000 characters, and passes it directly to `bin/foreman goal -` via stdin.
+#   All body sections below are flagged as human-only hints to guide reporters in providing structured,
+#   actionable feature requests for Foreman's AI planner.
+
+name: "New feature"
+description: "File a new feature goal for Agent-Forge to plan and implement"
+title: "[Feature]: "
+labels:
+  # Read by bin/issues-intake (default issue filter label):
+  - "agent-forge"
+  # Human-only hint (triage label ignored by bin/issues-intake):
+  - "feature"
+body:
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: "Problem statement"
+      description: "Human-only hint (bin/issues-intake does not read this section name; it forwards the full body into the goal text): What problem does this solve, and who is affected (e.g., user, operator, contributor)?"
+      placeholder: "Describe the problem this feature solves and who needs it..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-behaviour
+    attributes:
+      label: "Proposed behaviour"
+      description: "Human-only hint (bin/issues-intake does not read this section name): What is the desired behaviour or outcome? How should the feature work once implemented?"
+      placeholder: "e.g., Running bin/... with --new-flag should produce..."
+    validations:
+      required: true
+  - type: textarea
+    id: affected-area
+    attributes:
+      label: "Affected area"
+      description: "Human-only hint (bin/issues-intake does not read this section name): File paths, commands, or components affected (if known)."
+      placeholder: "e.g., bin/foreman, web/dashboard/, scripts/install.sh"
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: "Additional context"
+      description: "Human-only hint (bin/issues-intake does not read this section name): Constraints, alternatives considered, or acceptance criteria. Note: bin/issues-intake strips HTML tags and truncates total goal text (title + body) to 4000 characters."
+      placeholder: "Any additional notes, constraints, or links. Keep concise (total body + title under 4000 chars)."
+    validations:
+      required: false
