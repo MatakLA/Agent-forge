@@ -18,8 +18,10 @@ import unittest
 from unittest import mock
 
 # Set test environment before any sbx or foreman imports
+import atexit
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T = tempfile.mkdtemp(prefix="af-test-llm-")
+atexit.register(shutil.rmtree, T, ignore_errors=True)
 os.environ["SANDBOX_TEST"] = "1"
 os.environ["SANDBOX_RUNS_DIR"] = T
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
@@ -497,6 +499,59 @@ class TestForemanLLM(unittest.TestCase):
         self.assertIsNone(llm.parse_and_validate(non_json, llm.OBJECT_SCHEMA))
 
         assert llm.parse_and_validate(valid_review, llm.REVIEW_SCHEMA)["verdict"] == "approve"
+
+    def test_providers_for_whitespace_fallback_to_orchestrator(self):
+        """Test whitespace-only PLAN_PROVIDERS correctly falls back to ORCHESTRATOR_PROVIDER."""
+        ctx.C.clear()
+        ctx.C["PLAN_PROVIDERS"] = "   "
+        ctx.C["ORCHESTRATOR_PROVIDER"] = "openai-api"
+        provs = llm.providers_for("plan")
+        self.assertEqual(provs, ["openai-api"])
+        assert provs == ["openai-api"]
+
+    def test_provider_fallback_when_model_unconfigured(self):
+        """Test fallback to subsequent provider when primary provider model is unconfigured."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api, gemini-api"
+        ctx.C["OPENAI_MODEL"] = ""
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        gemini_result = {
+            "text": '{"tasks": [], "done": true}',
+            "provider": "gemini-api",
+            "model": "gemini-1.5-pro",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("providers.call_gemini_api", return_value=gemini_result) as mock_gemini:
+            text, who = llm.llm("plan", "Plan prompt")
+
+        self.assertEqual(who, "gemini-api:gemini-1.5-pro")
+        self.assertTrue(mock_gemini.called)
+        assert who == "gemini-api:gemini-1.5-pro"
+
+    def test_review_schema_validation_with_mutations(self):
+        """Test REVIEW_SCHEMA validates correctly with structured mutation diff proposals."""
+        review_with_mutations = {
+            "verdict": "approve",
+            "feedback": "LGTM with minor cleanup",
+            "lesson": "keep tests offline",
+            "mutations": [
+                {
+                    "name": "cleanup",
+                    "file": "bin/lib/foreman/llm.py",
+                    "old": "pass",
+                    "new": "return True",
+                }
+            ],
+        }
+        raw_text = json.dumps(review_with_mutations)
+        parsed = llm.parse_and_validate(raw_text, llm.REVIEW_SCHEMA)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.get("mutations", [])), 1)
+        assert parsed["verdict"] == "approve"
 
 
 if __name__ == "__main__":

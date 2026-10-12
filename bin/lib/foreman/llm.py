@@ -23,17 +23,18 @@ class Unavailable(Exception):
 
 
 def providers_for(kind):
-    if kind == "review":
-        order = ctx.C.get("REVIEW_PROVIDERS")
-    else:
-        order = ctx.C.get("PLAN_PROVIDERS")
-    if not order:
-        order = ctx.C.get("ORCHESTRATOR_PROVIDER") or os.environ.get("ORCHESTRATOR_PROVIDER", "")
+    order = ctx.C.get("REVIEW_PROVIDERS") if kind == "review" else ctx.C.get("PLAN_PROVIDERS")
     if isinstance(order, (list, tuple)):
-        raw = order
+        provs = [str(p).strip() for p in order if str(p).strip()]
     else:
-        raw = str(order or "").split(",")
-    return [p.strip() for p in raw if p.strip()]
+        provs = [p.strip() for p in str(order or "").split(",") if p.strip()]
+    if not provs:
+        fallback = ctx.C.get("ORCHESTRATOR_PROVIDER") or os.environ.get("ORCHESTRATOR_PROVIDER", "")
+        if isinstance(fallback, (list, tuple)):
+            provs = [str(p).strip() for p in fallback if str(p).strip()]
+        else:
+            provs = [p.strip() for p in str(fallback or "").split(",") if p.strip()]
+    return provs
 
 
 def llm_available():
@@ -146,12 +147,12 @@ def _via_paid_api(name, prompt, system):
     t0 = time.time()
     try:
         if name == "anthropic-api":
-            r = providers.call_anthropic_api(prompt, model=model, system=system)
+            r = providers.call_anthropic_api(prompt, model, system=system)
         elif name == "openai-api":
             api_base = ctx.C.get("OPENAI_API_BASE") or "https://api.openai.com/v1"
-            r = providers.call_openai_api(prompt, model=model, system=system, api_base=api_base)
+            r = providers.call_openai_api(prompt, model, system=system, api_base=api_base)
         elif name == "gemini-api":
-            r = providers.call_gemini_api(prompt, model=model, system=system)
+            r = providers.call_gemini_api(prompt, model, system=system)
         else:
             return None, None
     except ValueError:          # no key configured
