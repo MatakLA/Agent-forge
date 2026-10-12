@@ -4,6 +4,7 @@
 - Add examples/sample-project/: public example project pairing vision.md, project.conf, seed-repo/, and README.md
 - Add docs/CHOOSING-AN-AI.md: honest comparison of all supported runtimes and providers
 - Add docs/DEMO.md: Docker-only demo mode design and user guide
+- One-command demo mode: `bash scripts/demo.sh` runs the dashboard in a read-only Docker container on http://localhost:8171 against synthetic data, requiring only Docker and no API keys or secrets.
 - GitHub / GitLab issue intake: `bin/issues-intake` bridges open issues labelled `agent-forge` into foreman goals with seen-state deduplication and dry-run support.
 - Install smoke test: Hermetic install smoke test verifying fresh layout startup, web dashboard reachability at /api/status, and static asset delivery without Docker infrastructure (`tests/test_install_smoke.sh`, `tests/test_install_smoke.py`).
 - Foreman loop: `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks via in-flight tracking and early state persistence.
