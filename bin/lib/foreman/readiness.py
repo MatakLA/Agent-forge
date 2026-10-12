@@ -57,9 +57,12 @@ def _has_secret(name: str) -> bool:
     val = os.environ.get(name, "").strip()
     if bool(val):
         return True
-    # 4. Check ctx.CONF if configured
+    # 4. Check ctx.CONF / ctx.C if configured
     if hasattr(ctx, "CONF") and isinstance(ctx.CONF, dict):
         if bool(ctx.CONF.get(name)):
+            return True
+    if hasattr(ctx, "C") and isinstance(ctx.C, dict):
+        if bool(ctx.C.get(name)):
             return True
     # 5. Check alternate representations
     alt_keys = {
@@ -89,6 +92,9 @@ def _has_secret(name: str) -> bool:
             return True
         if hasattr(ctx, "CONF") and isinstance(ctx.CONF, dict):
             if bool(ctx.CONF.get(alt)):
+                return True
+        if hasattr(ctx, "C") and isinstance(ctx.C, dict):
+            if bool(ctx.C.get(alt)):
                 return True
     return False
 
