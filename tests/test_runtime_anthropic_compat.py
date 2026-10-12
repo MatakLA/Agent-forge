@@ -73,9 +73,11 @@ class TestAnthropicCompatRuntime(unittest.TestCase):
 
         self.assertEqual(argv[0], "af-agent")
         self.assertEqual(argv[1], "anthropic-compat")
+        self.assertEqual(argv[2], "exec")
         self.assertNotIn(prompt, argv)
         assert argv[0] == "af-agent"
         assert argv[1] == "anthropic-compat"
+        assert argv[2] == "exec"
         assert prompt not in argv
 
         body = json.loads(stdin_text)
@@ -256,11 +258,16 @@ class TestAnthropicCompatRuntime(unittest.TestCase):
         self.assertEqual(res["result"]["cost_usd"], expected_cost)
         assert res["result"]["cost_usd"] == expected_cost
 
-        # Rate: USD per 1K tokens rate (e.g. 0.003 USD / 1K tokens)
-        res_per_k = runtimes.scan("anthropic-compat", stream, prices="0.003")
-        expected_k_cost = round((1500 * 0.003) / 1000.0, 6)
-        self.assertEqual(res_per_k["result"]["cost_usd"], expected_k_cost)
-        assert res_per_k["result"]["cost_usd"] == expected_k_cost
+        # Single rate: USD per million tokens (same as compat)
+        res_single = runtimes.scan("anthropic-compat", stream, prices="3.0")
+        expected_single_cost = round((1000 * 3.0) / 1e6, 6)
+        self.assertEqual(res_single["result"]["cost_usd"], expected_single_cost)
+        assert res_single["result"]["cost_usd"] == expected_single_cost
+
+        # Unknown cost when prices config is omitted
+        res_none = runtimes.scan("anthropic-compat", stream, prices=None)
+        self.assertIsNone(res_none["result"]["cost_usd"])
+        assert res_none["result"]["cost_usd"] is None
 
     def test_anthropic_compat_scan_file_helper(self):
         """scan_file('anthropic-compat', path) properly parses lines from file."""

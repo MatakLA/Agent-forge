@@ -143,7 +143,7 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv += ["-p", QWEN_TRAILER]
         return argv, prompt
     if rt == "anthropic-compat":
-        argv = ["af-agent", "anthropic-compat"]
+        argv = ["af-agent", "anthropic-compat", "exec"]
         system_text = ""
         messages = []
         conv_data = None
@@ -196,16 +196,6 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
     raise ValueError(f"unknown runtime {rt!r}")
 
 
-class ResultDict(dict):
-    """Result dictionary supporting standard dict access and string comparisons."""
-
-    def __eq__(self, other):
-        if isinstance(other, str):
-            return self.get("response") == other
-        return super().__eq__(other)
-
-    def __str__(self):
-        return str(self.get("response") or "")
 
 
 def _prices(spec):
@@ -795,7 +785,7 @@ def scan(rt, lines, prices=None):
             if t == "error" or e.get("error") or e.get("is_error"):
                 err_obj = e.get("error")
                 err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj or "error")
-                st["result"] = ResultDict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=u if u else None, cost_usd=None)
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=u if u else None, cost_usd=None)
 
             is_final = False
             if t == "message_delta":
@@ -809,19 +799,13 @@ def scan(rt, lines, prices=None):
 
             if is_final and not (st["result"] and st["result"]["status"] == "ERROR"):
                 assistant_text = "".join(text)[-4000:]
-                cost = None
-                if prices:
-                    p = _prices(prices or "")
-                    if "," in str(prices) or any(p[1:]):
-                        cost = (inp_tokens * p[0] + out_tokens * p[2]) / 1e6
-                    elif p[0] < 0.1 and p[0] > 0:
-                        cost = (inp_tokens + out_tokens) * p[0] / 1000.0
-                    else:
-                        cost = (inp_tokens + out_tokens) * p[0] / 1e6
-                    cost = round(cost, 6)
-                st["result"] = ResultDict(status="SUCCESS", response=assistant_text, error="",
-                                          usage=dict(input_tokens=inp_tokens, output_tokens=out_tokens) if (inp_tokens or out_tokens) else (u if u else None),
-                                          cost_usd=cost)
+                p = _prices(prices or "")
+                cached = (u.get("cache_read_input_tokens") or u.get("cached_tokens") or u.get("cached_input_tokens") or 0) if isinstance(u, dict) else 0
+                cost = max(0, inp_tokens - cached) * p[0] + cached * p[1] + out_tokens * p[2]
+                prev = (st["result"] or {}).get("cost_usd") or 0
+                st["result"] = dict(status="SUCCESS", response=assistant_text, error="",
+                                    usage=dict(input_tokens=inp_tokens, output_tokens=out_tokens) if (inp_tokens or out_tokens) else (u if u else None),
+                                    cost_usd=round(prev + cost / 1e6, 6) if prices else None)
     for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
         st.pop(k, None)
     return st
