@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Tests for Foreman merge path (bin/lib/foreman/merge.py): crash recovery after merge,
 requeue-gate round counting and task isolation, externally-merged PR handling,
-null head tolerance in already_merged_pr, and conflict resolution for shared files.
+null head tolerance in already_merged_pr, conflict resolution for shared files,
+and control character safety in gate output and review feedback.
 
 Public interface: runs via unittest runner or directly as a test script.
 Invariants: crash recovery prevents double merges/PRs; 4-round regate cap blocks
-at exactly 4 rounds; external upstream merges are detected; non-union shared files conflict.
+at exactly 4 rounds; external upstream merges are detected; non-union shared files conflict;
+gate output and review feedback containing NUL or ANSI control chars never crash subprocess argv.
 """
 import json, os, shutil, subprocess, sys, tempfile, unittest
 
@@ -528,6 +530,131 @@ class TestForemanMerge(unittest.TestCase):
         assert t_after["regates"] == 1
         self.assertTrue(any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"]))
         assert any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"])
+
+    def test_feedback_and_gate_control_characters_safety(self):
+        """Regression test for control characters (NUL, ANSI escape, bell, backspace) in feedback/gate_tail:
+        asserts no crash and no raw NUL in any subprocess-bound argv across rework, requeue_gate, await_owner,
+        do_merge, and merge_upstream."""
+        adversarial_fb = "hello\x00world \x1b[31mred\x1b[0m \x07bell \x08backspace"
+        adversarial_gate = "gate tests:\x00null_error \x1b[32mgreen\x1b[0m \x07alert"
+
+        # Intercept and record all subprocess calls made via merge.sh
+        invoked_commands = []
+
+        def recording_sh(cmd, *a, **kw):
+            invoked_commands.append(list(cmd))
+            cmd_str = " ".join(cmd)
+            if "open-pr" in cmd_str:
+                return (0, "opened PR #77\n", "")
+            if "merge-pr" in cmd_str:
+                return (0, "merged\n", "")
+            if "forgejo-api" in cmd_str:
+                return (0, "[]", "")
+            if "review-branch" in cmd_str:
+                return (2, adversarial_gate, "")
+            return (0, "", "")
+
+        merge.sh = recording_sh
+
+        # 1. Test rework() with NUL and ANSI escape characters
+        t = dict(id="0113-ctrl", history=[], status="gate", branch="feat/0113-ctrl",
+                 role="security-developer", goal="G20261012", title="test control chars", attempts=0)
+        merge.save_task(t)
+
+        merge.rework(t, adversarial_fb, adversarial_gate)
+        t_rework = merge.live_task(t)
+        self.assertEqual(t_rework["status"], "pending")
+        assert t_rework["status"] == "pending"
+        self.assertEqual(t_rework["feedback"], adversarial_fb)
+        assert t_rework["feedback"] == adversarial_fb
+        self.assertEqual(t_rework["gate_tail"], adversarial_gate)
+        assert t_rework["gate_tail"] == adversarial_gate
+
+        # 2. Test requeue_gate() with adversarial why
+        merge.requeue_gate(t, adversarial_fb)
+        t_regate = merge.live_task(t)
+        self.assertEqual(t_regate["status"], "gate")
+        assert t_regate["status"] == "gate"
+        self.assertEqual(t_regate["regates"], 1)
+        assert t_regate["regates"] == 1
+
+        # 3. Test await_owner() with adversarial feedback and gate_tail
+        merge.await_owner(t, "merge", "auditor", adversarial_fb, adversarial_gate)
+        t_owner = merge.live_task(t)
+        self.assertEqual(t_owner["status"], "approval")
+        assert t_owner["status"] == "approval"
+        self.assertEqual(t_owner["merge_feedback"], adversarial_fb[:800])
+        assert t_owner["merge_feedback"] == adversarial_fb[:800]
+        self.assertEqual(t_owner["gate_tail"], adversarial_gate[-8000:])
+        assert t_owner["gate_tail"] == adversarial_gate[-8000:]
+
+        # 4. Test do_merge() with adversarial feedback and gate_tail
+        merge.already_merged_pr = lambda b: None
+        merge.upstream_obj = lambda: None
+        ctx.C["AUTO_MERGE"] = 1
+
+        fn_merge = merge.do_merge(t, "auditor", adversarial_fb, adversarial_gate)
+        self.assertTrue(callable(fn_merge))
+        assert callable(fn_merge)
+        fn_merge()
+
+        t_merged = merge.live_task(t)
+        self.assertEqual(t_merged["status"], "done")
+        assert t_merged["status"] == "done"
+        self.assertEqual(t_merged["pr"], 77)
+        assert t_merged["pr"] == 77
+
+        # Verify PR body file written to disk
+        pr_md_path = os.path.join(ctx.FD, "tasks", t["id"] + ".pr.md")
+        self.assertTrue(os.path.isfile(pr_md_path))
+        assert os.path.isfile(pr_md_path)
+        with open(pr_md_path, "r", encoding="utf-8") as f:
+            pr_body_content = f.read()
+        self.assertIn("hello\x00world", pr_body_content)
+        assert "hello\x00world" in pr_body_content
+
+        # 5. Test merge_upstream() with adversarial feedback and gate_tail
+        class FakeUpstream:
+            kind = "github"
+            c = {"branch": "main", "repo": "test/repo"}
+
+            def __init__(self):
+                self.calls = []
+
+            def open_pr(self, branch, title, body):
+                self.calls.append((branch, title, body))
+                return {"number": 88, "url": "https://github.com/test/repo/pull/88"}
+
+        fake_up = FakeUpstream()
+        import upstream
+        old_push_branch = getattr(upstream, "push_branch", None)
+        upstream.push_branch = lambda up, fd, br: None
+        try:
+            t_up = dict(id="0113-up", history=[], status="gate", branch="feat/0113-up",
+                        role="security-developer", goal="G20261012", title="test upstream control chars", attempts=0)
+            merge.save_task(t_up)
+            fn_up = merge.merge_upstream(t_up, fake_up, "auditor", adversarial_fb, adversarial_gate)
+            self.assertTrue(callable(fn_up))
+            assert callable(fn_up)
+            fn_up()
+
+            t_up_after = merge.live_task(t_up)
+            self.assertEqual(t_up_after["status"], "merging")
+            assert t_up_after["status"] == "merging"
+            self.assertEqual(len(fake_up.calls), 1)
+            assert len(fake_up.calls) == 1
+            self.assertIn("hello\x00world", fake_up.calls[0][2])
+            assert "hello\x00world" in fake_up.calls[0][2]
+        finally:
+            if old_push_branch is not None:
+                upstream.push_branch = old_push_branch
+
+        # 6. Verify that subprocess calls derived from this flow never contain raw NUL in argv
+        self.assertTrue(len(invoked_commands) > 0, "expected at least one subprocess call during do_merge")
+        assert len(invoked_commands) > 0
+        nul_in_argv = [arg for cmd in invoked_commands for arg in cmd if "\x00" in str(arg)]
+        self.assertEqual(nul_in_argv, [], f"raw NUL byte found in subprocess argv: {nul_in_argv}")
+        assert not nul_in_argv, "subprocess argv derived from gate/review path must never contain raw NUL byte"
 
 
 
