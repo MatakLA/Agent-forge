@@ -2,7 +2,8 @@
 merge (internal Forgejo PR, or a GitHub/GitLab pull/merge request); rework / block / finish.
 Public interface: auto_rebase, requeue_gate, step_gate_review_merge, do_merge, step_owner_merge, step_upstream_merge.
 Invariants: rebase conflict aborts cleanly without leaving rebase state; blocked tasks are never silently merged;
-stuck merging tasks route back to gate; PHASE tracking is purged on error or step resolution."""
+stuck merging tasks route back to gate; PHASE tracking is purged on error or step resolution;
+gate output and review feedback never enter subprocess argv."""
 import json, os, re, threading, time
 
 import sbx
@@ -377,6 +378,7 @@ def do_merge(t, who, fb, gate):
     PHASE[t["id"]] = "merge"
     body = os.path.join(ctx.FD, "tasks", t["id"] + ".pr.md")
     how = "after your approval in the dashboard" if t.get("merge_approved") else "(AUTO_MERGE=1) after the gate and the review passed"
+    # Security: feedback (fb) and gate output are written to disk as a markdown file, never passed via subprocess argv.
     open(body, "w").write(f"Task {t['id']} ({t['role']}), goal {t['goal']}.\n\nReview by {who}: {fb}\n\nGate:\n```\n{gate[-2500:]}\n```\n"
                           f"\nMerged by Agent-Forge {how}.\n")
     rc, out, err = sh([os.path.join(ctx.BIN, "open-pr"), t["branch"], f"{t['id']}: {t['title']}"[:120], body], timeout=60)
@@ -484,6 +486,7 @@ def retry_review(t, who, raw_text):
 
 
 def rework(t, feedback, gate_tail, count=True):
+    # Security: feedback and gate_tail persist to task JSON on disk; dashboard renders in <pre> tags via esc() (bypassing backend ANSI regex).
     t_id = t.get("id") if isinstance(t, dict) else ""
     if t_id:
         PHASE.pop(t_id, None)
