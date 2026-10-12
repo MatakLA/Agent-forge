@@ -69,24 +69,17 @@ class TestDoctorReadiness(unittest.TestCase):
         self.assertTrue(callable(doctor.check_readiness))
         assert callable(doctor.check_readiness)
 
-    def test_readiness_counts_10_runtimes_and_6_providers(self):
-        """Invariant: check_readiness evaluates 10 runtimes and 6 providers (16 checks total)."""
+    def test_readiness_counts_all_registered_runtimes_and_providers(self):
+        """Invariant: check_readiness evaluates all registered runtimes and providers."""
         res = doctor.check_readiness()
         checks = res["checks"]
-        self.assertEqual(len(checks), 16)
-        runtime_names = [
-            "agy", "claude", "codex", "gemini", "compat", "aider",
-            "opencode", "goose", "qwen-code", "anthropic-compat",
-        ]
-        provider_names = [
-            "claude-cli", "agy-claude", "agy-gemini",
-            "anthropic-api", "openai-api", "gemini-api",
-        ]
-        for name in runtime_names:
+        expected_total = len(readiness.runtime_items()) + len(readiness.provider_items())
+        self.assertEqual(len(checks), expected_total)
+        for name in readiness.runtime_items():
             self.assertTrue(any(f" {name}: " in c["message"] for c in checks))
-        for name in provider_names:
+        for name in readiness.provider_items():
             self.assertTrue(any(f" {name}: " in c["message"] for c in checks))
-        assert len(checks) == 16
+        assert len(checks) == expected_total
 
     def test_readiness_output_markers_and_format(self):
         """Invariant: Every line has name, [OK] or [WARN] marker, and detail sentence."""
@@ -177,7 +170,6 @@ class TestDoctorReadiness(unittest.TestCase):
         self.assertIn("✔ [OK] agy: Runtime 'agy' is ready.", proc.stdout)
         self.assertIn("[WARN] claude: Runtime 'claude' is missing setting", proc.stdout)
         self.assertIn("✔ [OK] claude-cli: Provider 'claude-cli' is ready.", proc.stdout)
-        self.assertIn("[WARN] anthropic-compat: Runtime 'anthropic-compat' is missing required setting", proc.stdout)
         assert "== Readiness" in proc.stdout
 
 

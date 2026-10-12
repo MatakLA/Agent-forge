@@ -191,15 +191,6 @@ def check_readiness(status=None):
     """
     section("Readiness")
     start_idx = len(CHECKS)
-    if "anthropic-compat" not in runtimes.RUNTIMES:
-        runtimes.RUNTIMES["anthropic-compat"] = dict(
-            label="Anthropic-compatible server (e.g. LiteLLM, Ollama - Anthropic Messages API)",
-            image=runtimes.AGY_IMAGE,
-            key=None,
-            hosts=[],
-            api=False,
-            endpoint=True,
-        )
     if status is None:
         try:
             st = readiness.all_status()
