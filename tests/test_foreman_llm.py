@@ -614,6 +614,135 @@ class TestForemanLLM(unittest.TestCase):
         self.assertFalse(llm.validate_schema({"a": 1}, 12345))
         assert llm.validate_schema({"a": 1}, "{invalid json") is False
 
+    def test_json_extraction_markdown_fence_plan_schema(self):
+        """Test markdown code fenced JSON extraction for plan schema (OBJECT_SCHEMA)."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+
+        fenced_plan = (
+            "Here is the planned task list:\n```json\n"
+            '{"tasks": [{"id": "0001-setup", "title": "Initial setup"}], "done": false}\n'
+            "```\nAll done."
+        )
+        mock_result = {
+            "text": fenced_plan,
+            "provider": "openai-api",
+            "model": "gpt-4o",
+            "duration_s": 0.3,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+        with mock.patch("providers.call_openai_api", return_value=mock_result):
+            text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "openai-api:gpt-4o")
+        parsed = util.extract_json(text)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.get("tasks", [])), 1)
+        assert len(parsed["tasks"]) == 1
+
+    def test_json_extraction_prose_surrounded_review_schema(self):
+        """Test conversational prose surrounding review schema (REVIEW_SCHEMA)."""
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        prose_review = (
+            "I reviewed the pull request changes in detail.\n"
+            '{"verdict": "approve", "feedback": "All acceptance criteria verified", "lesson": "Keep tests clean"}\n'
+            "Looks ready to merge."
+        )
+        mock_result = {
+            "text": prose_review,
+            "provider": "gemini-api",
+            "model": "gemini-1.5-pro",
+            "duration_s": 0.25,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+        with mock.patch("providers.call_gemini_api", return_value=mock_result):
+            text, who = llm.llm("review", "Review diff")
+
+        self.assertEqual(who, "gemini-api:gemini-1.5-pro")
+        parsed = util.extract_json(text)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.get("verdict"), "approve")
+        assert parsed["verdict"] == "approve"
+
+    def test_dispatch_openai_default_api_base(self):
+        """Test openai-api passes default api_base when OPENAI_API_BASE is not configured."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C.pop("OPENAI_API_BASE", None)
+
+        mock_result = {
+            "text": '{"tasks": []}',
+            "provider": "openai-api",
+            "model": "gpt-4o",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+        with mock.patch("providers.call_openai_api", return_value=mock_result) as mock_call:
+            text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "openai-api:gpt-4o")
+        self.assertTrue(mock_call.called)
+        call_kwargs = mock_call.call_args.kwargs
+        self.assertEqual(call_kwargs.get("api_base"), "https://api.openai.com/v1")
+        assert who == "openai-api:gpt-4o"
+
+    def test_provider_multi_step_fallback_chain(self):
+        """Test multi-step fallback through 3 providers: openai error -> gemini error -> anthropic success."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api, gemini-api, anthropic-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+        ctx.C["ANTHROPIC_MODEL"] = "claude-3-5-sonnet"
+
+        anthropic_ok = {
+            "text": '{"tasks": [], "done": true}',
+            "provider": "anthropic-api",
+            "model": "claude-3-5-sonnet",
+            "duration_s": 0.3,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+        with mock.patch("providers.call_openai_api", side_effect=OSError("Network down")):
+            with mock.patch("providers.call_gemini_api", return_value={"text": "", "is_error": True, "error": "rate limit"}):
+                with mock.patch("providers.call_anthropic_api", return_value=anthropic_ok) as mock_anthropic:
+                    text, who = llm.llm("plan", "Plan goal")
+
+        self.assertEqual(who, "anthropic-api:claude-3-5-sonnet")
+        self.assertTrue(mock_anthropic.called)
+        assert who == "anthropic-api:claude-3-5-sonnet"
+
+    def test_providers_for_other_decision_kinds(self):
+        """Test non-review decision kinds (ask, check, roadmap) resolve from PLAN_PROVIDERS."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+
+        provs_ask = llm.providers_for("ask")
+        provs_check = llm.providers_for("check")
+        provs_roadmap = llm.providers_for("roadmap")
+
+        self.assertEqual(provs_ask, ["openai-api"])
+        self.assertEqual(provs_check, ["openai-api"])
+        self.assertEqual(provs_roadmap, ["openai-api"])
+        assert provs_ask == ["openai-api"]
+
+    def test_parse_and_validate_edge_cases(self):
+        """Test parse_and_validate with None, empty strings, and whitespace."""
+        self.assertIsNone(llm.parse_and_validate(None, llm.OBJECT_SCHEMA))
+        self.assertIsNone(llm.parse_and_validate("", llm.OBJECT_SCHEMA))
+        self.assertIsNone(llm.parse_and_validate("   ", llm.OBJECT_SCHEMA))
+        self.assertIsNone(llm.parse_and_validate(None, None))
+        self.assertIsNone(llm.parse_and_validate("   ", None))
+        self.assertEqual(llm.parse_and_validate("plain text response", None), "plain text response")
+        assert llm.parse_and_validate(None, llm.OBJECT_SCHEMA) is None
+
 
 if __name__ == "__main__":
     unittest.main()
