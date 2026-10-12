@@ -297,6 +297,7 @@ def _selftest():
     check("consecutive_failures: skips killswitch/token-cap/quota, ignores other projects, stops at ok",
           sbx.consecutive_failures(L, "") == 2 and sbx.consecutive_failures(L + [dict(reason="ok", project="")], "") == 0
           and sbx.consecutive_failures(L, "other") == 1)
+    assert sbx.no_nul("a\x00b") == "a\\x00b" and sbx.no_nul("plain") == "plain"
     # notifications payloads
     b, h = sbx.notify_payload("ntfy", "goal_done", "Cieľ hotový", "text")
     b2, _ = sbx.notify_payload("slack", "goal_done", "T", "m")
