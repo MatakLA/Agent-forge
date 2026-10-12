@@ -11,6 +11,7 @@ import sbx  # noqa: E402
 import runtimes  # noqa: E402
 import providers  # noqa: E402
 import egress  # noqa: E402
+from foreman import readiness  # noqa: E402
 
 QUICK = False
 JSON = False
@@ -32,8 +33,10 @@ def ok(msg):
     say(f"  ✔ {msg}")
 
 
-def warn(msg, fix="", fix_id=""):
-    WARN.append(msg); CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
+def warn(msg, fix="", fix_id="", optional=False):
+    if not optional:
+        WARN.append(msg)
+    CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
     say(f"  ! {msg}" + (f"\n      → {fix}" if fix else ""))
 
 
@@ -171,6 +174,56 @@ def check_orchestrator_providers(conf=None):
 
         if not has_g_model_err and not has_g_key_err:
             ok(f"[OK] gemini-api: model '{g_model}'")
+
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_readiness(status=None):
+    """Check readiness for all worker runtimes and orchestrator providers.
+
+    Queries bin/lib/foreman/readiness.all_status() (or status override).
+    Emits one line per runtime and per provider with OK/WARN marker and detail.
+    Missing settings or egress entries on optional runtimes are reported as
+    warnings (optional=True) so doctor exits 0 unless a hard error occurs.
+    """
+    section("Readiness")
+    start_idx = len(CHECKS)
+    if "anthropic-compat" not in runtimes.RUNTIMES:
+        runtimes.RUNTIMES["anthropic-compat"] = dict(
+            label="Anthropic-compatible server (e.g. LiteLLM, Ollama - Anthropic Messages API)",
+            image=runtimes.AGY_IMAGE,
+            key=None,
+            hosts=[],
+            api=False,
+            endpoint=True,
+        )
+    if status is None:
+        try:
+            st = readiness.all_status()
+        except Exception as e:
+            warn(f"[WARN] readiness: could not determine readiness ({e})", optional=True)
+            st = {"runtimes": {}, "providers": {}}
+    else:
+        st = status
+
+    for name, info in (st.get("runtimes") or {}).items():
+        state = info.get("state", "ok") if isinstance(info, dict) else "ok"
+        detail = info.get("detail", "") if isinstance(info, dict) else str(info)
+        if state == "ok":
+            ok(f"[OK] {name}: {detail}")
+        else:
+            warn(f"[WARN] {name}: {detail}", optional=True)
+
+    for name, info in (st.get("providers") or {}).items():
+        state = info.get("state", "ok") if isinstance(info, dict) else "ok"
+        detail = info.get("detail", "") if isinstance(info, dict) else str(info)
+        if state == "ok":
+            ok(f"[OK] {name}: {detail}")
+        else:
+            warn(f"[WARN] {name}: {detail}", optional=True)
 
     new_checks = CHECKS[start_idx:]
     return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
@@ -394,6 +447,8 @@ def main():
                     bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")
     if lim and running > lim["MAX_PARALLEL"]:
         warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
+
+    check_readiness()
 
     section("Foreman")
     fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
