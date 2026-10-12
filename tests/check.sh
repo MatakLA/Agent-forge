@@ -87,6 +87,9 @@ fi
 if [ -f tests/test_runtime_anthropic_compat.py ]; then
   $PY tests/test_runtime_anthropic_compat.py || exit 1
 fi
+if [ -f tests/test_orphan_warning_ui.py ]; then
+  $PY tests/test_orphan_warning_ui.py || exit 1
+fi
 echo "check: ALL OK"
 
 

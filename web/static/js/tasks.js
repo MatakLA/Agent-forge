@@ -1,6 +1,8 @@
 // Tasks tab: the board and the project-wide dependency graph (with the critical path); a task's sheet: what it is, what it
 // cost, its runs (each one can be replayed), and only the actions that make sense in its state.
 
+const orphanBadge = t => t && t.orphan_warning ? '<span class="badge warn" title="crashing repeatedly">crashing repeatedly - ' + esc(t.orphan_streak) + '/' + esc(t.orphan_limit || ((S && S.values && S.values.ORPHAN_LIMIT) || 5)) + ' consecutive orphan recoveries</span>' : '';
+
 // ---- board
 function boardHtml() {
   const ts = F.tasks || [];
@@ -22,7 +24,8 @@ function boardHtml() {
       const deps = (t.depends_on || []).filter(d => !ts.find(x => x.id === d && x.status === 'done'));
       return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
         '<div class="id">' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
-        (t.pin_worker ? ' <span class="badge" title="assigned by you">→ ' + esc(t.pin_worker) + '</span>' : '') + '</div><div class="t">' + esc(t.title) + '</div><div class="m">' +
+        (t.pin_worker ? ' <span class="badge" title="assigned by you">→ ' + esc(t.pin_worker) + '</span>' : '') +
+        (t.orphan_warning ? ' ' + orphanBadge(t) : '') + '</div><div class="t">' + esc(t.title) + '</div><div class="m">' +
         roleTag(t.role) + (t.worker && k !== 'wait' ? '<span>' + esc(t.worker) + '</span>' : '') +
         (t.attempts ? '<span class="warn">attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + '</span>' : '') +
         (t.pr ? '<span>PR #' + esc(t.pr) + '</span>' : '') + (deps.length && k === 'wait' ? '<span>waits for ' + deps.map(esc).join(', ') + '</span>' : '') +
@@ -150,6 +153,7 @@ function renderTaskSheet() {
   const est = (d && d.estimate) || t.estimate;
   const subMeta = [esc(id), roleTag(t.role || ''), chip(t.status), t.worker ? esc(t.worker) : '',
       t.runtime && t.runtime !== 'agy' ? esc(RTNAME[t.runtime] || t.runtime) : '', prLink, t.risk === 'risky' ? '<span class="badge warn">risky</span>' : '',
+      orphanBadge(t),
       t.pin_worker ? '<span class="badge">→ ' + esc(t.pin_worker) + '</span>' : '', t.model_override ? '<span class="badge">model ' + esc(t.model_override) + '</span>' : '',
       'attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4),
       t.created ? 'created ' + esc(dfmt(t.created)) : '', t.finished ? 'finished ' + esc(dfmt(t.finished)) : ''].filter(Boolean).join(' · ');
