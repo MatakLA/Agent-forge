@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Qwen Code runtime: support Alibaba Qwen Code CLI (`qwen-code`) with non-interactive stream-json execution and DashScope egress allowlist.
 - Add examples/sample-project/: public example project pairing vision.md, project.conf, seed-repo/, and README.md
 - Add docs/CHOOSING-AN-AI.md: honest comparison of all supported runtimes and providers
 - Add docs/DEMO.md: Docker-only demo mode design and user guide
