@@ -221,6 +221,11 @@ def notify_payload(fmt, event, title, message):
         {"Content-Type": "application/json"}
 
 
+def no_nul(text):
+    """A NUL cannot be part of an argv; test output that quotes a hostile payload reaches the next attempt's prompt, so it is spelled out."""
+    return str(text).replace("\x00", "\\x00")
+
+
 def notify_outbox_path():
     return os.path.join(RUNS, "notify-outbox.jsonl")
 
