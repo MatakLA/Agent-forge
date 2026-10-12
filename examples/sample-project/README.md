@@ -7,16 +7,12 @@ This directory (`examples/sample-project/`) contains a tiny, runnable example pr
 The sample project pairs three files that represent a complete, miniature Agent-Forge setup:
 
 - `seed-repo/`: A clean starting repository containing `bookmarks`, an executable Python 3 CLI tool that uses only the standard library. The tool already implements `add` and `list` subcommands, persisting bookmark entries to a JSON file. It includes a passing offline test suite in `seed-repo/tests/`. You can inspect and run the tests locally with `python3 -m unittest discover -s tests` inside `seed-repo/`. The seed repository deliberately lacks a search command.
-- `vision.md`: A product vision document following the standard format described in [docs/vision.example.md](../../docs/vision.example.md). It outlines the purpose of `bookmarks`, its architectural constraints (standard library only, no external dependencies), and the target goal: adding a `search <tag>` subcommand with test coverage.
+- `vision.md`: A product vision document following the standard format described in [docs/vision.example.md](../../docs/vision.example.md). It outlines the purpose of `bookmarks`, its architectural constraints (standard library only, no external dependencies), and the target goal: adding a `bookmarks search <tag>` subcommand with test coverage.
 - `project.conf`: A project configuration file that sets the test runner command (`TEST_CMD=python3 -m unittest discover -s tests`), gate container image, and language settings.
 
 ## Prerequisites
 
-Before trying this example end to end, make sure you have:
-
-1. A running Agent-Forge deployment with Docker, the internal Forgejo Git server, and at least one configured worker container. For initial installation and VM setup instructions, refer to [docs/SETUP.md](../../docs/SETUP.md).
-2. Shell access to the Agent-Forge host machine.
-3. Access to the web dashboard (`http://127.0.0.1:8171`).
+Before trying this example end to end, ensure you have a running Agent-Forge deployment with at least one active worker container. Refer to [docs/SETUP.md](../../docs/SETUP.md) for initial host setup and installation instructions.
 
 ## How to try it end to end
 
@@ -33,84 +29,34 @@ python3 -m unittest discover -s tests
 
 The test runner discovers and passes all existing tests, verifying that `add` and `list` function correctly and confirming that `search` does not exist yet. Return to the repository root when finished.
 
-### 2. Initialize a fresh Agent-Forge project
+### 2. Point a fresh Agent-Forge project at seed-repo
 
-Create a new project named `bookmarks` targeting a repository path (for example, `sandbox/bookmarks` on Forgejo):
+Set up a fresh Agent-Forge project and point its repository at a copy of `seed-repo/`. For the exact project initialization, repository setup, and worker pool steps, refer to [docs/SETUP.md](../../docs/SETUP.md).
 
-```bash
-bin/foreman init-project bookmarks --repo sandbox/bookmarks
-```
+### 3. Copy project configuration and vision
 
-You can also create the project from the web dashboard by navigating to the project picker and clicking **+ New project**. For detailed multi-project configuration options, refer to [docs/SETUP.md](../../docs/SETUP.md).
-
-### 3. Bootstrap the repository and push the seed files
-
-Bootstrap the target repository on Forgejo to establish permissions and branch protection on `main`:
+Copy `vision.md` and `project.conf` into your project's configuration directory:
 
 ```bash
-FORGE_REPO=sandbox/bookmarks scripts/forge-bootstrap
+cp examples/sample-project/project.conf <project-dir>/project.conf
+cp examples/sample-project/vision.md <project-dir>/vision.md
 ```
 
-Next, initialize a Git repository from a copy of `seed-repo/` and push its files to `main`:
+`project.conf` sets `TEST_CMD=python3 -m unittest discover -s tests`, instructing the gate container how to run the project's test suite without external dependencies. `vision.md` defines the roadmap and constraints following the format described in [docs/vision.example.md](../../docs/vision.example.md).
 
-```bash
-TEMP_DIR=$(mktemp -d)
-cp -r examples/sample-project/seed-repo/. "$TEMP_DIR"
-cd "$TEMP_DIR"
-git init -b main
-git config user.name "Setup"
-git config user.email "setup@example.com"
-git add -A
-git commit -m "Initial commit of bookmarks seed repository"
-git remote add origin http://127.0.0.1:3000/sandbox/bookmarks.git
-git push -u origin main --force
-rm -rf "$TEMP_DIR"
+### 4. Ensure the foreman service is active
+
+Verify or start the foreman service for your project as documented in [docs/SETUP.md](../../docs/SETUP.md).
+
+### 5. Run the goal
+
+Run the goal written in `vision.md` through the web dashboard or CLI (see [docs/SETUP.md](../../docs/SETUP.md) for submitting goals):
+
+```text
+Add a bookmarks search <tag> command that lists only the bookmarks having that tag, with a test that fails without it.
 ```
 
-If you are using an upstream GitHub or GitLab repository instead of Forgejo, push `seed-repo/` to your upstream repository as described in [docs/UPSTREAM.md](../../docs/UPSTREAM.md).
-
-### 4. Copy project configuration and vision
-
-Copy `project.conf` and `vision.md` into the new project's configuration directory under `projects/bookmarks/`:
-
-```bash
-cp examples/sample-project/project.conf projects/bookmarks/project.conf
-cp examples/sample-project/vision.md projects/bookmarks/vision.md
-```
-
-`project.conf` instructs the gate container to use `python3 -m unittest discover -s tests` as its `TEST_CMD`, ensuring automated checks run without external package installations.
-
-### 5. Start the project foreman service
-
-If running multi-project systemd services, install and start the foreman service for `bookmarks`:
-
-```bash
-sudo scripts/install-services --project bookmarks
-```
-
-Alternatively, run the foreman directly in your terminal:
-
-```bash
-bin/foreman --project bookmarks
-```
-
-### 6. Queue the goal
-
-Queue the goal specified in `vision.md` through the web dashboard (select `bookmarks` in the project picker, go to **Overview**, and click **New goal**) or via the command line:
-
-```bash
-bin/foreman --project bookmarks goal "Add a bookmarks search <tag> command that lists only the bookmarks having that tag, with a test that fails without it."
-```
-
-### 7. Watch the cycle run
-
-Monitor the goal progress in the dashboard or via the CLI:
-
-- **Dashboard:** The **Overview** tab displays goal progress; the **Tasks** tab renders the task board and dependency graph; the **Live** tab streams worker output in real time; and the goal details page lists acceptance criteria and review status.
-- **CLI:** Check active status at any time:
-  ```bash
-  bin/foreman --project bookmarks status
-  ```
+Watch the foreman plan, dispatch, gate, and merge the goal in real time through the dashboard or via `bin/foreman status`.
 
 ## What to expect
 
@@ -125,11 +71,8 @@ This mirrors exactly what a real production goal looks like in Agent-Forge, scal
 
 ## What to do when it fails
 
-If execution stops or an issue occurs, check the following:
+If execution stops or an unexpected result occurs, check the following:
 
-- **Worker stays idle:** Run `bin/foreman --project bookmarks status` to see why the task is pending. Check `bin/killswitch status` to ensure the safety kill switch is off, and verify worker quota or container health with `bin/doctor`.
-- **Gate test failure:** If a worker produces code that fails tests, the gate rejects the branch and returns the failure output to the worker for automatic rework. Inspect the task sheet and test output in the dashboard **Tasks** tab.
-- **Service or repository errors:** Confirm Forgejo is responding on port 3000 and the project's foreman service is active:
-  ```bash
-  systemctl status agent-forge-foreman@bookmarks.service
-  ```
+- **Worker stays idle:** Check `bin/foreman status` and `bin/killswitch status` to see why tasks are pending or if the kill switch is engaged. Refer to the common problems guide in [docs/SETUP.md](../../docs/SETUP.md) to inspect worker quotas and container states.
+- **Gate test failure:** If a worker's change fails the test suite, the gate rejects the branch and returns failure output to the worker for automatic rework. You can review test feedback in the dashboard task sheet.
+- **Service or environment issues:** Run `bin/doctor` to verify component health across tools, configuration, and worker containers. Consult [docs/SETUP.md](../../docs/SETUP.md) for diagnostics and fixes.
