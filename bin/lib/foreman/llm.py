@@ -1,5 +1,11 @@
 """The orchestrator's LLM calls. Every call is a fresh, tool-less session; providers are tried in the configured order
-(Claude Code, Claude/Gemini via Antigravity, paid APIs) and one out of quota is retried after its reset."""
+(Claude Code, Claude/Gemini via Antigravity, paid APIs: OpenAI-compatible, Gemini API, Anthropic API).
+Public interface: llm(kind, prompt, subject=""), providers_for(kind), llm_available(), log_llm().
+Invariants:
+- providers_for resolves configured providers by decision kind with fallback to ORCHESTRATOR_PROVIDER.
+- llm validates JSON responses against schemas (REVIEW_SCHEMA, OBJECT_SCHEMA), extracting JSON from code fences and prose.
+- Provider errors or credential failures cascade to the next provider, raising Unavailable only on total exhaustion.
+"""
 import json, os, threading, time
 
 import sbx
@@ -17,8 +23,17 @@ class Unavailable(Exception):
 
 
 def providers_for(kind):
-    order = ctx.C["REVIEW_PROVIDERS"] if kind == "review" else ctx.C["PLAN_PROVIDERS"]
-    return [p.strip() for p in str(order).split(",") if p.strip()]
+    if kind == "review":
+        order = ctx.C.get("REVIEW_PROVIDERS")
+    else:
+        order = ctx.C.get("PLAN_PROVIDERS")
+    if not order:
+        order = ctx.C.get("ORCHESTRATOR_PROVIDER") or os.environ.get("ORCHESTRATOR_PROVIDER", "")
+    if isinstance(order, (list, tuple)):
+        raw = order
+    else:
+        raw = str(order or "").split(",")
+    return [p.strip() for p in raw if p.strip()]
 
 
 def llm_available():
@@ -73,7 +88,7 @@ def _via_agy(kind, prompt, family):
             RESERVED.add(w)
         LAST_LLM[w] = time.time()
         try:
-            ok, text, reset_ts, why = _agy(w, prompt, model, REVIEW_SCHEMA if kind == "review" else None if kind == "ask" else OBJECT_SCHEMA)
+            ok, text, reset_ts, why = _agy(w, prompt, model, schema_for(kind))
         finally:
             RESERVED.discard(w)
         if ok:
@@ -120,19 +135,75 @@ def _via_claude_cli(prompt, system):
 
 def _via_paid_api(name, prompt, system):
     import providers
+    model = (
+        ctx.C.get("ANTHROPIC_MODEL") if name == "anthropic-api" else
+        ctx.C.get("OPENAI_MODEL") if name == "openai-api" else
+        ctx.C.get("GEMINI_MODEL") if name == "gemini-api" else ""
+    )
+    if not model:
+        return None, None
+    who = f"{name}:{model}"
+    t0 = time.time()
     try:
-        if name == "anthropic-api" and ctx.C["ANTHROPIC_MODEL"]:
-            r = providers.call_anthropic_api(prompt, model=ctx.C["ANTHROPIC_MODEL"], system=system)
-        elif name == "openai-api" and ctx.C["OPENAI_MODEL"]:
-            r = providers.call_openai_api(prompt, model=ctx.C["OPENAI_MODEL"], api_base=ctx.C["OPENAI_API_BASE"], system=system)
-        elif name == "gemini-api" and ctx.C["GEMINI_MODEL"]:
-            r = providers.call_gemini_api(prompt, model=ctx.C["GEMINI_MODEL"], system=system)
+        if name == "anthropic-api":
+            r = providers.call_anthropic_api(prompt, model=model, system=system)
+        elif name == "openai-api":
+            api_base = ctx.C.get("OPENAI_API_BASE") or "https://api.openai.com/v1"
+            r = providers.call_openai_api(prompt, model=model, system=system, api_base=api_base)
+        elif name == "gemini-api":
+            r = providers.call_gemini_api(prompt, model=model, system=system)
         else:
-            return None
+            return None, None
     except ValueError:          # no key configured
+        return None, None
+    except Exception as e:
+        log_llm(KIND.k, who, 1, time.time() - t0, None, None, str(e)[:300])
+        return None, None
+
+    is_err = r.get("is_error") or not (r.get("text") or "").strip()
+    log_llm(KIND.k, who, 1 if is_err else 0, r.get("duration_s", time.time() - t0), r.get("cost_usd"), r.get("usage"),
+            (r.get("text") or r.get("error") or "")[:300])
+    if is_err:
+        return None, None
+    return r["text"], who
+
+
+def schema_for(kind):
+    if kind == "review":
+        return REVIEW_SCHEMA
+    if kind == "ask":
         return None
-    log_llm(KIND.k, f"{name}:{r.get('model')}", 1 if r["is_error"] else 0, r["duration_s"], None, r.get("usage"), r["text"][:300])
-    return r["text"] if not r["is_error"] and r["text"].strip() else None
+    return OBJECT_SCHEMA
+
+
+def validate_schema(data, schema):
+    """Validates that parsed dict `data` satisfies JSON schema dict/string `schema`."""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(schema, str):
+        schema = json.loads(schema)
+    if schema.get("type") == "object":
+        if not isinstance(data, dict):
+            return False
+    for req in schema.get("required", []):
+        if req not in data:
+            return False
+    props = schema.get("properties", {})
+    if "verdict" in props and "verdict" in data:
+        allowed = props["verdict"].get("enum")
+        if allowed and data["verdict"] not in allowed:
+            return False
+    return True
+
+
+def parse_and_validate(text, schema_str):
+    """Extracts JSON and validates against schema. Returns parsed dict, or text for schemaless, or None if invalid."""
+    if not schema_str:
+        return text if bool(text and text.strip()) else None
+    data = extract_json(text)
+    if data is None or not validate_schema(data, schema_str):
+        return None
+    return data
 
 
 def llm(kind, prompt, subject=""):
@@ -141,21 +212,32 @@ def llm(kind, prompt, subject=""):
     goal id the call is about (logged, for the cost of a task or goal)."""
     KIND.k, KIND.subject = kind, subject
     system = load_system_prompt()
+    schema = schema_for(kind)
     for p in providers_for(kind):
-        if p == "claude-cli":
-            text = _via_claude_cli(prompt, system)
-        elif p == "agy-claude":
-            text = _via_agy(kind, system + "\n\n" + prompt, "claude")
-        elif p == "agy-gemini":
-            text = _via_agy(kind, system + "\n\n" + prompt, "gemini")
-        else:
-            text = _via_paid_api(p, prompt, system)
-        if text:
-            return text, p
+        text, who = None, p
+        try:
+            if p == "claude-cli":
+                text = _via_claude_cli(prompt, system)
+                who = "claude-cli"
+            elif p == "agy-claude":
+                text = _via_agy(kind, system + "\n\n" + prompt, "claude")
+                who = "agy-claude"
+            elif p == "agy-gemini":
+                text = _via_agy(kind, system + "\n\n" + prompt, "gemini")
+                who = "agy-gemini"
+            else:
+                text, who = _via_paid_api(p, prompt, system)
+        except Unavailable:
+            continue
+        except Exception:
+            continue
+        if text and parse_and_validate(text, schema) is not None:
+            return text, who
     raise Unavailable(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})")
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
+    os.makedirs(ctx.FD, exist_ok=True)
     with open(os.path.join(ctx.FD, "llm.jsonl"), "a") as f:
         f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc, secs=round(secs, 1), cost_usd=cost, usage=usage, head=head,
                                 subject=KIND.subject or None), ensure_ascii=False) + "\n")
