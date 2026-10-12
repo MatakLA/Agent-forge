@@ -21,7 +21,7 @@ os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 from foreman import ctx
-from foreman.settings import EDITABLE, settings_apply, write_conf
+from foreman.settings import EDITABLE, settings_apply, settings_get, write_conf
 
 
 class TestForemanSettings(unittest.TestCase):
@@ -165,7 +165,84 @@ class TestForemanSettings(unittest.TestCase):
 
         self.assertIn("restart", help_map["FORGE_URL"].lower())
         self.assertIn("restart", help_map["FORGE_REPO"].lower())
-        assert len(help_map) >= len(EDITABLE)
+        self.assertIn("ORPHAN_LIMIT", help_map)
+        self.assertIn("ORPHAN_WARN", help_map)
+        self.assertIn("before the task is blocked", help_map["ORPHAN_LIMIT"])
+        self.assertIn("before a warning", help_map["ORPHAN_WARN"])
+        assert len(help_map) >= len(EDITABLE) and "before the task is blocked" in help_map["ORPHAN_LIMIT"] and "before a warning" in help_map["ORPHAN_WARN"]
+
+    def test_orphan_settings_help_text(self):
+        """help_map contains non-empty, correctly-phrased help text for ORPHAN_LIMIT and ORPHAN_WARN."""
+        import re
+        js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
+        js = open(js_path).read()
+
+        help_match = re.search(r"const HELP = \{(.*?)\};", js, re.DOTALL)
+        self.assertIsNotNone(help_match)
+        help_map = dict(re.findall(r"([A-Z0-9_]+):\s*\x27((?:[^\x27\\]|\\.)*)\x27", help_match.group(1)))
+
+        self.assertIn("ORPHAN_LIMIT", help_map)
+        self.assertIn("ORPHAN_WARN", help_map)
+        self.assertTrue(len(help_map["ORPHAN_LIMIT"]) > 0)
+        self.assertTrue(len(help_map["ORPHAN_WARN"]) > 0)
+        self.assertIn("before the task is blocked", help_map["ORPHAN_LIMIT"])
+        self.assertIn("before a warning", help_map["ORPHAN_WARN"])
+        self.assertTrue("consecutive" in help_map["ORPHAN_LIMIT"].lower() and "orphan" in help_map["ORPHAN_LIMIT"].lower())
+        self.assertTrue("consecutive" in help_map["ORPHAN_WARN"].lower() and "orphan" in help_map["ORPHAN_WARN"].lower())
+        assert "before the task is blocked" in help_map["ORPHAN_LIMIT"] and "before a warning" in help_map["ORPHAN_WARN"]
+
+    def test_orphan_settings_get_defaults_and_scopes(self):
+        """settings_get exposes ORPHAN_LIMIT and ORPHAN_WARN with default values 5 and 3 in project scope."""
+        res = settings_get()
+        self.assertIn("ORPHAN_LIMIT", res["scopes"])
+        self.assertIn("ORPHAN_WARN", res["scopes"])
+        self.assertEqual(res["scopes"]["ORPHAN_LIMIT"], "project")
+        self.assertEqual(res["scopes"]["ORPHAN_WARN"], "project")
+        self.assertEqual(res["values"]["ORPHAN_LIMIT"], 5)
+        self.assertEqual(res["values"]["ORPHAN_WARN"], 3)
+        assert res["scopes"]["ORPHAN_LIMIT"] == "project" and res["values"]["ORPHAN_LIMIT"] == 5
+
+    def test_orphan_settings_apply_valid_and_persistence(self):
+        """settings_apply accepts valid integers for ORPHAN_LIMIT and ORPHAN_WARN and writes them to project config."""
+        errs = settings_apply({"ORPHAN_LIMIT": "5", "ORPHAN_WARN": "3"})
+        self.assertEqual(errs, {})
+        foreman_content = open(self.foreman_conf).read()
+        self.assertIn("ORPHAN_LIMIT=5", foreman_content)
+        self.assertIn("ORPHAN_WARN=3", foreman_content)
+        limits_content = open(self.limits_conf).read()
+        self.assertNotIn("ORPHAN_LIMIT", limits_content)
+        self.assertNotIn("ORPHAN_WARN", limits_content)
+
+        # boundary tests: 1 and 100
+        errs_bounds = settings_apply({"ORPHAN_LIMIT": "1", "ORPHAN_WARN": "100"})
+        self.assertEqual(errs_bounds, {})
+        foreman_content = open(self.foreman_conf).read()
+        self.assertIn("ORPHAN_LIMIT=1", foreman_content)
+        self.assertIn("ORPHAN_WARN=100", foreman_content)
+        assert "ORPHAN_LIMIT=1" in foreman_content and "ORPHAN_WARN=100" in foreman_content
+
+    def test_orphan_settings_apply_rejects_invalid_values(self):
+        """settings_apply rejects non-integer and out-of-range values for ORPHAN_LIMIT and ORPHAN_WARN."""
+        # non-integers
+        for bad in ["abc", "-1", "3.5", "", " 0x10 "]:
+            errs = settings_apply({"ORPHAN_LIMIT": bad, "ORPHAN_WARN": bad})
+            self.assertEqual(errs.get("ORPHAN_LIMIT"), "number 1-100", f"failed to reject {bad!r} for ORPHAN_LIMIT")
+            self.assertEqual(errs.get("ORPHAN_WARN"), "number 1-100", f"failed to reject {bad!r} for ORPHAN_WARN")
+
+        # out-of-range boundaries (0 and 101)
+        errs_zero = settings_apply({"ORPHAN_LIMIT": "0", "ORPHAN_WARN": "0"})
+        self.assertEqual(errs_zero.get("ORPHAN_LIMIT"), "number 1-100")
+        self.assertEqual(errs_zero.get("ORPHAN_WARN"), "number 1-100")
+
+        errs_high = settings_apply({"ORPHAN_LIMIT": "101", "ORPHAN_WARN": "101"})
+        self.assertEqual(errs_high.get("ORPHAN_LIMIT"), "number 1-100")
+        self.assertEqual(errs_high.get("ORPHAN_WARN"), "number 1-100")
+
+        foreman_content = open(self.foreman_conf).read()
+        self.assertNotIn("ORPHAN_LIMIT=0", foreman_content)
+        self.assertNotIn("ORPHAN_LIMIT=101", foreman_content)
+        assert errs_zero["ORPHAN_LIMIT"] == "number 1-100" and errs_high["ORPHAN_LIMIT"] == "number 1-100"
+
 
 
 if __name__ == "__main__":

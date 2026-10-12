@@ -69,7 +69,11 @@ EDITABLE = {
     "SHARED_FILES": (r"|(?!/)(?!.*\.\.)[A-Za-z0-9._~/-]+(,(?!/)(?!.*\.\.)[A-Za-z0-9._~/-]+)*", "project"),
     "VISION_FILE": (r"(?!.*\.\.)[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
     "PROJECT_DIR": (r"|(?!.*\.\.)[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
+    "ORPHAN_LIMIT": ((1, 100), "project"),  # consecutive orphan recoveries before the task is blocked
+    "ORPHAN_WARN": ((1, 100), "project"),   # consecutive orphan recoveries before a warning
 }
+
+CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3}
 
 
 def conf_path(scope):
@@ -172,7 +176,7 @@ def mask_log_value(k, v):
 
 def settings_get():
     lim = sbx.load_limits()
-    vals = {k: (int(lim[k]) if isinstance(rule, tuple) and isinstance(lim.get(k), (int, float)) else lim[k]) if sc == "limits" else ctx.C.get(k, "") for k, (rule, sc) in EDITABLE.items()}
+    vals = {k: (int(lim[k]) if isinstance(rule, tuple) and isinstance(lim.get(k), (int, float)) else lim[k]) if sc == "limits" else (ctx.C[k] if k in ctx.C and ctx.C[k] != "" else CONF_DEFAULTS.get(k, "")) for k, (rule, sc) in EDITABLE.items()}
     vals["FORGE_URL"] = sbx.FORGE_URL
     vals["FORGE_REPO"] = sbx.FORGE_REPO
     rc, out, _ = sh(["docker", "ps", "-a", "--format", '{{.Names}} {{.State}} {{.Label "agent-forge.runtime"}}'], timeout=30)
