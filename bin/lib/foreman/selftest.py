@@ -553,4 +553,81 @@ def test_owner_and_insights(check):
           and doc_path("role:tester", write=True).startswith(ctx.CFG_DIR))
 
 
-GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights]
+def test_orphan_recovery(check):
+    """Orphan loop detection: 5 consecutive no-progress orphan recoveries block the task, progress resets streak, and startup grace exempts."""
+    import shutil, tempfile
+    from . import loop, store
+    from .loop import recover_orphan
+
+    old_fd, old_runs = ctx.FD, sbx.RUNS
+    old_grace = loop.STARTUP_GRACE_DONE
+    d = tempfile.mkdtemp(prefix="forge-selftest-orphan-")
+    try:
+        ctx.FD = d
+        sbx.RUNS = os.path.join(d, "runs")
+        os.makedirs(os.path.join(d, "tasks"), exist_ok=True)
+        os.makedirs(os.path.join(d, "goals"), exist_ok=True)
+        os.makedirs(sbx.RUNS, exist_ok=True)
+        store.save_goal(dict(id="G1", status="active", text="dummy goal"))
+
+        # (a) 5 consecutive no-progress orphan recoveries after startup grace block the task with reason and log tail
+        loop.STARTUP_GRACE_DONE = True
+        r1 = os.path.join(sbx.RUNS, "20261012T000001Z-w1")
+        os.makedirs(r1, exist_ok=True)
+        with open(os.path.join(r1, "supervisor.log"), "w") as f:
+            f.write("crash line 1\ncrash line 2: fatal error\n")
+        json.dump(dict(task="0121-a", worker="w1"), open(os.path.join(r1, "meta.json"), "w"))
+
+        t1 = dict(id="0121-a", goal="G1", status="running", role="dev", files=["a.py"], history=[], orphan_streak=0)
+        store.save_task(t1)
+        for _ in range(5):
+            t1["status"] = "running"
+            t1["run"] = r1
+            t1["worker"] = "w1"
+            recover_orphan(t1)
+
+        saved1 = store.jload(os.path.join(ctx.FD, "tasks", "0121-a.json"))
+        check("orphan recovery: 5 consecutive no-progress recoveries block task with reason and log tail",
+              saved1.get("status") == "blocked"
+              and saved1.get("orphan_streak") == 5
+              and str(saved1.get("blocked_why", "")).startswith("orphan limit reached: ")
+              and "crash line 2: fatal error" in str(saved1.get("blocked_why", ""))
+              and "crash line 2: fatal error" in str(saved1.get("orphan_log_tail", "")))
+
+        # (b) a progress event (long-duration run) resets orphan_streak to 0
+        r2 = os.path.join(sbx.RUNS, "20261012T000002Z-w1")
+        os.makedirs(r2, exist_ok=True)
+        json.dump(dict(task="0121-b1", worker="w1", duration_s=150), open(os.path.join(r2, "meta.json"), "w"))
+        t2 = dict(id="0121-b1", goal="G1", status="running", role="dev", files=["b1.py"], history=[],
+                  orphan_streak=4, orphan_log_tail="previous crash log", run=r2, worker="w1")
+        store.save_task(t2)
+        recover_orphan(t2)
+        saved2 = store.jload(os.path.join(ctx.FD, "tasks", "0121-b1.json"))
+
+        check("orphan recovery: progress event (long-duration run) resets orphan_streak to 0",
+              saved2.get("status") == "pending"
+              and saved2.get("orphan_streak") == 0
+              and saved2.get("orphan_log_tail") == "")
+
+        # (c) orphans found in the first scan pass after process start (STARTUP_GRACE_DONE still False) do not increment orphan_streak
+        loop.STARTUP_GRACE_DONE = False
+        r4 = os.path.join(sbx.RUNS, "20261012T000004Z-w1")
+        os.makedirs(r4, exist_ok=True)
+        json.dump(dict(task="0121-c", worker="w1"), open(os.path.join(r4, "meta.json"), "w"))
+        t4 = dict(id="0121-c", goal="G1", status="running", role="dev", files=["c.py"], history=[],
+                  orphan_streak=2, orphan_log_tail="tail from earlier", run=r4, worker="w1")
+        store.save_task(t4)
+        recover_orphan(t4)
+        saved4 = store.jload(os.path.join(ctx.FD, "tasks", "0121-c.json"))
+
+        check("orphan recovery: first scan pass with STARTUP_GRACE_DONE False does not increment orphan_streak",
+              saved4.get("status") == "pending"
+              and saved4.get("orphan_streak") == 2)
+    finally:
+        loop.STARTUP_GRACE_DONE = old_grace
+        ctx.FD = old_fd
+        sbx.RUNS = old_runs
+        shutil.rmtree(d, ignore_errors=True)
+
+
+GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights, test_orphan_recovery]
