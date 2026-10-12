@@ -241,15 +241,24 @@ def scan(rt, lines, prices=None):
                     st["tools"] += 1
         st["result"] = ResultStr(last_line) if last_line is not None else None
         return st
+    if lines is None:
+        lines = []
     st = dict(tokens=None if rt == "opencode" else 0, tools=0, conversation_id=None, result=None)
     text = []
     for line in lines:
+        if isinstance(line, bytes):
+            try:
+                line = line.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+        elif not isinstance(line, str):
+            continue
         line = line.strip()
         if not line.startswith("{"):
             continue
         try:
             e = json.loads(line)
-        except ValueError:
+        except Exception:
             continue
         if not isinstance(e, dict):
             continue
@@ -352,13 +361,13 @@ def scan(rt, lines, prices=None):
                                     cost_usd=round(cost, 6) if cost is not None else None)
         elif rt == "opencode":
             t = e.get("type") or e.get("event")
-            sid = e.get("sessionID") or e.get("session_id") or e.get("sessionId") or e.get("conversation_id")
+            sid = e.get("sessionID") or e.get("session_id") or e.get("sessionId") or e.get("session") or e.get("conversation_id")
             if not sid and isinstance(e.get("part"), dict):
-                sid = e["part"].get("sessionID") or e["part"].get("session_id") or e["part"].get("sessionId")
+                sid = e["part"].get("sessionID") or e["part"].get("session_id") or e["part"].get("sessionId") or e["part"].get("session")
             if sid and not st["conversation_id"]:
                 st["conversation_id"] = str(sid)
             part = e.get("part") if isinstance(e.get("part"), dict) else {}
-            if t in ("tool_use", "tool_call", "tool") or part.get("type") in ("tool", "tool_use", "tool_call") or part.get("tool"):
+            if t in ("tool_use", "tool_call", "tool", "tool_invocation") or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation") or part.get("tool"):
                 st["tools"] += 1
             elif t == "text":
                 txt = part.get("text") or e.get("text") or e.get("content") or ""
@@ -370,44 +379,53 @@ def scan(rt, lines, prices=None):
                     txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
                 if txt:
                     text.append(str(txt))
-            u = part.get("tokens") or e.get("tokens") or e.get("usage")
+            u = part.get("tokens") or e.get("tokens") or part.get("usage") or e.get("usage")
             if isinstance(u, dict):
-                if any(k in u for k in ("input", "output", "input_tokens", "output_tokens", "total_tokens")):
-                    inp = u.get("input") or u.get("input_tokens") or 0
-                    out = u.get("output") or u.get("output_tokens") or 0
-                    tot = u.get("total_tokens") or (inp + out)
+                if any(k in u for k in ("input", "output", "input_tokens", "output_tokens", "total_tokens", "total", "prompt_tokens", "completion_tokens")):
+                    inp = u.get("input") or u.get("input_tokens") or u.get("prompt_tokens") or 0
+                    out = u.get("output") or u.get("output_tokens") or u.get("completion_tokens") or 0
+                    tot = u.get("total_tokens") or u.get("total") or (inp + out)
                     st["tokens"] = (st["tokens"] or 0) + max(0, tot)
-            elif isinstance(u, (int, float)) and u > 0:
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
                 st["tokens"] = (st["tokens"] or 0) + int(u)
 
             if t == "step_finish":
+                finish_txt = part.get("text") or e.get("text") or ""
+                if finish_txt:
+                    text.append(str(finish_txt))
                 reason = part.get("reason") or e.get("reason") or ""
-                if reason in ("stop", "end", "completed", "complete") or (not reason and not part.get("type") == "tool"):
-                    ok = not part.get("error") and not e.get("error") and not e.get("is_error")
-                    err = str(part.get("error") or e.get("error") or ("error" if not ok else ""))
+                err_raw = part.get("error") or e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or reason in ("error", "failed", "failure"))
+                if reason in ("error", "failed", "failure"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err_msg or reason,
+                                        usage=u,
+                                        cost_usd=None)
+                elif reason in ("stop", "end", "completed", "complete", "success") or (not reason and not part.get("type") == "tool"):
+                    ok = not has_err
+                    err = "" if ok else (err_msg or "error")
                     st["result"] = dict(status="SUCCESS" if ok else "ERROR",
                                         response="\n".join(text)[-4000:],
                                         error=err,
-                                        usage=part.get("tokens") or e.get("tokens") or e.get("usage"),
-                                        cost_usd=None)
-                elif reason in ("error", "failed"):
-                    st["result"] = dict(status="ERROR",
-                                        response="\n".join(text)[-4000:],
-                                        error=str(part.get("error") or e.get("error") or reason),
-                                        usage=part.get("tokens") or e.get("tokens") or e.get("usage"),
+                                        usage=u,
                                         cost_usd=None)
             elif t == "result":
                 ok = e.get("status") in ("success", "SUCCESS") or e.get("subtype") == "success" or not (e.get("error") or e.get("is_error"))
-                err = str(e.get("error") or ("" if ok else "error"))
+                err_raw = e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                err = "" if ok else (err_msg or "error")
                 res = str(e.get("response") or e.get("result") or "\n".join(text))[-4000:]
                 st["result"] = dict(status="SUCCESS" if ok else "ERROR",
                                     response=res,
                                     error=err,
-                                    usage=e.get("usage") or e.get("tokens"),
+                                    usage=e.get("usage") or e.get("tokens") or u,
                                     cost_usd=None)
-            elif t == "error":
-                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("error") or e.get("message") or "error")
-                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err, usage=None, cost_usd=None)
+            elif t in ("error", "turn.failed", "step_failed"):
+                err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
         elif rt == "qwen-code":
             t = e.get("type") or e.get("event")
             sid = e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("conversation_id")
