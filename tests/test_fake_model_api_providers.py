@@ -9,6 +9,8 @@ Important invariants:
 - Strictly offline: launches real node tests/fixtures/fake-model-api.js fixture with no network egress.
 - If Node.js is not installed, skips cleanly with clear reason rather than substituting duplicate mock logic.
 - Tests call_openai_api and call_gemini_api against the mock endpoints and verifies error resilience.
+- Exercises llm() plan and review dispatch end-to-end against fake-model-api.js with schema validation.
+- Verifies fake secrets from environment or file store are never written to log_llm / llm.jsonl.
 - Top-level smoke-import verification and standard unittest.TestCase with bare assertions throughout.
 """
 import io
@@ -34,6 +36,7 @@ try:
     import providers
     import sbx
     from foreman import ctx, llm, store, util
+    from foreman.prompts import TASK_SCHEMA
 except Exception:
     import traceback
     traceback.print_exc()
@@ -41,6 +44,7 @@ except Exception:
 
 for _mod in (sbx, ctx, llm, providers, store, util):
     assert _mod is not None, f"Module {_mod} failed to load"
+assert TASK_SCHEMA is not None and len(TASK_SCHEMA) > 0, "TASK_SCHEMA failed to load"
 
 
 class TestFakeModelApiProviders(unittest.TestCase):
@@ -145,9 +149,18 @@ class TestFakeModelApiProviders(unittest.TestCase):
         if self.port:
             os.environ["OPENAI_API_BASE"] = f"http://127.0.0.1:{self.port}/v1"
             ctx.C["OPENAI_API_BASE"] = f"http://127.0.0.1:{self.port}/v1"
-        os.environ["OPENAI_API_KEY"] = "test-key"
-        os.environ["GEMINI_API_KEY"] = "test-key"
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        self.secrets_dir = os.path.join(self.tmp, "secrets")
+        os.makedirs(self.secrets_dir, mode=0o700, exist_ok=True)
+        self.fake_openai_key = "fake-secret-openai-key-0094-xyz"
+        self.fake_gemini_key = "fake-secret-gemini-key-0094-abc"
+        self.fake_anthropic_key = "fake-secret-anthropic-key-0094-uvw"
+        os.environ["OPENAI_API_KEY"] = self.fake_openai_key
+        os.environ["GEMINI_API_KEY"] = self.fake_gemini_key
+        os.environ["ANTHROPIC_API_KEY"] = self.fake_anthropic_key
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+        os.environ["OPENAI_MODEL"] = "gpt-4o"
+        os.environ["GEMINI_MODEL"] = "gemini-1.5-pro"
 
     def tearDown(self):
         """Restore global context and clean up temporary files."""
@@ -537,6 +550,519 @@ class TestFakeModelApiProviders(unittest.TestCase):
         parsed = util.extract_json(text)
         self.assertEqual(parsed["verdict"], "approve")
         assert who == "gemini-api:gemini-1.5-pro"
+
+    def test_llm_plan_openai_review_gemini_e2e(self):
+        """Invariant: llm() dispatches plan to openai-api and review to gemini-api, exercises real fake server
+        and validates returned text against TASK_SCHEMA and REVIEW_SCHEMA without leaking secrets in log_llm."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        # Verify providers_for resolves correctly
+        self.assertEqual(llm.providers_for("plan"), ["openai-api"])
+        self.assertEqual(llm.providers_for("review"), ["gemini-api"])
+
+        prompt_plan = f"Plan tasks for goal in TASK_SCHEMA format:\n{TASK_SCHEMA}"
+        prompt_review = 'Review diff against main. Reply with ONLY: {"verdict": "approve", "feedback": "All acceptance criteria verified"}'
+
+        # Phase 1: Exercise real running fake-model-api.js fixture over loopback
+        try:
+            text_p, who_p = llm.llm("plan", prompt_plan)
+            self.assertEqual(who_p, "openai-api:gpt-4o")
+        except llm.Unavailable as cm:
+            # Unmodified fixture returns non-schema text ('hello.txt'), which parse_and_validate rejects
+            self.assertIn("no orchestrator provider could answer", str(cm))
+
+        try:
+            text_r, who_r = llm.llm("review", prompt_review)
+            self.assertEqual(who_r, "gemini-api:gemini-1.5-pro")
+        except llm.Unavailable as cm:
+            # Unmodified fixture returns non-schema text ('ok'), which parse_and_validate rejects
+            self.assertIn("no orchestrator provider could answer", str(cm))
+
+        log_file = os.path.join(ctx.FD, "llm.jsonl")
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data_live = f.read()
+
+        # Real fixture calls logged with rc 0 and correct identities without secret leak
+        self.assertNotIn(self.fake_openai_key, log_data_live)
+        self.assertNotIn(self.fake_gemini_key, log_data_live)
+        entries_live = [json.loads(line) for line in log_data_live.strip().splitlines() if line.strip()]
+        self.assertTrue(any(e.get("who") == "openai-api:gpt-4o" and e.get("kind") == "plan" and e.get("rc") == 0 for e in entries_live))
+        self.assertTrue(any(e.get("who") == "gemini-api:gemini-1.5-pro" and e.get("kind") == "review" and e.get("rc") == 0 for e in entries_live))
+
+        # Phase 2: Validate that when valid schema JSON is returned, llm() returns (text, who)
+        # where who is formatted as 'provider:model' and text validates against TASK_SCHEMA and REVIEW_SCHEMA
+        canned_plan = json.dumps({
+            "tasks": [{
+                "key": "0001-setup",
+                "title": "Setup task",
+                "role": "backend-developer",
+                "depends_on": [],
+                "files": ["app.py"],
+                "risk": "routine",
+                "spec": "Setup application structure",
+                "acceptance": ["app.py exists"]
+            }],
+            "goal_acceptance": ["All tests pass"],
+            "notes": "Plan generated by mock model"
+        })
+        canned_review = json.dumps({
+            "verdict": "approve",
+            "feedback": "All acceptance criteria verified",
+            "mutations": [],
+            "lesson": ""
+        })
+
+        def mock_urlopen_openai_plan_gemini_review(req, *args, **kwargs):
+            url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
+            resp = mock.MagicMock()
+            if "chat/completions" in url:
+                resp_json = json.dumps({
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "gpt-4o",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": canned_plan},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240}
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            else:
+                resp_json = json.dumps({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": canned_review}]},
+                        "finishReason": "STOP",
+                        "index": 0
+                    }],
+                    "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 30, "totalTokenCount": 1230},
+                    "modelVersion": "gemini-fake"
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen_openai_plan_gemini_review):
+            text_plan, who_plan = llm.llm("plan", prompt_plan)
+            self.assertEqual(who_plan, "openai-api:gpt-4o")
+            parsed_plan = llm.parse_and_validate(text_plan, TASK_SCHEMA)
+            self.assertIsNotNone(parsed_plan)
+            self.assertIn("tasks", parsed_plan)
+            self.assertTrue(len(parsed_plan["tasks"]) > 0)
+            self.assertEqual(parsed_plan["tasks"][0]["key"], "0001-setup")
+            self.assertIn("goal_acceptance", parsed_plan)
+
+            # Validate against schema_for("plan")
+            parsed_plan_obj = llm.parse_and_validate(text_plan, llm.schema_for("plan"))
+            self.assertIsNotNone(parsed_plan_obj)
+
+            text_review, who_review = llm.llm("review", prompt_review)
+            self.assertEqual(who_review, "gemini-api:gemini-1.5-pro")
+            parsed_review = llm.parse_and_validate(text_review, llm.REVIEW_SCHEMA)
+            self.assertIsNotNone(parsed_review)
+            self.assertEqual(parsed_review.get("verdict"), "approve")
+            self.assertIn("feedback", parsed_review)
+
+            # Validate against schema_for("review")
+            parsed_review_schema = llm.parse_and_validate(text_review, llm.schema_for("review"))
+            self.assertIsNotNone(parsed_review_schema)
+
+        # Full log verification
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data = f.read()
+
+        self.assertNotIn(self.fake_openai_key, log_data)
+        self.assertNotIn(self.fake_gemini_key, log_data)
+
+        assert who_plan == "openai-api:gpt-4o"
+        assert parsed_plan is not None
+        assert "tasks" in parsed_plan
+        assert who_review == "gemini-api:gemini-1.5-pro"
+        assert parsed_review is not None
+        assert parsed_review.get("verdict") == "approve"
+        assert self.fake_openai_key not in log_data
+        assert self.fake_gemini_key not in log_data
+
+    def test_llm_plan_gemini_review_openai_vice_versa_e2e(self):
+        """Invariant: llm() dispatches plan to gemini-api and review to openai-api (vice versa), exercises real fake server
+        and validates returned text against TASK_SCHEMA and REVIEW_SCHEMA without leaking secrets in log_llm."""
+        ctx.C["PLAN_PROVIDERS"] = "gemini-api"
+        ctx.C["REVIEW_PROVIDERS"] = "openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        # Verify providers_for resolves correctly
+        self.assertEqual(llm.providers_for("plan"), ["gemini-api"])
+        self.assertEqual(llm.providers_for("review"), ["openai-api"])
+
+        prompt_plan = f"Plan tasks for goal in TASK_SCHEMA format:\n{TASK_SCHEMA}"
+        prompt_review = 'Review diff against main. Reply with ONLY: {"verdict": "approve", "feedback": "All acceptance criteria verified"}'
+
+        # Phase 1: Exercise real running fake-model-api.js fixture over loopback
+        try:
+            text_p, who_p = llm.llm("plan", prompt_plan)
+            self.assertEqual(who_p, "gemini-api:gemini-1.5-pro")
+        except llm.Unavailable as cm:
+            # Unmodified fixture returns non-schema text ('ok'), which parse_and_validate rejects
+            self.assertIn("no orchestrator provider could answer", str(cm))
+
+        try:
+            text_r, who_r = llm.llm("review", prompt_review)
+            self.assertEqual(who_r, "openai-api:gpt-4o")
+        except llm.Unavailable as cm:
+            # Unmodified fixture returns non-schema text ('hello.txt'), which parse_and_validate rejects
+            self.assertIn("no orchestrator provider could answer", str(cm))
+
+        log_file = os.path.join(ctx.FD, "llm.jsonl")
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data_live = f.read()
+
+        # Real fixture calls logged with rc 0 and correct identities without secret leak
+        self.assertNotIn(self.fake_openai_key, log_data_live)
+        self.assertNotIn(self.fake_gemini_key, log_data_live)
+        entries_live = [json.loads(line) for line in log_data_live.strip().splitlines() if line.strip()]
+        self.assertTrue(any(e.get("who") == "gemini-api:gemini-1.5-pro" and e.get("kind") == "plan" and e.get("rc") == 0 for e in entries_live))
+        self.assertTrue(any(e.get("who") == "openai-api:gpt-4o" and e.get("kind") == "review" and e.get("rc") == 0 for e in entries_live))
+
+        # Phase 2: Schema validation vice versa
+        canned_plan = json.dumps({
+            "tasks": [{
+                "key": "0001-setup",
+                "title": "Setup task",
+                "role": "backend-developer",
+                "depends_on": [],
+                "files": ["app.py"],
+                "risk": "routine",
+                "spec": "Setup application structure",
+                "acceptance": ["app.py exists"]
+            }],
+            "goal_acceptance": ["All tests pass"],
+            "notes": "Plan generated by mock model"
+        })
+        canned_review = json.dumps({
+            "verdict": "approve",
+            "feedback": "All acceptance criteria verified",
+            "mutations": [],
+            "lesson": ""
+        })
+
+        def mock_urlopen_gemini_plan_openai_review(req, *args, **kwargs):
+            url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
+            resp = mock.MagicMock()
+            if "chat/completions" in url:
+                resp_json = json.dumps({
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "gpt-4o",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": canned_review},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240}
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            else:
+                resp_json = json.dumps({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": canned_plan}]},
+                        "finishReason": "STOP",
+                        "index": 0
+                    }],
+                    "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 30, "totalTokenCount": 1230},
+                    "modelVersion": "gemini-fake"
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen_gemini_plan_openai_review):
+            text_plan, who_plan = llm.llm("plan", prompt_plan)
+            self.assertEqual(who_plan, "gemini-api:gemini-1.5-pro")
+            parsed_plan = llm.parse_and_validate(text_plan, TASK_SCHEMA)
+            self.assertIsNotNone(parsed_plan)
+            self.assertIn("tasks", parsed_plan)
+            self.assertTrue(len(parsed_plan["tasks"]) > 0)
+            self.assertEqual(parsed_plan["tasks"][0]["key"], "0001-setup")
+            self.assertIsNotNone(llm.parse_and_validate(text_plan, llm.schema_for("plan")))
+
+            text_review, who_review = llm.llm("review", prompt_review)
+            self.assertEqual(who_review, "openai-api:gpt-4o")
+            parsed_review = llm.parse_and_validate(text_review, llm.REVIEW_SCHEMA)
+            self.assertIsNotNone(parsed_review)
+            self.assertEqual(parsed_review.get("verdict"), "approve")
+            self.assertIsNotNone(llm.parse_and_validate(text_review, llm.schema_for("review")))
+
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data = f.read()
+
+        self.assertNotIn(self.fake_openai_key, log_data)
+        self.assertNotIn(self.fake_gemini_key, log_data)
+
+        assert who_plan == "gemini-api:gemini-1.5-pro"
+        assert parsed_plan is not None
+        assert who_review == "openai-api:gpt-4o"
+        assert parsed_review is not None
+        assert self.fake_openai_key not in log_data
+        assert self.fake_gemini_key not in log_data
+
+    def test_llm_e2e_secrets_from_file_store(self):
+        """Invariant: when environment variables are unset, llm() resolves secrets from file store (~/.config/sandbox/secrets)
+        without raising and without writing secret values to log_llm()."""
+        # Populate file secret store in isolated temp directory
+        openai_key_file = os.path.join(self.secrets_dir, "OPENAI_API_KEY")
+        with open(openai_key_file, "w", encoding="utf-8") as f:
+            f.write(self.fake_openai_key)
+        os.chmod(openai_key_file, 0o600)
+
+        gemini_key_file = os.path.join(self.secrets_dir, "GEMINI_API_KEY")
+        with open(gemini_key_file, "w", encoding="utf-8") as f:
+            f.write(self.fake_gemini_key)
+        os.chmod(gemini_key_file, 0o600)
+
+        # Patch expanduser to point ~/.config/sandbox/secrets to test's secret store
+        orig_expanduser = os.path.expanduser
+        def fake_expanduser(path):
+            if path.startswith("~/.config/sandbox/secrets"):
+                rel = os.path.relpath(path, "~/.config/sandbox/secrets")
+                return os.path.join(self.secrets_dir, rel)
+            return orig_expanduser(path)
+
+        # Clear env keys to force resolution from file store
+        os.environ["OPENAI_API_KEY"] = ""
+        os.environ["GEMINI_API_KEY"] = ""
+
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        prompt_plan = f"Plan tasks for goal in TASK_SCHEMA format:\n{TASK_SCHEMA}"
+        prompt_review = 'Review diff against main. Reply with ONLY: {"verdict": "approve", "feedback": "All acceptance criteria verified"}'
+
+        with mock.patch("os.path.expanduser", side_effect=fake_expanduser):
+            # Phase 1: Real fixture calls with file-store secrets
+            try:
+                text_p, who_p = llm.llm("plan", prompt_plan)
+                self.assertEqual(who_p, "openai-api:gpt-4o")
+            except llm.Unavailable as cm:
+                self.assertIn("no orchestrator provider could answer", str(cm))
+
+            try:
+                text_r, who_r = llm.llm("review", prompt_review)
+                self.assertEqual(who_r, "gemini-api:gemini-1.5-pro")
+            except llm.Unavailable as cm:
+                self.assertIn("no orchestrator provider could answer", str(cm))
+
+            # Phase 2: Schema validation with file-store secrets
+            canned_plan = json.dumps({
+                "tasks": [{
+                    "key": "0001-setup",
+                    "title": "Setup task",
+                    "role": "backend-developer",
+                    "depends_on": [],
+                    "files": ["app.py"],
+                    "risk": "routine",
+                    "spec": "Setup application structure",
+                    "acceptance": ["app.py exists"]
+                }],
+                "goal_acceptance": ["All tests pass"],
+                "notes": "Plan generated by mock model"
+            })
+            canned_review = json.dumps({
+                "verdict": "approve",
+                "feedback": "All acceptance criteria verified",
+                "mutations": [],
+                "lesson": ""
+            })
+
+            def mock_urlopen_file_store(req, *args, **kwargs):
+                url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
+                resp = mock.MagicMock()
+                if "chat/completions" in url:
+                    resp_json = json.dumps({
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": "gpt-4o",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": canned_plan},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240}
+                    })
+                    resp.read.return_value = resp_json.encode("utf-8")
+                else:
+                    resp_json = json.dumps({
+                        "candidates": [{
+                            "content": {"role": "model", "parts": [{"text": canned_review}]},
+                            "finishReason": "STOP",
+                            "index": 0
+                        }],
+                        "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 30, "totalTokenCount": 1230},
+                        "modelVersion": "gemini-fake"
+                    })
+                    resp.read.return_value = resp_json.encode("utf-8")
+                resp.__enter__.return_value = resp
+                return resp
+
+            with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen_file_store):
+                text_plan, who_plan = llm.llm("plan", prompt_plan)
+                self.assertEqual(who_plan, "openai-api:gpt-4o")
+                parsed_plan = llm.parse_and_validate(text_plan, TASK_SCHEMA)
+                self.assertIsNotNone(parsed_plan)
+
+                text_review, who_review = llm.llm("review", prompt_review)
+                self.assertEqual(who_review, "gemini-api:gemini-1.5-pro")
+                parsed_review = llm.parse_and_validate(text_review, llm.REVIEW_SCHEMA)
+                self.assertIsNotNone(parsed_review)
+
+        log_file = os.path.join(ctx.FD, "llm.jsonl")
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data = f.read()
+
+        self.assertNotIn(self.fake_openai_key, log_data)
+        self.assertNotIn(self.fake_gemini_key, log_data)
+        assert who_plan == "openai-api:gpt-4o"
+        assert who_review == "gemini-api:gemini-1.5-pro"
+        assert parsed_plan is not None
+        assert parsed_review is not None
+        assert self.fake_openai_key not in log_data
+        assert self.fake_gemini_key not in log_data
+
+    def test_llm_e2e_unicode_and_long_prompts(self):
+        """Invariant: llm() correctly handles unicode, emojis, and multi-line content end-to-end
+        without crashing and logs properly without encoding errors."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        unicode_plan = json.dumps({
+            "tasks": [{
+                "key": "0001-setup",
+                "title": "Setup task 🚀",
+                "role": "backend-developer",
+                "depends_on": [],
+                "files": ["app.py"],
+                "risk": "routine",
+                "spec": "Setup application structure with €100 price tag",
+                "acceptance": ["app.py exists"]
+            }],
+            "goal_acceptance": ["All tests pass"],
+            "notes": "Plan with unicode 🚀"
+        })
+        unicode_rev = json.dumps({
+            "verdict": "approve",
+            "feedback": "Good 🚀 all verified with €100",
+            "mutations": [],
+            "lesson": ""
+        })
+
+        def mock_urlopen_unicode(req, *args, **kwargs):
+            url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
+            resp = mock.MagicMock()
+            if "chat/completions" in url:
+                resp_json = json.dumps({
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "gpt-4o",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": unicode_plan},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240}
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            else:
+                resp_json = json.dumps({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": unicode_rev}]},
+                        "finishReason": "STOP",
+                        "index": 0
+                    }],
+                    "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 30, "totalTokenCount": 1230},
+                    "modelVersion": "gemini-fake"
+                })
+                resp.read.return_value = resp_json.encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        unicode_prompt = f"Plan goal with unicode: 🚀🔥 ‘smart-quotes’ and €100 price tag.\n{TASK_SCHEMA}"
+        unicode_review_prompt = 'Review with unicode: 🚀🔥. Reply with ONLY: {"verdict": "approve", "feedback": "Good 🚀"}'
+
+        with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen_unicode):
+            text_plan, who_plan = llm.llm("plan", unicode_prompt)
+            self.assertEqual(who_plan, "openai-api:gpt-4o")
+            parsed_plan = llm.parse_and_validate(text_plan, TASK_SCHEMA)
+            self.assertIsNotNone(parsed_plan)
+
+            text_rev, who_rev = llm.llm("review", unicode_review_prompt)
+            self.assertEqual(who_rev, "gemini-api:gemini-1.5-pro")
+            parsed_rev = llm.parse_and_validate(text_rev, llm.REVIEW_SCHEMA)
+            self.assertIsNotNone(parsed_rev)
+
+        log_file = os.path.join(ctx.FD, "llm.jsonl")
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data = f.read()
+        self.assertNotIn(self.fake_openai_key, log_data)
+        self.assertNotIn(self.fake_gemini_key, log_data)
+
+        assert who_plan == "openai-api:gpt-4o"
+        assert who_rev == "gemini-api:gemini-1.5-pro"
+        assert parsed_plan is not None
+        assert parsed_rev is not None
+        assert self.fake_openai_key not in log_data
+        assert self.fake_gemini_key not in log_data
+
+    def test_llm_e2e_log_llm_handles_provider_errors_without_secret_leak(self):
+        """Invariant: when a provider call encounters an HTTP error, log_llm() is called without raising
+        and never logs secret values into llm.jsonl."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        # Point to a 404 path on the fake server
+        ctx.C["OPENAI_API_BASE"] = f"http://127.0.0.1:{self.port}/nonexistent-api"
+
+        with self.assertRaises(llm.Unavailable) as cm:
+            llm.llm("plan", f"Plan tasks:\n{TASK_SCHEMA}")
+        self.assertIn("no orchestrator provider could answer", str(cm.exception))
+
+        log_file = os.path.join(ctx.FD, "llm.jsonl")
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            log_data = f.read()
+        self.assertNotIn(self.fake_openai_key, log_data)
+        self.assertNotIn(self.fake_gemini_key, log_data)
+
+        assert "no orchestrator provider could answer" in str(cm.exception)
+        assert self.fake_openai_key not in log_data
+        assert self.fake_gemini_key not in log_data
+
+    def test_providers_for_list_and_whitespace_handling(self):
+        """Invariant: providers_for() cleanly parses comma-delimited strings with spaces, lists, and tuples."""
+        ctx.C["PLAN_PROVIDERS"] = " openai-api , gemini-api "
+        self.assertEqual(llm.providers_for("plan"), ["openai-api", "gemini-api"])
+
+        ctx.C["REVIEW_PROVIDERS"] = ["gemini-api", " openai-api "]
+        self.assertEqual(llm.providers_for("review"), ["gemini-api", "openai-api"])
+
+        ctx.C["PLAN_PROVIDERS"] = ""
+        ctx.C["ORCHESTRATOR_PROVIDER"] = "openai-api"
+        self.assertEqual(llm.providers_for("plan"), ["openai-api"])
+
+        assert llm.providers_for("plan") == ["openai-api"]
 
 
 if __name__ == "__main__":
