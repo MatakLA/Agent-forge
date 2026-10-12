@@ -55,9 +55,9 @@ Use these if you want the orchestrator queue to keep moving when subscription qu
 
 | Provider | Configuration keys | Credential key | Endpoint / Network |
 |---|---|---|---|
-| [`openai-api`](#orchestrator-provider-openai-api) | `OPENAI_MODEL`, optional `OPENAI_API_BASE` | `OPENAI_API_KEY` | `api.openai.com`, `openrouter.ai`, or local HTTP model server |
-| [`gemini-api`](#orchestrator-provider-gemini-api) | `GEMINI_MODEL` | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` |
-| `anthropic-api` | `ANTHROPIC_MODEL` | `ANTHROPIC_API_KEY` | `api.anthropic.com` |
+| [`openai-api`](#orchestrator-provider-openai-api) | `OPENAI_MODEL`, optional `OPENAI_API_BASE` | `OPENAI_API_KEY` (`openai.key`) | `api.openai.com`, `openrouter.ai`, or local HTTP model server |
+| [`gemini-api`](#orchestrator-provider-gemini-api) | `GEMINI_MODEL` | `GEMINI_API_KEY` (`gemini.key`) | `generativelanguage.googleapis.com` |
+| `anthropic-api` | `ANTHROPIC_MODEL` | `ANTHROPIC_API_KEY` (`anthropic.key`) | `api.anthropic.com` |
 
 ---
 
@@ -98,17 +98,13 @@ To point the orchestrator at an OpenAI-compatible provider:
    ```bash
    printf '%s' "sk-YOUR_API_KEY" | bin/secret-set openai.key
    ```
-   `bin/secret-set` reads the secret value strictly from standard input (preventing exposure in shell history or `/proc/*/cmdline`) and writes it with mode `0600` into `~/.config/sandbox/secrets/openai.key` within a mode `0700` secrets directory.
-   
-   To enable the host orchestrator process (`bin/lib/providers.py`) to access this key without file duplication, create a symbolic link:
-   ```bash
-   ln -sf openai.key ~/.config/sandbox/secrets/OPENAI_API_KEY
-   ```
-   Alternatively, export the key in the environment (`export OPENAI_API_KEY="sk-YOUR_API_KEY"`) or store it directly at `~/.config/sandbox/secrets/OPENAI_API_KEY` with permissions mode `0600`.
-   
+   `bin/secret-set` reads the secret value strictly from standard input (preventing exposure in shell history or process listings) and writes it with mode `0600` into `~/.config/sandbox/secrets/openai.key` within a mode `0700` secrets directory.
+
+   Alternatively, supply the key via the environment variable (`export OPENAI_API_KEY="sk-YOUR_API_KEY"`).
+
    > [!IMPORTANT]
    > **Credential storage invariants**:
-   > API keys must **never** be placed in `etc/foreman.conf`, `project.conf`, or committed to git. In the web dashboard under **Settings &rarr; Models**, the key setting (`OPENAI_API_KEY`) is strictly file-only: it displays whether `openai.key` exists on disk, but never accepts or edits raw tokens in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw values with `***`, and `mask_log_value()` ensures secrets are never recorded in settings event logs.
+   > API keys must **never** be placed in `etc/foreman.conf`, `project.conf`, or committed to git. In the web dashboard under **Settings &rarr; Models**, the credential setting field (`OPENAI_API_KEY`) is strictly file-only: it displays whether `openai.key` is present on disk, but never accepts or edits raw tokens in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw values with `***`, and `mask_log_value()` ensures secrets are never recorded in settings event logs.
 
 ### Cost and quota caveats
 
@@ -172,14 +168,10 @@ To point the orchestrator at the Gemini API provider:
    ```bash
    printf '%s' "AIzaSyYOUR_API_KEY" | bin/secret-set gemini.key
    ```
-   `bin/secret-set` reads the secret from standard input and stores it with mode `0600` into `~/.config/sandbox/secrets/gemini.key`.
-   
-   To allow the host-based orchestrator adapter (`bin/lib/providers.py`) to access it, link the key:
-   ```bash
-   ln -sf gemini.key ~/.config/sandbox/secrets/GEMINI_API_KEY
-   ```
-   Alternatively, set the key as an environment variable (`export GEMINI_API_KEY="AIzaSyYOUR_API_KEY"`) or store it directly at `~/.config/sandbox/secrets/GEMINI_API_KEY` with permissions mode `0600`.
-   
+   `bin/secret-set` reads the secret from standard input (preventing exposure in shell history or process listings) and stores it with mode `0600` into `~/.config/sandbox/secrets/gemini.key` within a mode `0700` secrets directory.
+
+   Alternatively, supply the key via the environment variable (`export GEMINI_API_KEY="AIzaSyYOUR_API_KEY"`).
+
    > [!IMPORTANT]
    > **Credential storage invariants**:
    > Never store API keys in `etc/foreman.conf`, `project.conf`, or dashboard inputs. The dashboard's **Settings &rarr; Models** page marks `GEMINI_API_KEY` as file-only: it indicates whether `gemini.key` is set on disk, but is not editable in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw keys with `***`, and `mask_log_value()` ensures sensitive tokens never appear in event logs.
