@@ -34,9 +34,15 @@ If a provider encounters an exhausted quota, missing credentials, connection tim
 | `agy-claude` | Claude (`AGY_PLAN_MODEL` / `AGY_REVIEW_MODEL`) via Antigravity worker container | Quota ("Claude and GPT models" bucket) | Review | High-fidelity reviews without per-token charges. Automatically skips exhausted worker accounts. |
 | `agy-gemini` | Gemini (`AGY_FALLBACK_MODEL`) via Antigravity worker container | Quota (worker Gemini bucket) | Fallback | Free fallback; uses the same Gemini quota that workers use for coding. |
 
-**Quota reality check.** The Antigravity "Claude and GPT models" quota bucket is small: on a 4-worker team, planning and reviews alone can exhaust it across all accounts within two days. Antigravity calls now pass `--json-schema` to constrain outputs, but `claude-cli` or paid API fallbacks remain recommended in the chain.
+**Quota reality check.** The Antigravity "Claude and GPT models" quota bucket is small: on a 4-worker team, planning and reviews alone can exhaust it across all accounts within two days. That is why reviews try it first (it is otherwise unused) but Claude Code stays in the chain, and why workers code with Gemini rather than Claude.
+
+**Gemini as a reviewer.** In early project telemetry, 64% of Gemini review calls produced no usable verdict before structured output constraints were introduced. Antigravity calls now pass `--json-schema` to constrain outputs, which improves consistency. Before adding `agy-gemini` or `gemini-api` as a primary reviewer, inspect your own team's telemetry in the web dashboard under **Insights &rarr; Team (orchestrator calls)**.
+
+---
 
 ### 2. Paid per-token and self-hosted providers
+
+Use these if you want the orchestrator queue to keep moving when subscription quotas are exhausted, or if you do not use Claude Code or Antigravity at all. These adapters (`bin/lib/providers.py`) run in the foreman process directly on the host machine.
 
 | Provider | Configuration keys | Credential key | Endpoint / Network |
 |---|---|---|---|
@@ -64,13 +70,17 @@ Store your API key securely without hardcoding it in configuration files:
 printf '%s' "sk-proj-YOUR_OPENAI_API_KEY" > ~/.config/sandbox/secrets/OPENAI_API_KEY
 chmod 600 ~/.config/sandbox/secrets/OPENAI_API_KEY
 
-# Option B: Store as an environment variable
+# Option B: Store as an environment variable (in your shell or systemd unit)
 export OPENAI_API_KEY="sk-proj-YOUR_OPENAI_API_KEY"
 ```
 
-If worker containers also use OpenAI (`codex` runtime), store the key via `bin/secret-set`:
+If worker containers also use OpenAI (`codex` runtime), store the key for workers via `bin/secret-set`:
 ```bash
 printf '%s' "sk-proj-YOUR_OPENAI_API_KEY" | bin/secret-set openai.key
+```
+You can symlink the orchestrator key to avoid duplicating the file:
+```bash
+ln -sf openai.key ~/.config/sandbox/secrets/OPENAI_API_KEY
 ```
 
 #### Step 2: Configure `etc/foreman.conf`
@@ -80,14 +90,14 @@ Add `openai-api` to your provider chains in `etc/foreman.conf`:
 PLAN_PROVIDERS=openai-api
 REVIEW_PROVIDERS=openai-api
 OPENAI_MODEL=gpt-4o
-# OPENAI_API_BASE defaults to https://api.openai.com/v1
+# OPENAI_API_BASE defaults to https://api.openai.com/v1 if omitted
 ```
 
-#### Step 3: Verify egress allowlist
-The foreman runs directly on the host machine. If worker containers also contact OpenAI, ensure `api.openai.com` is present in `egress/allowlist.txt`.
+#### Step 3: Network and egress
+The foreman runs directly on the host machine and communicates with `api.openai.com` over HTTPS. If worker containers also contact OpenAI (e.g. `codex` workers), ensure `api.openai.com` is present in `egress/allowlist.txt`.
 
 #### Step 4: Verify setup
-Run the diagnostic doctor check:
+Run the diagnostic check:
 ```bash
 bin/doctor --quick
 ```
@@ -96,15 +106,24 @@ bin/doctor --quick
 
 ### Setup 2: OpenRouter
 
-Use OpenRouter to route orchestrator requests to any hosted model (Claude, Llama 3.3, DeepSeek, Qwen).
+Use OpenRouter to route orchestrator requests to hosted models (Claude, Llama 3.3, DeepSeek, Qwen).
 
 #### Prerequisites
 - An OpenRouter account and API key (`sk-or-...`).
 
 #### Step 1: Configure credentials
 ```bash
+# Option A: Store in secrets directory (mode 0600)
 printf '%s' "sk-or-YOUR_KEY" > ~/.config/sandbox/secrets/OPENAI_API_KEY
 chmod 600 ~/.config/sandbox/secrets/OPENAI_API_KEY
+
+# Option B: Store as an environment variable
+export OPENAI_API_KEY="sk-or-YOUR_KEY"
+```
+
+If worker containers also route through OpenRouter (`compat` or `aider` runtime), store `compat.key`:
+```bash
+printf '%s' "sk-or-YOUR_KEY" | bin/secret-set compat.key
 ```
 
 #### Step 2: Configure `etc/foreman.conf`
@@ -117,11 +136,17 @@ OPENAI_API_BASE=https://openrouter.ai/api/v1
 OPENAI_MODEL=anthropic/claude-3.5-sonnet
 ```
 
-#### Step 3: Verify egress allowlist
-If workers or proxies need to contact OpenRouter, append the domain to `egress/allowlist.local.txt`:
+#### Step 3: Network and egress
+The foreman connects directly from the host. If worker containers also need to reach OpenRouter, append `openrouter.ai` to `egress/allowlist.local.txt` and reload egress:
 ```bash
 printf '%s\n' "openrouter.ai" >> egress/allowlist.local.txt
 bin/egress-up
+```
+
+#### Step 4: Verify setup
+Run the diagnostic check:
+```bash
+bin/doctor --quick
 ```
 
 ---
@@ -157,13 +182,19 @@ Run the orchestrator completely offline at zero token cost using local inference
     ```
 
 #### Step 1: Configure credentials
-Local inference servers rarely validate API keys, but the adapter requires a non-empty key:
+Local inference servers rarely validate API keys, but the adapter requires a non-empty key string:
 ```bash
 printf '%s' "local-token" > ~/.config/sandbox/secrets/OPENAI_API_KEY
 chmod 600 ~/.config/sandbox/secrets/OPENAI_API_KEY
 ```
 
+For worker containers using the same local server (`compat` or `aider` runtime), store `compat.key`:
+```bash
+printf '%s' "local-token" | bin/secret-set compat.key
+```
+
 #### Step 2: Configure `etc/foreman.conf`
+Configure the orchestrator endpoint in `etc/foreman.conf`:
 ```ini
 PLAN_PROVIDERS=openai-api
 REVIEW_PROVIDERS=openai-api
@@ -172,22 +203,23 @@ OPENAI_MODEL=qwen2.5-coder:32b
 ```
 
 #### Step 3: Configure network egress for local servers
-The Agent-Forge egress proxy blocks all private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and plain HTTP traffic by default.
+The orchestrator foreman runs directly on the host machine and accesses `OPENAI_API_BASE` directly without going through the Docker proxy.
 
-To allow worker containers or sandboxed processes to reach your local server, add a narrow destination rule in `egress/local-endpoint.conf`:
+However, if worker containers (`worker-N`) also need to reach the local server (such as `compat` or `aider` workers), note that the Agent-Forge egress proxy blocks all private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and plain HTTP traffic by default.
 
+To grant workers access to your local model server, set `COMPAT_BASE_URL` in `etc/limits.conf` (or in the dashboard under **Settings &rarr; Workers**):
+```ini
+COMPAT_BASE_URL=http://192.168.1.50:11434/v1
+```
+
+When saved or applied via `bin/egress-up`, Agent-Forge automatically writes `egress/local-endpoint.conf` with a strict destination rule allowing only that host and port:
 ```conf
-# egress/local-endpoint.conf
+# written by Agent-Forge for COMPAT_BASE_URL - the workers may reach exactly this address and port
 acl af_model_server dst 192.168.1.50
 acl af_model_port port 11434
 http_access allow workers af_model_server af_model_port
 ```
-
-Alternatively, set `COMPAT_BASE_URL` in `etc/limits.conf`:
-```ini
-COMPAT_BASE_URL=http://192.168.1.50:11434/v1
-```
-When saved in the settings UI or applied via `bin/egress-up`, Agent-Forge automatically writes `egress/local-endpoint.conf` and reloads the Squid proxy.
+and reloads the Squid proxy.
 
 #### Step 4: Verify connectivity
 Test the endpoint directly from the command line:
@@ -214,9 +246,13 @@ chmod 600 ~/.config/sandbox/secrets/GEMINI_API_KEY
 export GEMINI_API_KEY="AIzaSyYOUR_KEY"
 ```
 
-For worker containers running the `gemini` runtime, store via `bin/secret-set`:
+For worker containers running the `gemini` runtime, store the key via `bin/secret-set`:
 ```bash
 printf '%s' "AIzaSyYOUR_KEY" | bin/secret-set gemini.key
+```
+You can symlink the orchestrator key to share it:
+```bash
+ln -sf gemini.key ~/.config/sandbox/secrets/GEMINI_API_KEY
 ```
 
 #### Step 2: Configure `etc/foreman.conf`
@@ -228,7 +264,7 @@ GEMINI_MODEL=gemini-1.5-pro
 Supported models include `gemini-1.5-pro`, `gemini-2.0-flash`, and `gemini-1.5-flash`.
 
 #### Step 3: Verify egress allowlist
-Ensure `generativelanguage.googleapis.com` is present in `egress/allowlist.txt`.
+The foreman connects from the host. If worker containers also run the `gemini` runtime, verify that `generativelanguage.googleapis.com` is present in `egress/allowlist.txt`.
 
 #### Step 4: Verify setup
 Run the diagnostic check:
@@ -240,18 +276,23 @@ bin/doctor --quick
 
 ## Capability and cost comparison
 
-The following table provides an honest, empirical comparison of orchestrator model options:
+The following table provides an honest capability and cost comparison across orchestrator model options:
 
-| Provider / Model Family | Context Window | Latency (Plan / Review) | JSON Schema Compliance | Token Pricing (Input / Cache / Output per 1M) | Best Orchestrator Role |
+| Provider / Model Family | Context Window | Latency | JSON Schema Reliability | Token Pricing (Input / Cache / Output per 1M)* | Best Orchestrator Role |
 |---|---|---|---|---|---|
-| **Claude 3.5 / 3.7 Sonnet** (`claude-cli` / `anthropic-api`) | 200,000 | Medium (15–35s) | **99%** (Flawless schema adherence) | $3.00 / $0.30 / $15.00 (or $0 on Claude subscription) | **Primary Planner & Primary Reviewer** |
-| **OpenAI GPT-4o** (`openai-api`) | 128,000 | Fast (8–18s) | **98%** (Reliable JSON mode adherence) | $2.50 / $1.25 / $10.00 | **Primary Planner & Primary Reviewer** |
-| **OpenAI GPT-4o-mini** (`openai-api`) | 128,000 | Very Fast (4–10s) | **92%** (Occasional schema omission on complex diffs) | $0.15 / $0.075 / $0.60 | Fallback Reviewer (too weak for multi-step planning) |
-| **Gemini 1.5 Pro** (`gemini-api` / `agy-gemini`) | 2,000,000 | Medium (12–25s) | **94%** (Reliable with structured prompts) | $1.25 / $0.3125 / $5.00 (or $0 on Antigravity quota) | **Planner for large repos** & Fallback Reviewer |
-| **Gemini 2.0 Flash** (`gemini-api`) | 1,000,000 | Extremely Fast (3–8s) | **91%** (Requires strict schema enforcement) | $0.10 / $0.025 / $0.40 | **Fast Reviewer & Rapid Triage** |
-| **Qwen 2.5 Coder 32B** (Local vLLM / Ollama) | 32,768–65,536 | Fast on GPU (10–25s) / Slow on CPU (60–180s) | **91%** (Valid JSON at temp 0.2) | **$0.00** (Local electricity only) | **Self-hosted Planner & Reviewer** |
-| **DeepSeek-Coder-V2 236B** (OpenRouter / Local) | 64,000–128,000 | Medium (15–30s) | **93%** (Strong structured output) | $0.14 / $0.014 / $0.28 (OpenRouter) | Cost-effective Planner & Reviewer |
-| **Small Models (<30B)** (e.g. 7B, 8B, 14B) | 8,192–32,768 | Fast on GPU (5–15s) | **<45%** (**Fails review verdicts and plan structures**) | **$0.00** (Local) | **Not recommended** (Fails orchestration) |
+| **Claude 3.5 / 3.7 Sonnet** (`claude-cli` / `anthropic-api`) | 200,000 | Moderate | **High**: Consistently adheres to JSON review schema without extra prose wrappers. | $3.00 / $0.30 / $15.00 (or $0 on Claude subscription) | **Primary Planner & Primary Reviewer** |
+| **OpenAI GPT-4o** (`openai-api`) | 128,000 | Fast | **High**: Dependable JSON mode adherence at temperature 0.2; rarely produces malformed verdicts. | $2.50 / $1.25 / $10.00 | **Primary Planner & Primary Reviewer** |
+| **OpenAI GPT-4o-mini** (`openai-api`) | 128,000 | Very Fast | **Moderate**: Handles simple schemas; prone to truncating complex code reviews or losing dependency chains. | $0.15 / $0.075 / $0.60 | Fallback Reviewer (too weak for multi-task planning) |
+| **Gemini 1.5 Pro** (`gemini-api` / `agy-gemini`) | 2,000,000 | Moderate | **Moderate to High**: Historically variable on reviews without schema enforcement; Antigravity passes `--json-schema` (measure in dashboard). | $1.25 / $0.3125 / $5.00 (or $0 on Antigravity quota) | **Planner for large repositories** & Fallback Reviewer |
+| **Gemini 2.0 Flash** (`gemini-api`) | 1,000,000 | Very Fast | **Moderate**: Fast generation, but requires explicit schema adherence prompts to prevent conversational preamble. | $0.10 / $0.025 / $0.40 | **Fast Reviewer & Rapid Triage** |
+| **Qwen 2.5 Coder 32B** (Local vLLM / Ollama) | 32,768–65,536 | Hardware-dependent | **Moderate to High**: Consistently emits valid JSON at temperature 0.2 when given explicit schemas; viable for reviews. | **$0.00** (Local hardware) | **Self-hosted Planner & Reviewer** |
+| **DeepSeek-Coder-V2 236B** (OpenRouter / Local) | 64,000–128,000 | Moderate | **High**: Strong code reasoning and disciplined structured JSON adherence. | $0.14 / $0.014 / $0.28 (OpenRouter) | Cost-effective Planner & Reviewer |
+| **Small Models (<30B)** (e.g. 7B, 8B, 14B) | 8,192–32,768 | Fast on GPU | **Low**: Frequently emits markdown wrappers, commentary, or non-conforming verdict strings. | **$0.00** (Local hardware) | **Not recommended** (Fails orchestrator duties) |
+
+*\* Note: Token pricing figures are approximate at the time of writing; check each provider's current pricing page since commercial rates drift over time.*
+
+> [!TIP]
+> **Measure in your own environment**: Do not rely solely on theoretical figures. Every orchestrator decision, latency duration, token count, and parse failure is recorded in `runs/foreman/llm.jsonl`. You can monitor real provider performance in the web dashboard under **Insights &rarr; Team (orchestrator calls)**.
 
 ---
 
@@ -263,7 +304,7 @@ Orchestrating autonomous software agents requires significantly higher reasoning
 
 1. **Plan generation (`OBJECT_SCHEMA`)**:
    - The planner must ingest the vision document, read existing directory structures, identify dependency ordering, and generate disjoint tasks with precise file ownership boundaries.
-   - **Why small models (<30B) fail**: Small models frequently hallucinate cyclic dependencies, fail to scope task boundaries to 3 files or fewer, invent nonexistent files, or omit required acceptance criteria.
+   - **Why small models (<30B) struggle**: Small models frequently hallucinate cyclic dependencies, fail to scope task boundaries to 3 files or fewer, invent nonexistent files, or omit required acceptance criteria.
 
 2. **Code review (`REVIEW_SCHEMA`)**:
    - The reviewer inspects a unified git diff against the task prompt, verifies that code logic satisfies acceptance criteria, checks for test regressions, and outputs a strict JSON payload:
@@ -276,11 +317,15 @@ Orchestrating autonomous software agents requires significantly higher reasoning
      }
      ```
      Allowed verdicts are strictly restricted to `"approve"`, `"rework"`, or `"reject"`.
-   - **Why small models (<30B) fail**: In empirical testing, models under 30B parameters produced invalid outputs in more than 55% of review calls:
-     - Outputting explanatory markdown before or after the JSON payload (breaking JSON parsers).
-     - Returning non-conforming verdict values (such as `"pass"`, `"looks good"`, or `"merged"`).
-     - Missing mandatory keys (`feedback` or `verdict`).
-     - Hallucinating false syntax errors on valid code.
+   - **Why small models (<30B) struggle**: In practice, models under 30B parameters frequently produce unparseable or non-conforming review responses:
+     - Outputting conversational filler or markdown code blocks around the JSON (e.g. `Here is the review: ```json ... ``` `), which breaks strict JSON parsers.
+     - Returning non-standard verdict strings (such as `"pass"`, `"looks good"`, `"LGTM"`, or `"merged"`) instead of `"approve"`, `"rework"`, or `"reject"`.
+     - Omitting mandatory schema keys (such as `verdict` or `feedback`).
+     - Hallucinating false syntax or logic errors on valid diffs.
+
+### Historical team telemetry precedent
+
+The orchestrator review loop is unforgiving of schema deviations. In early project telemetry, 64% of Gemini review calls produced no usable verdict before structured output constraints (`--json-schema`) were enforced. Small models lacking rigorous instruction following fail in similar ways. Readers are encouraged to inspect their own logs (`runs/foreman/llm.jsonl`) and the web dashboard (Insights &rarr; Team) to measure real parse success rates before relying on any model as a sole reviewer.
 
 ### Models known to succeed
 
@@ -298,13 +343,30 @@ Agent-Forge enforces strict credential handling to prevent token leaks:
 
 1. **No secrets in configuration files**: `etc/foreman.conf` and `etc/limits.conf` contain model names and URLs only. Never place API keys in `.conf` files.
 2. **File permissions**: All secret files stored in `~/.config/sandbox/secrets/` must have permission mode `0600` (readable and writable only by the owner), and the directory must have mode `0700`.
-3. **Safe entry via stdin**: Use `bin/secret-set` to prevent secret tokens from appearing in shell histories, process listings (`/proc`), or command-line arguments:
+3. **Orchestrator provider keys vs. Worker runtime keys**:
+   - The orchestrator adapters in `bin/lib/providers.py` check environment variables first (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`), and if unset, read from `~/.config/sandbox/secrets/<NAME>` (mode 0600).
+   - Worker containers mount specific secrets based on their runtime (`openai.key` for `codex`, `gemini.key` for `gemini`, `compat.key` for `compat`/`aider`, `anthropic.key` for `claude`).
+4. **Safe entry via `bin/secret-set`**: Use `bin/secret-set` to securely store worker keys from stdin without exposing tokens in shell histories, process listings (`/proc`), or command-line arguments:
    ```bash
    printf '%s' "sk-SECRET_VALUE" | bin/secret-set openai.key
    printf '%s' "AIza-SECRET_VALUE" | bin/secret-set gemini.key
+   printf '%s' "compat-SECRET_VALUE" | bin/secret-set compat.key
+   printf '%s' "sk-ant-SECRET_VALUE" | bin/secret-set anthropic.key
    ```
-4. **Header-only transmission**: The orchestrator HTTP adapters (`bin/lib/providers.py`) transmit keys exclusively via standard authorization headers (`Authorization: Bearer <key>` or `x-goog-api-key`), never in URL query strings.
-5. **Audit checks**: Running `bin/doctor` verifies that all secret files exist with correct file permissions:
+   *Accepted secret names*: `anthropic.key`, `openai.key`, `gemini.key`, `compat.key`, `github.token`, `gitlab.token`, `notify.token`.
+   
+   To inspect existing configured secrets without revealing secret values:
+   ```bash
+   bin/secret-set --list
+   ```
+   To share a worker secret with the orchestrator without duplicating files, create a symlink:
+   ```bash
+   ln -sf openai.key ~/.config/sandbox/secrets/OPENAI_API_KEY
+   ln -sf gemini.key ~/.config/sandbox/secrets/GEMINI_API_KEY
+   ln -sf anthropic.key ~/.config/sandbox/secrets/ANTHROPIC_API_KEY
+   ```
+5. **Header-only transmission**: The orchestrator HTTP adapters (`bin/lib/providers.py`) transmit keys exclusively via standard authorization headers (`Authorization: Bearer <key>` or `x-goog-api-key`), never in URL query strings.
+6. **Audit checks**: Running `bin/doctor` verifies that all required secret files exist with correct file permissions:
    ```bash
    bin/doctor
    ```
@@ -319,7 +381,7 @@ Agent-Forge enforces strict credential handling to prevent token leaks:
 - **Cause**: Hitting API requests-per-minute (RPM) or tokens-per-minute (TPM) limits on your provider tier.
 - **Fix**:
   1. Add secondary fallback providers in `etc/foreman.conf` (for example, `PLAN_PROVIDERS=openai-api,gemini-api`).
-  2. The foreman automatically detects rate limits and cascades to the next provider.
+  2. The foreman automatically detects rate limits and cascades to the next provider in the chain.
   3. For paid APIs, request a tier upgrade or configure a higher rate limit in your provider console.
 
 ### 2. Invalid JSON response or schema validation failure
@@ -345,17 +407,17 @@ Agent-Forge enforces strict credential handling to prevent token leaks:
 - **Cause**:
   - The local model server is not running or is bound only to `127.0.0.1` instead of `0.0.0.0`.
   - The port specified in `OPENAI_API_BASE` is incorrect.
-  - The egress proxy blocked access to an unlisted private IP address.
+  - For worker containers: the Squid egress proxy blocked access to an unlisted private IP address.
 - **Fix**:
   1. Confirm the local server is listening on all interfaces:
      ```bash
      ss -tulpn | grep -E '11434|8000|1234|8080'
      ```
-  2. Test local endpoint access directly:
+  2. Test local endpoint access directly from the host:
      ```bash
      curl -s http://192.168.1.50:11434/v1/models
      ```
-  3. Ensure `egress/local-endpoint.conf` allows the specific destination IP and port, then run `bin/egress-up`.
+  3. For worker containers reaching the local server, ensure `COMPAT_BASE_URL` is set in `etc/limits.conf` and run `bin/egress-up` to write `egress/local-endpoint.conf`.
 
 ---
 
@@ -367,4 +429,4 @@ Every orchestrator decision is recorded in `runs/foreman/llm.jsonl`. Inspect thi
 tail -n 20 runs/foreman/llm.jsonl | jq '{at, kind, who, rc, secs, usage}'
 ```
 
-You can also view orchestrator call distribution and failure rates in the web dashboard under **Insights &rarr; Team**.
+You can also view orchestrator call distribution, token spend, and failure rates in the web dashboard under **Insights &rarr; Team (orchestrator calls)**.
