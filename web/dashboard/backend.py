@@ -1,15 +1,19 @@
 """The dashboard's backend: reaches Agent-Forge locally or over SSH, polls foreman status,
 and executes background jobs (new worker, new project, connecting upstream) and pty login sessions.
 
-Public interface: ssh_run, ssh_run_full, pflag, add_worker_job, create_project_job,
+Public interface: ssh_run, ssh_run_full, local_run, local_run_full, pflag, add_worker_job, create_project_job,
 connect_upstream_job, LOGIN (LoginSessions), foreman_loop.
 
 Invariants:
 - All owner-supplied parameters formatted into shell strings are strictly allowlisted.
 - Vision text and configuration secrets travel strictly via stdin, never in command line or argv.
 - LoginSessions validates worker names and rejects pty control sequences to prevent breakout.
+- In DEMO_MODE, ssh_run and ssh_run_full are never called and all write actions return read-only errors.
 """
 import atexit, collections, json, os, re, shlex, signal, subprocess, threading, time
+
+
+DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
 
 
 BIND_PORT = int(os.environ.get("BIND_PORT", "8171"))
@@ -29,7 +33,7 @@ SSH_TIMEOUT = 6
 
 # Two modes: LOCAL (default) - the dashboard runs on the same machine as bin/foreman and reads it directly; REMOTE - set VM_IP (+
 # VM_USER, VM_KEY, VM_KNOWN_HOSTS) and it reads the Agent-Forge machine over ssh, e.g. from a host that runs Agent-Forge in a VM.
-VM_IP = os.environ.get("VM_IP", "")
+VM_IP = "" if DEMO_MODE else os.environ.get("VM_IP", "")
 
 
 FORGE_DIR = os.environ.get("FORGE_DIR", "~/sandbox" if VM_IP else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,11 +63,26 @@ LAST_ERR = {"msg": ""}           # why the last ssh_run failed, shown on the pag
 
 
 def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
+    assert not DEMO_MODE, "Demo mode: ssh_run must never be called"
     if not isinstance(remote_cmd, str):
         LAST_ERR["msg"] = "remote_cmd must be a string"
         return ""
     try:
         r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout)
+        if r.returncode:
+            LAST_ERR["msg"] = f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
+        return r.stdout if r.returncode == 0 else ""
+    except Exception as e:
+        LAST_ERR["msg"] = f"{type(e).__name__}: {e}"[:300]
+        return ""
+
+
+def local_run(cmd, timeout=SSH_TIMEOUT):
+    if not isinstance(cmd, str):
+        LAST_ERR["msg"] = "cmd must be a string"
+        return ""
+    try:
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=timeout)
         if r.returncode:
             LAST_ERR["msg"] = f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
         return r.stdout if r.returncode == 0 else ""
@@ -114,6 +133,10 @@ def add_worker_job(job, runtime="agy"):
     """Next free worker-N: Forgejo account + token, HOME volume, container (bin/worker-add). agy: the login is a separate
     interactive step (LOGIN), the owner opens a URL with that worker's Google account. API runtimes: the key must already be
     stored (POST /api/secret) - the worker works right away."""
+    if DEMO_MODE:
+        job["state"] = "failed"
+        job["log"] = "Demo mode: read-only, no real workers"
+        return {"error": "Demo mode: read-only, no real workers"}
     try:
         if not isinstance(runtime, str) or runtime not in VALID_RUNTIMES:
             raise ValueError(f"bad runtime: {runtime!r}")
@@ -133,6 +156,10 @@ def create_project_job(job, name, repo, workers_, lang, vision):
     """A new project end to end: projects/<name>/ (bin/foreman init-project), its repository + access on Forgejo
     (scripts/forge-bootstrap with FORGE_REPO), its own foreman service (scripts/install-services --project, needs sudo), and -
     if the default project still uses every worker - the default project's pool shrinks to the workers not given away."""
+    if DEMO_MODE:
+        job["state"] = "failed"
+        job["log"] = "Demo mode: read-only, no real workers"
+        return {"error": "Demo mode: read-only, no real workers"}
     def step(label, cmd, timeout=600, inp=None):
         job["log"] += f"==> {label}\n"
         rc, o, e = ssh_run_full(cmd, timeout=timeout, inp=inp)
@@ -187,6 +214,10 @@ def create_project_job(job, name, repo, workers_, lang, vision):
 
 def connect_upstream_job(job, pf, changes, upstream, force):
     """Save where the code lives, check the token, and import upstream's main into Forgejo (bin/upstream import)."""
+    if DEMO_MODE:
+        job["state"] = "failed"
+        job["log"] = "Demo mode: read-only, no real workers"
+        return {"error": "Demo mode: read-only, no real workers"}
     def step(label, cmd, inp=None, timeout=120):
         job["log"] += f"==> {label}\n"
         rc, o, e = ssh_run_full(cmd, timeout=timeout, inp=inp)
@@ -230,6 +261,8 @@ class LoginSessions:
         self.lock = threading.Lock()
 
     def start(self, w):
+        if DEMO_MODE:
+            return {"error": "Demo mode: read-only, no real workers"}
         if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
             return {"error": "bad worker"}
         with self.lock:
@@ -270,6 +303,8 @@ class LoginSessions:
         reap(sess["proc"])
 
     def send(self, w, text):
+        if DEMO_MODE:
+            return {"error": "Demo mode: read-only, no real workers"}
         if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
             return {"error": "bad worker"}
         if not isinstance(text, str) or CONTROL_CHARS.search(text):
@@ -297,6 +332,8 @@ class LoginSessions:
         return {"running": sess["proc"].poll() is None, "output": out[-6000:], "url": urls[-1] if urls else None}
 
     def stop(self, w):
+        if DEMO_MODE:
+            return {"error": "Demo mode: read-only, no real workers"}
         if not isinstance(w, str) or not WORKER_RE.fullmatch(w):
             return {"error": "bad worker"}
         sess = self.s.pop(w, None)
@@ -315,10 +352,21 @@ LOGIN = LoginSessions()
 def ssh_run_full(remote_cmd, timeout=30, inp=None):
     """Like ssh_run but returns (returncode, stdout, stderr) - used by the one write action this dashboard has
     (/api/resume), so a failure can be reported instead of silently swallowed."""
+    assert not DEMO_MODE, "Demo mode: ssh_run_full must never be called"
     if not isinstance(remote_cmd, str):
         return 1, "", "remote_cmd must be a string"
     try:
         r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout, input=inp)
+        return r.returncode, r.stdout, r.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def local_run_full(cmd, timeout=30, inp=None):
+    if not isinstance(cmd, str):
+        return 1, "", "cmd must be a string"
+    try:
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=timeout, input=inp)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return 1, "", str(e)
@@ -382,14 +430,15 @@ def poll_project(name):
     except ValueError:
         entry["error"] = f"bad project: {name}"
         return
-    out = ssh_run(f"cd {FORGE_DIR} && bin/foreman{pf} status --dashboard 2>/dev/null", timeout=12)
+    run_fn = local_run if DEMO_MODE else ssh_run
+    out = run_fn(f"cd {FORGE_DIR} && bin/foreman{pf} status --dashboard 2>/dev/null", timeout=12)
     data = None
     try:
         data = json.loads(out)
     except Exception:
         if name == "default":
             try:
-                data = foreman_from_old_json(json.loads(ssh_run(f"cd {FORGE_DIR} && bin/foreman status --json 2>/dev/null", timeout=12)))
+                data = foreman_from_old_json(json.loads(run_fn(f"cd {FORGE_DIR} && bin/foreman status --json 2>/dev/null", timeout=12)))
             except Exception:
                 pass
     if data is not None:
@@ -399,11 +448,12 @@ def poll_project(name):
 
 
 def foreman_loop():
+    run_fn = local_run if DEMO_MODE else ssh_run
     while True:
         try:
             if time.time() - PROJECTS["at"] > 30:
                 try:
-                    lst = json.loads(ssh_run(f"cd {FORGE_DIR} && bin/foreman projects --json 2>/dev/null", timeout=15))
+                    lst = json.loads(run_fn(f"cd {FORGE_DIR} && bin/foreman projects --json 2>/dev/null", timeout=15))
                     PROJECTS.update(list=[p for p in lst if PROJECT_RE.fullmatch(p.get("name", ""))], at=time.time())
                 except Exception:
                     PROJECTS["at"] = time.time() - 20      # older foreman without `projects`: retry soon, default only meanwhile

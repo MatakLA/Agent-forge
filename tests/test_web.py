@@ -475,6 +475,153 @@ class TestWebServer(unittest.TestCase):
         self.assertNotIn(b'"tasks"', more.split(b'"delta"')[1])
         assert b'"tasks"' not in more.split(b'"delta"')[1]
 
+    def test_demo_mode_mutating_posts_rejected(self):
+        """Invariant: in DEMO_MODE, all mutating POST actions return 403 and error JSON."""
+        srv.DEMO_MODE = True
+        srv.B.DEMO_MODE = True
+        try:
+            endpoints = [
+                ("POST", "/api/killswitch", {"action": "on"}),
+                ("POST", "/api/resume", {}),
+                ("POST", "/api/task", {"id": "0012-store", "action": "approve"}),
+                ("POST", "/api/settings", {"changes": {"AUTOPILOT": "1"}}),
+                ("POST", "/api/workers", {"action": "add", "runtime": "agy"}),
+                ("POST", "/api/projects", {"action": "create", "name": "demo-proj", "repo": "a/b"}),
+                ("POST", "/api/doc", {"name": "vision", "reset": True}),
+                ("POST", "/api/goalctl", {"id": "G20261008-062000", "action": "pause"}),
+                ("POST", "/api/upstream", {"action": "connect", "kind": "forgejo"}),
+                ("POST", "/api/egress", {"action": "allow", "host": "pypi.org"}),
+                ("POST", "/api/login", {"worker": "worker-1", "action": "start"}),
+                ("POST", "/api/goal", {"text": "new goal", "mode": "now"}),
+                ("POST", "/api/backlog", {"action": "top", "n": "1"}),
+                ("POST", "/api/answer", {"n": "1", "answer": "yes"}),
+                ("POST", "/api/secret", {"name": "anthropic.key", "value": "secret"}),
+                ("POST", "/api/fix", {"fix": "worker-up:1"}),
+                ("POST", "/api/disk", {"action": "compress"}),
+                ("POST", "/api/ask", {"question": "what is this?"}),
+            ]
+            for method, path, payload in endpoints:
+                status, headers, body = self.req(method, path, payload)
+                self.assertEqual(status, 403)
+                data = json.loads(body)
+                self.assertEqual(data.get("error"), "Demo mode: read-only")
+            assert len(endpoints) == 18
+        finally:
+            srv.DEMO_MODE = False
+            srv.B.DEMO_MODE = False
+
+    def test_demo_mode_get_status_and_dashboard(self):
+        """Invariant: in DEMO_MODE, GET /api/status and /api/dashboard return 200 with data unchanged."""
+        srv.DEMO_MODE = True
+        srv.B.DEMO_MODE = True
+        try:
+            sample_data = {"goals": [{"id": "G1", "text": "demo goal"}], "alive": True}
+            srv.B.FOREMAN_BY["default"] = {"data": sample_data, "at": 100.0, "error": None}
+            s_stat, _, body_stat = self.req("GET", "/api/status")
+            s_dash, _, body_dash = self.req("GET", "/api/dashboard")
+            self.assertEqual(s_stat, 200)
+            self.assertEqual(s_dash, 200)
+            d_stat = json.loads(body_stat)
+            d_dash = json.loads(body_dash)
+            self.assertEqual(d_stat["foreman"], sample_data)
+            self.assertEqual(d_dash["foreman"], sample_data)
+            self.assertEqual(d_stat["fetched_at"], 100.0)
+            self.assertEqual(d_dash["fetched_at"], 100.0)
+            assert d_stat == d_dash
+        finally:
+            srv.DEMO_MODE = False
+            srv.B.DEMO_MODE = False
+
+    def test_demo_mode_host_and_token_skipping(self):
+        """Invariant: DEMO_MODE skips host/token checks ONLY when not configured by owner."""
+        orig_token = srv.DASHBOARD_TOKEN
+        orig_hosts = srv.DASHBOARD_HOSTS
+        srv.DEMO_MODE = True
+        srv.B.DEMO_MODE = True
+        try:
+            # 1. No token, no hosts configured -> host enforcement skipped
+            srv.DASHBOARD_TOKEN = ""
+            srv.DASHBOARD_HOSTS = set()
+            self.assertTrue(srv.host_allowed("custom.external.domain.org:8171"))
+            assert srv.host_allowed("custom.external.domain.org:8171")
+            self.assertTrue(srv.token_ok("", ""))
+            assert srv.token_ok("", "")
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            c.request("GET", "/healthz", headers={"Host": "custom.external.domain.org:8171"})
+            r = c.getresponse()
+            c.close()
+            self.assertEqual(r.status, 200)
+            assert r.status == 200
+
+            # 2. Host IS configured by owner -> enforce it, do not weaken
+            srv.DASHBOARD_HOSTS = {"allowed.domain.org"}
+            self.assertFalse(srv.host_allowed("forbidden.domain.org"))
+            assert not srv.host_allowed("forbidden.domain.org")
+            self.assertTrue(srv.host_allowed("allowed.domain.org"))
+            assert srv.host_allowed("allowed.domain.org")
+
+            # 3. Token IS configured by owner -> enforce it, do not weaken
+            srv.DASHBOARD_TOKEN = "configured_token"
+            self.assertFalse(srv.token_ok("", ""))
+            assert not srv.token_ok("", "")
+            self.assertTrue(srv.token_ok("af_token=configured_token", ""))
+            assert srv.token_ok("af_token=configured_token", "")
+        finally:
+            srv.DASHBOARD_TOKEN = orig_token
+            srv.DASHBOARD_HOSTS = orig_hosts
+            srv.DEMO_MODE = False
+            srv.B.DEMO_MODE = False
+
+    def test_demo_mode_backend_guards(self):
+        """Invariant: in DEMO_MODE, backend.py never calls ssh_run/ssh_run_full and raises assertion if called."""
+        orig_b_demo = srv.B.DEMO_MODE
+        srv.B.DEMO_MODE = True
+        try:
+            # 1. ssh_run and ssh_run_full raise AssertionError
+            with self.assertRaises(AssertionError):
+                self.orig_ssh("id")
+            with self.assertRaises(AssertionError):
+                srv.B.ssh_run("id")
+
+            # 2. Jobs exit immediately with error message and without calling ssh
+            job_worker = {"id": "w-1", "state": "running", "log": "", "started": 0}
+            res_w = srv.B.add_worker_job(job_worker)
+            self.assertEqual(job_worker["state"], "failed")
+            self.assertIn("Demo mode: read-only, no real workers", job_worker["log"])
+            self.assertEqual(res_w.get("error"), "Demo mode: read-only, no real workers")
+
+            job_proj = {"id": "p-1", "state": "running", "log": "", "started": 0}
+            res_p = srv.B.create_project_job(job_proj, "proj", "repo/name", [], "English", "v")
+            self.assertEqual(job_proj["state"], "failed")
+            self.assertIn("Demo mode: read-only, no real workers", job_proj["log"])
+            self.assertEqual(res_p.get("error"), "Demo mode: read-only, no real workers")
+
+            job_up = {"id": "u-1", "state": "running", "log": "", "started": 0}
+            res_u = srv.B.connect_upstream_job(job_up, "", {}, False, False)
+            self.assertEqual(job_up["state"], "failed")
+            self.assertIn("Demo mode: read-only, no real workers", job_up["log"])
+            self.assertEqual(res_u.get("error"), "Demo mode: read-only, no real workers")
+
+            # 3. LoginSessions start / send / stop exit immediately with error message
+            self.assertEqual(srv.B.LOGIN.start("worker-1"), {"error": "Demo mode: read-only, no real workers"})
+            self.assertEqual(srv.B.LOGIN.send("worker-1", "test"), {"error": "Demo mode: read-only, no real workers"})
+            self.assertEqual(srv.B.LOGIN.stop("worker-1"), {"error": "Demo mode: read-only, no real workers"})
+
+            assert job_worker["state"] == "failed"
+        finally:
+            srv.B.DEMO_MODE = orig_b_demo
+
+    def test_without_demo_mode_behaviour_unchanged(self):
+        """Invariant: without DEMO_MODE, behaviour is byte-for-byte identical to before."""
+        srv.DEMO_MODE = False
+        srv.B.DEMO_MODE = False
+        H = {"X-Agent-Forge": "1"}
+        s, _, out = self.req("POST", "/api/doc", {"name": "vision", "reset": True}, H)
+        self.assertEqual(s, 200)
+        assert s == 200
+        self.assertGreater(len(self.calls), 0)
+        assert len(self.calls) > 0
+
 
 if __name__ == "__main__":
     runner = unittest.TextTestRunner(stream=sys.stdout)
