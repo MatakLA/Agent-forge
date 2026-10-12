@@ -133,6 +133,16 @@ def list_projects():
     return out
 
 
+def is_orphan_warning(t, orphan_warn=None, orphan_limit=None):
+    """True when a task has orphan_streak between ORPHAN_WARN and ORPHAN_LIMIT and is not yet blocked."""
+    if orphan_warn is None:
+        orphan_warn = int(ctx.C.get("ORPHAN_WARN", 3))
+    if orphan_limit is None:
+        orphan_limit = int(ctx.C.get("ORPHAN_LIMIT", 5))
+    streak = int((t or {}).get("orphan_streak") or 0)
+    return bool((t or {}).get("status") != "blocked" and 0 < streak < orphan_limit and streak >= orphan_warn)
+
+
 def dashboard_json():
     """Everything the host dashboard shows, in one read-only call (`bin/foreman status --dashboard`)."""
     pool = workers()                                   # first: it also learns each worker's runtime (WORKER_RT)
@@ -156,6 +166,8 @@ def dashboard_json():
         pass
     led = [e for e in sbx.read_ledger() if e.get("date") == sbx.today() and not e.get("test")]
     lim = sbx.load_limits()
+    orphan_warn = int(ctx.C.get("ORPHAN_WARN", 3))
+    orphan_limit = int(ctx.C.get("ORPHAN_LIMIT", 5))
     task_out = []
     try:
         sz = sizes(ts, run_stats(), own_files)
@@ -163,13 +175,16 @@ def dashboard_json():
         sz = None
     for t in ts:
         open_ = t["status"] not in ("done", "cancelled")
+        streak = int(t.get("orphan_streak") or 0)
+        warn = is_orphan_warning(t, orphan_warn, orphan_limit)
         x = dict(id=t["id"], goal=t["goal"], title=t["title"], role=t["role"], risk=t.get("risk"), status=t["status"],
                  attempts=t["attempts"], max_attempts=ctx.C["MAX_REWORK"] + 1, worker=t.get("worker"), pr=t.get("pr"),
                  depends_on=t.get("depends_on", []), files=t.get("files", []), dispatched=t.get("dispatched"), finished=t.get("finished"),
                  updated=t.get("updated"), run_tokens=t.get("run_tokens"), diff=t.get("diff"), total_lines=t.get("total_lines"),
                  pr_url=t.get("pr_url") or (t.get("upstream_pr") or {}).get("url"), runtime=WORKER_RT.get(t.get("worker") or "", ""),
                  awaiting=t.get("awaiting"), pin_worker=t.get("pin_worker"), model_override=t.get("model_override"),
-                 cancel_requested=t.get("cancel_requested"), created=t.get("created"))
+                 cancel_requested=t.get("cancel_requested"), created=t.get("created"),
+                 orphan_streak=streak, orphan_warning=warn, orphan_limit=orphan_limit)
         if open_:                                     # the full spec and history of closed tasks: GET /api/task (task_detail)
             x.update(spec=t.get("spec", "")[:2500], acceptance=t.get("acceptance", []), blocked_why=t.get("blocked_why", ""),
                      feedback=t.get("feedback", "")[:1500], history=t.get("history", [])[-6:], mutations=t.get("mutations", []),
@@ -354,8 +369,17 @@ def task_detail(tid):
     keep = ("id", "goal", "title", "role", "risk", "status", "attempts", "worker", "pr", "pr_url", "depends_on", "files", "spec", "acceptance",
             "blocked_why", "feedback", "history", "dispatched", "finished", "created", "diff", "total_lines", "mutations", "awaiting",
             "pin_worker", "model_override", "owner_notes", "cancel_requested", "merge_reviewer", "merge_feedback", "variant", "branch",
-            "split_from", "planned_by", "cancelled_why")
+            "split_from", "planned_by", "cancelled_why", "orphan_streak", "orphan_warning")
+    orphan_warn = int(ctx.C.get("ORPHAN_WARN", 3))
+    orphan_limit = int(ctx.C.get("ORPHAN_LIMIT", 5))
+    streak = int(t.get("orphan_streak") or 0)
+    warn = is_orphan_warning(t, orphan_warn, orphan_limit)
+    t["orphan_streak"] = streak
+    t["orphan_warning"] = warn
     x = {k: t.get(k) for k in keep if k in t}
+    x["orphan_streak"] = streak
+    x["orphan_warning"] = warn
+    x["orphan_limit"] = orphan_limit
     x["max_attempts"] = ctx.C["MAX_REWORK"] + 1
     x["upstream_pr"] = t.get("upstream_pr")
     x["gate_tail"] = (t.get("gate_tail") or "")[-3000:]

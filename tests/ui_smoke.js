@@ -164,6 +164,52 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     F.tasks = window._origFTasks;
     renderTasks(true);
   `);
+
+  // Task 0123: orphan-warning badge on board card and detail sheet
+  w.eval(`
+    window._origTasks0123 = F.tasks;
+    F.tasks = [
+      {id: '0123-warn', goal: 'G1', title: 'Task with orphan warn', role: 'developer', status: 'pending', orphan_warning: true, orphan_streak: 3, orphan_limit: 5},
+      {id: '0123-clean', goal: 'G1', title: 'Clean task', role: 'developer', status: 'pending', orphan_warning: false, orphan_streak: 1, orphan_limit: 5},
+      {id: '0123-blk', goal: 'G1', title: 'Blocked task', role: 'developer', status: 'blocked', orphan_warning: false, orphan_streak: 5, orphan_limit: 5}
+    ];
+    SUB.tasks = 'board';
+    renderTasks(true);
+  `);
+  const warnCard = d.querySelector('#t-tasks .card[data-open="task:0123-warn"]');
+  const cleanCard = d.querySelector('#t-tasks .card[data-open="task:0123-clean"]');
+  const blkCard = d.querySelector('#t-tasks .card[data-open="task:0123-blk"]');
+  const warnBadge = warnCard ? warnCard.querySelector('.badge.warn') : null;
+  const cleanBadge = cleanCard ? cleanCard.querySelector('.badge.warn') : null;
+  const blkBadge = blkCard ? blkCard.querySelector('.badge.warn') : null;
+  const boardWarnOk = !!warnBadge && warnBadge.textContent.includes('crashing repeatedly - 3/5 consecutive orphan recoveries') &&
+                      !cleanBadge && !blkBadge;
+  check('tasks: orphan warning badge shown on board card when orphan_warning is true with dynamic streak count', boardWarnOk);
+
+  // Detail sheet orphan warning
+  w.eval(`
+    TD.id = '0123-warn';
+    TD.data = {task: {id: '0123-warn', goal: 'G1', title: 'Task with orphan warn', role: 'developer', status: 'pending', orphan_warning: true, orphan_streak: 3, orphan_limit: 5}};
+    SHEET.kind = 'task';
+    renderTaskSheet();
+  `);
+  const sheetWarnBadge = d.querySelector('#sheet .sub .badge.warn');
+  const sheetWarnOk = !!sheetWarnBadge && sheetWarnBadge.textContent.includes('crashing repeatedly - 3/5 consecutive orphan recoveries');
+  check('tasks: orphan warning badge shown in detail sheet with dynamic streak count', sheetWarnOk);
+
+  w.eval(`
+    TD.id = '0123-clean';
+    TD.data = {task: {id: '0123-clean', goal: 'G1', title: 'Clean task', role: 'developer', status: 'pending', orphan_warning: false, orphan_streak: 1, orphan_limit: 5}};
+    renderTaskSheet();
+  `);
+  const sheetCleanBadge = d.querySelector('#sheet .sub .badge.warn');
+  check('tasks: no orphan warning badge in detail sheet when orphan_warning is false', !sheetCleanBadge);
+
+  w.eval(`
+    F.tasks = window._origTasks0123;
+    SHEET.kind = null;
+    renderTasks(true);
+  `);
   // the egress view with a blocked host, an alarm and the kill switch it tripped (the demo has no proxy log)
   w.eval(`SYS.egress = {health: {ok: true, mode: 'enforce'}, since: '2026-10-08T00:00:00Z', allowed: {'api.anthropic.com': 12}, denied: {'pypi.org': 3, 'stats.example.net': 1},
     noise: {}, new_domains: {'worker-2 pypi.org': 3}, private: [], alarms: [{level: 'HIGH', code: 'new-domain', message: 'worker-2 tried pypi.org'}],
