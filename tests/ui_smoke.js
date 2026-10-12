@@ -221,8 +221,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         !!oaiBase && !!oaiHelp && oaiHelp.textContent.trim().length > 0 && oaiHelp.textContent.toLowerCase().includes('applies live'));
 
   // Settings / Models: task 0078 provider fields and file-only note
-  const oaiRow = d.querySelector('.prov[data-p="openai-api"]');
-  const geminiRow = d.querySelector('.prov[data-p="gemini-api"]');
+  const oaiRow = d.querySelector('.prov-row[data-p="openai-api"]');
+  const geminiRow = d.querySelector('.prov-row[data-p="gemini-api"]');
   const oaiInputs = !!oaiRow && !!oaiRow.querySelector('#set-OPENAI_API_BASE') && !!oaiRow.querySelector('#set-OPENAI_MODEL');
   const geminiInputs = !!geminiRow && !!geminiRow.querySelector('#set-GEMINI_API_BASE') && !!geminiRow.querySelector('#set-GEMINI_MODEL');
   const oaiNote = !!oaiRow && oaiRow.textContent.toLowerCase().includes('file-only') && oaiRow.textContent.includes('bin/secret-set');
@@ -232,14 +232,24 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / models: openai-api and gemini-api rows render with editable base/model inputs, help text, and file-only API-key note',
         oaiInputs && geminiInputs && oaiNote && geminiNote && oaiHelpText && geminiHelpText);
 
+  // Settings / Models: ensure provider setting inputs have unique DOM ids (no duplicates across lists)
+  const oaiBaseCount = d.querySelectorAll('#set-OPENAI_API_BASE').length;
+  const oaiModelCount = d.querySelectorAll('#set-OPENAI_MODEL').length;
+  const geminiBaseCount = d.querySelectorAll('#set-GEMINI_API_BASE').length;
+  const geminiModelCount = d.querySelectorAll('#set-GEMINI_MODEL').length;
+  check('settings / models: provider inputs have unique DOM ids (no duplicates)',
+        oaiBaseCount === 1 && oaiModelCount === 1 && geminiBaseCount === 1 && geminiModelCount === 1);
+
   // Settings / Models: validation errors display inline next to provider fields
   w.eval(`
     document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
     const errs = {OPENAI_MODEL: 'invalid model name', OPENAI_API_BASE: 'invalid URL'};
     for (const [k, msg] of Object.entries(errs)) {
-      const els = document.querySelectorAll('#settings [id="set-' + k + '"]');
-      if (els.length) {
-        els.forEach(el => el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>'));
+      const el = $('set-' + k);
+      if (el) {
+        const det = el.closest('details');
+        if (det) det.open = true;
+        el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
       }
     }
   `);
