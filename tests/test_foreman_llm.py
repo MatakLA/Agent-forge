@@ -384,18 +384,18 @@ class TestForemanLLM(unittest.TestCase):
 
         with mock.patch("providers.call_openai_api", return_value=openai_err):
             with mock.patch("providers.call_gemini_api", return_value=gemini_err):
-                with self.assertRaises(llm.Unavailable):
+                with self.assertRaises(llm.Unavailable) as cm:
                     llm.llm("plan", "Plan prompt")
 
-        assert True
+        assert "no orchestrator provider could answer" in str(cm.exception)
 
     def test_unavailable_when_no_providers_configured(self):
         """Test Unavailable is raised immediately when no providers are configured."""
         ctx.C.clear()
         ctx.C["PLAN_PROVIDERS"] = ""
-        with self.assertRaises(llm.Unavailable):
+        with self.assertRaises(llm.Unavailable) as cm:
             llm.llm("plan", "Plan prompt")
-        assert True
+        assert "no orchestrator provider could answer" in str(cm.exception)
 
     def test_log_llm_records_who_timing_and_usage(self):
         """Test log_llm records provider caller identity, timing, cost, and token usage to llm.jsonl."""
@@ -872,7 +872,7 @@ class TestForemanLLM(unittest.TestCase):
                 shutil.rmtree(cwd_tmp, ignore_errors=True)
         finally:
             ctx.FD = orig_fd
-        assert True
+        assert ctx.FD == orig_fd
 
     def test_llm_catches_generic_provider_exception_and_falls_back(self):
         """Test llm catches unexpected exceptions from a provider and cascades to next provider."""

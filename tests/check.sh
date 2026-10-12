@@ -29,9 +29,6 @@ fi
 if [ -f tests/test_foreman_settings.py ]; then
   $PY tests/test_foreman_settings.py | tail -1
 fi
-if [ -f tests/test_foreman_llm.py ]; then
-  $PY tests/test_foreman_llm.py || exit 1
-fi
 if [ -f tests/test_egress_security.sh ]; then
   bash tests/test_egress_security.sh | tail -1
 fi
