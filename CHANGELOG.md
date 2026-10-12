@@ -3,6 +3,7 @@
 ## Unreleased
 - OpenCode runtime: support SST's OpenCode CLI (`opencode`) with non-interactive JSON stream execution and configurable endpoint egress.
 - Qwen Code runtime: support Alibaba Qwen Code CLI (`qwen-code`) with non-interactive stream-json execution and DashScope egress allowlist.
+- Goose runtime: support Block's Goose CLI agent (`goose`) with non-interactive execution and configurable endpoint egress.
 - Add examples/sample-project/: public example project pairing vision.md, project.conf, seed-repo/, and README.md
 - Add docs/CHOOSING-AN-AI.md: honest comparison of all supported runtimes and providers
 - Add docs/DEMO.md: Docker-only demo mode design and user guide
