@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# test_install_smoke.sh — hermetic smoke test for fresh install dashboard startup.
+# test_install_smoke.sh — hermetic smoke test for fresh install dashboard startup and --check mode.
 # Verifies a fresh installation layout can launch web/server.py without Docker
 # or external infrastructure, poll /api/status, and verify a valid response.
+# Also verifies scripts/install.sh --check runs hermetically and produces 0 side effects.
 #
 # Public interface: bash tests/test_install_smoke.sh [--unreachable]
 # Invariants:
 # - Runs completely hermetically (SANDBOX_TEST=1) without Docker or network calls.
+# - Verifies scripts/install.sh --check dry-run mode exits 0, prints stepwise plan, and creates 0 side effects.
 # - Cleans up server process and temporary directory on EXIT trap.
 # - Exits 0 when web/server.py is reachable and non-zero when it is not.
 set -Eeuo pipefail
@@ -111,6 +113,82 @@ if "ok" not in data and "foreman" not in data:
   echo "ERROR: /api/status assertion failed on: $BODY" >&2
   exit 1
 }
+
+# Verify scripts/install.sh --check dry-run mode
+echo "Testing scripts/install.sh --check dry-run mode..."
+CHECK_TMP="$(mktemp -d /tmp/af-smoke-check.XXXXXX)"
+SENTINEL_SECRETS="$CHECK_TMP/sentinel-secrets"
+CHECK_REPO="$CHECK_TMP/agent-forge"
+
+mkdir -p "$CHECK_REPO/etc" "$CHECK_REPO/scripts" "$CHECK_REPO/bin" "$CHECK_REPO/worker"
+cp "$ROOT/scripts/install.sh" "$CHECK_REPO/scripts/install.sh"
+chmod +x "$CHECK_REPO/scripts/install.sh"
+cp -r "$ROOT/bin" "$CHECK_REPO/"
+cp "$ROOT/etc/"*.example.* "$CHECK_REPO/etc/"
+
+CHECK_OUT=$(cd "$CHECK_REPO" && SANDBOX_SECRETS="$SENTINEL_SECRETS" bash scripts/install.sh --check 2>&1) || {
+  echo "ERROR: scripts/install.sh --check exited non-zero" >&2
+  echo "$CHECK_OUT" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+}
+
+# Assert exit code 0 and plan output lines
+grep -q "Plan complete - 0 side effects" <<<"$CHECK_OUT" || {
+  echo "ERROR: output missing 'Plan complete - 0 side effects': $CHECK_OUT" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+}
+
+grep -q "Would:" <<<"$CHECK_OUT" || {
+  echo "ERROR: output missing 'Would:' lines: $CHECK_OUT" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+}
+
+# Assert absence of side-effect files/directories
+if [ -e "$SENTINEL_SECRETS" ]; then
+  echo "ERROR: sentinel secrets directory $SENTINEL_SECRETS was created by --check" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+fi
+
+for cfg in limits foreman forge; do
+  if [ -e "$CHECK_REPO/etc/$cfg.conf" ]; then
+    echo "ERROR: config file $CHECK_REPO/etc/$cfg.conf was created by --check" >&2
+    rm -rf "$CHECK_TMP"
+    exit 1
+  fi
+done
+
+if [ -e "$CHECK_REPO/etc/team-rules.md" ]; then
+  echo "ERROR: team-rules.md was created by --check" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+fi
+
+# Also assert that running --check --demo does not create docs/vision.md
+DEMO_OUT=$(cd "$CHECK_REPO" && SANDBOX_SECRETS="$SENTINEL_SECRETS" bash scripts/install.sh --check --demo 2>&1) || {
+  echo "ERROR: scripts/install.sh --check --demo exited non-zero" >&2
+  echo "$DEMO_OUT" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+}
+
+if [ -e "$CHECK_REPO/docs/vision.md" ]; then
+  echo "ERROR: docs/vision.md was created by --check --demo" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+fi
+
+grep -q "Would: copy examples/demo/vision.md to docs/vision.md" <<<"$DEMO_OUT" || {
+  echo "ERROR: demo output missing plan line for vision.md" >&2
+  rm -rf "$CHECK_TMP"
+  exit 1
+}
+
+rm -rf "$CHECK_TMP"
+echo "install check test (shell): OK"
 
 echo "install smoke test (shell): ALL OK"
 exit 0
