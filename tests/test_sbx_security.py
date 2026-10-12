@@ -1,13 +1,14 @@
-"""Security regression tests for bin/lib/sbx.py and bin/dispatch.
+"""Security regression tests for bin/lib/sbx.py, bin/dispatch, and bin/run-supervisor.
 Public interface: run via unittest runner or directly with python3 tests/test_sbx_security.py.
 Invariants:
 - Argument regexes reject shell metacharacters, control characters, and path separators.
 - Path helpers reject directory traversal sequences (..) and separators, returning safe paths.
 - Project configurations reject malicious TEST_CMD and GATE_IMAGE entries, failing safe.
 - Dispatch preflight enforces worker naming, model, and role formats before container execution.
-- Dispatch prompt reading escapes hostile NUL bytes into literal \\x00, preventing supervisor crashes.
+- Dispatch and run-supervisor prompt reading escapes hostile NUL bytes into literal \\x00, preventing crashes.
 """
 import inspect
+import json
 import os
 import re
 import subprocess
@@ -430,6 +431,9 @@ class TestSbxSecurity(unittest.TestCase):
     def test_dispatch_escapes_nul_bytes_in_prompt(self):
         """Invariant: bin/dispatch wraps task prompts with sbx.no_nul, replacing NUL bytes with literal '\\x00'."""
         dispatch_bin = os.path.join(sbx.ROOT, "bin", "dispatch")
+        prompt_content = None
+        runs_count = 0
+        dispatch_rc = -1
         with tempfile.TemporaryDirectory() as td:
             fake_docker = os.path.join(td, "docker")
             with open(fake_docker, "w") as f:
@@ -461,27 +465,16 @@ class TestSbxSecurity(unittest.TestCase):
 
             r = subprocess.run([sys.executable, dispatch_bin, "worker-1", task_file],
                                capture_output=True, text=True, env=env)
-            self.assertEqual(r.returncode, 0, f"bin/dispatch failed: {r.stderr}")
-            assert r.returncode == 0
-
+            dispatch_rc = r.returncode
             runs = [d for d in os.listdir(runs_dir) if d.endswith("-worker-1")]
-            self.assertEqual(len(runs), 1, "expected exactly one run directory created")
-            assert len(runs) == 1
+            runs_count = len(runs)
+            if runs:
+                prompt_file = os.path.join(runs_dir, runs[0], "prompt.md")
+                if os.path.isfile(prompt_file):
+                    with open(prompt_file, "r") as pf:
+                        prompt_content = pf.read()
 
-            prompt_file = os.path.join(runs_dir, runs[0], "prompt.md")
-            self.assertTrue(os.path.isfile(prompt_file), f"missing prompt.md in {runs[0]}")
-            assert os.path.isfile(prompt_file)
-
-            with open(prompt_file, "r") as pf:
-                prompt_content = pf.read()
-
-            self.assertNotIn("\x00", prompt_content, "prompt.md must not contain raw NUL byte")
-            assert "\x00" not in prompt_content
-
-            self.assertIn(r"hello\x00world", prompt_content, "prompt.md must contain escaped \\x00")
-            assert r"hello\x00world" in prompt_content
-
-            pid_file = os.path.join(runs_dir, runs[0], "pid")
+            pid_file = os.path.join(runs_dir, runs[0], "pid") if runs else ""
             if os.path.isfile(pid_file):
                 try:
                     with open(pid_file, "r") as f:
@@ -494,6 +487,100 @@ class TestSbxSecurity(unittest.TestCase):
                             break
                 except (ValueError, OSError):
                     pass
+
+        self.assertEqual(dispatch_rc, 0)
+        assert dispatch_rc == 0
+        self.assertEqual(runs_count, 1)
+        assert runs_count == 1
+        self.assertIsNotNone(prompt_content)
+        assert prompt_content is not None
+        self.assertNotIn("\x00", prompt_content, "prompt.md must not contain raw NUL byte")
+        assert "\x00" not in prompt_content
+        self.assertIn(r"hello\x00world", prompt_content, "prompt.md must contain escaped \\x00")
+        assert r"hello\x00world" in prompt_content
+
+    def test_run_supervisor_escapes_nul_bytes_in_prompt(self):
+        """Invariant: bin/run-supervisor wraps prompt.md with sbx.no_nul, preventing embedded null byte crashes."""
+        sup_bin = os.path.join(sbx.ROOT, "bin", "run-supervisor")
+        sup_rc = -1
+        sup_stderr = ""
+        calls_content = ""
+        with tempfile.TemporaryDirectory() as td:
+            calls_log = os.path.join(td, "calls.log")
+            fake_docker = os.path.join(td, "docker")
+            with open(fake_docker, "w") as f:
+                f.write(
+                    "#!/bin/sh\n"
+                    f'echo "$*" >> "{calls_log}"\n'
+                    'if [ "$1" = "inspect" ]; then\n'
+                    '    echo "true"\n'
+                    "    exit 0\n"
+                    "fi\n"
+                    "exit 0\n"
+                )
+            os.chmod(fake_docker, 0o755)
+
+            limits_file = os.path.join(td, "limits.conf")
+            with open(limits_file, "w") as f:
+                f.write(
+                    "RUN_TIMEOUT_MIN=30\nRUN_TOKEN_CAP=1500000\nMAX_PARALLEL=4\nPOLL_SEC=1\n"
+                    "DAILY_TOKEN_BUDGET=3000000\nMAX_RUNS_PER_DAY=10\nCONSEC_FAIL_TRIP=3\n"
+                    "WORKER_MODEL=test-model\n"
+                )
+
+            runs_dir = os.path.join(td, "runs")
+            run_dir = os.path.join(runs_dir, "20261012T000000Z-worker-1")
+            os.makedirs(run_dir)
+
+            prompt_content = "hello\x00world\n"
+            with open(os.path.join(run_dir, "prompt.md"), "w") as f:
+                f.write(prompt_content)
+
+            meta = {
+                "run_id": "20261012T000000Z-worker-1",
+                "worker": "worker-1",
+                "task": "task-1.md",
+                "test": True,
+                "runner": None,
+                "runtime": "agy",
+                "model": "test-model",
+                "repo": "sandbox/playground",
+                "branch": "feat/task-1",
+                "conversation": "",
+                "limits": {"timeout_min": 30, "token_cap": 1500000},
+            }
+            with open(os.path.join(run_dir, "meta.json"), "w") as f:
+                json.dump(meta, f)
+
+            env = dict(
+                os.environ,
+                PATH=f"{td}:{os.environ.get('PATH', '')}",
+                SANDBOX_TEST="1",
+                SANDBOX_RUNS_DIR=runs_dir,
+                LIMITS_FILE=limits_file,
+            )
+
+            r = subprocess.run([sys.executable, sup_bin, run_dir], capture_output=True, text=True, env=env)
+            sup_rc = r.returncode
+            sup_stderr = r.stderr
+            if os.path.isfile(calls_log):
+                with open(calls_log, "r") as f:
+                    calls_content = f.read()
+
+        self.assertEqual(sup_rc, 0, f"bin/run-supervisor crashed with exit code {sup_rc}: {sup_stderr}")
+        assert sup_rc == 0
+        self.assertNotIn("embedded null byte", sup_stderr, "run-supervisor raised embedded null byte error")
+        assert "embedded null byte" not in sup_stderr
+
+        agy_lines = [line for line in calls_content.splitlines() if "agy-run" in line]
+        self.assertTrue(len(agy_lines) > 0, "expected at least one docker call invoking agy-run")
+        assert len(agy_lines) > 0
+
+        agy_cmd = agy_lines[0]
+        self.assertNotIn("\x00", agy_cmd, "command sent to agent subprocess must not contain raw NUL byte")
+        assert "\x00" not in agy_cmd
+        self.assertIn(r"hello\x00world", agy_cmd, "command sent to agent subprocess must escape NUL to literal \\x00")
+        assert r"hello\x00world" in agy_cmd
 
 
 if __name__ == "__main__":
