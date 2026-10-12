@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Orchestrator providers documentation: `docs/PROVIDERS.md` now covers `openai-api` and `gemini-api` setup (base URL and model settings fields, key management via `bin/secret-set`), cost/quota honesty, schema and URL validation limitations, and offline testing.
 - Escape hostile NUL bytes: a hostile NUL byte in test/gate output could crash the supervisor when it reached the next retry prompt; now it is escaped.
 - OpenCode runtime: support SST's OpenCode CLI (`opencode`) with non-interactive JSON stream execution and configurable endpoint egress.
 - Qwen Code runtime: support Alibaba Qwen Code CLI (`qwen-code`) with non-interactive stream-json execution and DashScope egress allowlist.
