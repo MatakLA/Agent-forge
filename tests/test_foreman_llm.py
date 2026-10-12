@@ -553,6 +553,67 @@ class TestForemanLLM(unittest.TestCase):
         self.assertEqual(len(parsed.get("mutations", [])), 1)
         assert parsed["verdict"] == "approve"
 
+    def test_llm_available_openai_and_gemini(self):
+        """Test llm_available recognizes openai-api and gemini-api as valid providers."""
+        ctx.C.clear()
+        ctx.C["PLAN_PROVIDERS"] = "openai-api"
+        self.assertTrue(llm.llm_available())
+        assert llm.llm_available() is True
+
+        ctx.C.clear()
+        ctx.C["REVIEW_PROVIDERS"] = "gemini-api"
+        self.assertTrue(llm.llm_available())
+        assert llm.llm_available() is True
+
+    def test_providers_for_whitespace_orchestrator_falls_back_to_env(self):
+        """Test whitespace ORCHESTRATOR_PROVIDER in ctx.C falls back to os.environ."""
+        ctx.C.clear()
+        ctx.C["PLAN_PROVIDERS"] = ""
+        ctx.C["ORCHESTRATOR_PROVIDER"] = "   "
+        os.environ["ORCHESTRATOR_PROVIDER"] = "gemini-api"
+        provs = llm.providers_for("plan")
+        self.assertEqual(provs, ["gemini-api"])
+        assert provs == ["gemini-api"]
+
+    def test_provider_fallback_on_empty_text_response(self):
+        """Test provider returning empty text or whitespace triggers fallback to next provider."""
+        ctx.C["PLAN_PROVIDERS"] = "openai-api, gemini-api"
+        ctx.C["OPENAI_MODEL"] = "gpt-4o"
+        ctx.C["GEMINI_MODEL"] = "gemini-1.5-pro"
+
+        openai_empty = {
+            "text": "   ",
+            "provider": "openai-api",
+            "model": "gpt-4o",
+            "duration_s": 0.1,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+        gemini_ok = {
+            "text": '{"tasks": [], "done": true}',
+            "provider": "gemini-api",
+            "model": "gemini-1.5-pro",
+            "duration_s": 0.2,
+            "usage": {},
+            "is_error": False,
+            "error": None,
+        }
+
+        with mock.patch("providers.call_openai_api", return_value=openai_empty):
+            with mock.patch("providers.call_gemini_api", return_value=gemini_ok):
+                text, who = llm.llm("plan", "Plan prompt")
+
+        self.assertEqual(who, "gemini-api:gemini-1.5-pro")
+        assert who == "gemini-api:gemini-1.5-pro"
+
+    def test_validate_schema_malformed_schema_and_types(self):
+        """Test validate_schema safely handles malformed schema JSON strings and non-dict inputs."""
+        self.assertFalse(llm.validate_schema({"a": 1}, "{invalid json"))
+        self.assertFalse(llm.validate_schema("not a dict", "{}"))
+        self.assertFalse(llm.validate_schema({"a": 1}, 12345))
+        assert llm.validate_schema({"a": 1}, "{invalid json") is False
+
 
 if __name__ == "__main__":
     unittest.main()
