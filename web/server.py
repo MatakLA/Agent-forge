@@ -126,11 +126,13 @@ def foreman(pf, args, inp=None, timeout=60):
     return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {args}", timeout=timeout, inp=inp)
 
 
-def as_json(out, err, rc):
+def as_json(out, err="", rc=0):
+    if isinstance(out, (dict, list)):
+        return out
     try:
         return json.loads(out)
-    except ValueError:
-        msg = (err or out or f"exit {rc}").strip()[-400:]
+    except (ValueError, TypeError):
+        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
         if DASHBOARD_TOKEN:
             msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
         return {"ok": False, "error": msg}
@@ -555,6 +557,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(json.loads(out))
             except Exception:
                 self._json({"error": (err or out)[-300:] or "settings need a newer bin/foreman"})
+        elif path == "/api/readiness":
+            self._json(as_json(B.readiness_summary()))
         elif path.startswith("/api/jobs/"):
             j = B.JOBS.get(path.rsplit("/", 1)[-1])
             self._json(j or {"error": "unknown job"})
