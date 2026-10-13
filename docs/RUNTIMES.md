@@ -45,13 +45,15 @@ For example, when a `claude` worker is active but `api.anthropic.com` is missing
 ### How to fix a missing egress host
 
 1. **Which file to edit**:
-   - `egress/allowlist.local.txt`: Edit this file (or click **Allow** on the dashboard's **System &rarr; Egress** page) to permit a host locally. Under the hood, `bin/lib/egress.py`'s `allow_host()` appends the host to `egress/allowlist.local.txt` while keeping the shipped `egress/allowlist.txt` untouched.
-   - `egress/allowlist.txt`: Shipped base allowlist for repository-wide defaults.
+   - `bin/doctor`'s diagnostic message directs the owner to: `add <host> to egress/allowlist.txt, or allow it from the dashboard's Egress page`.
+   - Both `egress/allowlist.txt` (shipped base allowlist) and `egress/allowlist.local.txt` (local additions) are loaded by `egress.allowlist()`: adding the host to either file satisfies `bin/doctor` and permits traffic through Squid.
+   - Per `bin/lib/egress.py`'s `allow_host(host)` (and the dashboard's **System &rarr; Egress** page **Allow** action), the host is appended to `egress/allowlist.local.txt` so the shipped `egress/allowlist.txt` remains untouched.
+   - For manual edits from the shell, you can append the host to `egress/allowlist.local.txt` (per `allow_host()` convention for local additions) or directly to `egress/allowlist.txt` (as quoted in `bin/doctor`'s output).
 2. **Proxy reload**:
-   - `allow_host()` reloads the proxy automatically via `reload_proxy()` (`squid -k reconfigure`).
-   - If editing `egress/allowlist.local.txt` or `egress/allowlist.txt` manually from a shell, run `bin/egress-up` or invoke `reload_proxy()` to apply the change.
+   - `allow_host()` (or the dashboard **Allow** button) reloads the proxy automatically via `reload_proxy()` (`squid -k reconfigure`).
+   - If editing `egress/allowlist.local.txt` or `egress/allowlist.txt` manually from a shell, apply the changes by running `bin/egress-up` or invoking `reload_proxy()`.
 3. **No worker restart is needed**:
-   - The Squid proxy reloads its allowlists in place without dropping active tunnels. Worker containers do not need to be restarted.
+   - The Squid proxy reloads its allowlists in place (`squid -k reconfigure`) without dropping active tunnels. Worker containers do not need to be restarted.
 
 ### Required egress hosts by runtime
 
