@@ -13,6 +13,7 @@
        bin/foreman doc list | get <name> | reset <role:slug>    echo "<text>" | bin/foreman doc set <name>   (vision, team-rules,
                                                     decisions, lessons, role:<slug> - a role is saved as this project's own version)
        bin/foreman disk                             what takes the space (JSON)   bin/foreman cleanup compress|transcripts|docker [days]
+       bin/foreman readiness                        readiness of all runtimes and providers (JSON)
        bin/foreman retry <task-id> | cancel <goal-id>          older spellings of `task <id> retry` / `goal <id> cancel`
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
        bin/foreman questions [--json]               things the roadmap could not decide without the owner
@@ -110,6 +111,8 @@ def main():
         print(json.dumps(disk_usage())); return
     if a[:1] == ["readiness-recommend"]:
         print(json.dumps(readiness.recommend(), ensure_ascii=False)); return
+    if a[:1] == ["readiness"]:
+        print(json.dumps(readiness.all_status())); return
     if a[:1] == ["cleanup"] and len(a) in (2, 3) and (len(a) == 2 or a[2].isdigit()):
         print(json.dumps({"ok": True, "message": cleanup(a[1], int(a[2]) if len(a) == 3 else None)})); return
     if a[:2] == ["backlog", "edit"] and len(a) == 4 and a[2].isdigit() and a[3] == "-":
