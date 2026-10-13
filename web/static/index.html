@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent-Forge</title>
 <meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="/static/vendor/xterm.css?v={{V}}">
 <link rel="stylesheet" href="/static/app.css?v={{V}}">
 </head>
 <body>
@@ -69,14 +70,12 @@
 <!-- one sheet for task / goal / run replay / document / search; the dialogs below are separate because they hold a running process -->
 <div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
 <div class="detail" id="login"><div class="sheet"><button class="close" id="login-close">Close</button><h2 id="login-title">Sign-in</h2>
-  <div class="muted small" style="margin:6px 0">This is the worker's terminal. Open the link, sign in with the Google account meant for this worker, copy the
-  code and send it here. If agy shows a menu or a [Done] button, use the key buttons (Tab to the button, then Enter).</div>
+  <div class="muted small" style="margin:6px 0">A real terminal of the worker: click into it and type. Open the sign-in link, choose the Google account meant for this
+  worker, paste the code it shows into the terminal (Ctrl+Shift+V) and press Enter; accept agy's questions with Tab / Enter. When agy shows its prompt, you are signed in:
+  press <b>Done</b> below.</div>
   <div id="login-url" style="font-size:13px;margin:6px 0"></div>
-  <pre id="login-out" class="term"></pre>
-  <div class="btnrow muted small">Keys for agy's menus (the terminal has no keyboard of its own):
-    <button class="mini" data-key="enter">Enter</button><button class="mini" data-key="tab">Tab</button><button class="mini" data-key="shift-tab">Shift+Tab</button><button class="mini" data-key="up">&uarr;</button><button class="mini" data-key="down">&darr;</button><button class="mini" data-key="left">&larr;</button><button class="mini" data-key="right">&rarr;</button><button class="mini" data-key="space">Space</button><button class="mini" data-key="esc">Esc</button></div>
-  <div class="btnrow"><input type="text" id="login-in" placeholder="code or answer" style="flex:1"><button class="mini" id="login-send">Send</button></div>
-  <div class="btnrow"><button class="primary" id="login-done">Done — check the sign-in</button></div></div></div>
+  <div id="login-term" class="term-box"></div>
+  <div class="btnrow"><button class="primary" id="login-done">Done — check the sign-in and close</button></div></div></div>
 <div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close">Close</button><h2>New project</h2>
   <div class="muted small" style="margin:6px 0">Creates a project with its own orchestrator, a repository on Forgejo and a group of workers.
   Each worker should belong to one project only.</div>
@@ -106,6 +105,8 @@
   <div class="btnrow"><button class="primary" id="su-go">Save and connect</button><button class="mini" id="su-later">Later</button></div></div>
   <pre id="su-log" class="term" style="display:none"></pre></div></div>
 <div id="toasts" aria-live="polite"></div>
+<script src="/static/vendor/xterm.js?v={{V}}"></script>
+<script src="/static/vendor/addon-fit.js?v={{V}}"></script>
 <script src="/static/js/core.js?v={{V}}"></script>
 <script src="/static/js/overview.js?v={{V}}"></script>
 <script src="/static/js/tasks.js?v={{V}}"></script>

@@ -2,3 +2,5 @@ Agent-Forge
 Copyright 2026 MatakLA
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party: web/static/vendor/ contains xterm.js and its fit addon (MIT, Copyright The xterm.js authors), see web/static/vendor/XTERM-LICENSE.txt.

@@ -269,10 +269,6 @@ document.addEventListener('click', async e => {
   if (e.target.id === 'np-create') { createProject(); return; }
   if (e.target.id === 'np-close') { $('newproj').classList.remove('on'); await loadProjects(true); if ($('proj').value !== project) switchProject(project); return; }
   const lg = e.target.closest('[data-login]'); if (lg) { openLogin(lg.dataset.login); return; }
-  if (e.target.id === 'login-send') { const i = $('login-in');
-    await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'input', text: i.value})}); i.value = ''; return; }
-  const kb = e.target.closest('[data-key]'); if (kb) {
-    await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Agent-Forge': '1'}, body: JSON.stringify({worker: loginW, action: 'key', key: kb.dataset.key})}); return; }
   if (e.target.id === 'login-done' || e.target.id === 'login-close') { closeLogin(e.target.id === 'login-done'); return; }
   if (e.target.id === 'su-close' || e.target.id === 'su-later') { $('setup').classList.remove('on'); setupDismissed[project] = true; return; }
   if (e.target.id === 'su-go') { setupGo(); return; }
@@ -349,22 +345,33 @@ async function setupGo() {
   S = null; loadSettings(true); refreshSoon();
 }
 
-// ---- a worker's Antigravity sign-in, in its terminal
-let loginW = null, loginTimer = null;
+// ---- a worker's Antigravity sign-in: a real terminal (xterm.js) on the worker's `agy-run`, raw bytes both ways
+let loginW = null, loginTimer = null, loginTerm = null, loginFit = null, loginPos = 0, loginSend = Promise.resolve();
+const loginPost = body => fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({worker: loginW}, body))});
+const b64 = u8 => { let s = ''; for (const c of u8) s += String.fromCharCode(c); return btoa(s); };
 async function openLogin(w) {
-  loginW = w;
-  $('login').classList.add('on'); $('login-title').textContent = 'Sign ' + w + ' in to Antigravity'; $('login-out').textContent = 'starting…';
-  await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: w, action: 'start'})});
+  loginW = w; loginPos = 0;
+  $('login').classList.add('on'); $('login-title').textContent = 'Sign ' + w + ' in to Antigravity'; $('login-url').textContent = '';
+  const box = $('login-term'); box.textContent = '';
+  loginTerm = new Terminal({fontSize: 13, cursorBlink: true, scrollback: 2000, convertEol: false, theme: {background: '#000000'}});
+  loginFit = new FitAddon.FitAddon(); loginTerm.loadAddon(loginFit); loginTerm.open(box); loginFit.fit();
+  const enc = new TextEncoder();
+  loginTerm.onData(d => { loginSend = loginSend.then(() => loginPost({action: 'write', data: b64(enc.encode(d))})).catch(() => {}); });
+  loginTerm.onResize(sz => { loginPost({action: 'size', cols: sz.cols, rows: sz.rows}).catch(() => {}); });
+  await loginPost({action: 'start', cols: loginTerm.cols, rows: loginTerm.rows});
+  loginTerm.focus();
   clearInterval(loginTimer);
   loginTimer = setInterval(async () => {
-    let r; try { r = await (await fetch('/api/login?worker=' + encodeURIComponent(w))).json(); } catch (e) { return; }
-    const o = $('login-out'), atBottom = o.scrollHeight - o.scrollTop - o.clientHeight < 30;
-    o.textContent = r.output || '(waiting for output…)'; if (atBottom) o.scrollTop = o.scrollHeight;
-    $('login-url').innerHTML = r.url ? 'Open it and sign in with <b>the account for ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
-  }, 1500);
+    let r; try { r = await (await fetch('/api/login?worker=' + encodeURIComponent(w) + '&since=' + loginPos)).json(); } catch (e) { return; }
+    if (r.data) { const bin = atob(r.data), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); loginTerm.write(u8); loginPos = r.next; }
+    $('login-url').innerHTML = r.url && /accounts\.google\.com/.test(r.url) ? 'Open it and sign in with <b>the account for ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
+  }, 500);
+  window.addEventListener('resize', fitLogin);
 }
+function fitLogin() { try { if (loginFit && $('login').classList.contains('on')) loginFit.fit(); } catch (e) {} }
 async function closeLogin(check) {
-  clearInterval(loginTimer);
+  clearInterval(loginTimer); window.removeEventListener('resize', fitLogin);
+  if (loginTerm) { loginTerm.dispose(); loginTerm = null; }
   if (check) $('login-url').textContent = 'checking the sign-in…';
   let r = {}; try { r = await (await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'stop'})})).json(); } catch (e) {}
   if (check) alert(r.logged_in ? loginW + ' is signed in and sees its quota. Tick it in the project and save.' : loginW + ' is not signed in yet — try again.');
