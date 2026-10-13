@@ -558,28 +558,14 @@ function fileOnlyCard() {
 let ONBOARDING = null, onboardingBusy = false, onboardingErr = null, onboardingAt = 0;
 
 const ONBOARDING_STATUS_LABELS = {
-  ok: 'Configured',
-  configured: 'Configured',
+  ok: 'Ready',
   missing_setting: 'Missing setting',
-  missing_egress: 'Missing host',
-  missing_host: 'Missing host',
-  missing_secret: 'Missing secret',
-  untested: 'Untested'
+  missing_egress: 'Missing egress'
 };
 
 function onboardingStatusLabel(info) {
-  if (!info) return ONBOARDING_STATUS_LABELS.untested;
   const state = String((info && info.state) || info || '').trim().toLowerCase();
-  if (state === 'ok') return ONBOARDING_STATUS_LABELS.ok;
-  if (state === 'missing_egress') return ONBOARDING_STATUS_LABELS.missing_egress;
-  if (state === 'missing_setting') {
-    const ms = (info && info.missing_settings) || [];
-    if (Array.isArray(ms) && ms.some(k => /KEY|SECRET|\.key$/i.test(k))) {
-      return 'Missing secret';
-    }
-    return ONBOARDING_STATUS_LABELS.missing_setting;
-  }
-  return ONBOARDING_STATUS_LABELS[state] || 'Untested';
+  return ONBOARDING_STATUS_LABELS[state] || 'Unknown status';
 }
 
 function choosingAiRefHtml() {
@@ -616,7 +602,7 @@ async function loadOnboarding(force) {
 function onboardingRow(kind, name, info) {
   if (typeof info === 'string') info = {state: info};
   info = info || {};
-  const state = String(info.state || 'untested').trim().toLowerCase();
+  const state = String((info && info.state) || '').trim().toLowerCase();
   const statusLabel = onboardingStatusLabel(info);
   const detail = info.detail != null ? String(info.detail) : '';
   const label = kind === 'runtime'
@@ -624,7 +610,7 @@ function onboardingRow(kind, name, info) {
     : ((typeof PROVLABEL !== 'undefined' && PROVLABEL[name]) || READINESS_PROVLABEL[name] || name);
   const nameHtml = '<b>' + esc(label) + '</b>' + (label !== name ? ' <span class="muted small">(' + esc(name) + ')</span>' : '');
   const kindLabel = kind === 'runtime' ? 'Runtime' : 'Provider';
-  const badgeClass = state === 'ok' ? 'badge ok' : (state === 'untested' ? 'badge' : 'badge warn');
+  const badgeClass = state === 'ok' ? 'badge ok' : (state in ONBOARDING_STATUS_LABELS ? 'badge warn' : 'badge');
   return '<tr data-kind="' + esc(kind) + '" data-name="' + esc(name) + '" data-state="' + esc(state) + '">' +
     '<td class="muted small">' + esc(kindLabel) + '</td>' +
     '<td>' + nameHtml + '</td>' +
