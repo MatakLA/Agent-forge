@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Issue intake parsing E2E test: verify bin/issues-intake creates one goal per eligible GitHub issue with role taken from label-to-role mapping against a fake GitHub API fixture (tests/test_issues_intake_parsing.sh, tests/fixtures/fake-forge-api-github.js).
 - Runtime recommendation: rank ready runtimes cheapest-first in Settings > Onboarding via GET /api/readiness/recommend with honest fallback when none are ready.
 - Control endpoint: POST /api/control triggers autopilot on/off and foreman pause/resume per project or default via bin/foreman.
 - Readiness API and CLI: expose runtime and provider readiness status via GET /api/readiness and `bin/foreman readiness` subcommand.
