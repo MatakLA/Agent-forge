@@ -292,7 +292,7 @@ class LoginSessions:
                 ln = lines[j]
                 u += re.match(r"\s?([^\s'\"<>]+)", ln).group(1)
             found.append(u)
-        oauth = [u for u in found if "accounts.google.com" in u]
+        oauth = [u for u in found if "accounts.google.com/o/oauth2" in u] or [u for u in found if "accounts.google.com" in u]
         return (oauth or found or [None])[-1]
 
     def stop(self, w):
