@@ -57,7 +57,7 @@ HOST = re.compile(r"[a-z0-9][a-z0-9.-]{2,252}")          # bin/lib/egress.py che
 TARGET = re.compile(r"|worker-\d+|[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
 TASK_ACTIONS = ("approve", "cancel", "retry", "feedback", "assign", "model")
 GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "cancel")
-CONTROL_ACTIONS = ("autopilot_on", "autopilot_off")
+CONTROL_ACTIONS = ("autopilot_on", "autopilot_off", "pause", "resume")
 
 
 def load_static():
@@ -361,8 +361,13 @@ class Handler(BaseHTTPRequestHandler):
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
-            cmd = ["autopilot", "on"] if act == "autopilot_on" else ["autopilot", "off"]
-            rc, out, err = foreman(pf, cmd)
+            cmds = {
+                "autopilot_on": ["autopilot", "on"],
+                "autopilot_off": ["autopilot", "off"],
+                "pause": ["pause"],
+                "resume": ["resume"],
+            }
+            rc, out, err = foreman(pf, cmds[act])
             combined = ((out if isinstance(out, str) else "") + ("\n" if out and err else "") + (err if isinstance(err, str) else "")).strip()[-400:]
             if not combined and rc != 0:
                 combined = f"exit {rc}"
