@@ -10,6 +10,7 @@
 #   - Strictly offline: tests up/down against loopback without real Docker or external network.
 #   - Asserts all six KEY=VALUE pairs emitted by up, verifies server response, and confirms down cleans up.
 #   - down is verified to be idempotent (second call is a clean exit 0 no-op).
+#   - Verifies concurrent up calls allocate independent ephemeral ports and processes without collisions.
 #   - Confirms QUICKSTART_FAKE_DOCKER_DIR only points to tools/fake-docker and invokes no real Docker binary.
 #   - All assertions use explicit || exit 1 with set -euo pipefail.
 
@@ -34,6 +35,8 @@ echo "$ERR_SUB" | grep -qi "unknown command" || exit 1
 # 3. Test down without required arguments failure
 ERR_DOWN_ARGS=$(bash "$SETUP" down 2>&1 && exit 1 || true)
 echo "$ERR_DOWN_ARGS" | grep -qi "Usage:" || exit 1
+ERR_DOWN_ONE=$(bash "$SETUP" down /tmp/scratch 2>&1 && exit 1 || true)
+echo "$ERR_DOWN_ONE" | grep -qi "Usage:" || exit 1
 
 # 4. Test missing node failure mode (fails closed with clear stderr)
 if ! command -v node >/dev/null 2>&1; then
@@ -66,6 +69,10 @@ eval "$UP_OUT" || exit 1
 [ -n "${QUICKSTART_FAKE_API_PID:-}" ] || exit 1
 kill -0 "$QUICKSTART_FAKE_API_PID" 2>/dev/null || exit 1
 
+# Extract first port
+PORT1=$(echo "$ANTHROPIC_API_BASE" | sed -E 's|http://127.0.0.1:([0-9]+)|\1|')
+[ -n "$PORT1" ] || exit 1
+
 # Verify fake-docker directory and executable shim
 [ -n "${QUICKSTART_FAKE_DOCKER_DIR:-}" ] || exit 1
 [ -d "$QUICKSTART_FAKE_DOCKER_DIR" ] || exit 1
@@ -89,7 +96,43 @@ echo "$RESP_OPENAI" | grep -q "chatcmpl" || exit 1
 RESP_GEMINI=$(curl -s -X POST -H "Content-Type: application/json" -d '{"contents":[]}' "$GEMINI_API_BASE/:generateContent") || exit 1
 echo "$RESP_GEMINI" | grep -q "gemini-fake" || exit 1
 
-# 7. Run `down` with printed values
+# 7. Test concurrent `up` call to verify ephemeral port allocation avoids collision
+UP_OUT2=$(bash "$SETUP" up) || exit 1
+DIR2=$(echo "$UP_OUT2" | grep '^QUICKSTART_RUNS_DIR=' | cut -d= -f2-)
+PID2=$(echo "$UP_OUT2" | grep '^QUICKSTART_FAKE_API_PID=' | cut -d= -f2-)
+PORT2=$(echo "$UP_OUT2" | grep '^ANTHROPIC_API_BASE=' | sed -E 's|.*:([0-9]+)|\1|')
+
+[ -n "$DIR2" ] || exit 1
+[ -n "$PID2" ] || exit 1
+[ -n "$PORT2" ] || exit 1
+[ "$PORT2" != "$PORT1" ] || exit 1
+[ "$PID2" != "$QUICKSTART_FAKE_API_PID" ] || exit 1
+[ "$DIR2" != "$QUICKSTART_RUNS_DIR" ] || exit 1
+
+kill -0 "$PID2" 2>/dev/null || exit 1
+kill -0 "$QUICKSTART_FAKE_API_PID" 2>/dev/null || exit 1
+
+# Confirm second server answers on its distinct port
+RESP2=$(curl -s -X POST -H "Content-Type: application/json" -d '{"messages":[]}' "http://127.0.0.1:$PORT2/v1/messages") || exit 1
+echo "$RESP2" | grep -q "msg_x" || exit 1
+
+# Tear down second instance
+bash "$SETUP" down "$DIR2" "$PID2" || exit 1
+if kill -0 "$PID2" 2>/dev/null; then
+  echo "ERROR: second fake API process $PID2 still running after down" >&2
+  exit 1
+fi
+if [ -d "$DIR2" ]; then
+  echo "ERROR: second scratch dir $DIR2 still exists after down" >&2
+  exit 1
+fi
+
+# Confirm first instance is still running unaffected
+kill -0 "$QUICKSTART_FAKE_API_PID" 2>/dev/null || exit 1
+RESP1_AGAIN=$(curl -s -X POST -H "Content-Type: application/json" -d '{"messages":[]}' "$ANTHROPIC_API_BASE/v1/messages") || exit 1
+echo "$RESP1_AGAIN" | grep -q "msg_x" || exit 1
+
+# 8. Run `down` with printed values
 bash "$SETUP" down "$QUICKSTART_RUNS_DIR" "$QUICKSTART_FAKE_API_PID" || exit 1
 
 # Assert pid is no longer running
@@ -104,27 +147,7 @@ if [ -d "$QUICKSTART_RUNS_DIR" ]; then
   exit 1
 fi
 
-# 8. Assert `down` is idempotent (second invocation exits 0)
+# 9. Assert `down` is idempotent (second invocation exits 0)
 bash "$SETUP" down "$QUICKSTART_RUNS_DIR" "$QUICKSTART_FAKE_API_PID" || exit 1
-
-# 9. Test port bind conflict failure
-FIXTURE_PORT=$(grep -oE '\.listen\([0-9]+' "$ROOT/tests/fixtures/fake-model-api.js" | grep -oE '[0-9]+' || echo "8099")
-python3 -c "
-import socket, sys, time
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('127.0.0.1', int(sys.argv[1])))
-s.listen(1)
-time.sleep(3)
-s.close()
-" "$FIXTURE_PORT" &
-OCC_PID=$!
-sleep 0.1
-
-PORT_FAIL_OUT=$(bash "$SETUP" up 2>&1 && exit 1 || true)
-echo "$PORT_FAIL_OUT" | grep -qiE "bound|already in use|died" || exit 1
-
-kill -9 "$OCC_PID" 2>/dev/null || true
-wait "$OCC_PID" 2>/dev/null || true
 
 echo "quickstart setup tests: ALL OK"

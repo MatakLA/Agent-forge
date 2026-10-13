@@ -8,7 +8,7 @@
 #
 # Invariants:
 #   - Needs node on PATH to run tests/fixtures/fake-model-api.js; fails closed with clear stderr if missing.
-#   - Strictly offline: binds fake-model-api.js on localhost loopback port without network egress.
+#   - Strictly offline: binds fake-model-api.js on an ephemeral localhost loopback port without network egress.
 #   - Prepares fake-docker shim directory containing tools/fake-docker as `docker` so no real Docker daemon is invoked.
 #   - down is idempotent: stops fake API process and removes scratch dir, exiting 0 even if already stopped.
 
@@ -24,7 +24,13 @@ Usage:
   scripts/quickstart-e2e-setup.sh up
       Picks a free localhost port, starts fake-model-api.js in the background,
       prepares tools/fake-docker on a shim PATH, and prints six KEY=VALUE lines
-      eval-able by the caller.
+      eval-able by the caller:
+        ANTHROPIC_API_BASE=http://127.0.0.1:<port>
+        OPENAI_API_BASE=http://127.0.0.1:<port>/v1
+        GEMINI_API_BASE=http://127.0.0.1:<port>
+        QUICKSTART_RUNS_DIR=<scratch dir>
+        QUICKSTART_FAKE_API_PID=<pid>
+        QUICKSTART_FAKE_DOCKER_DIR=<dir prepended to PATH containing tools/fake-docker as docker>
 
   scripts/quickstart-e2e-setup.sh down <scratch_dir> <pid>
       Kills the fake-model-api process (if still running) and removes the scratch dir.
@@ -52,29 +58,61 @@ cmd_up() {
     exit 1
   fi
 
-  # 3. Read port from fixture (.listen(8099))
+  # 3. Pick a free ephemeral localhost port allocated by the OS
   local port
-  port=$(grep -oE '\.listen\([0-9]+' "$FIXTURE" | grep -oE '[0-9]+' || echo "8099")
-
-  # 4. Verify port can be bound on loopback
-  if ! python3 -c "import socket, sys; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', int(sys.argv[1]))); s.close()" "$port" 2>/dev/null; then
-    echo "ERROR: port $port cannot be bound on 127.0.0.1 (already in use)" >&2
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || true)
+  if [ -z "$port" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not allocate a free localhost port" >&2
     exit 1
   fi
 
-  # 5. Create scratch directory
+  # 4. Create scratch directory
   local scratch_dir
   scratch_dir="$(mktemp -d)"
 
-  # 6. Create fake-docker shim directory
+  # 5. Create fake-docker shim directory
   local fake_docker_dir="$scratch_dir/docker-shim"
   mkdir -p "$fake_docker_dir"
   cp "$FAKE_DOCKER" "$fake_docker_dir/docker"
   chmod +x "$fake_docker_dir/docker"
 
-  # 7. Start fake-model-api.js in the background
+  # 6. Preload hook to bind HTTP server to the selected ephemeral port
+  cat <<'EOF' > "$scratch_dir/bind-port.js"
+const http = require('http');
+const net = require('net');
+const port = parseInt(process.env.PORT || process.argv[2], 10);
+if (port && !isNaN(port)) {
+  const patch = function(proto) {
+    if (!proto || !proto.listen) return;
+    const orig = proto.listen;
+    proto.listen = function(...args) {
+      if (args.length > 0) {
+        if (typeof args[0] === 'number' || (typeof args[0] === 'string' && /^\d+$/.test(args[0]))) {
+          args[0] = port;
+        } else if (typeof args[0] === 'object' && args[0] !== null) {
+          args[0].port = port;
+        }
+      }
+      return orig.apply(this, args);
+    };
+  };
+  if (http && http.Server) patch(http.Server.prototype);
+  if (net && net.Server) patch(net.Server.prototype);
+  const origLog = console.log;
+  console.log = function(...args) {
+    return origLog.apply(console, args.map(a => typeof a === 'string' ? a.replace(':8099', ':' + port) : a));
+  };
+}
+EOF
+
+  # 7. Start fake-model-api.js on the chosen port in the background
+  local node_opts="--require $scratch_dir/bind-port.js"
+  if [ -n "${NODE_OPTIONS:-}" ]; then
+    node_opts="$NODE_OPTIONS $node_opts"
+  fi
+
   local server_pid
-  node "$FIXTURE" > "$scratch_dir/fake-model-api.log" 2>&1 &
+  PORT="$port" NODE_OPTIONS="$node_opts" node "$FIXTURE" "$port" > "$scratch_dir/fake-model-api.log" 2>&1 &
   server_pid=$!
 
   # 8. Wait for fake server to accept connections
@@ -142,7 +180,7 @@ case "${1:-}" in
     cmd_up
     ;;
   down)
-    if [ $# -lt 2 ]; then
+    if [ $# -lt 3 ]; then
       echo "Usage: $0 down <scratch_dir> <pid>" >&2
       exit 1
     fi
