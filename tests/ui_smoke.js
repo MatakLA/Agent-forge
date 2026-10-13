@@ -1,8 +1,9 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
 // sub-view renders, overview controls (autopilot and foreman pause switches) match fixture state and are keyboard reachable,
 // readiness summary on Settings checks runtimes and providers, file-only settings render with reasons, onboarding subsection
-// displays human-readable runtime/provider readiness and choosing AI guide, each kind of sheet opens
-// (task, goal, run replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
+// displays human-readable runtime/provider readiness, runtime recommendations widget (top pick vs no ready runtime), and choosing
+// AI guide, each kind of sheet opens (task, goal, run replay, search, document), the graph finds the critical path, and no script
+// error happens on the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
 let failed = 0;
@@ -1000,7 +1001,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / onboarding: Tab key sequence reaches table/rows proving keyboard reachability',
         onbTableReached);
 
-  // Task 0184: Onboarding recommendation widget (Fixture 1: has top pick)
+  // Task 0185: Onboarding recommendation widget (Fixture 1: has top pick)
   const recWidget = d.getElementById('onboarding-recommend');
   check('settings / onboarding: #onboarding-recommend container element is rendered',
         !!recWidget);
@@ -1028,8 +1029,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Assert ranked entries count and each data-ready attribute matches fixture ready value in order
   const pickRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const pickRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
   const pickRankedCountOk = pickRankedLis.length === recommendPickFixture.ranked.length && pickRankedLis.length > 0;
-  const pickRankedDataReadyOk = pickRankedCountOk && recommendPickFixture.ranked.every(r => {
+  const pickRankedAllHaveReadyAttr = pickRankedReadyLis.length === pickRankedLis.length;
+  const pickRankedDataReadyOk = pickRankedCountOk && pickRankedAllHaveReadyAttr && recommendPickFixture.ranked.every(r => {
     const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
     return !!li && li.getAttribute('data-ready') === String(r.ready);
   });
@@ -1052,7 +1055,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / onboarding (top pick): recommendation widget and ranked entries are reachable in keyboard/screen order via focus walking',
         recFocusOk);
 
-  // Task 0184: Onboarding recommendation widget (Fixture 2: no runtime ready, top is null)
+  // Task 0185: Onboarding recommendation widget (Fixture 2: no runtime ready, top is null)
   currentRecommendMock = recommendNoneFixture;
   w.eval(`
     if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
@@ -1080,8 +1083,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Assert every .recommend-ranked li has data-ready="false" and matches fixture ready values in order
   const noneRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const noneRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
   const noneRankedCountOk = noneRankedLis.length === recommendNoneFixture.ranked.length && noneRankedLis.length > 0;
-  const noneRankedAllFalse = noneRankedCountOk && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
+  const noneRankedAllHaveReadyAttr = noneRankedReadyLis.length === noneRankedLis.length;
+  const noneRankedAllFalse = noneRankedCountOk && noneRankedAllHaveReadyAttr && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
   const noneRankedMatchesFixture = noneRankedCountOk && recommendNoneFixture.ranked.every(r => {
     const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
     return !!li && li.getAttribute('data-ready') === String(r.ready);
