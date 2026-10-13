@@ -2,16 +2,17 @@
 """Poll GitHub or GitLab for open issues labelled agent-forge and queue each as a foreman goal.
 
 Public interface:
-  bin/issues-intake [--project NAME] [--label LABEL] [--dry-run]
-  intake_issues(kind=..., repo=..., token=..., project=..., label=..., dry_run=...)
+  bin/issues-intake [--project NAME] [--label LABEL] [--dry-run] [PAYLOAD_FILE] [--payload PAYLOAD_FILE]
+  intake_issues(kind=..., repo=..., token=..., project=..., label=..., dry_run=..., payload_file=...)
 
 Invariants:
   - Stdlib-only (Python 3 urllib.request, subprocess, json, re, argparse).
   - Only polls issues with the specified label (default: agent-forge).
+  - Validates webhook payloads and rejects malformed JSON, missing fields, invalid types, control/NUL characters, and oversized input cleanly without tracebacks.
   - Queues each issue exactly once by persisting seen issue IDs in issues-intake.json.
   - Passes goal text strictly over stdin to bin/foreman goal -, never in argv.
   - Never logs or exposes tokens; passes credentials solely in Authorization header.
-  - Exits 0 on success; 1 on auth, network, or configuration errors.
+  - Exits 0 on success; 1 on auth, network, configuration, or payload validation errors.
 """
 import argparse
 import json
@@ -27,6 +28,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_RE = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 PROJECT_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 HTML_TAG_RE = re.compile(r'<[^>]+>')
+CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+MAX_PAYLOAD_BYTES = 1024 * 1024
+MAX_TITLE_LEN = 10000
 
 
 def load_kv(path):
@@ -114,46 +118,135 @@ def fetch_issues(kind, repo, token, label="agent-forge"):
         sys.exit(1)
 
 
-def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-forge", dry_run=False, runs_dir=None):
+def validate_issue(issue, is_webhook=False):
+    """Validate issue dictionary structure and reject malformed input cleanly."""
+    if not isinstance(issue, dict):
+        sys.stderr.write("Malformed payload: issue entry must be a JSON object\n")
+        sys.exit(1)
+
+    # Validate id: required, integer or digits-only string
+    if "id" not in issue or issue["id"] is None:
+        sys.stderr.write("Malformed payload: missing required field 'id'\n")
+        sys.exit(1)
+    issue_id = issue["id"]
+    if isinstance(issue_id, bool) or (not isinstance(issue_id, int) and not (isinstance(issue_id, str) and issue_id.isdigit())):
+        sys.stderr.write(f"Malformed payload: invalid type for 'id': expected integer\n")
+        sys.exit(1)
+
+    # Validate title: required, string, non-empty, within size limit
+    if "title" not in issue or issue["title"] is None:
+        sys.stderr.write("Malformed payload: missing required field 'title'\n")
+        sys.exit(1)
+    title = issue["title"]
+    if not isinstance(title, str):
+        sys.stderr.write("Malformed payload: invalid type for 'title': expected string\n")
+        sys.exit(1)
+    if not title.strip():
+        sys.stderr.write("Malformed payload: 'title' cannot be empty\n")
+        sys.exit(1)
+    if len(title) > MAX_TITLE_LEN:
+        sys.stderr.write("Malformed payload: title exceeds maximum allowed length\n")
+        sys.exit(1)
+
+    # Validate body: if present, must be string
+    body = issue.get("body")
+    if body is None:
+        body = issue.get("description")
+    if body is not None and not isinstance(body, str):
+        sys.stderr.write("Malformed payload: invalid type for 'body': expected string\n")
+        sys.exit(1)
+
+    # Validate control characters and embedded NUL bytes
+    if CONTROL_CHARS_RE.search(title) or (body and CONTROL_CHARS_RE.search(body)):
+        sys.stderr.write("Malformed payload: title or body contains invalid control characters or NUL byte\n")
+        sys.exit(1)
+
+    # Validate labels: in webhook payloads or when present in polled issues
+    if is_webhook or "labels" in issue:
+        if "labels" not in issue or issue["labels"] is None:
+            sys.stderr.write("Malformed payload: missing required field 'labels'\n")
+            sys.exit(1)
+        labels = issue["labels"]
+        if not isinstance(labels, list):
+            sys.stderr.write("Malformed payload: invalid type for 'labels': expected list\n")
+            sys.exit(1)
+        for lbl in labels:
+            if isinstance(lbl, str):
+                continue
+            if isinstance(lbl, dict) and (isinstance(lbl.get("name"), str) or isinstance(lbl.get("title"), str)):
+                continue
+            sys.stderr.write("Malformed payload: invalid label format in 'labels'\n")
+            sys.exit(1)
+
+
+def load_payload(payload_file):
+    """Load and parse webhook payload from a file path or '-' for stdin."""
+    if payload_file == "-":
+        raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
+        if len(raw) > MAX_PAYLOAD_BYTES:
+            sys.stderr.write(f"Malformed payload: payload size exceeds limit ({MAX_PAYLOAD_BYTES} bytes)\n")
+            sys.exit(1)
+    else:
+        if not os.path.isfile(payload_file):
+            sys.stderr.write(f"Payload file not found: {payload_file}\n")
+            sys.exit(1)
+        size = os.path.getsize(payload_file)
+        if size > MAX_PAYLOAD_BYTES:
+            sys.stderr.write(f"Malformed payload: payload size ({size} bytes) exceeds limit ({MAX_PAYLOAD_BYTES} bytes)\n")
+            sys.exit(1)
+        try:
+            with open(payload_file, "r", encoding="utf-8", errors="replace") as f:
+                raw = f.read()
+        except OSError as e:
+            sys.stderr.write(f"Error reading payload file {payload_file}: {e}\n")
+            sys.exit(1)
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        sys.stderr.write(f"Malformed payload: invalid JSON: {e}\n")
+        sys.exit(1)
+
+    if isinstance(data, list):
+        issues = data
+    elif isinstance(data, dict):
+        if "issue" in data:
+            if not isinstance(data["issue"], dict):
+                sys.stderr.write("Malformed payload: 'issue' field must be a JSON object\n")
+                sys.exit(1)
+            issue_obj = dict(data["issue"])
+            if "labels" in data and "labels" not in issue_obj:
+                issue_obj["labels"] = data["labels"]
+            issues = [issue_obj]
+        elif "object_attributes" in data:
+            if not isinstance(data["object_attributes"], dict):
+                sys.stderr.write("Malformed payload: 'object_attributes' field must be a JSON object\n")
+                sys.exit(1)
+            attrs = dict(data["object_attributes"])
+            if "labels" in data and "labels" not in attrs:
+                attrs["labels"] = data["labels"]
+            issues = [attrs]
+        else:
+            issues = [data]
+    else:
+        sys.stderr.write("Malformed payload: expected JSON object or array\n")
+        sys.exit(1)
+
+    if not issues:
+        sys.stderr.write("Malformed payload: empty issue list\n")
+        sys.exit(1)
+
+    for issue in issues:
+        validate_issue(issue, is_webhook=True)
+
+    return issues
+
+
+def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-forge", dry_run=False, runs_dir=None, payload_file=None):
     """Process issues: queue unseen issues to foreman and track seen IDs."""
-    if kind is None or repo is None or token is None:
-        conf = get_config(project=project)
-        if kind is None:
-            kind = os.environ.get("FORGE_KIND") or conf.get("FORGE_KIND")
-        if repo is None:
-            repo = os.environ.get("FORGE_REPO") or conf.get("FORGE_REPO") or conf.get("UPSTREAM_REPO")
-        if token is None:
-            token = os.environ.get("FORGE_UPSTREAM_TOKEN") or conf.get("FORGE_UPSTREAM_TOKEN")
-            if not token and kind:
-                secrets_dir = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
-                secret_file = os.path.join(secrets_dir, f"{kind}.token")
-                if os.path.isfile(secret_file):
-                    try:
-                        with open(secret_file, "r", encoding="utf-8") as f:
-                            token = f.read().strip()
-                    except OSError:
-                        pass
-
-    # Validate kind
-    kind = (kind or "").strip().lower()
-    if kind not in ("github", "gitlab"):
-        sys.stderr.write(f"Invalid FORGE_KIND {kind!r}: must be 'github' or 'gitlab'\n")
-        sys.exit(1)
-
-    # Validate repo
-    repo = (repo or "").strip()
-    if not repo or not REPO_RE.fullmatch(repo):
-        sys.stderr.write(f"Invalid FORGE_REPO {repo!r}: must match owner/repo pattern\n")
-        sys.exit(1)
-
     # Validate project if provided
     if project and not PROJECT_RE.fullmatch(project):
         sys.stderr.write(f"Invalid project name {project!r}\n")
-        sys.exit(1)
-
-    # Validate token
-    if not token:
-        sys.stderr.write(f"Missing upstream token for {kind}: set FORGE_UPSTREAM_TOKEN or secrets/{kind}.token\n")
         sys.exit(1)
 
     # Determine runs directory and seen path
@@ -163,6 +256,49 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
 
     foreman_dir = os.path.join(runs_dir, "projects", project, "foreman") if project else os.path.join(runs_dir, "foreman")
     seen_file = os.path.join(foreman_dir, "issues-intake.json")
+
+    if payload_file is not None:
+        issues = load_payload(payload_file)
+    else:
+        if kind is None or repo is None or token is None:
+            conf = get_config(project=project)
+            if kind is None:
+                kind = os.environ.get("FORGE_KIND") or conf.get("FORGE_KIND")
+            if repo is None:
+                repo = os.environ.get("FORGE_REPO") or conf.get("FORGE_REPO") or conf.get("UPSTREAM_REPO")
+            if token is None:
+                token = os.environ.get("FORGE_UPSTREAM_TOKEN") or conf.get("FORGE_UPSTREAM_TOKEN")
+                if not token and kind:
+                    secrets_dir = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
+                    secret_file = os.path.join(secrets_dir, f"{kind}.token")
+                    if os.path.isfile(secret_file):
+                        try:
+                            with open(secret_file, "r", encoding="utf-8") as f:
+                                token = f.read().strip()
+                        except OSError:
+                            pass
+
+        # Validate kind
+        kind = (kind or "").strip().lower()
+        if kind not in ("github", "gitlab"):
+            sys.stderr.write(f"Invalid FORGE_KIND {kind!r}: must be 'github' or 'gitlab'\n")
+            sys.exit(1)
+
+        # Validate repo
+        repo = (repo or "").strip()
+        if not repo or not REPO_RE.fullmatch(repo):
+            sys.stderr.write(f"Invalid FORGE_REPO {repo!r}: must match owner/repo pattern\n")
+            sys.exit(1)
+
+        # Validate token
+        if not token:
+            sys.stderr.write(f"Missing upstream token for {kind}: set FORGE_UPSTREAM_TOKEN or secrets/{kind}.token\n")
+            sys.exit(1)
+
+        # Fetch issues
+        issues = fetch_issues(kind, repo, token, label=label)
+        for issue in issues:
+            validate_issue(issue, is_webhook=False)
 
     # Load seen file
     seen = []
@@ -177,15 +313,25 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
 
     seen_set = set(seen)
 
-    # Fetch issues
-    issues = fetch_issues(kind, repo, token, label=label)
-
     # Process issues
     foreman_bin = os.path.join(ROOT, "bin", "foreman")
     for issue in issues:
         issue_id = issue.get("id")
         if issue_id is None:
             continue
+
+        # Check label filter if labels present
+        if label and "labels" in issue:
+            label_names = []
+            for lbl in issue["labels"]:
+                if isinstance(lbl, str):
+                    label_names.append(lbl)
+                elif isinstance(lbl, dict):
+                    name = lbl.get("name") or lbl.get("title")
+                    if isinstance(name, str):
+                        label_names.append(name)
+            if label not in label_names:
+                continue
 
         is_seen = (issue_id in seen_set) or (str(issue_id) in seen_set) or (isinstance(issue_id, str) and issue_id.isdigit() and int(issue_id) in seen_set)
         if is_seen:
@@ -222,13 +368,16 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Poll GitHub/GitLab issues labelled agent-forge and queue as foreman goals.")
+    parser.add_argument("payload", nargs="?", default=None, help="Path to webhook payload JSON file (or '-' for stdin)")
+    parser.add_argument("--payload", dest="payload_opt", default=None, help="Path to webhook payload JSON file")
     parser.add_argument("--project", dest="project", default=None, help="Target specific project name")
     parser.add_argument("--label", dest="label", default="agent-forge", help="Issue label filter (default: agent-forge)")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Print what would be queued without touching state")
     args = parser.parse_args(argv)
 
+    payload_file = args.payload_opt or args.payload
     project = args.project or os.environ.get("FORGE_PROJECT")
-    return intake_issues(project=project, label=args.label, dry_run=args.dry_run)
+    return intake_issues(project=project, label=args.label, dry_run=args.dry_run, payload_file=payload_file)
 
 
 if __name__ == "__main__":
