@@ -1,8 +1,9 @@
-// Settings: Runtimes & providers readiness summary (doctor check), followed by six short pages: Workers (kill switch,
+// Settings: Runtimes & providers readiness summary (doctor check), followed by seven short pages: Workers (kill switch,
 // the pool, adding workers, keys and your model server), Models (who plans and reviews, worker models, routing, experiments),
 // Project (where the code lives, approvals, behaviour, tests, notifications), Money (budgets and prices), Knowledge (vision,
-// team rules, decisions, lessons, roles) and Limits (all projects). File-only settings (set in host conf files) are surfaced
-// with reasons in a dedicated non-editable subsection. Also: where the code lives (dialog), a worker's Antigravity sign-in, a new project.
+// team rules, decisions, lessons, roles), Limits (all projects) and Onboarding (plain-language readiness table and CHOOSING-AN-AI
+// reference). File-only settings (set in host conf files) are surfaced with reasons in a dedicated non-editable subsection. Also:
+// where the code lives (dialog), a worker's Antigravity sign-in, a new project.
 
 // ---- kill switch (per project; "all" = every project)
 let ksBusy = false;
@@ -553,6 +554,137 @@ function fileOnlyCard() {
   return '<div class="setcard" id="file-only-settings"><h3>File-only settings</h3><div class="muted small intro">Configured in host files and not editable from the dashboard.</div>' + rows + '</div>';
 }
 
+// ---- Onboarding subsection (plain-language readiness checklist + CHOOSING-AN-AI reference)
+let ONBOARDING = null, onboardingBusy = false, onboardingErr = null, onboardingAt = 0;
+
+const ONBOARDING_STATUS_LABELS = {
+  ok: 'Configured',
+  configured: 'Configured',
+  missing_setting: 'Missing setting',
+  missing_egress: 'Missing host',
+  missing_host: 'Missing host',
+  missing_secret: 'Missing secret',
+  untested: 'Untested'
+};
+
+function onboardingStatusLabel(info) {
+  if (!info) return ONBOARDING_STATUS_LABELS.untested;
+  const state = String((info && info.state) || info || '').trim().toLowerCase();
+  if (state === 'ok') return ONBOARDING_STATUS_LABELS.ok;
+  if (state === 'missing_egress') return ONBOARDING_STATUS_LABELS.missing_egress;
+  if (state === 'missing_setting') {
+    const ms = (info && info.missing_settings) || [];
+    if (Array.isArray(ms) && ms.some(k => /KEY|SECRET|\.key$/i.test(k))) {
+      return 'Missing secret';
+    }
+    return ONBOARDING_STATUS_LABELS.missing_setting;
+  }
+  return ONBOARDING_STATUS_LABELS[state] || 'Untested';
+}
+
+function choosingAiRefHtml() {
+  return '<div class="onboarding-ref muted small" style="margin-top:12px;">' +
+    'For details on capabilities, pricing, and how to choose the right agent for your workflow, see <code>docs/CHOOSING-AN-AI.md</code> for the full write-up.' +
+    '</div>';
+}
+
+async function loadOnboarding(force) {
+  if (onboardingBusy) return;
+  if (!force && ONBOARDING !== null && Date.now() - onboardingAt < 30000) return;
+  onboardingBusy = true;
+  schedule(true);
+  try {
+    const data = await getJSON('/api/readiness');
+    if (data && data.error && !data.runtimes && !data.providers) {
+      throw new Error(data.error);
+    }
+    ONBOARDING = data || {};
+    onboardingErr = null;
+    READINESS = ONBOARDING;
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    onboardingErr = msg;
+    ONBOARDING = null;
+    toast('Could not load readiness: ' + msg, true);
+  } finally {
+    onboardingBusy = false;
+    onboardingAt = Date.now();
+  }
+  schedule(true);
+}
+
+function onboardingRow(kind, name, info) {
+  if (typeof info === 'string') info = {state: info};
+  info = info || {};
+  const state = String(info.state || 'untested').trim().toLowerCase();
+  const statusLabel = onboardingStatusLabel(info);
+  const detail = info.detail != null ? String(info.detail) : '';
+  const label = kind === 'runtime'
+    ? ((typeof RTNAME !== 'undefined' && RTNAME[name]) || READINESS_RTNAME[name] || name)
+    : ((typeof PROVLABEL !== 'undefined' && PROVLABEL[name]) || READINESS_PROVLABEL[name] || name);
+  const nameHtml = '<b>' + esc(label) + '</b>' + (label !== name ? ' <span class="muted small">(' + esc(name) + ')</span>' : '');
+  const kindLabel = kind === 'runtime' ? 'Runtime' : 'Provider';
+  const badgeClass = state === 'ok' ? 'badge ok' : (state === 'untested' ? 'badge' : 'badge warn');
+  return '<tr data-kind="' + esc(kind) + '" data-name="' + esc(name) + '" data-state="' + esc(state) + '">' +
+    '<td class="muted small">' + esc(kindLabel) + '</td>' +
+    '<td>' + nameHtml + '</td>' +
+    '<td><span class="' + badgeClass + '">' + esc(statusLabel) + '</span></td>' +
+    '<td style="white-space:normal;word-break:break-word;">' + esc(detail) + '</td>' +
+    '</tr>';
+}
+
+function pageOnboarding() {
+  if (ONBOARDING === null && !onboardingBusy && !onboardingErr) {
+    loadOnboarding();
+  }
+  if (onboardingBusy && !ONBOARDING) {
+    return card('Onboarding',
+      '<div class="empty" id="onboarding-loading">loading…</div>' + choosingAiRefHtml(),
+      'Check runtime and provider readiness and choose the right AI.'
+    );
+  }
+  if (onboardingErr && !ONBOARDING) {
+    const errHtml = '<div class="empty bad" id="onboarding-error">Could not load readiness: ' + esc(onboardingErr) + '</div>' +
+      '<div class="tablewrap"><table class="m onboarding-table" id="onboarding-readiness-table">' +
+      '<thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>' +
+      '<tbody><tr class="error-row"><td colspan="4" class="bad">Could not load readiness: ' + esc(onboardingErr) + '</td></tr></tbody>' +
+      '</table></div>';
+    return card('Onboarding', errHtml + choosingAiRefHtml(), 'Check runtime and provider readiness and choose the right AI.');
+  }
+  const R = ONBOARDING || READINESS || {};
+  const rtEntries = Object.entries(R.runtimes || {});
+  const provEntries = Object.entries(R.providers || {});
+  let body = '';
+  if (!rtEntries.length && !provEntries.length) {
+    body = '<div class="tablewrap"><table class="m onboarding-table" id="onboarding-readiness-table">' +
+      '<thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>' +
+      '<tbody><tr><td colspan="4" class="empty">No runtimes or providers available.</td></tr></tbody>' +
+      '</table></div>';
+  } else {
+    const rows = [
+      ...rtEntries.map(([name, info]) => onboardingRow('runtime', name, info)),
+      ...provEntries.map(([name, info]) => onboardingRow('provider', name, info))
+    ].join('');
+    body = '<div class="tablewrap"><table class="m onboarding-table" id="onboarding-readiness-table">' +
+      '<thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>';
+  }
+  return card('Onboarding', body + choosingAiRefHtml(), 'Check runtime and provider readiness and choose the right AI.');
+}
+
+function ensureSettingsNav() {
+  const seg = $('settings-seg');
+  if (!seg) return;
+  let btn = seg.querySelector('button[data-v="onboarding"]');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.dataset.v = 'onboarding';
+    btn.textContent = 'Onboarding';
+    seg.appendChild(btn);
+  }
+  btn.classList.toggle('on', SUB.settings === 'onboarding');
+}
+
 function settingsHtml() {
   if (!S) {
     if (window._ferr) return '<div class="empty bad">Could not load settings: ' + esc(window._ferr) + '</div>';
@@ -561,10 +693,11 @@ function settingsHtml() {
   }
   if (S.error) return '<div class="empty bad">Could not load settings: ' + esc(S.error) + '</div>';
   const p = SUB.settings;
-  const body = p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
-  return readinessCard() + body + fileOnlyCard() + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
+  const body = p === 'onboarding' ? pageOnboarding() : p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
+  return (p === 'onboarding' ? '' : readinessCard()) + body + (p === 'onboarding' ? '' : fileOnlyCard()) + (p === 'knowledge' || p === 'onboarding' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
 }
 function renderSettings(force) {
+  ensureSettingsNav();
   const el = $('settings');
   if (!force && el.contains(document.activeElement) && document.activeElement !== document.body) return;   // never under the owner's fingers
   setHTML('settings', settingsHtml(), force);
@@ -758,4 +891,21 @@ async function createProject() {
   await loadProjects(true);
   if (j.state !== 'failed') { project = body.name; store('af-project', project); }
 }
-projectResets.push(() => { S = null; sLoadedFor = null; sMsg = ''; DOCS.list = null; READINESS = null; readinessErr = null; readinessAt = 0; });
+document.addEventListener('click', e => {
+  const b = e.target.closest('#settings-seg button[data-v="onboarding"]');
+  if (b) {
+    loadOnboarding(true);
+  }
+});
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ensureSettingsNav);
+  } else {
+    ensureSettingsNav();
+  }
+}
+projectResets.push(() => {
+  S = null; sLoadedFor = null; sMsg = ''; DOCS.list = null;
+  READINESS = null; readinessErr = null; readinessAt = 0;
+  ONBOARDING = null; onboardingErr = null; onboardingAt = 0;
+});
