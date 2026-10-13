@@ -1,7 +1,7 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
 // sub-view renders, overview controls (autopilot and foreman pause switches) match fixture state and are keyboard reachable,
-// readiness summary on Settings checks runtimes and providers, each kind of sheet opens (task, goal, run
-// replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
+// readiness summary on Settings checks runtimes and providers, file-only settings render with reasons, each kind of sheet opens
+// (task, goal, run replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
 let failed = 0;
@@ -563,6 +563,52 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     DOCS.list = window._origDOCS;
     window._ferr = window._origFerr;
     SUB.settings = 'project';
+    renderSettings(true);
+  `);
+
+  // Settings / File-only: task 0164 file-only settings subsection
+  const fileOnlyFixture = {
+    FORGE_URL: 'Install-time internal git forge URL; set in etc/forge.conf and requires restart.',
+    FORGE_REPO: 'Install-time default repository; set in etc/forge.conf and requires restart.'
+  };
+  w.eval(`
+    window._origSFileOnly = S;
+    S = Object.assign({}, S, {
+      file_only: ` + JSON.stringify(fileOnlyFixture) + `
+    });
+    renderSettings(true);
+  `);
+  const fileOnlyEntries = Object.entries(fileOnlyFixture);
+  const fileOnlyElementsOk = fileOnlyEntries.length > 0 && fileOnlyEntries.every(([k, reason]) => {
+    const el = d.querySelector('.setting-file-only[data-key="' + k + '"]');
+    return !!el && el.textContent.includes(reason);
+  });
+  const fileOnlyCountOk = d.querySelectorAll('.setting-file-only').length === fileOnlyEntries.length;
+  check('settings: file-only subsection renders .setting-file-only[data-key="<KEY>"] with reason text for each entry',
+        fileOnlyElementsOk && fileOnlyCountOk);
+
+  // Settings / File-only: absence when file_only is empty
+  w.eval(`
+    S = Object.assign({}, S, {file_only: {}});
+    renderSettings(true);
+  `);
+  const fileOnlyEmptyOk = d.querySelectorAll('.setting-file-only').length === 0;
+  check('settings: no .setting-file-only elements present when file_only is empty',
+        fileOnlyEmptyOk);
+
+  // Settings / File-only: absence when file_only is absent
+  w.eval(`
+    S = Object.assign({}, S);
+    delete S.file_only;
+    renderSettings(true);
+  `);
+  const fileOnlyAbsentOk = d.querySelectorAll('.setting-file-only').length === 0;
+  check('settings: no .setting-file-only elements present when file_only is absent',
+        fileOnlyAbsentOk);
+
+  // Restore settings state
+  w.eval(`
+    S = window._origSFileOnly;
     renderSettings(true);
   `);
 
