@@ -1,5 +1,6 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
-// sub-view renders, readiness summary on Settings checks runtimes and providers, each kind of sheet opens (task, goal, run
+// sub-view renders, overview controls (autopilot and foreman pause switches) match fixture state and are keyboard reachable,
+// readiness summary on Settings checks runtimes and providers, each kind of sheet opens (task, goal, run
 // replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
@@ -25,6 +26,45 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const iso = '2026-01-15T13:49:21Z', wantLocal = new Date(iso).toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'});
   check('quota reset timestamps are shown in the viewer\'s own time, not UTC',
         w.eval("tsloc('quota low: Gemini weekly 0% (resets " + iso + ")')") === 'quota low: Gemini weekly 0% (resets ' + wantLocal + ')');
+
+  // Task 0143: Overview controls - autopilot and foreman pause/resume switches
+  const curF = w.eval('F');
+  check('overview: demo fixture state is available', !!curF);
+  const apToggle = d.getElementById('autopilot-toggle');
+  const fmToggle = d.getElementById('foreman-pause-toggle');
+  check('overview: autopilot toggle is present and keyboard reachable',
+        !!apToggle && (apToggle.tagName === 'BUTTON' || (apToggle.getAttribute('role') === 'button' && apToggle.tabIndex >= 0)) && apToggle.tabIndex >= 0);
+  check('overview: foreman pause toggle is present and keyboard reachable',
+        !!fmToggle && (fmToggle.tagName === 'BUTTON' || (fmToggle.getAttribute('role') === 'button' && fmToggle.tabIndex >= 0)) && (fmToggle.disabled || fmToggle.tabIndex >= 0));
+
+  const curAp = Boolean(curF && curF.autopilot);
+  const wantApLabel = 'Autopilot: ' + (curAp ? 'on' : 'off');
+  const wantApTip = curAp
+    ? 'Autopilot on: when a worker would idle and the backlog is empty, the orchestrator proposes new goals from the vision.'
+    : 'Autopilot off: when a worker would idle and the backlog is empty, the orchestrator does not propose new goals from the vision.';
+  check('overview: autopilot toggle visible label matches demo state',
+        !!apToggle && apToggle.textContent.trim() === wantApLabel);
+  check('overview: autopilot toggle tooltip matches demo state',
+        !!apToggle && (apToggle.title === wantApTip || apToggle.getAttribute('title') === wantApTip));
+
+  const curPaused = Boolean(curF && (curF.paused || curF.killswitch));
+  const wantFmLabel = 'Foreman: ' + (curPaused ? 'paused' : 'running');
+  check('overview: foreman pause toggle visible label matches demo state',
+        !!fmToggle && fmToggle.textContent.trim() === wantFmLabel);
+
+  if (curF && curF.killswitch) {
+    const ks = curF.killswitch;
+    const ksReason = (typeof ks === 'object' ? String(ks.reason || '').trim() : String(ks).trim());
+    const wantKsTip = 'Resume is blocked while the kill switch is engaged' + (ksReason ? ': ' + ksReason : '');
+    check('overview: resume control is rendered disabled with explanatory tooltip matching fixture kill switch',
+          !!fmToggle && fmToggle.disabled === true && (fmToggle.title === wantKsTip || fmToggle.getAttribute('title') === wantKsTip));
+  } else {
+    const wantWorkingTip = curPaused
+      ? 'Paused: no new tasks are dispatched; tasks already running continue to completion.'
+      : 'Running: tasks are dispatched to workers as they become available.';
+    check('overview: resume control is rendered enabled in working state matching fixture kill switch value',
+          !!fmToggle && fmToggle.disabled === false && (fmToggle.title === wantWorkingTip || fmToggle.getAttribute('title') === wantWorkingTip));
+  }
   w.eval(`
     window._origOverviewState = {g: F.goals, bl: F.backlog, onb: F.onboarding, ts: F.tasks};
     F.goals = []; F.backlog = []; F.onboarding = []; F.tasks = [];
@@ -51,7 +91,42 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     F.onboarding = window._origOverviewState.onb; F.tasks = window._origOverviewState.ts;
     renderOverview(true);
   `);
-  const overAct = [...d.querySelectorAll('#t-overview [data-open], #t-overview [data-ta], #t-overview [data-ga], #t-overview [data-bledit]')];
+  // Verify control switches when kill switch is engaged dynamically
+  w.eval(`
+    window._origFControls = {ap: F.autopilot, p: F.paused, ks: F.killswitch};
+    F.killswitch = {reason: 'egress violation', scope: 'project'};
+    renderOverview(true);
+  `);
+  const ksToggle = d.getElementById('foreman-pause-toggle');
+  check('overview: foreman pause toggle rendered disabled with kill switch explanation when kill switch engaged',
+        !!ksToggle && ksToggle.disabled === true &&
+        (ksToggle.title || '').includes('Resume is blocked while the kill switch is engaged: egress violation') &&
+        ksToggle.textContent.trim() === 'Foreman: paused');
+
+  // Verify control switches when autopilot is off and foreman paused without kill switch
+  w.eval(`
+    F.autopilot = false;
+    F.paused = true;
+    F.killswitch = null;
+    renderOverview(true);
+  `);
+  const offApToggle = d.getElementById('autopilot-toggle');
+  const pausedFmToggle = d.getElementById('foreman-pause-toggle');
+  check('overview: control switches render correctly when autopilot is off and foreman paused without kill switch',
+        !!offApToggle && offApToggle.textContent.trim() === 'Autopilot: off' &&
+        (offApToggle.title || '').includes('Autopilot off') &&
+        !!pausedFmToggle && pausedFmToggle.textContent.trim() === 'Foreman: paused' &&
+        pausedFmToggle.disabled === false &&
+        (pausedFmToggle.title || '').includes('Paused: no new tasks are dispatched'));
+
+  // Restore control states
+  w.eval(`
+    F.autopilot = window._origFControls.ap;
+    F.paused = window._origFControls.p;
+    F.killswitch = window._origFControls.ks;
+    renderOverview(true);
+  `);
+  const overAct = [...d.querySelectorAll('#t-overview [data-open], #t-overview [data-ta], #t-overview [data-ga], #t-overview [data-bledit], #t-overview [data-control]')];
   check('overview: all interactive elements are buttons reachable by keyboard',
         overAct.length > 0 && overAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
   const click = sel => { const el = d.querySelector(sel); if (!el) { errors.push('no element ' + sel); return false; } el.dispatchEvent(new w.MouseEvent('click', {bubbles: true})); return true; };
