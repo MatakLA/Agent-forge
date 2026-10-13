@@ -4,14 +4,16 @@
 Public interface:
   bin/issues-intake [--project NAME] [--label LABEL] [--dry-run]
   intake_issues(kind=..., repo=..., token=..., project=..., label=..., dry_run=...)
+  validate_issue(issue)
 
 Invariants:
   - Stdlib-only (Python 3 urllib.request, subprocess, json, re, argparse).
   - Only polls issues with the specified label (default: agent-forge).
+  - Validates polled issues and rejects malformed JSON, missing fields, invalid types, control/NUL characters, and oversized input cleanly without tracebacks.
   - Queues each issue exactly once by persisting seen issue IDs in issues-intake.json.
   - Passes goal text strictly over stdin to bin/foreman goal -, never in argv.
   - Never logs or exposes tokens; passes credentials solely in Authorization header.
-  - Exits 0 on success; 1 on auth, network, or configuration errors.
+  - Exits 0 on success; 1 on auth, network, configuration, or payload validation errors.
 """
 import argparse
 import json
@@ -27,6 +29,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_RE = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 PROJECT_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 HTML_TAG_RE = re.compile(r'<[^>]+>')
+CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+MAX_TITLE_LEN = 10000
 
 
 def load_kv(path):
@@ -109,9 +113,67 @@ def fetch_issues(kind, repo, token, label="agent-forge"):
     except OSError as e:
         sys.stderr.write(f"Network error fetching issues from {kind}: {e}\n")
         sys.exit(1)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         sys.stderr.write(f"Failed to parse JSON issues response from {kind}: {e}\n")
         sys.exit(1)
+
+
+def validate_issue(issue):
+    """Validate issue dictionary structure and reject malformed input cleanly."""
+    if not isinstance(issue, dict):
+        sys.stderr.write("Malformed payload: issue entry must be a JSON object\n")
+        sys.exit(1)
+
+    # Validate id: required, integer or digits-only string
+    if "id" not in issue or issue["id"] is None:
+        sys.stderr.write("Malformed payload: missing required field 'id'\n")
+        sys.exit(1)
+    issue_id = issue["id"]
+    if isinstance(issue_id, bool) or (not isinstance(issue_id, int) and not (isinstance(issue_id, str) and issue_id.isdigit())):
+        sys.stderr.write("Malformed payload: invalid type for 'id': expected integer\n")
+        sys.exit(1)
+
+    # Validate title: required, string, non-empty, within size limit
+    if "title" not in issue or issue["title"] is None:
+        sys.stderr.write("Malformed payload: missing required field 'title'\n")
+        sys.exit(1)
+    title = issue["title"]
+    if not isinstance(title, str):
+        sys.stderr.write("Malformed payload: invalid type for 'title': expected string\n")
+        sys.exit(1)
+    if not title.strip():
+        sys.stderr.write("Malformed payload: 'title' cannot be empty\n")
+        sys.exit(1)
+    if len(title) > MAX_TITLE_LEN:
+        sys.stderr.write("Malformed payload: title exceeds maximum allowed length\n")
+        sys.exit(1)
+
+    # Validate body: if present, must be string
+    body = issue.get("body")
+    if body is None:
+        body = issue.get("description")
+    if body is not None and not isinstance(body, str):
+        sys.stderr.write("Malformed payload: invalid type for 'body': expected string\n")
+        sys.exit(1)
+
+    # Validate control characters and embedded NUL bytes
+    if CONTROL_CHARS_RE.search(title) or (body and CONTROL_CHARS_RE.search(body)):
+        sys.stderr.write("Malformed payload: title or body contains invalid control characters or NUL byte\n")
+        sys.exit(1)
+
+    # Validate labels: if present, must be a list
+    if "labels" in issue and issue["labels"] is not None:
+        labels = issue["labels"]
+        if not isinstance(labels, list):
+            sys.stderr.write("Malformed payload: invalid type for 'labels': expected list\n")
+            sys.exit(1)
+        for lbl in labels:
+            if isinstance(lbl, str):
+                continue
+            if isinstance(lbl, dict) and (isinstance(lbl.get("name"), str) or isinstance(lbl.get("title"), str)):
+                continue
+            sys.stderr.write("Malformed payload: invalid label format in 'labels'\n")
+            sys.exit(1)
 
 
 def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-forge", dry_run=False, runs_dir=None):
@@ -179,6 +241,8 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
 
     # Fetch issues
     issues = fetch_issues(kind, repo, token, label=label)
+    for issue in issues:
+        validate_issue(issue)
 
     # Process issues
     foreman_bin = os.path.join(ROOT, "bin", "foreman")
