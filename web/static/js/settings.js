@@ -1,8 +1,8 @@
 // Settings: Runtimes & providers readiness summary (doctor check), followed by six short pages: Workers (kill switch,
 // the pool, adding workers, keys and your model server), Models (who plans and reviews, worker models, routing, experiments),
 // Project (where the code lives, approvals, behaviour, tests, notifications), Money (budgets and prices), Knowledge (vision,
-// team rules, decisions, lessons, roles) and Limits (all projects). Also: where the code lives (dialog), a worker's Antigravity
-// sign-in, a new project.
+// team rules, decisions, lessons, roles) and Limits (all projects). File-only settings (set in host conf files) are surfaced
+// with reasons in a dedicated non-editable subsection. Also: where the code lives (dialog), a worker's Antigravity sign-in, a new project.
 
 // ---- kill switch (per project; "all" = every project)
 let ksBusy = false;
@@ -535,6 +535,24 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ---- file-only settings (set in host conf files; not editable from dashboard)
+function fileOnlyCard() {
+  const fo = S && S.file_only;
+  if (!fo || typeof fo !== 'object' || Array.isArray(fo)) return '';
+  const entries = Object.entries(fo);
+  if (!entries.length) return '';
+  const rows = entries.map(([k, reason]) => {
+    const labelHtml = (LABEL[k] && LABEL[k] !== k)
+      ? '<b><code>' + esc(k) + '</code></b><span class="help">' + esc(LABEL[k]) + '</span>'
+      : '<b><code>' + esc(k) + '</code></b>';
+    return '<div class="setrow setting-file-only" data-key="' + esc(k) + '">' +
+      '<label>' + labelHtml + '</label>' +
+      '<div><span class="muted small">' + esc(reason) + '</span></div>' +
+      '</div>';
+  }).join('');
+  return '<div class="setcard" id="file-only-settings"><h3>File-only settings</h3><div class="muted small intro">Configured in host files and not editable from the dashboard.</div>' + rows + '</div>';
+}
+
 function settingsHtml() {
   if (!S) {
     if (window._ferr) return '<div class="empty bad">Could not load settings: ' + esc(window._ferr) + '</div>';
@@ -544,7 +562,7 @@ function settingsHtml() {
   if (S.error) return '<div class="empty bad">Could not load settings: ' + esc(S.error) + '</div>';
   const p = SUB.settings;
   const body = p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
-  return readinessCard() + body + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
+  return readinessCard() + body + fileOnlyCard() + (p === 'knowledge' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
 }
 function renderSettings(force) {
   const el = $('settings');
