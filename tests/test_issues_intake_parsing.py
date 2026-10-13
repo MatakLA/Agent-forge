@@ -9,6 +9,7 @@ Important invariants:
   - Verifies eligible GitHub issues are parsed and queued as exactly one Foreman goal per issue.
   - Verifies goal role field equals role from bin/issues-intake's real LABEL_TO_ROLE mapping table.
   - Verifies expected roles differ across at least 3 distinct labels.
+  - Passes issue labels as GitHub label objects ({"id": ..., "name": ...}) matching real GitHub client shape.
   - Verifies HTML tag stripping and boundary truncation of goal text at exactly 4000 characters.
   - Verifies missing or empty body cleanly falls back to issue title.
   - Verifies fixture server lifecycle on OS-assigned free port and clean shutdown on SIGTERM.
@@ -67,11 +68,36 @@ class TestIssuesIntakeParsing(unittest.TestCase):
     def test_eligible_issues_create_exactly_one_goal_each(self):
         """Intake parses eligible GitHub issues and creates exactly 1 goal per issue on disk with mapped role."""
         fake_issues = [
-            {"id": 1001, "title": "Fix cookie expiration", "body": "Session bug.<br><b>preserve</b>", "labels": ["agent-forge", "bug"]},
-            {"id": 1002, "title": "Update provider docs", "body": "Docs in docs/PROVIDERS.md", "labels": ["agent-forge", "docs"]},
-            {"id": 1003, "title": "Egress firewall audit", "body": "Audit iptables.<p>Drop policies</p>", "labels": ["agent-forge", "security"]},
-            {"id": 1004, "title": "Token count metric", "body": "Expose token count metrics.", "labels": ["agent-forge", "feature"]},
-            {"id": 1005, "title": "Triage feedback notes", "body": "Community discussion notes.", "labels": ["agent-forge", "triage-needed"]},
+            {
+                "id": 1001,
+                "title": "Fix cookie expiration",
+                "body": "Session bug.<br><b>preserve</b>",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 12, "name": "bug"}]
+            },
+            {
+                "id": 1002,
+                "title": "Update provider docs",
+                "body": "Docs in docs/PROVIDERS.md",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 13, "name": "docs"}]
+            },
+            {
+                "id": 1003,
+                "title": "Egress firewall audit",
+                "body": "Audit iptables.<p>Drop policies</p>",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 14, "name": "security"}]
+            },
+            {
+                "id": 1004,
+                "title": "Token count metric",
+                "body": "Expose token count metrics.",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 15, "name": "feature"}]
+            },
+            {
+                "id": 1005,
+                "title": "Triage feedback notes",
+                "body": "Community discussion notes.",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 16, "name": "triage-needed"}]
+            },
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
@@ -91,47 +117,40 @@ class TestIssuesIntakeParsing(unittest.TestCase):
                     seen_data = json.load(f)
             self.assertEqual(sorted(seen_data.get("seen", [])), [1001, 1002, 1003, 1004, 1005])
 
-            self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), "bin/issues-intake must define LABEL_TO_ROLE")
-            mapping = issues_intake.LABEL_TO_ROLE
             loaded_goals = []
             for gf in goal_files:
                 with open(gf, "r", encoding="utf-8") as f:
                     loaded_goals.append(json.load(f))
 
-            expected_labels = ["bug", "docs", "security", "feature"]
-            for g, lbl in zip(loaded_goals[:4], expected_labels):
-                expected_role = mapping.get(lbl)
-                self.assertEqual(g.get("role"), expected_role, f"Goal {g.get('id')} role mismatch for label {lbl}")
+            self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), "bin/issues-intake must define LABEL_TO_ROLE")
+            mapping = issues_intake.LABEL_TO_ROLE
+
+            goal_bug = next(g for g in loaded_goals if "Fix cookie expiration" in g.get("text", ""))
+            goal_docs = next(g for g in loaded_goals if "Update provider docs" in g.get("text", ""))
+            goal_sec = next(g for g in loaded_goals if "Egress firewall audit" in g.get("text", ""))
+            goal_feat = next(g for g in loaded_goals if "Token count metric" in g.get("text", ""))
+
+            self.assertEqual(goal_bug.get("role"), mapping["bug"])
+            self.assertEqual(goal_docs.get("role"), mapping["docs"])
+            self.assertEqual(goal_sec.get("role"), mapping["security"])
+            self.assertEqual(goal_feat.get("role"), mapping["feature"])
 
         assert rc == 0
         assert len(goal_files) == 5
         assert sorted(seen_data.get("seen", [])) == [1001, 1002, 1003, 1004, 1005]
         assert hasattr(issues_intake, "LABEL_TO_ROLE")
-        assert all(g.get("role") == mapping.get(lbl) for g, lbl in zip(loaded_goals[:4], expected_labels))
+        assert goal_bug.get("role") == mapping["bug"]
+        assert goal_docs.get("role") == mapping["docs"]
+        assert goal_sec.get("role") == mapping["security"]
+        assert goal_feat.get("role") == mapping["feature"]
 
     def test_label_to_role_mapping_on_created_goals(self):
-        """Verify each goal's role field equals the real mapping table from bin/issues-intake across >=3 distinct labels."""
-        self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), (
-            "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
-        ))
-        assert hasattr(issues_intake, "LABEL_TO_ROLE"), (
-            "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
-        )
-
-        mapping = issues_intake.LABEL_TO_ROLE
-        self.assertGreaterEqual(len(mapping), 3, "Mapping table must cover at least 3 distinct roles")
-        assert len(mapping) >= 3, "Mapping table must cover at least 3 distinct roles"
-
-        # Assert expected roles differ across at least 3 distinct labels so the check cannot pass vacuously
-        distinct_roles = {mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")}
-        self.assertGreaterEqual(len(distinct_roles), 3, "Expected roles must differ across at least 3 distinct labels")
-        assert len(distinct_roles) >= 3, "Expected roles must differ across at least 3 distinct labels"
-
+        """Verify each goal's role field read off disk equals mapping[label] from bin/issues-intake across >=3 distinct labels."""
         fake_issues = [
-            {"id": 2001, "title": "Bug issue", "body": "Content", "labels": ["agent-forge", "bug"]},
-            {"id": 2002, "title": "Doc issue", "body": "Content", "labels": ["agent-forge", "docs"]},
-            {"id": 2003, "title": "Security issue", "body": "Content", "labels": ["agent-forge", "security"]},
-            {"id": 2004, "title": "Feature issue", "body": "Content", "labels": ["agent-forge", "feature"]},
+            {"id": 2001, "title": "Bug issue", "body": "Content", "labels": [{"id": 11, "name": "agent-forge"}, {"id": 12, "name": "bug"}]},
+            {"id": 2002, "title": "Doc issue", "body": "Content", "labels": [{"id": 11, "name": "agent-forge"}, {"id": 13, "name": "docs"}]},
+            {"id": 2003, "title": "Security issue", "body": "Content", "labels": [{"id": 11, "name": "agent-forge"}, {"id": 14, "name": "security"}]},
+            {"id": 2004, "title": "Feature issue", "body": "Content", "labels": [{"id": 11, "name": "agent-forge"}, {"id": 15, "name": "feature"}]},
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
@@ -143,18 +162,46 @@ class TestIssuesIntakeParsing(unittest.TestCase):
             goal_files = sorted(glob.glob(os.path.join(goals_dir, "G*.json")))
             self.assertEqual(len(goal_files), 4)
 
-            expected_roles = [mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")]
-            loaded_goals = []
-            for gf, exp_role in zip(goal_files, expected_roles):
+            # Read each production goal JSON written to disk
+            goals = []
+            for gf in goal_files:
                 with open(gf, "r", encoding="utf-8") as f:
-                    goal = json.load(f)
-                loaded_goals.append(goal)
-                self.assertEqual(goal.get("role"), exp_role, f"Goal {goal.get('id')} role mismatch: {goal.get('role')} != {exp_role}")
+                    goals.append(json.load(f))
+
+            self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), (
+                "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
+            ))
+            assert hasattr(issues_intake, "LABEL_TO_ROLE"), (
+                "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
+            )
+
+            mapping = issues_intake.LABEL_TO_ROLE
+            self.assertGreaterEqual(len(mapping), 3, "Mapping table must cover at least 3 distinct roles")
+            assert len(mapping) >= 3, "Mapping table must cover at least 3 distinct roles"
+
+            # Assert expected roles differ across at least 3 distinct labels so the check cannot pass vacuously
+            distinct_roles = {mapping["bug"], mapping["docs"], mapping["security"], mapping["feature"]}
+            self.assertGreaterEqual(len(distinct_roles), 3, "Expected roles must differ across at least 3 distinct labels")
+            assert len(distinct_roles) >= 3, "Expected roles must differ across at least 3 distinct labels"
+
+            # Match each goal by title and directly assert goal['role'] == mapping[label]
+            goal_bug = next(g for g in goals if "Bug issue" in g.get("text", ""))
+            goal_docs = next(g for g in goals if "Doc issue" in g.get("text", ""))
+            goal_sec = next(g for g in goals if "Security issue" in g.get("text", ""))
+            goal_feat = next(g for g in goals if "Feature issue" in g.get("text", ""))
+
+            self.assertEqual(goal_bug.get("role"), mapping["bug"])
+            self.assertEqual(goal_docs.get("role"), mapping["docs"])
+            self.assertEqual(goal_sec.get("role"), mapping["security"])
+            self.assertEqual(goal_feat.get("role"), mapping["feature"])
 
         assert rc == 0
         assert len(goal_files) == 4
         assert len(distinct_roles) >= 3
-        assert all(g.get("role") == exp_role for g, exp_role in zip(loaded_goals, expected_roles))
+        assert goal_bug.get("role") == mapping["bug"]
+        assert goal_docs.get("role") == mapping["docs"]
+        assert goal_sec.get("role") == mapping["security"]
+        assert goal_feat.get("role") == mapping["feature"]
 
     def test_goal_text_html_tag_stripping(self):
         """HTML formatting tags in title and body are stripped cleanly from goal text."""
@@ -163,7 +210,7 @@ class TestIssuesIntakeParsing(unittest.TestCase):
                 "id": 2001,
                 "title": "Bug with <b>bold title tag</b>",
                 "body": "<p>Paragraph one with <a href='https://example.com'>link</a> and <br>newline.</p>",
-                "labels": ["agent-forge"]
+                "labels": [{"id": 11, "name": "agent-forge"}]
             }
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -197,7 +244,7 @@ class TestIssuesIntakeParsing(unittest.TestCase):
         """Oversized issue bodies exceeding 4000 chars are truncated cleanly at exactly 4000 chars."""
         oversized_body = "x" * 6000
         fake_issues = [
-            {"id": 3001, "title": "Boundary truncation test", "body": oversized_body, "labels": ["agent-forge"]}
+            {"id": 3001, "title": "Boundary truncation test", "body": oversized_body, "labels": [{"id": 11, "name": "agent-forge"}]}
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
@@ -223,7 +270,7 @@ class TestIssuesIntakeParsing(unittest.TestCase):
     def test_missing_or_empty_body_uses_title_cleanly(self):
         """An issue with missing or empty body cleanly uses title alone as goal string."""
         fake_issues = [
-            {"id": 4001, "title": "Title only goal issue", "body": None, "labels": ["agent-forge"]}
+            {"id": 4001, "title": "Title only goal issue", "body": None, "labels": [{"id": 11, "name": "agent-forge"}]}
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
@@ -244,7 +291,12 @@ class TestIssuesIntakeParsing(unittest.TestCase):
     def test_non_matching_label_issue_is_queued_without_rejection(self):
         """Issues carrying non-matching triage labels are queued as goals rather than skipped."""
         fake_issues = [
-            {"id": 5001, "title": "Unknown label issue", "body": "Non-matching label payload", "labels": ["agent-forge", "custom-category"]}
+            {
+                "id": 5001,
+                "title": "Unknown label issue",
+                "body": "Non-matching label payload",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 17, "name": "custom-category"}]
+            }
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
@@ -266,7 +318,12 @@ class TestIssuesIntakeParsing(unittest.TestCase):
     def test_repeated_intake_calls_idempotent(self):
         """Running intake repeatedly against the same issue list produces no duplicate goals."""
         fake_issues = [
-            {"id": 6001, "title": "Idempotent parsing issue", "body": "Single goal expected", "labels": ["agent-forge", "bug"]}
+            {
+                "id": 6001,
+                "title": "Idempotent parsing issue",
+                "body": "Single goal expected",
+                "labels": [{"id": 11, "name": "agent-forge"}, {"id": 12, "name": "bug"}]
+            }
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
