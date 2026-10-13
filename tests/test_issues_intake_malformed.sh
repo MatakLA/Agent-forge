@@ -116,9 +116,13 @@ run_case "case4b_control_chars" "$T/case4b_ctrl_chars.json" "control characters 
 printf '{"id": 403, "title": "raw\x00nul", "labels": ["agent-forge"]}' > "$T/case4c_raw_nul.json"
 run_case "case4c_raw_nul" "$T/case4c_raw_nul.json" "control character"
 
-# Case 5: oversized payload (multi-MB title)
-python3 -c "import json, sys; json.dump({'id': 501, 'title': 'A'*2000000, 'labels': ['agent-forge']}, open(sys.argv[1], 'w'))" "$T/case5_oversized.json"
-run_case "case5_oversized_payload" "$T/case5_oversized.json" "exceeds"
+# Case 5a: oversized title exceeding MAX_TITLE_LEN (50,000 chars, within 1MB payload size)
+python3 -c "import json, sys; json.dump({'id': 501, 'title': 'A'*50000, 'labels': ['agent-forge']}, open(sys.argv[1], 'w'))" "$T/case5a_oversized_title.json"
+run_case "case5a_oversized_title" "$T/case5a_oversized_title.json" "title exceeds maximum allowed length"
+
+# Case 5b: oversized payload file exceeding MAX_PAYLOAD_BYTES (2MB)
+python3 -c "import json, sys; json.dump({'id': 502, 'title': 'A'*2000000, 'labels': ['agent-forge']}, open(sys.argv[1], 'w'))" "$T/case5b_oversized_file.json"
+run_case "case5b_oversized_file" "$T/case5b_oversized_file.json" "exceeds"
 
 # Webhook payload structure verification (GitHub and GitLab formats)
 echo '{"action": "opened", "issue": {"id": 601, "body": "missing title in webhook", "labels": ["agent-forge"]}}' > "$T/case6_gh_webhook_no_title.json"
