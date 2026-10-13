@@ -239,6 +239,85 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('no page error shown', !txt('jserr'));
   click('nav button[data-t="settings"]'); await sleep(800);
 
+  // Settings / Workers: task 0128 runtime model fields for OpenCode, Qwen Code, Goose
+  click('#settings-seg button[data-v="team"]'); await sleep(800);
+  const rtModelFieldConfigs = [
+    {id: 'field-opencode-model', key: 'OPENCODE_MODEL', runtime: 'opencode'},
+    {id: 'field-qwen-model', key: 'QWEN_MODEL', runtime: 'qwen-code'},
+    {id: 'field-goose-model', key: 'GOOSE_MODEL', runtime: 'goose'}
+  ];
+  const rtModelFieldsOk = rtModelFieldConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    return !!el && el.tagName === 'INPUT';
+  });
+  check('settings / workers: field-opencode-model, field-qwen-model and field-goose-model are present', rtModelFieldsOk);
+
+  const rtModelHelpOk = rtModelFieldConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    const help = d.querySelector('[for="' + cfg.id + '"] .help') || (el && el.closest('.setrow') && el.closest('.setrow').querySelector('.help'));
+    return !!help && help.textContent.trim().length > 0;
+  });
+  check('settings / workers: runtime model fields each have a non-empty help text element', rtModelHelpOk);
+
+  const rtModelKeyboardOk = rtModelFieldConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    return !!el && el.tabIndex !== -1 && el.getAttribute('tabindex') !== '-1';
+  });
+  check('settings / workers: runtime model fields are reachable by keyboard in tab order', rtModelKeyboardOk);
+  check('settings / workers: field-opencode-model, field-qwen-model and field-goose-model present, with help text, and reachable by keyboard',
+        rtModelFieldsOk && rtModelHelpOk && rtModelKeyboardOk);
+
+  const rtModelReadinessOk = rtModelFieldConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    const badge = el ? (el.parentElement.querySelector('.badge') || (el.closest('.setrow') && el.closest('.setrow').querySelector('.badge'))) : null;
+    return !!badge && badge.style.display !== 'none' && badge.textContent.trim().length > 0;
+  });
+  check('settings / workers: runtime model fields each have a visible readiness indicator element without further interaction', rtModelReadinessOk);
+
+  // Settings / Workers: add-worker runtime picker options for OpenCode, Qwen Code, Goose
+  const addwForm = d.getElementById('addw-form');
+  if (addwForm && addwForm.style.display === 'none') {
+    click('#add-worker');
+    await sleep(400);
+  }
+  const rtPickerConfigs = [
+    {id: 'runtime-opt-opencode', val: 'opencode'},
+    {id: 'runtime-opt-qwen-code', val: 'qwen-code'},
+    {id: 'runtime-opt-goose', val: 'goose'}
+  ];
+  const rtPickerPresent = rtPickerConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    return !!el && el.tagName === 'INPUT' && el.type === 'radio';
+  });
+  check('settings / workers: add-worker runtime picker exposes selectable elements with ids runtime-opt-opencode, runtime-opt-qwen-code and runtime-opt-goose', rtPickerPresent);
+
+  let rtPickerNoThrow = true;
+  let rtPickerUpdatesSelection = true;
+  for (const cfg of rtPickerConfigs) {
+    const el = d.getElementById(cfg.id);
+    if (!el) {
+      rtPickerUpdatesSelection = false;
+      continue;
+    }
+    try {
+      el.dispatchEvent(new w.MouseEvent('click', {bubbles: true}));
+    } catch (err) {
+      rtPickerNoThrow = false;
+      errors.push('Selecting ' + cfg.id + ' threw: ' + (err.message || err));
+    }
+    const checked = d.querySelector('input[name="addw-rt"]:checked');
+    if (!checked || checked.value !== cfg.val || !el.checked) {
+      rtPickerUpdatesSelection = false;
+    }
+  }
+  check('settings / workers: selecting each runtime picker option does not throw and updates visible selection',
+        rtPickerNoThrow && rtPickerUpdatesSelection);
+
+  if (d.getElementById('addw-cancel')) {
+    click('#addw-cancel');
+    await sleep(200);
+  }
+
   // Settings / Project: task 0024 fields
   click('#settings-seg button[data-v="project"]'); await sleep(800);
   const projKeys0024 = ['DIFF_MAX', 'MAX_GOAL_ROUNDS', 'LESSONS_MAX', 'LOOP_SEC', 'LOCAL_TZ', 'SHARED_FILES', 'VISION_FILE', 'PROJECT_DIR'];
@@ -455,6 +534,34 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         !!claudeBadge && claudeBadge.classList.contains('ok') && claudeBadge.textContent.trim() === 'Ready' &&
         !!codexBadge && codexBadge.classList.contains('warn') && codexBadge.textContent.trim() === 'Missing setting' &&
         !!geminiBadge && geminiBadge.classList.contains('warn') && geminiBadge.textContent.trim() === 'Missing egress');
+
+  // Settings / Readiness: OpenCode, Qwen Code, and Goose summary rows and badges
+  w.eval(`
+    READINESS = {
+      runtimes: {
+        opencode: {state: 'ok', detail: 'OpenCode CLI ready'},
+        'qwen-code': {state: 'missing_setting', detail: 'qwen.key is not set'},
+        goose: {state: 'missing_egress', detail: 'generativelanguage.googleapis.com missing from egress allowlist'}
+      },
+      providers: {}
+    };
+    renderSettings(true);
+  `);
+  const rtSummaryRows = [...d.querySelectorAll('.readiness-row')];
+  const rtSummaryNames = rtSummaryRows.map(r => r.dataset.name);
+  const expectedRtSummary = ['opencode', 'qwen-code', 'goose'];
+  const rtSummaryOk = rtSummaryRows.length === 3 && expectedRtSummary.every(n => rtSummaryNames.includes(n));
+  const rowOpencode = d.querySelector('.readiness-row[data-name="opencode"]');
+  const rowQwen = d.querySelector('.readiness-row[data-name="qwen-code"]');
+  const rowGoose = d.querySelector('.readiness-row[data-name="goose"]');
+  const badgeOpencode = rowOpencode ? rowOpencode.querySelector('.badge') : null;
+  const badgeQwen = rowQwen ? rowQwen.querySelector('.badge') : null;
+  const badgeGoose = rowGoose ? rowGoose.querySelector('.badge') : null;
+  const rtSummaryBadgesOk = !!badgeOpencode && badgeOpencode.classList.contains('ok') && badgeOpencode.textContent.trim() === 'Ready' &&
+                            !!badgeQwen && badgeQwen.classList.contains('warn') && badgeQwen.textContent.trim() === 'Missing setting' &&
+                            !!badgeGoose && badgeGoose.classList.contains('warn') && badgeGoose.textContent.trim() === 'Missing egress';
+  check('settings: readiness summary renders opencode, qwen-code, and goose rows with correct status badges',
+        rtSummaryOk && rtSummaryBadgesOk);
 
   // Loading state
   w.eval(`
