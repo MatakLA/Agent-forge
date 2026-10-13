@@ -29,9 +29,31 @@ from tests.fixtures.quickstart_budget import (
 
 
 def default_step_commands() -> dict[str, list[str]]:
-    """Map documented step names to their corresponding CLI commands."""
+    """Map documented pipeline steps from docs/QUICKSTART.md to their CLI commands.
+
+    Step commands as documented in docs/QUICKSTART.md:
+    1. install:
+       Documented in docs/QUICKSTART.md Section 1 as:
+         cd examples/sample-project/seed-repo
+         python3 -m unittest discover -s tests
+       Deviation: executed from the repository root as
+         ["python3", "-m", "unittest", "discover", "-s", "examples/sample-project/seed-repo/tests"]
+       to preserve the python3 entry point while avoiding changing working directory for subsequent steps.
+    2. plan:
+       Documented in docs/QUICKSTART.md Section 2 as:
+         bin/foreman goal 'Add a `bookmarks search <tag>` command that lists only the bookmarks having that tag, with a test that fails without it.'
+    3. dispatch:
+       Documented in docs/QUICKSTART.md Section 3 under Dispatch as:
+         bin/foreman status
+    4. gate:
+       Documented in docs/QUICKSTART.md Section 3 under Gate as:
+         bin/foreman status
+    5. merge:
+       Documented in docs/QUICKSTART.md Section 3 under Merge as:
+         bin/foreman status
+    """
     return {
-        "install": [sys.executable, "-m", "unittest", "discover", "-s", "examples/sample-project/seed-repo/tests"],
+        "install": ["python3", "-m", "unittest", "discover", "-s", "examples/sample-project/seed-repo/tests"],
         "plan": ["bin/foreman", "goal", "Add a `bookmarks search <tag>` command that lists only the bookmarks having that tag, with a test that fails without it."],
         "dispatch": ["bin/foreman", "status"],
         "gate": ["bin/foreman", "status"],

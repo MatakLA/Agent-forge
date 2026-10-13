@@ -82,106 +82,160 @@ class TestQuickstartE2ERunner(unittest.TestCase):
     def test_run_all_stops_early_on_first_over_budget_step(self):
         """Invariant: run_all stops before running later steps when check_budget returns ok=False.
 
-        Verified by monkeypatching run_step to return an over-budget time for the first step
-        and asserting later steps' argv were never passed to subprocess.run.
+        Verified by patching only subprocess.run (recording each argv it receives),
+        patching time.monotonic to return an over-budget elapsed for the first call,
+        and asserting that only the first step's argv reached subprocess.run.
         """
-        called_argvs = []
+        executed_argvs = []
 
-        def mock_run_step(name, argv, cwd=None, env=None):
-            called_argvs.append((name, argv))
-            if name == "install":
-                # Exceed install budget (300s)
-                return 350.0
-            return 10.0
+        def mock_subprocess_run(argv, *args, **kwargs):
+            executed_argvs.append(argv)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        # install budget is 300s.
+        # Call 1 (start of install): monotonic() -> 0.0
+        # Call 2 (end of install): monotonic() -> 350.0 (elapsed = 350.0 > 300s -> budget failure)
+        # Any subsequent monotonic calls increment by 1.0 (if early-stop logic were broken)
+        monotonic_sequence = [0.0, 350.0, 351.0, 352.0, 353.0, 354.0, 355.0, 356.0, 357.0, 358.0]
+        monotonic_iter = iter(monotonic_sequence)
 
         steps = [
-            ("install", ["echo", "install"]),
-            ("plan", ["echo", "plan"]),
-            ("dispatch", ["echo", "dispatch"]),
-            ("gate", ["echo", "gate"]),
-            ("merge", ["echo", "merge"]),
+            ("install", ["python3", "-m", "unittest", "discover", "-s", "tests"]),
+            ("plan", ["bin/foreman", "goal", "test goal"]),
+            ("dispatch", ["bin/foreman", "status"]),
+            ("gate", ["bin/foreman", "status"]),
+            ("merge", ["bin/foreman", "status"]),
         ]
 
-        with patch("tests.fixtures.quickstart_e2e_runner.run_step", side_effect=mock_run_step):
-            with patch("subprocess.run") as mock_subproc:
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
                 ok, msg, timings = run_all(steps)
 
         # Early termination verification
         self.assertFalse(ok)
         self.assertIn("install exceeded budget", msg)
         self.assertIn("350.0", msg)
-        self.assertEqual(len(called_argvs), 1)
-        self.assertEqual(called_argvs[0][0], "install")
+        self.assertEqual(len(executed_argvs), 1)
+        self.assertEqual(executed_argvs[0], steps[0][1])
         self.assertIn("install", timings)
         self.assertNotIn("plan", timings)
         self.assertNotIn("dispatch", timings)
         self.assertNotIn("gate", timings)
         self.assertNotIn("merge", timings)
 
-        # Verify later steps' argv were never executed by subprocess.run
-        mock_subproc.assert_not_called()
+        # Assert later steps' argv were never passed to subprocess.run
+        for later_step_name, later_step_argv in steps[1:]:
+            self.assertNotIn(later_step_argv, executed_argvs)
+
         assert ok is False
         assert "install exceeded budget" in msg
-        assert len(called_argvs) == 1
+        assert len(executed_argvs) == 1
+        assert executed_argvs[0] == steps[0][1]
         assert "plan" not in timings
 
     def test_run_all_stops_early_at_intermediate_step(self):
         """Invariant: run_all halts at the exact failing step (e.g., dispatch)."""
-        called_steps = []
+        executed_argvs = []
 
-        def mock_run_step(name, argv, cwd=None, env=None):
-            called_steps.append(name)
-            if name == "dispatch":
-                return 150.0  # Exceed dispatch budget (120s)
-            return 1.0
+        def mock_subprocess_run(argv, *args, **kwargs):
+            executed_argvs.append(argv)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        # Step 1 (install, budget 300s): 0.0 -> 1.0 (elapsed 1.0 <= 300s OK)
+        # Step 2 (plan, budget 180s): 2.0 -> 3.0 (elapsed 1.0 <= 180s OK)
+        # Step 3 (dispatch, budget 120s): 4.0 -> 150.0 (elapsed 146.0 > 120s OVER BUDGET)
+        # Step 4-5 (if called): 151.0 -> 152.0...
+        monotonic_sequence = [0.0, 1.0, 2.0, 3.0, 4.0, 150.0, 151.0, 152.0, 153.0, 154.0]
+        monotonic_iter = iter(monotonic_sequence)
 
         steps = get_pipeline_steps()
-        with patch("tests.fixtures.quickstart_e2e_runner.run_step", side_effect=mock_run_step):
-            ok, msg, timings = run_all(steps)
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
+                ok, msg, timings = run_all(steps)
 
         self.assertFalse(ok)
         self.assertIn("dispatch exceeded budget", msg)
-        self.assertEqual(called_steps, ["install", "plan", "dispatch"])
+        self.assertEqual(len(executed_argvs), 3)
+        self.assertEqual(executed_argvs[0], steps[0][1])
+        self.assertEqual(executed_argvs[1], steps[1][1])
+        self.assertEqual(executed_argvs[2], steps[2][1])
         self.assertEqual(len(timings), 3)
         self.assertNotIn("gate", timings)
         self.assertNotIn("merge", timings)
+
+        # Later steps (gate, merge) were never run: exactly 3 calls occurred
+        self.assertEqual(len(executed_argvs), 3)
+        self.assertNotIn("gate", timings)
+        self.assertNotIn("merge", timings)
+
         assert ok is False
         assert "dispatch exceeded budget" in msg
-        assert called_steps == ["install", "plan", "dispatch"]
+        assert len(executed_argvs) == 3
+        assert "gate" not in timings
+        assert "merge" not in timings
 
     def test_run_all_success_when_all_within_budget(self):
         """Invariant: run_all succeeds and records all timings when steps are within budget."""
-        def mock_run_step(name, argv, cwd=None, env=None):
-            return 2.0
+        executed_argvs = []
+
+        def mock_subprocess_run(argv, *args, **kwargs):
+            executed_argvs.append(argv)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        # 5 steps, each taking 2.0s
+        seq = []
+        for i in range(5):
+            seq.extend([float(i * 10), float(i * 10 + 2)])
+        monotonic_iter = iter(seq)
 
         steps = get_pipeline_steps()
-        with patch("tests.fixtures.quickstart_e2e_runner.run_step", side_effect=mock_run_step):
-            ok, msg, timings = run_all(steps)
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
+                ok, msg, timings = run_all(steps)
 
         self.assertTrue(ok)
         self.assertEqual(msg, "")
+        self.assertEqual(len(executed_argvs), 5)
         self.assertEqual(list(timings.keys()), list(STEP_BUDGETS.keys()))
         for step in STEP_BUDGETS:
             self.assertEqual(timings[step], 2.0)
         assert ok is True
         assert msg == ""
+        assert len(executed_argvs) == 5
         assert list(timings.keys()) == list(STEP_BUDGETS.keys())
 
     def test_run_all_handles_command_failure_cleanly(self):
         """Invariant: run_all returns ok=False when a command exits with an error."""
-        def mock_run_step(name, argv, cwd=None, env=None):
-            if name == "plan":
-                raise subprocess.CalledProcessError(returncode=2, cmd=argv)
-            return 1.0
-
         steps = get_pipeline_steps()
-        with patch("tests.fixtures.quickstart_e2e_runner.run_step", side_effect=mock_run_step):
-            ok, msg, timings = run_all(steps)
+        executed_argvs = []
+
+        def mock_subprocess_run(argv, *args, **kwargs):
+            executed_argvs.append(argv)
+            if argv == steps[1][1]:
+                raise subprocess.CalledProcessError(returncode=2, cmd=argv)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        seq = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        monotonic_iter = iter(seq)
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
+                ok, msg, timings = run_all(steps)
 
         self.assertFalse(ok)
         self.assertIn("plan failed with exit code 2", msg)
+        self.assertEqual(len(executed_argvs), 2)
         self.assertIn("install", timings)
         self.assertNotIn("dispatch", timings)
+        self.assertNotIn(steps[2][1], executed_argvs)
         assert ok is False
         assert "plan failed with exit code 2" in msg
 
@@ -259,7 +313,7 @@ class TestQuickstartE2ERunner(unittest.TestCase):
             assert "total exceeded budget" in err.getvalue()
 
     def test_main_uses_scratch_directory_and_never_touches_real_runs(self):
-        """Invariant: main sets SANDBOX_TEST and SANDBOX_RUNS_DIR to a scratch temp directory."""
+        """Invariant: main sets SANDBOX_TEST and SANDBOX_RUNS_DIR to an isolated scratch temp directory under /tmp."""
         captured_env = {}
 
         def mock_run_all(steps, cwd=None, env=None):
@@ -275,10 +329,14 @@ class TestQuickstartE2ERunner(unittest.TestCase):
         self.assertEqual(captured_env.get("SANDBOX_TEST"), "1")
         scratch = captured_env.get("SANDBOX_RUNS_DIR")
         self.assertIsNotNone(scratch)
+        self.assertTrue(scratch.startswith(tempfile.gettempdir()) or scratch.startswith("/tmp"))
         self.assertNotEqual(scratch, os.path.join(ROOT, "runs"))
         self.assertNotIn("sandbox/playground", scratch)
+        self.assertNotIn(os.path.expanduser("~/sandbox"), scratch)
+        self.assertTrue(captured_env.get("SANDBOX_SECRETS", "").startswith(scratch))
         assert captured_env.get("SANDBOX_TEST") == "1"
         assert scratch != os.path.join(ROOT, "runs")
+        assert scratch.startswith(tempfile.gettempdir()) or scratch.startswith("/tmp")
 
 
 if __name__ == "__main__":
