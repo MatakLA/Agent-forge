@@ -1,7 +1,21 @@
-"""Settings the dashboard may change (validated), new projects, the model list."""
+"""Settings the dashboard may change (validated), new projects, the model list.
+
+Public interface: settings_get(), settings_apply(), validate_providers(), validate_url(), models_cached(), init_project().
+Invariants:
+- settings_apply validates egress allowlist requirements for submitted providers and runtimes before saving.
+- Unrelated editable settings preserve their existing validation rules.
+- Sensitive keys and secrets are masked in event logs and responses.
+"""
 import os, re, sys, time
 
 import sbx, runtimes
+try:
+    import egress, providers
+except ImportError:
+    _lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _lib not in sys.path:
+        sys.path.insert(0, _lib)
+    import egress, providers
 
 from . import ctx
 from .util import sh
@@ -26,6 +40,7 @@ NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|appro
 EDITABLE = {
     "PLAN_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
     "REVIEW_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
+    "WORKER_RUNTIME": (r"|" + "|".join(runtimes.RUNTIMES.keys()), "project"),
     "CLAUDE_MODEL": (MODEL_RE, "project"), "AGY_PLAN_MODEL": (MODEL_RE, "project"), "AGY_REVIEW_MODEL": (MODEL_RE, "project"),
     "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
     "ANTHROPIC_MODEL": ("|" + MODEL_RE, "project"), "OPENAI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"), "GEMINI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),
@@ -77,12 +92,15 @@ EDITABLE = {
 }
 
 HELP = {
+    "PLAN_PROVIDERS": "Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
+    "REVIEW_PROVIDERS": "Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
+    "WORKER_RUNTIME": "Default worker runtime (e.g. agy, claude, codex, gemini). Egress host check happens at save time. Applies live.",
     "OPENCODE_MODEL": "Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.",
     "QWEN_MODEL": "Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.",
     "GOOSE_MODEL": "Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.",
 }
 
-CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3}
+CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3, "WORKER_RUNTIME": "agy"}
 
 
 def conf_path(scope):
@@ -225,6 +243,33 @@ def settings_apply(changes):
             if err:
                 errors[k] = err; continue
             v = ",".join(p.strip() for p in v.split(","))
+            parts = [p.strip() for p in v.split(",") if p.strip()]
+            for p in parts:
+                base_key = f"{p.split('-', 1)[0].upper()}_API_BASE"
+                api_base = str(cleaned.get(base_key, (changes or {}).get(base_key, ctx.C.get(base_key, ""))) or "").strip()
+                missing = providers.missing_hosts(p, api_base)
+                if missing:
+                    missing_str = ", ".join(missing)
+                    errors[k] = f"missing egress host '{missing_str}' for provider '{p}' (add to egress/allowlist.txt or the dashboard's Egress page)"
+                    break
+            if k in errors:
+                continue
+        elif k in ("WORKER_RUNTIME", "RUNTIME", "DEFAULT_RUNTIME"):
+            if not re.fullmatch(rule, v):
+                errors[k] = "invalid value"; continue
+            if v:
+                endpoint_url = str(cleaned.get("COMPAT_BASE_URL", (changes or {}).get("COMPAT_BASE_URL", ctx.C.get("COMPAT_BASE_URL", ""))) or "").strip()
+                if not endpoint_url:
+                    try:
+                        lim = sbx.load_limits()
+                        endpoint_url = str((lim or {}).get("COMPAT_BASE_URL", "")).strip()
+                    except Exception:
+                        endpoint_url = ""
+                missing = egress.runtime_missing_hosts(v, endpoint_url)
+                if missing:
+                    missing_str = ", ".join(missing)
+                    errors[k] = f"missing egress host '{missing_str}' for runtime '{v}' (add to egress/allowlist.txt or the dashboard's Egress page)"
+                    continue
         elif k in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
             if not re.fullmatch(rule, v):
                 errors[k] = "invalid secret name or masked identifier"; continue
@@ -252,7 +297,6 @@ def settings_apply(changes):
     event("settings changed: " + ", ".join(f"{k}={mask_log_value(k, v)}" for sc in by_scope.values() for k, v in sc.items())[:300])
     if "COMPAT_BASE_URL" in by_scope.get("limits", {}):
         # the workers may reach exactly the new model server (and no longer the old one, if it was a local exception)
-        import egress
         try:
             for m in egress.set_endpoint(by_scope["limits"]["COMPAT_BASE_URL"]):
                 event(m)
