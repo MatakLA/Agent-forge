@@ -4,6 +4,8 @@ Agent-Forge automates software development through an autonomous loop of plannin
 
 This guide provides an honest comparison of every supported worker runtime and orchestrator provider so you can choose the setup that fits your workflow and budget.
 
+If you are using the web dashboard, you can also check readiness status interactively. The dashboard's Settings tab now has an Onboarding subsection (Settings > Onboarding) that displays live status for every runtime and provider. It indicates whether each option is configured, missing a host, missing a secret, or untested without reading any code. You can use either this document or the dashboard to determine which AI will work for your setup.
+
 ---
 
 ## Quick decision flowchart

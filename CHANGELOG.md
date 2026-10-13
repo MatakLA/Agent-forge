@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Cross-link docs/CHOOSING-AN-AI.md with the dashboard Settings Onboarding checklist.
 - Settings: surface file-only settings with human-readable explanations via `FILE_ONLY` in `bin/lib/foreman/settings.py` and `settings_get()`.
 - Dashboard: Overview tab can now toggle autopilot and pause/resume the foreman without the CLI.
 - Quickstart CI workflow: `.github/workflows/quickstart-e2e.yml` runs the quickstart e2e check on demand and on relevant path changes.
