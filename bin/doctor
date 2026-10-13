@@ -222,6 +222,40 @@ def check_readiness(status=None):
                 bad=[c for c in new_checks if c["level"] == "bad"])
 
 
+def check_cost_models(rts=None):
+    """Check cost model for every runtime relevant to this install.
+
+    Queries bin/lib/foreman/readiness.runtime_items() (or rts override).
+    Emits one line per runtime with its cost model kind and detail from cost_model(rt).
+    Informational only (level='ok'), so 'unknown' cost models never fail doctor.
+    """
+    section("Cost Models")
+    start_idx = len(CHECKS)
+    if rts is None:
+        if hasattr(readiness, "runtime_items"):
+            rts = readiness.runtime_items()
+        elif hasattr(readiness, "readiness_items"):
+            rts = readiness.readiness_items()
+        else:
+            rts = list(runtimes.RUNTIMES.keys())
+    elif isinstance(rts, dict):
+        rts = list(rts.keys())
+
+    for rt in rts:
+        try:
+            cm = runtimes.cost_model(rt)
+        except Exception as e:
+            cm = dict(kind="unknown", detail=str(e))
+        kind = cm.get("kind", "unknown")
+        detail = cm.get("detail", "")
+        ok(f"[OK] {rt}: cost model {kind} - {detail}")
+
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
 def _get_provider_api_base(provider, conf=None):
     prefix = provider[:-4].replace("-", "_").upper() if provider.endswith("-api") else provider.replace("-", "_").upper()
     key = f"{prefix}_API_BASE"
@@ -578,6 +612,7 @@ def main():
         warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
 
     check_readiness()
+    check_cost_models()
 
     section("Foreman")
     fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
