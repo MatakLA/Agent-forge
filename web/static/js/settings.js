@@ -73,10 +73,13 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   ROUTING_MIN_FIRST_PASS: 'Routing: approved first time, at least (%)', FORGE_KIND: 'Git forge type', UPSTREAM_REPO: 'Upstream repository',
   UPSTREAM_URL: 'Upstream URL', UPSTREAM_BRANCH: 'Upstream default branch', UPSTREAM_MERGE: 'Upstream merge method',
   FORGE_URL: 'Internal Git forge URL', FORGE_REPO: 'Forgejo repository',
-  OPENCODE_MODEL: 'OpenCode model', QWEN_MODEL: 'Qwen Code model', GOOSE_MODEL: 'Goose model'};
+  OPENCODE_MODEL: 'OpenCode model', QWEN_MODEL: 'Qwen Code model', GOOSE_MODEL: 'Goose model',
+  PROVIDERS: 'Providers', WORKER_RUNTIME: 'Default worker runtime'};
 const HELP = {
-  PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
-  REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
+  PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.',
+  REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.',
+  PROVIDERS: 'Ordered orchestrator providers: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.',
+  WORKER_RUNTIME: 'Default worker runtime (e.g. agy, claude, codex, gemini). Egress host check happens at save time. Applies live.',
   CLAUDE_MODEL: 'Model used by the claude-cli provider (e.g. sonnet, opus, haiku). Applies live.',
   AGY_PLAN_MODEL: 'Antigravity model for planning calls in worker containers (e.g. claude-sonnet-4-6). Applies live.',
   AGY_REVIEW_MODEL: 'Antigravity model for review calls in worker containers (e.g. claude-sonnet-4-6). Applies live.',
