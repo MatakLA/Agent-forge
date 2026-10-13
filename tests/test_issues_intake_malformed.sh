@@ -140,6 +140,10 @@ run_case() {
 printf "this is not { valid [ json at all" > "$T/case1_not_valid_json.json"
 run_case "case1_not_valid_json" "$T/case1_not_valid_json.json" "Failed to parse JSON issues response"
 
+# 1b: invalid UTF-8 byte stream
+printf "\xff\xfe\x00\x00" > "$T/case1b_invalid_utf8.json"
+run_case "case1b_invalid_utf8" "$T/case1b_invalid_utf8.json" "Failed to parse JSON issues response"
+
 # (2) valid JSON missing a required field
 # 2a: missing 'title'
 printf '[{"id": 201, "body": "description without title", "labels": ["agent-forge"]}]' > "$T/case2a_missing_title.json"
@@ -170,6 +174,10 @@ run_case "case4b_control_chars" "$T/case4b_ctrl_chars.json" "control characters 
 # 4c: raw unescaped NUL byte in stream
 printf '[{"id": 403, "title": "raw\x00nul", "labels": ["agent-forge"]}]' > "$T/case4c_raw_nul.json"
 run_case "case4c_raw_nul" "$T/case4c_raw_nul.json" ""
+
+# 4d: control characters or embedded NUL byte in body
+printf '[{"id": 404, "title": "Clean title", "body": "evil\\u0000body", "labels": ["agent-forge"]}]' > "$T/case4d_body_nul.json"
+run_case "case4d_body_nul" "$T/case4d_body_nul.json" "control characters or NUL byte"
 
 # (5) oversized payload (e.g. multi-MB title) to check crash or unbounded memory use
 python3 -c "import json, sys; json.dump([{'id': 501, 'title': 'A'*50000, 'labels': ['agent-forge']}], open(sys.argv[1], 'w'))" "$T/case5_oversized_title.json"
