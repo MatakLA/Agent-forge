@@ -1,120 +1,87 @@
 #!/usr/bin/env bash
-# scripts/demo.sh — One-command demo launch script for Agent-Forge.
-# Public interface: scripts/demo.sh [--port N] [-h|--help]
+# scripts/demo.sh — One-command demo launch and teardown script for Agent-Forge.
+# Public interface: scripts/demo.sh [up|down|-h|--help]
 # Invariants:
-# - Self-contained offline demo using synthetic data from tools/demo_state.py.
-# - Fails fast with a clear message and help link when Docker or Docker Compose is missing.
-# - Cleans up temporary workspace directory on exit.
-# - References demo/docker-compose.yml and DEMO_DATA_DIR exactly without touching real infrastructure.
+# - Default action (no args or 'up'): builds and starts only the 'demo' compose service.
+# - Polls http://localhost:8171/ once a second up to 60s until responsive, printing URL on success.
+# - Action 'down': stops and removes the demo compose service.
+# - Fails fast with actionable error and non-zero exit if compose or polling fails.
+# - Rejects unknown arguments with usage message and exit code 1.
+# - References demo/docker-compose.yml and requires zero host credentials or tokens.
 set -euo pipefail
-umask 077
 
-ROOT="${FORGE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-step() { printf '\n==> %s\n' "$*"; }
-ok()   { printf '  ✔ %s\n' "$*"; }
-die()  { printf '\n✘ %s\n' "$1"; shift; for h in "$@"; do printf '    → %s\n' "$h"; done; exit 1; }
+COMPOSE_FILE="demo/docker-compose.yml"
+SERVICE="demo"
+PORT="8171"
+URL="http://localhost:${PORT}/"
+MAX_WAIT="${DEMO_MAX_WAIT:-60}"
 
-PORT="${BIND_PORT:-${PORT:-8171}}"
+usage() {
+  cat <<'EOF'
+Usage: scripts/demo.sh [up|down]
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --port)
-      [ $# -gt 1 ] || die "--port requires a port argument"
-      PORT="$2"
-      shift 2
-      ;;
-    --port=*)
-      PORT="${1#*=}"
-      shift
-      ;;
-    -h|--help)
-      cat <<'EOF'
-Usage: scripts/demo.sh [--port N]
+One-command launcher and teardown for the Agent-Forge Docker demo.
 
-One-command demo launcher for Agent-Forge. Populates a temporary workspace
-with synthetic goals, tasks, events, and runs, then starts the demo dashboard
-in Docker.
+Commands:
+  up         Build and start the demo dashboard container (default)
+  down       Stop and remove the demo dashboard container
 
 Options:
-  --port N       Host port for the demo dashboard (default: 8171)
-  -h, --help     Show this help message
-
-Prerequisites:
-  Docker and Docker Compose: https://docs.docker.com/get-docker/
+  -h, --help Show this help message
 EOF
+}
+
+ACTION="up"
+if [ $# -eq 0 ]; then
+  ACTION="up"
+elif [ $# -eq 1 ]; then
+  case "$1" in
+    up)
+      ACTION="up"
+      ;;
+    down)
+      ACTION="down"
+      ;;
+    -h|--help)
+      usage
       exit 0
       ;;
     *)
-      die "Unknown option: $1" "Use --help for usage information"
+      usage >&2
+      exit 1
       ;;
   esac
-done
-
-if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-  die "Invalid port number: $PORT (must be between 1 and 65535)"
-fi
-
-step "Checking prerequisites"
-if ! command -v docker >/dev/null 2>&1; then
-  die "Docker is not installed." \
-      "Install Docker and Docker Compose before running the demo: https://docs.docker.com/get-docker/"
-fi
-
-if ! docker compose version >/dev/null 2>&1; then
-  die "Docker Compose is not available." \
-      "Install the Docker Compose plugin: https://docs.docker.com/get-docker/"
-fi
-ok "Docker and Docker Compose are available"
-
-step "Preparing demo workspace"
-workdir="$(mktemp -d)"
-cleanup() {
-  local rc=$?
-  if [ -n "${workdir:-}" ] && [ -d "$workdir" ]; then
-    rm -rf "$workdir"
-  fi
-  exit "$rc"
-}
-trap cleanup EXIT INT TERM
-
-for d in bin etc roles prompts docs examples web; do
-  if [ -d "$ROOT/$d" ]; then
-    cp -r "$ROOT/$d" "$workdir/"
-  fi
-done
-if [ -f "$ROOT/VERSION" ]; then
-  cp "$ROOT/VERSION" "$workdir/"
-fi
-mkdir -p "$workdir/etc" "$workdir/docs"
-
-for cfg in limits foreman forge; do
-  if [ -f "$workdir/etc/$cfg.example.conf" ] && [ ! -f "$workdir/etc/$cfg.conf" ]; then
-    cp "$workdir/etc/$cfg.example.conf" "$workdir/etc/$cfg.conf"
-  fi
-  if [ -f "$workdir/etc/$cfg.conf" ]; then
-    chmod 600 "$workdir/etc/$cfg.conf"
-  fi
-done
-if [ -f "$workdir/etc/team-rules.example.md" ] && [ ! -f "$workdir/etc/team-rules.md" ]; then
-  cp "$workdir/etc/team-rules.example.md" "$workdir/etc/team-rules.md"
-  chmod 600 "$workdir/etc/team-rules.md"
-fi
-chmod 700 "$workdir/etc"
-ok "Workspace prepared at $workdir"
-
-step "Populating synthetic demo state"
-python3 tools/demo_state.py "$workdir"
-ok "Demo state populated in $workdir/runs/"
-
-step "Starting demo"
-if [ "$PORT" = "8171" ]; then
-  echo "Demo running at http://localhost:8171 (Ctrl-C to stop)"
 else
-  echo "Demo running at http://localhost:$PORT (Ctrl-C to stop)"
+  usage >&2
+  exit 1
 fi
 
-export BIND_PORT="$PORT"
-export PORT="$PORT"
-DEMO_DATA_DIR="$workdir" docker compose -f demo/docker-compose.yml up --build
+if [ "$ACTION" = "down" ]; then
+  docker compose -f "$COMPOSE_FILE" down
+  exit 0
+fi
+
+# Action is 'up' (default or explicit)
+export DEMO_MODE=1
+docker compose -f "$COMPOSE_FILE" up -d --build "$SERVICE"
+
+echo "waiting for the demo to start..."
+ready=0
+for ((i=1; i<=MAX_WAIT; i++)); do
+  if "${CURL_BIN:-curl}" -sf "$URL" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+  echo "Error: demo dashboard did not start within ${MAX_WAIT} seconds." >&2
+  echo "Check container logs with: docker compose -f $COMPOSE_FILE logs" >&2
+  exit 1
+fi
+
+echo "Demo dashboard ready. Open $URL in your browser."
