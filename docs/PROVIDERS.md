@@ -14,6 +14,55 @@ The orchestrator in Agent-Forge makes three kinds of high-level decisions:
 
 The same summary is shown on the dashboard's Settings page, so the owner no longer has to cross-check these docs by hand to see what is configured. Point to this live check as the source of truth for current status.
 
+## Egress host readiness
+
+When applying settings for `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`, `settings_apply()` in `bin/lib/foreman/settings.py` validates that every configured provider's required egress host is present in the egress allowlist.
+
+### Settings-save validation error
+
+If a provider's required egress host is missing, `settings_apply()` rejects the save and returns the literal error message:
+
+```
+missing egress host '<host>' for provider '<provider>' (add to egress/allowlist.txt or the dashboard's Egress page)
+```
+
+Literal error text for each provider requiring an egress host:
+
+- `anthropic-api`:
+  ```
+  missing egress host 'api.anthropic.com' for provider 'anthropic-api' (add to egress/allowlist.txt or the dashboard's Egress page)
+  ```
+- `openai-api`:
+  ```
+  missing egress host 'api.openai.com' for provider 'openai-api' (add to egress/allowlist.txt or the dashboard's Egress page)
+  ```
+- `gemini-api`:
+  ```
+  missing egress host 'generativelanguage.googleapis.com' for provider 'gemini-api' (add to egress/allowlist.txt or the dashboard's Egress page)
+  ```
+
+### Required egress hosts by provider
+
+For each provider in `bin/lib/foreman/settings.py` (`PROVIDERS_ALL`), the required egress host from `bin/lib/providers.py` (`PROVIDER_HOSTS`) is:
+
+| Provider (`PROVIDERS_ALL`) | Required egress host (`PROVIDER_HOSTS`) |
+|---|---|
+| `claude-cli` | *(none)* |
+| `agy-claude` | *(none)* |
+| `agy-gemini` | *(none)* |
+| `anthropic-api` | `api.anthropic.com` |
+| `openai-api` | `api.openai.com` |
+| `gemini-api` | `generativelanguage.googleapis.com` |
+
+As defined in `bin/lib/providers.py` `missing_hosts()`, providers routed through `agy` (`claude-cli`, `agy-claude`, and `agy-gemini`) need no pinned egress host and return `[]`.
+
+### How to resolve a missing egress host
+
+To fix the error, add the required host to one of the following files:
+
+- `egress/allowlist.txt`: edit this file directly to add the required host.
+- `egress/allowlist.local.txt`: edit this file directly, or use `bin/lib/egress.py` `allow_host()` for API-key providers.
+
 ## How provider fallback works
 
 The orchestrator tries providers sequentially from left to right as configured in `etc/foreman.conf` until one answers successfully:
