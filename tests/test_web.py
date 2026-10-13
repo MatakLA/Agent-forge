@@ -13,11 +13,16 @@ import http.client
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import threading
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.join(ROOT, "bin", "lib") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
+from foreman import readiness
+
 os.environ["DASHBOARD_TOKEN"] = "s3cret"
 spec = importlib.util.spec_from_file_location("srv", os.path.join(ROOT, "web", "server.py"))
 srv = importlib.util.module_from_spec(spec)
@@ -621,6 +626,91 @@ class TestWebServer(unittest.TestCase):
         assert s == 200
         self.assertGreater(len(self.calls), 0)
         assert len(self.calls) > 0
+
+    def test_cli_foreman_readiness_subcommand(self):
+        """Invariant: bin/foreman readiness prints valid JSON matching readiness.all_status() and exits 0."""
+        foreman_bin = os.path.join(ROOT, "bin", "foreman")
+        proc = subprocess.run([sys.executable, foreman_bin, "readiness"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"bin/foreman readiness failed: {proc.stderr}")
+        data = json.loads(proc.stdout)
+        expected = readiness.all_status()
+        self.assertEqual(data, expected)
+        self.assertIn("runtimes", data)
+        self.assertIn("providers", data)
+        for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+            val = os.environ.get(secret_name, "")
+            if val:
+                self.assertNotIn(val, proc.stdout)
+
+    def test_api_readiness_endpoint_auth_and_host_guards(self):
+        """Invariant: GET /api/readiness enforces DASHBOARD_TOKEN and DASHBOARD_HOSTS checks."""
+        s_unauth, _, body_unauth = self.req("GET", "/api/readiness", headers={"Cookie": ""})
+        self.assertEqual(s_unauth, 401)
+        self.assertIn("sign in", body_unauth)
+
+        s_badtoken, _, body_badtoken = self.req("GET", "/api/readiness", headers={"Cookie": "af_token=wrong_token"})
+        self.assertEqual(s_badtoken, 401)
+        self.assertIn("sign in", body_badtoken)
+
+        s_badhost, _, body_badhost = self.req("GET", "/api/readiness", host="evil.attacker.com")
+        self.assertEqual(s_badhost, 403)
+        self.assertIn("host not allowed", body_badhost)
+
+    def test_api_readiness_endpoint_success_and_mocked_foreman(self):
+        """Invariant: GET /api/readiness calls foreman with 'readiness' and returns 200 with all_status JSON."""
+        stub_status = readiness.all_status()
+        old_ssh = srv.B.ssh_run_full
+        try:
+            srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
+                self.calls.append((cmd, inp)) or (0, json.dumps(stub_status), "")
+            )
+            status, headers, body = self.req("GET", "/api/readiness")
+            self.assertEqual(status, 200)
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            self.assertTrue(self.calls and self.calls[-1][0].endswith("bin/foreman readiness"))
+            data = json.loads(body)
+            self.assertEqual(data, stub_status)
+            self.assertIn("runtimes", data)
+            self.assertIn("providers", data)
+            for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+                val = os.environ.get(secret_name, "")
+                if val:
+                    self.assertNotIn(val, body)
+        finally:
+            srv.B.ssh_run_full = old_ssh
+
+    def test_api_readiness_endpoint_error_handling(self):
+        """Invariant: non-zero returncode or invalid JSON from foreman surfaces as error JSON via as_json."""
+        old_ssh = srv.B.ssh_run_full
+        try:
+            srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
+                self.calls.append((cmd, inp)) or (1, "", "readiness diagnostic failed")
+            )
+            status, _, body = self.req("GET", "/api/readiness")
+            self.assertEqual(status, 200)
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            self.assertIn("readiness diagnostic failed", data.get("error", ""))
+
+            srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
+                self.calls.append((cmd, inp)) or (2, "", "")
+            )
+            status, _, body = self.req("GET", "/api/readiness")
+            self.assertEqual(status, 200)
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            self.assertIn("exit 2", data.get("error", ""))
+
+            srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
+                self.calls.append((cmd, inp)) or (0, "corrupted stdout output", "")
+            )
+            status, _, body = self.req("GET", "/api/readiness")
+            self.assertEqual(status, 200)
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            self.assertIn("corrupted stdout output", data.get("error", ""))
+        finally:
+            srv.B.ssh_run_full = old_ssh
 
 
 if __name__ == "__main__":
