@@ -26,6 +26,50 @@ The dashboard does the same: Settings → "+ Add worker" → pick the runtime; f
 
 The same summary is shown on the dashboard's Settings page, so the owner no longer has to cross-check these docs by hand to see what is configured. Point to this live check as the source of truth for current status.
 
+## Egress host readiness
+
+When a runtime's required egress host is missing from the egress proxy allowlist, `bin/doctor` reports an error during worker inspection (`check_runtime_egress`):
+
+```
+  ✘ [FAIL] <runtime>: missing egress host '<host>'
+      → add <host> to egress/allowlist.txt, or allow it from the dashboard's Egress page
+```
+
+For example, when a `claude` worker is active but `api.anthropic.com` is missing from the egress allowlist, `bin/doctor` prints:
+
+```
+  ✘ [FAIL] claude: missing egress host 'api.anthropic.com'
+      → add api.anthropic.com to egress/allowlist.txt, or allow it from the dashboard's Egress page
+```
+
+### How to fix a missing egress host
+
+1. **Which file to edit**:
+   - `egress/allowlist.local.txt`: Edit this file (or click **Allow** on the dashboard's **System &rarr; Egress** page) to permit a host locally. Under the hood, `bin/lib/egress.py`'s `allow_host()` appends the host to `egress/allowlist.local.txt` while keeping the shipped `egress/allowlist.txt` untouched.
+   - `egress/allowlist.txt`: Shipped base allowlist for repository-wide defaults.
+2. **Proxy reload**:
+   - `allow_host()` reloads the proxy automatically via `reload_proxy()` (`squid -k reconfigure`).
+   - If editing `egress/allowlist.local.txt` or `egress/allowlist.txt` manually from a shell, run `bin/egress-up` or invoke `reload_proxy()` to apply the change.
+3. **No worker restart is needed**:
+   - The Squid proxy reloads its allowlists in place without dropping active tunnels. Worker containers do not need to be restarted.
+
+### Required egress hosts by runtime
+
+The required egress hosts for each runtime, derived from `bin/lib/runtimes.py` `hosts(rt, endpoint_url='')`:
+
+| runtime | required egress host(s) | notes |
+|---|---|---|
+| `agy` | none (`[]`) | `hosts(rt, endpoint_url='')` returns `[]`; subscription runtime. |
+| `claude` | `api.anthropic.com` | Anthropic Messages API host in `RUNTIMES['claude']['hosts']`. |
+| `codex` | `api.openai.com` | OpenAI API host in `RUNTIMES['codex']['hosts']`. |
+| `gemini` | `generativelanguage.googleapis.com` | Google Gemini API host in `RUNTIMES['gemini']['hosts']`. |
+| `compat` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `aider` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `opencode` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `goose` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` | Alibaba Cloud DashScope API hosts in `RUNTIMES['qwen-code']['hosts']`. |
+| `anthropic-compat` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+
 ## Your own model server: Ollama, vLLM, LM Studio, OpenRouter
 Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
 with the runtime `compat` or `aider`:
