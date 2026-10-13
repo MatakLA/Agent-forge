@@ -627,18 +627,18 @@ function onboardingRow(kind, name, info) {
 
 function onboardingRecommendHtml() {
   const data = ONBOARDING_RECOMMEND || (ONBOARDING && ONBOARDING.recommend) || {};
-  const hasTop = Boolean(data && data.top != null);
-  const top = hasTop ? data.top : null;
+  const top = (data && data.top != null && typeof data.top === 'object') ? data.top : null;
   const topHtml = top
-    ? '<div class="recommend-top">pick runtime <b data-runtime-name>' + esc(top.name || '') + '</b> — <span data-cost-tier>' + esc(top.cost_tier || '') + '</span> — <span data-reason>' + esc(top.reason || '') + '</span></div>'
-    : '<div class="recommend-none">' + esc((data && data.message) || '') + '</div>';
+    ? '<div class="recommend-top">pick runtime <b data-runtime-name>' + esc(top.name != null ? top.name : '') + '</b> — <span data-cost-tier>' + esc(top.cost_tier != null ? top.cost_tier : '') + '</span> — <span data-reason>' + esc(top.reason != null ? top.reason : '') + '</span></div>'
+    : '<div class="recommend-none">' + esc((data && data.message != null) ? data.message : '') + '</div>';
   const ranked = Array.isArray(data && data.ranked) ? data.ranked : [];
   const rankedItems = ranked.map(r => {
-    const isReady = (r.ready === true || r.ready === 'true') ? 'true' : 'false';
-    const tier = r.cost_tier || 'unknown';
-    const note = r.note != null ? String(r.note) : '';
-    const parts = [r.name || '', tier, note].filter(x => x.length > 0);
-    return '<li data-runtime="' + esc(r.name || '') + '" data-ready="' + isReady + '">' + parts.map(esc).join(' — ') + '</li>';
+    const isReady = (r && (r.ready === true || r.ready === 'true')) ? 'true' : 'false';
+    const tier = (r && r.cost_tier != null && String(r.cost_tier).length > 0) ? String(r.cost_tier) : 'unknown';
+    const note = (r && r.note != null) ? String(r.note) : '';
+    const name = (r && r.name != null) ? String(r.name) : '';
+    const parts = [name, tier, note].filter(x => x.length > 0);
+    return '<li data-runtime="' + esc(name) + '" data-ready="' + isReady + '">' + parts.map(esc).join(' — ') + '</li>';
   }).join('');
   return '<div id="onboarding-recommend">' +
     topHtml +
