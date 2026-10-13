@@ -1013,23 +1013,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / onboarding (top pick): .recommend-top is present and .recommend-none is absent',
         topPickExclusivityOk);
 
-  // Assert top runtime name, tier, and reason appear in visible text
+  // Assert top runtime name, tier, and reason appear in visible text and structured attributes
   const recTopTxt = recTop ? recTop.textContent : '';
   const topNameInText = recTopTxt.includes(recommendPickFixture.top.name);
   const topTierInText = recTopTxt.includes(recommendPickFixture.top.cost_tier);
   const topReasonInText = recTopTxt.includes(recommendPickFixture.top.reason);
-  check('settings / onboarding (top pick): top runtime name, tier, and reason appear in visible text',
-        topNameInText && topTierInText && topReasonInText);
+  const topNameEl = recTop ? recTop.querySelector('[data-runtime-name]') : null;
+  const topTierEl = recTop ? recTop.querySelector('[data-cost-tier]') : null;
+  const topReasonEl = recTop ? recTop.querySelector('[data-reason]') : null;
+  const topStructureOk = !!topNameEl && topNameEl.textContent === recommendPickFixture.top.name &&
+                         !!topTierEl && topTierEl.textContent === recommendPickFixture.top.cost_tier &&
+                         !!topReasonEl && topReasonEl.textContent === recommendPickFixture.top.reason;
+  check('settings / onboarding (top pick): top runtime name, tier, and reason appear in visible text and structured attributes',
+        topNameInText && topTierInText && topReasonInText && topStructureOk);
 
-  // Assert ranked entries count and each data-ready attribute matches fixture's ready value
-  const pickRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
+  // Assert ranked entries count and each data-ready attribute matches fixture ready value in order
+  const pickRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const pickRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
   const pickRankedCountOk = pickRankedLis.length === recommendPickFixture.ranked.length && pickRankedLis.length > 0;
-  const pickRankedDataReadyOk = pickRankedCountOk && recommendPickFixture.ranked.every((r, idx) => {
-    const li = pickRankedLis[idx];
-    return !!li && li.getAttribute('data-ready') === String(r.ready) && li.textContent.includes(r.name);
+  const pickRankedAllHaveReadyAttr = pickRankedReadyLis.length === pickRankedLis.length;
+  const pickRankedDataReadyOk = pickRankedCountOk && pickRankedAllHaveReadyAttr && recommendPickFixture.ranked.every(r => {
+    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
+    return !!li && li.getAttribute('data-ready') === String(r.ready);
   });
-  check('settings / onboarding (top pick): ranked entries data-ready attribute matches fixture ready value for each runtime',
-        pickRankedDataReadyOk);
+  const pickRankedOrderOk = pickRankedCountOk &&
+    pickRankedLis[0].getAttribute('data-runtime') === recommendPickFixture.ranked[0].name &&
+    pickRankedLis[0].getAttribute('data-ready') === String(recommendPickFixture.ranked[0].ready) &&
+    pickRankedLis[1].getAttribute('data-runtime') === recommendPickFixture.ranked[1].name &&
+    pickRankedLis[1].getAttribute('data-ready') === String(recommendPickFixture.ranked[1].ready);
+  check('settings / onboarding (top pick): ranked entries data-ready attribute matches fixture ready value for each runtime in order',
+        pickRankedDataReadyOk && pickRankedOrderOk);
 
   // Assert recommendation widget and ranked items are reachable by keyboard/screen order consistent with Onboarding subsection
   const recFocusTargets = [recWidget, recTop, ...pickRankedLis].filter(Boolean);
@@ -1063,22 +1076,23 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / onboarding (no ready runtime): .recommend-none is present and .recommend-top is absent',
         noneExclusivityOk);
 
-  // Assert .recommend-none shows the server's message text
-  const noneMsgOk = !!noneRecNone && (noneRecNone.textContent.trim() === recommendNoneFixture.message || noneRecNone.textContent.includes(recommendNoneFixture.message));
-  check('settings / onboarding (no ready runtime): .recommend-none displays the server message text',
+  // Assert .recommend-none shows the server's message text verbatim
+  const noneMsgOk = !!noneRecNone && noneRecNone.textContent.trim() === recommendNoneFixture.message;
+  check('settings / onboarding (no ready runtime): .recommend-none displays the server message text verbatim',
         noneMsgOk);
 
-  // Assert every .recommend-ranked li has data-ready="false" and matches fixture ready values
-  const noneRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
+  // Assert every .recommend-ranked li has data-ready="false" and matches fixture ready values in order
+  const noneRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const noneRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
   const noneRankedCountOk = noneRankedLis.length === recommendNoneFixture.ranked.length && noneRankedLis.length > 0;
-  const noneRankedAllFalse = noneRankedCountOk && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
-  const noneRankedMatchesFixture = noneRankedCountOk && recommendNoneFixture.ranked.every((r, idx) => {
-    const li = noneRankedLis[idx];
-    return !!li && li.getAttribute('data-ready') === String(r.ready) && li.textContent.includes(r.name);
+  const noneRankedAllHaveReadyAttr = noneRankedReadyLis.length === noneRankedLis.length;
+  const noneRankedAllFalse = noneRankedCountOk && noneRankedAllHaveReadyAttr && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
+  const noneRankedMatchesFixture = noneRankedCountOk && recommendNoneFixture.ranked.every(r => {
+    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
+    return !!li && li.getAttribute('data-ready') === String(r.ready);
   });
-  const noneRankedDataReadyOk = noneRankedAllFalse && noneRankedMatchesFixture;
-  check('settings / onboarding (no ready runtime): every ranked entry has data-ready="false" matching fixture ready value',
-        noneRankedDataReadyOk);
+  check('settings / onboarding (no ready runtime): every ranked entry has data-ready="false" matching fixture ready value in order',
+        noneRankedAllFalse && noneRankedMatchesFixture);
 
   // Task 0184: Onboarding recommendation widget (Fixture 3: top is an object with falsy-but-valid fields)
   w.eval(`
