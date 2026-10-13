@@ -11,9 +11,47 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
+try:
+    import egress
+except ImportError:
+    from bin.lib import egress
+
 DEFAULT_TIMEOUT = 600
+
+PROVIDER_HOSTS = {
+    "anthropic-api": "api.anthropic.com",
+    "openai-api": "api.openai.com",
+    "gemini-api": "generativelanguage.googleapis.com",
+}
+
+
+def missing_hosts(provider, api_base=''):
+    """The egress host `provider` (one of bin/lib/foreman/settings.py PROVIDERS_ALL) needs that
+    is not currently allowed, as a list with 0 or 1 entries. `api_base`, when given, overrides the
+    default host (e.g. an owner-configured OPENAI_API_BASE) - parsed with urllib.parse.urlparse,
+    using .hostname (scheme/path ignored). claude-cli, agy-claude and agy-gemini are routed
+    through agy, need no pinned egress host, and always return []."""
+    if provider not in PROVIDER_HOSTS:
+        return []
+    if api_base:
+        parsed = urllib.parse.urlparse(api_base)
+        host = parsed.hostname or (urllib.parse.urlparse(f"//{api_base}").hostname if "://" not in api_base else None)
+    else:
+        host = PROVIDER_HOSTS[provider]
+    if not host:
+        return []
+    covered = set()
+    for fn in (egress.allowlist, egress.local_allowlist):
+        for entry in fn() or ():
+            line = str(entry).split("#", 1)[0].strip().lower()
+            if line:
+                covered.add(line)
+    if host.lower() in covered:
+        return []
+    return [host]
 
 
 def get_secret(name, default=""):
