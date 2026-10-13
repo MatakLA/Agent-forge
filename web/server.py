@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent-Forge web dashboard and admin console: the team live (orchestrator, every worker), goals with their acceptance criteria,
 the task board and dependency graph, run replays, timeline, money and quota, metrics, health, egress and disk; and the owner's
-controls - goals and backlog, approvals, task and goal actions, answers to the planner's questions, kill switch per project or
+controls - autopilot toggle, foreman pause/resume, goals and backlog, approvals, task and goal actions, answers to the planner's questions, kill switch per project or
 for all, settings, the team's documents, new workers with their Antigravity login in a browser terminal, and new projects.
 
 Python standard library only: this file is the HTTP side, web/dashboard/ the backend, web/static/ the page. Runs next to
@@ -57,6 +57,7 @@ HOST = re.compile(r"[a-z0-9][a-z0-9.-]{2,252}")          # bin/lib/egress.py che
 TARGET = re.compile(r"|worker-\d+|[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
 TASK_ACTIONS = ("approve", "cancel", "retry", "feedback", "assign", "model")
 GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "cancel")
+CONTROL_ACTIONS = ("autopilot_on", "autopilot_off", "pause", "resume")
 
 
 def load_static():
@@ -131,12 +132,17 @@ def as_json(out, err="", rc=0):
     if isinstance(out, (dict, list)):
         return out
     try:
-        return json.loads(out)
+        res = json.loads(out)
+        if isinstance(res, (dict, list)):
+            return res
     except (ValueError, TypeError):
-        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
-        if DASHBOARD_TOKEN:
-            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
-        return {"ok": False, "error": msg}
+        pass
+    msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
+    if DASHBOARD_TOKEN:
+        msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+    if rc == 0:
+        return {"ok": True, "message": msg}
+    return {"ok": False, "error": msg, "message": msg}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -355,6 +361,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 rc, out, err = foreman(pf, f"goal {gid} {act}", timeout=30)
             self._json(as_json(out, err, rc))
+        elif path == "/api/control":
+            act = str(body.get("action", ""))
+            if act not in CONTROL_ACTIONS:
+                self._json({"ok": False, "message": "unknown action"}, 400); return
+            if act == "autopilot_on":
+                cmd_args = ["autopilot", "on"]
+            elif act == "autopilot_off":
+                cmd_args = ["autopilot", "off"]
+            elif act == "pause":
+                cmd_args = ["pause"]
+            else:
+                cmd_args = ["resume"]
+            rc, out, err = foreman(pf, cmd_args)
+            self._json(as_json(out, err, rc))
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
@@ -448,6 +468,16 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
         self.send_response(405); self.end_headers()
 
+    def do_PUT(self):
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        self.send_response(405); self.end_headers()
+
+    def do_DELETE(self):
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        self.send_response(405); self.end_headers()
+
     def do_GET(self):
         if not host_allowed(self.headers.get("Host")):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
@@ -474,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
             self._raw(f[0], f[1], cache="public, max-age=31536000, immutable" if "v" in q else "no-cache"); return
         if not path.startswith("/api/"):
             self.send_response(404); self.end_headers(); return
+        if path == "/api/control":
+            self.send_response(405); self.end_headers(); return
         proj = q.get("project", "default")
         try:
             pf = B.pflag(proj)
