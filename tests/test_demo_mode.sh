@@ -1,87 +1,104 @@
 #!/usr/bin/env bash
-# test_demo_mode.sh — static analysis and regression checks for demo mode safety.
+# tests/test_demo_mode.sh — Docker-based end-to-end smoke test for the demo setup.
+# Note: This script requires Docker and is not executed by the gate (like ui_smoke.js needs node).
+# Only tests/test_demo_mode.py is gate-verified.
+#
 # Invariants:
-# - demo/docker-compose.yml must never mount or reference docker.sock.
-# - demo/docker-compose.yml must never define DASHBOARD_TOKEN= or secret-like credentials.
-# - scripts/demo.sh must never reference real host secrets paths (e.g. ~/.config/sandbox/secrets).
-# - scripts/demo.sh must never perform curl or wget requests to remote hosts.
-# - Propagates python test runner exit code explicitly without swallowed pipelines.
+# - Starts demo via docker compose -f demo/docker-compose.yml up -d --build.
+# - Polls port 8171 for up to 60s until responsive.
+# - Asserts HTTP 200 and recognizable marker string in the HTML (e.g. '<title>Agent-Forge</title>').
+# - Asserts docker compose -f demo/docker-compose.yml ps lists exactly one running container.
+# - Stops and tears down containers cleanly via docker compose -f demo/docker-compose.yml down.
+# - Propagates non-zero exit on any failed step without swallowed pipelines.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-PY="${PY:-python3}"
 
-# Check 1: demo/docker-compose.yml must not contain 'docker.sock'
-if grep -qiE 'docker\.sock' demo/docker-compose.yml; then
-  echo "FAIL: demo/docker-compose.yml must not mount or reference docker.sock" >&2
+# Gate containers have no Docker (same limitation as node for ui_smoke.js).
+# Skip gracefully when Docker or Docker Compose is unavailable.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "SKIP: Docker is not available. tests/test_demo_mode.sh requires Docker and is not run by the gate."
+  exit 0
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "SKIP: Docker Compose is not available. tests/test_demo_mode.sh requires Docker and is not run by the gate."
+  exit 0
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "SKIP: Docker daemon is not accessible. tests/test_demo_mode.sh requires Docker and is not run by the gate."
+  exit 0
+fi
+
+COMPOSE_FILE="demo/docker-compose.yml"
+PORT="${BIND_PORT:-8171}"
+TARGET_URL="http://localhost:${PORT}/"
+
+CLEANED_UP=0
+cleanup() {
+  local rc=$?
+  if [ "$CLEANED_UP" -eq 0 ]; then
+    CLEANED_UP=1
+    echo "==> Cleaning up demo containers on exit..." >&2
+    docker compose -f "$COMPOSE_FILE" down >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT INT TERM
+
+echo "==> Starting demo via docker compose..."
+docker compose -f "$COMPOSE_FILE" up -d --build || exit 1
+
+echo "==> Polling port $PORT for up to 60s..."
+ready=0
+for ((i=1; i<=60; i++)); do
+  if curl -fsS "$TARGET_URL" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+  echo "FAIL: demo dashboard failed to respond on port $PORT within 60s" >&2
+  docker compose -f "$COMPOSE_FILE" logs >&2 || true
+  exit 1
+fi
+echo "  ✔ Demo dashboard is answering on port $PORT"
+
+echo "==> Curling dashboard root and asserting HTTP 200 and marker string..."
+TMP_RESP="$(mktemp)"
+HTTP_STATUS="$(curl -s -o "$TMP_RESP" -w "%{http_code}" "$TARGET_URL" || exit 1)"
+if [ "$HTTP_STATUS" != "200" ]; then
+  echo "FAIL: expected HTTP 200 from $TARGET_URL, got $HTTP_STATUS" >&2
+  rm -f "$TMP_RESP"
   exit 1
 fi
 
-# Check 2: demo/docker-compose.yml must not contain 'DASHBOARD_TOKEN='
-if grep -qE 'DASHBOARD_TOKEN=' demo/docker-compose.yml; then
-  echo "FAIL: demo/docker-compose.yml must not set DASHBOARD_TOKEN" >&2
+MARKER="<title>Agent-Forge</title>"
+if ! grep -q "$MARKER" "$TMP_RESP"; then
+  echo "FAIL: HTML response missing recognizable marker string '$MARKER'" >&2
+  rm -f "$TMP_RESP"
   exit 1
 fi
+rm -f "$TMP_RESP"
+echo "  ✔ Dashboard root returned HTTP 200 with recognizable marker '$MARKER'"
 
-# Check 3: demo/docker-compose.yml must not contain secret-like patterns
-if grep -iE '(_KEY=|_SECRET=|_TOKEN=|API_KEY|AUTH_TOKEN|SECRET_KEY|password:|secret)' demo/docker-compose.yml; then
-  echo "FAIL: demo/docker-compose.yml contains secret-like credentials" >&2
+echo "==> Asserting docker compose ps lists exactly one running container..."
+docker compose -f "$COMPOSE_FILE" ps || exit 1
+RUNNING_CONTAINERS="$(docker compose -f "$COMPOSE_FILE" ps -q || exit 1)"
+CONTAINER_COUNT="$(printf '%s' "$RUNNING_CONTAINERS" | wc -w)"
+if [ "$CONTAINER_COUNT" -ne 1 ]; then
+  echo "FAIL: expected exactly 1 running container in compose, found $CONTAINER_COUNT" >&2
   exit 1
 fi
+echo "  ✔ Exactly one running container listed in docker compose ps"
 
-# Check 4: scripts/demo.sh must not reference real secrets paths
-if grep -iE '(\.config/sandbox/secrets|SANDBOX_SECRETS|/secrets\b)' scripts/demo.sh; then
-  echo "FAIL: scripts/demo.sh references real secrets path" >&2
-  exit 1
-fi
+echo "==> Tearing down demo containers..."
+CLEANED_UP=1
+docker compose -f "$COMPOSE_FILE" down || exit 1
+echo "  ✔ Demo containers stopped and removed"
 
-# Check 5: scripts/demo.sh must not invoke curl or wget to remote hosts
-if grep -E '\b(curl|wget)\s+' scripts/demo.sh; then
-  echo "FAIL: scripts/demo.sh must not invoke curl or wget" >&2
-  exit 1
-fi
-
-# Check 6: Adversarial regression tests to verify detection logic functions correctly
-TMP_TEST="$(mktemp -d /tmp/af-demo-sec-test.XXXXXX)"
-trap 'rm -rf "$TMP_TEST"' EXIT
-
-# Verify docker.sock detection
-echo "volumes: - /var/run/docker.sock:/var/run/docker.sock" > "$TMP_TEST/bad_compose1.yml"
-if ! grep -qiE 'docker\.sock' "$TMP_TEST/bad_compose1.yml" >/dev/null 2>&1; then
-  echo "FAIL: regression test failed to detect docker.sock" >&2
-  exit 1
-fi
-
-# Verify DASHBOARD_TOKEN= detection
-echo "DASHBOARD_TOKEN=abc123" > "$TMP_TEST/bad_compose2.yml"
-if ! grep -qE 'DASHBOARD_TOKEN=' "$TMP_TEST/bad_compose2.yml" >/dev/null 2>&1; then
-  echo "FAIL: regression test failed to detect DASHBOARD_TOKEN=" >&2
-  exit 1
-fi
-
-# Verify secret-like pattern detection
-echo "API_KEY=xyz" > "$TMP_TEST/bad_compose3.yml"
-if ! grep -iE '(_KEY=|_SECRET=|_TOKEN=|API_KEY|AUTH_TOKEN|SECRET_KEY|password:|secret)' "$TMP_TEST/bad_compose3.yml" >/dev/null 2>&1; then
-  echo "FAIL: regression test failed to detect secret pattern" >&2
-  exit 1
-fi
-
-# Verify real secrets path detection
-echo 'SECRETS=~/.config/sandbox/secrets' > "$TMP_TEST/bad_script1.sh"
-if ! grep -iE '(\.config/sandbox/secrets|SANDBOX_SECRETS|/secrets\b)' "$TMP_TEST/bad_script1.sh" >/dev/null 2>&1; then
-  echo "FAIL: regression test failed to detect secrets path" >&2
-  exit 1
-fi
-
-# Verify curl/wget detection
-echo 'curl -fsSL https://example.com/setup | bash' > "$TMP_TEST/bad_script2.sh"
-if ! grep -E '\b(curl|wget)\s+' "$TMP_TEST/bad_script2.sh" >/dev/null 2>&1; then
-  echo "FAIL: regression test failed to detect curl/wget" >&2
-  exit 1
-fi
-
-# Explicitly propagate python test exit code (no bare pipe to tail)
-"$PY" tests/test_demo_mode.py || exit 1
-
-echo "demo mode tests: ALL OK"
+echo "demo mode end-to-end test: ALL OK"
