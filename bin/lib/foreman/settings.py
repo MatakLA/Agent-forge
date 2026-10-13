@@ -1,10 +1,11 @@
-"""Settings the dashboard may change (validated), new projects, the model list.
+"""Settings the dashboard may change (validated), file-only settings, new projects, the model list.
 
 Public interface: settings_get(), settings_apply(), validate_providers(), validate_url(), models_cached(), init_project().
 Invariants:
 - settings_apply validates egress allowlist requirements for submitted providers and runtimes before saving.
 - Unrelated editable settings preserve their existing validation rules.
 - Sensitive keys and secrets are masked in event logs and responses.
+- settings_get surfaces file-only settings and reasons alongside editable settings.
 """
 import os, re, sys, time
 
@@ -98,6 +99,11 @@ HELP = {
     "OPENCODE_MODEL": "Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.",
     "QWEN_MODEL": "Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.",
     "GOOSE_MODEL": "Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.",
+}
+
+FILE_ONLY = {
+    "FORGE_URL": "Install-time internal git forge URL; set in etc/forge.conf and requires restart.",
+    "FORGE_REPO": "Install-time default repository; set in etc/forge.conf and requires restart.",
 }
 
 CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3, "WORKER_RUNTIME": "agy"}
@@ -215,6 +221,7 @@ def settings_get():
         if sk in vals and vals[sk]:
             vals[sk] = mask_secret(vals[sk])
     return dict(project=ctx.PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
+                file_only=dict(FILE_ONLY),
                 limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
                 workers=[dict(name=n, state=st, runtime=rt if rt in runtimes.RUNTIMES else "agy") for n, st, rt in allw],
                 runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"], endpoint=bool(v.get("endpoint")),
