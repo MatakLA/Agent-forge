@@ -132,17 +132,12 @@ def as_json(out, err="", rc=0):
     if isinstance(out, (dict, list)):
         return out
     try:
-        res = json.loads(out)
-        if isinstance(res, (dict, list)):
-            return res
+        return json.loads(out)
     except (ValueError, TypeError):
-        pass
-    msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
-    if DASHBOARD_TOKEN:
-        msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
-    if rc == 0:
-        return {"ok": True, "message": msg}
-    return {"ok": False, "error": msg, "message": msg}
+        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+        return {"ok": False, "error": msg}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -365,16 +360,8 @@ class Handler(BaseHTTPRequestHandler):
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
-            if act == "autopilot_on":
-                cmd_args = ["autopilot", "on"]
-            elif act == "autopilot_off":
-                cmd_args = ["autopilot", "off"]
-            elif act == "pause":
-                cmd_args = ["pause"]
-            else:
-                cmd_args = ["resume"]
-            rc, out, err = foreman(pf, cmd_args)
-            self._json(as_json(out, err, rc))
+            rc, out, err = foreman(pf, act.split("_"))
+            self._json({"ok": rc == 0, "message": (out or err or "").strip()[-400:]})
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
