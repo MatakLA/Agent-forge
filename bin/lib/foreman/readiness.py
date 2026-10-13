@@ -5,12 +5,14 @@ Public interface:
 - provider_items() -> list[str]: every entry of bin/lib/foreman/settings.py PROVIDERS_ALL, in order
 - status_of(kind: str, name: str) -> dict: readiness status of a single runtime or provider
 - all_status() -> dict: status of all runtimes and providers
+- recommend() -> dict: ranked recommendation of worker runtimes
 
 Important invariants:
 - Pure read-only checks without network calls or secrets exposure.
 - Provider requirements are derived generically from settings.EDITABLE and settings.PROVIDERS_ALL.
 - State priority when both missing settings and missing egress apply: missing_setting wins.
 - Absence of files, credentials, or settings is treated as 'missing' without raising exceptions.
+- Runtime recommendation strictly orders ready runtimes before not-ready ones, cheapest tier first.
 """
 import os
 
@@ -291,4 +293,71 @@ def all_status() -> dict:
     return {
         "runtimes": {rt: status_of("runtime", rt) for rt in runtime_items()},
         "providers": {pr: status_of("provider", pr) for pr in provider_items()},
+    }
+
+
+def cost_model(rt: str) -> dict:
+    """Return the cost/quota model classification for a runtime."""
+    return runtimes.cost_model(rt)
+
+
+_TIER_PRIORITY = {
+    "quota": 0,
+    "metered": 1,
+    "unknown": 2,
+}
+
+
+def recommend() -> dict:
+    """Rank worker runtimes by readiness and cost tier.
+
+    Contract:
+    {
+      "top": {"name": str, "cost_tier": str, "reason": str} | None,
+      "ranked": [
+        {"name": str, "ready": bool, "cost_tier": str, "note": str}, ...
+      ],
+      "message": str
+    }
+    """
+    ready_entries = []
+    not_ready_entries = []
+
+    for name in runtime_items():
+        st = status_of("runtime", name)
+        cm = cost_model(name)
+        is_ready = bool(isinstance(st, dict) and st.get("state") == "ok")
+        cost_tier = cm.get("kind", "unknown") if isinstance(cm, dict) else "unknown"
+        note = str(st.get("detail", "")) if isinstance(st, dict) else ""
+
+        entry = {
+            "name": name,
+            "ready": is_ready,
+            "cost_tier": cost_tier,
+            "note": note,
+        }
+        if is_ready:
+            ready_entries.append(entry)
+        else:
+            not_ready_entries.append(entry)
+
+    ready_entries.sort(key=lambda x: _TIER_PRIORITY.get(x["cost_tier"], 99))
+    ranked = ready_entries + not_ready_entries
+
+    if ready_entries:
+        top_entry = ready_entries[0]
+        top = {
+            "name": top_entry["name"],
+            "cost_tier": top_entry["cost_tier"],
+            "reason": top_entry["note"],
+        }
+        message = ""
+    else:
+        top = None
+        message = "No runtime passed its readiness check yet."
+
+    return {
+        "top": top,
+        "ranked": ranked,
+        "message": message,
     }
