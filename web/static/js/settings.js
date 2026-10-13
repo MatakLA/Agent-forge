@@ -1,9 +1,9 @@
 // Settings: Runtimes & providers readiness summary (doctor check), followed by seven short pages: Workers (kill switch,
 // the pool, adding workers, keys and your model server), Models (who plans and reviews, worker models, routing, experiments),
 // Project (where the code lives, approvals, behaviour, tests, notifications), Money (budgets and prices), Knowledge (vision,
-// team rules, decisions, lessons, roles), Limits (all projects) and Onboarding (plain-language readiness table and CHOOSING-AN-AI
-// reference). File-only settings (set in host conf files) are surfaced with reasons in a dedicated non-editable subsection. Also:
-// where the code lives (dialog), a worker's Antigravity sign-in, a new project.
+// team rules, decisions, lessons, roles), Limits (all projects) and Onboarding (plain-language readiness table, runtime
+// recommendations, and CHOOSING-AN-AI reference). File-only settings (set in host conf files) are surfaced with reasons in a dedicated
+// non-editable subsection. Also: where the code lives (dialog), a worker's Antigravity sign-in, a new project.
 
 // ---- kill switch (per project; "all" = every project)
 let ksBusy = false;
@@ -554,8 +554,9 @@ function fileOnlyCard() {
   return '<div class="setcard" id="file-only-settings"><h3>File-only settings</h3><div class="muted small intro">Configured in host files and not editable from the dashboard.</div>' + rows + '</div>';
 }
 
-// ---- Onboarding subsection (plain-language readiness checklist + CHOOSING-AN-AI reference)
+// ---- Onboarding subsection (plain-language readiness checklist, runtime recommendation + CHOOSING-AN-AI reference)
 let ONBOARDING = null, onboardingBusy = false, onboardingErr = null, onboardingAt = 0;
+let ONBOARDING_RECOMMEND = null;
 
 const ONBOARDING_STATUS_LABELS = {
   ok: 'Ready',
@@ -580,17 +581,22 @@ async function loadOnboarding(force) {
   onboardingBusy = true;
   schedule(true);
   try {
-    const data = await getJSON('/api/readiness');
+    const [data, rec] = await Promise.all([
+      getJSON('/api/readiness'),
+      getJSON('/api/readiness/recommend').catch(() => null)
+    ]);
     if (data && data.error && !data.runtimes && !data.providers) {
       throw new Error(data.error);
     }
     ONBOARDING = data || {};
+    ONBOARDING_RECOMMEND = rec || null;
     onboardingErr = null;
     READINESS = ONBOARDING;
   } catch (e) {
     const msg = String(e && e.message ? e.message : e);
     onboardingErr = msg;
     ONBOARDING = null;
+    ONBOARDING_RECOMMEND = null;
     toast('Could not load readiness: ' + msg, true);
   } finally {
     onboardingBusy = false;
@@ -617,6 +623,27 @@ function onboardingRow(kind, name, info) {
     '<td><span class="' + badgeClass + '">' + esc(statusLabel) + '</span></td>' +
     '<td style="white-space:normal;word-break:break-word;">' + esc(detail) + '</td>' +
     '</tr>';
+}
+
+function onboardingRecommendHtml() {
+  const data = ONBOARDING_RECOMMEND || (ONBOARDING && ONBOARDING.recommend) || {};
+  const hasTop = Boolean(data && data.top != null);
+  const top = hasTop ? data.top : null;
+  const topHtml = top
+    ? '<div class="recommend-top">pick runtime <b data-runtime-name>' + esc(top.name || '') + '</b> — <span data-cost-tier>' + esc(top.cost_tier || '') + '</span> — <span data-reason>' + esc(top.reason || '') + '</span></div>'
+    : '<div class="recommend-none">' + esc((data && data.message) || '') + '</div>';
+  const ranked = Array.isArray(data && data.ranked) ? data.ranked : [];
+  const rankedItems = ranked.map(r => {
+    const isReady = (r.ready === true || r.ready === 'true') ? 'true' : 'false';
+    const tier = r.cost_tier || 'unknown';
+    const note = r.note != null ? String(r.note) : '';
+    const parts = [r.name || '', tier, note].filter(x => x.length > 0);
+    return '<li data-runtime="' + esc(r.name || '') + '" data-ready="' + isReady + '">' + parts.map(esc).join(' — ') + '</li>';
+  }).join('');
+  return '<div id="onboarding-recommend">' +
+    topHtml +
+    '<ul class="recommend-ranked">' + rankedItems + '</ul>' +
+    '</div>';
 }
 
 function pageOnboarding() {
@@ -655,7 +682,7 @@ function pageOnboarding() {
       '<thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table></div>';
   }
-  return card('Onboarding', body + choosingAiRefHtml(), 'Check runtime and provider readiness and choose the right AI.');
+  return card('Onboarding', body + onboardingRecommendHtml() + choosingAiRefHtml(), 'Check runtime and provider readiness and choose the right AI.');
 }
 
 function ensureSettingsNav() {
@@ -894,4 +921,5 @@ projectResets.push(() => {
   S = null; sLoadedFor = null; sMsg = ''; DOCS.list = null;
   READINESS = null; readinessErr = null; readinessAt = 0;
   ONBOARDING = null; onboardingErr = null; onboardingAt = 0;
+  ONBOARDING_RECOMMEND = null;
 });
