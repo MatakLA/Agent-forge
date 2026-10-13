@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Quickstart CI workflow: `.github/workflows/quickstart-e2e.yml` runs the quickstart e2e check on demand and on relevant path changes.
 - Settings UI: add-worker runtime picker entries and per-runtime model fields with readiness badges for OpenCode, Qwen Code and Goose in `web/static/js/settings.js`.
 - Runtime settings: dashboard-editable model settings (`OPENCODE_MODEL`, `QWEN_MODEL`, `GOOSE_MODEL`) for OpenCode, Qwen Code and Goose runtimes in `bin/lib/foreman/settings.py`.
 - Orchestrator providers documentation: `docs/PROVIDERS.md` now covers `openai-api` and `gemini-api` setup (base URL and model settings fields, key management via `bin/secret-set`), cost/quota honesty, schema and URL validation limitations, and offline testing.
