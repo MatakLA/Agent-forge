@@ -72,7 +72,8 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   APPROVE: 'Wait for my OK before…', MODEL_ROUTING: 'Model routing', ROUTING_MIN_TASKS: 'Routing: merged tasks a model needs per role',
   ROUTING_MIN_FIRST_PASS: 'Routing: approved first time, at least (%)', FORGE_KIND: 'Git forge type', UPSTREAM_REPO: 'Upstream repository',
   UPSTREAM_URL: 'Upstream URL', UPSTREAM_BRANCH: 'Upstream default branch', UPSTREAM_MERGE: 'Upstream merge method',
-  FORGE_URL: 'Internal Git forge URL', FORGE_REPO: 'Forgejo repository'};
+  FORGE_URL: 'Internal Git forge URL', FORGE_REPO: 'Forgejo repository',
+  OPENCODE_MODEL: 'OpenCode model', QWEN_MODEL: 'Qwen Code model', GOOSE_MODEL: 'Goose model'};
 const HELP = {
   PLAN_PROVIDERS: 'Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
   REVIEW_PROVIDERS: 'Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Applies live.',
@@ -162,7 +163,10 @@ const HELP = {
   CONSEC_FAIL_TRIP: 'Consecutive failed runs across install before kill switch trips automatically (1-100). Applies live.',
   POLL_SEC: 'Supervisor polling interval in seconds for limit enforcement (1-60). Applies live.',
   FORGE_URL: 'URL of internal Forgejo server. Set in etc/forge.conf — requires restarting the foreman service to take effect.',
-  FORGE_REPO: 'Forgejo repository path for this project. Set in etc/forge.conf or project.conf at bootstrap — requires restarting the foreman service to change.'};
+  FORGE_REPO: 'Forgejo repository path for this project. Set in etc/forge.conf or project.conf at bootstrap — requires restarting the foreman service to change.',
+  OPENCODE_MODEL: 'Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.',
+  QWEN_MODEL: 'Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.',
+  GOOSE_MODEL: 'Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.'};
 const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
   'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
 async function loadReadiness(force) {
@@ -195,7 +199,8 @@ async function loadSettings(force) {
   schedule(true);
 }
 function sval(k) {
-  const el = $('set-' + k); if (!el) return null;
+  const fid = 'field-' + k.toLowerCase().replace(/_/g, '-');
+  const el = $('set-' + k) || $(fid); if (!el) return null;
   if (el.dataset.kind === 'prov') return [...el.querySelectorAll('.prov')].filter(r => r.querySelector('input').checked).map(r => r.dataset.p).join(',');
   if (el.dataset.kind === 'pool' || el.dataset.kind === 'multi') return [...el.querySelectorAll('input:checked')].map(i => i.value).join(',');
   if (el.dataset.kind === 'wbudget') {
@@ -235,6 +240,22 @@ function readinessBadge(state) {
   if (s === 'missing_setting') return '<span class="badge warn" data-state="missing_setting">Missing setting</span>';
   if (s === 'missing_egress') return '<span class="badge warn" data-state="missing_egress">Missing egress</span>';
   return '<span class="badge" data-state="' + esc(state) + '">' + esc(state || 'unknown') + '</span>';
+}
+function runtimeModelField(k, rtKey, ph) {
+  const fid = 'field-' + k.toLowerCase().replace(/_/g, '-');
+  const val = V()[k] != null ? V()[k] : '';
+  const rInfo = (READINESS && READINESS.runtimes && READINESS.runtimes[rtKey]) || {};
+  const badge = readinessBadge(rInfo.state || 'unknown');
+  const help = HELP[k] || '';
+  return '<div class="setrow" data-field="' + esc(k) + '"><label for="' + fid + '">' + esc(LABEL[k] || k) +
+    (help ? '<span class="help">' + esc(help) + '</span>' : '') +
+    '</label><div>' +
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+    '<input type="text" id="' + fid + '" value="' + esc(val) + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' style="flex:1;min-width:140px;">' +
+    badge +
+    '</div>' +
+    '<div class="seterr" id="err-' + fid + '"></div>' +
+    '</div></div>';
 }
 function readinessRow(kind, name, info) {
   info = info || {};
@@ -297,9 +318,9 @@ function pageWorkers() {
   h += card('This project\'s workers', '<div id="set-WORKERS" data-kind="pool" class="pool">' + poolHtml +
       '</div><div class="btnrow"><button class="mini" id="add-worker">+ Add a worker</button><span id="addw-status" class="muted small"></span></div>' + addWorkerForm(),
     'Ticked workers belong to project “' + esc(project) + '” (none ticked = all). Each is its own Antigravity account, API key or connection to your model server.');
-  h += card('API keys and your model server', '<div class="keys">' + ['anthropic.key', 'openai.key', 'gemini.key', 'compat.key'].map(k => '<span>' + esc(k.split('.')[0] === 'compat' ? 'your server' : k.split('.')[0]) +
+  h += card('API keys and your model server', '<div class="keys">' + ['anthropic.key', 'openai.key', 'gemini.key', 'compat.key', 'qwen.key'].map(k => '<span>' + esc(k.split('.')[0] === 'compat' ? 'your server' : k.split('.')[0]) +
       ' ' + (sec[k] ? '<b class="plus">✓</b>' : '<span class="muted">—</span>') + '</span>').join('') + '<button class="mini" id="key-change">set a key…</button></div>' +
-    '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option><option value="compat.key">compat.key (your server)</option></select>' +
+    '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option><option value="compat.key">compat.key (your server)</option><option>qwen.key</option></select>' +
     '<input type="password" id="key-val" autocomplete="off" placeholder="the key (stored on the server only)" style="flex:1;min-width:180px"><button class="mini" id="key-save">Save key</button></div>' +
     field('COMPAT_BASE_URL', txt('COMPAT_BASE_URL', 'http://192.168.1.20:11434/v1  or  https://openrouter.ai/api/v1'), HELP.COMPAT_BASE_URL) +
     field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b'), HELP.WORKER_MODEL_COMPAT) +
@@ -307,6 +328,9 @@ function pageWorkers() {
     field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE', 'sonnet'), HELP.WORKER_MODEL_CLAUDE) +
     field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX', 'e.g. gpt-5.1-codex'), HELP.WORKER_MODEL_CODEX) +
     field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI', 'the CLI\'s default'), HELP.WORKER_MODEL_GEMINI) +
+    runtimeModelField('OPENCODE_MODEL', 'opencode', 'e.g. gpt-4o') +
+    runtimeModelField('QWEN_MODEL', 'qwen-code', 'e.g. qwen-max') +
+    runtimeModelField('GOOSE_MODEL', 'goose', 'e.g. gpt-4o') +
     field('API_WORKERS_POLICY', sel('API_WORKERS_POLICY', [['overflow', 'only when no subscription worker can take the task'], ['always', 'first']]), HELP.API_WORKERS_POLICY),
     'Keys are stored on the server (mode 0600) and reach only the agent\'s environment. Budgets: the Money page.');
   return h;
@@ -329,12 +353,12 @@ function addWorkerForm() {
     }
   }
   if (!R['anthropic-compat']) R['anthropic-compat'] = {label: 'Anthropic-compatible endpoint', endpoint: true};
-  if (!R['qwen-code']) R['qwen-code'] = {label: 'Qwen Code CLI'};
+  if (!R['qwen-code']) R['qwen-code'] = {label: 'Qwen Code CLI', key: 'qwen.key'};
   if (!R.opencode) R.opencode = {label: 'OpenCode on your model server', endpoint: true};
   if (!R.goose) R.goose = {label: 'Goose on your model server', endpoint: true};
   const sec = (S && S.secrets) || {};
   const rtEntries = Object.entries(R);
-  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block"><input type="radio" name="addw-rt" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'anthropic-compat' ? 'Anthropic-compatible endpoint' : k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k === 'qwen-code' ? 'Qwen Code' : k)) +
+  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block" for="runtime-opt-' + esc(k) + '"><input type="radio" name="addw-rt" id="runtime-opt-' + esc(k) + '" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'anthropic-compat' ? 'Anthropic-compatible endpoint' : k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k === 'qwen-code' ? 'Qwen Code' : k)) +
       '</b> <span class="muted">— ' + esc((typeof RTDESC !== 'undefined' && RTDESC[k]) || r.label) + '</span></label>').join('')
     : '<div class="empty">No runtimes available.</div>';
   return '<div id="addw-form" style="display:none" class="addw"><div class="muted small">What will the new worker run on?</div>' +
@@ -531,6 +555,9 @@ async function saveSettings() {
   if ($('set-GEMINI_API_BASE')) knownKeys.add('GEMINI_API_BASE');
   if ($('set-ORPHAN_LIMIT')) knownKeys.add('ORPHAN_LIMIT');
   if ($('set-ORPHAN_WARN')) knownKeys.add('ORPHAN_WARN');
+  if ($('field-opencode-model')) knownKeys.add('OPENCODE_MODEL');
+  if ($('field-qwen-model')) knownKeys.add('QWEN_MODEL');
+  if ($('field-goose-model')) knownKeys.add('GOOSE_MODEL');
   const defVal = k => (k === 'ORPHAN_LIMIT' ? 5 : k === 'ORPHAN_WARN' ? 3 : '');
   for (const k of knownKeys) {
     const v = sval(k);
@@ -546,11 +573,15 @@ async function saveSettings() {
   if (r.ok) { toast('Settings saved'); document.activeElement && document.activeElement.blur(); await loadSettings(true); return; }
   // keep everything the owner typed: only mark the bad fields
   document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
+  document.querySelectorAll('#settings .seterr:not(.live)').forEach(x => { x.textContent = ''; });
   for (const [k, msg] of Object.entries(errs)) {
-    const el = $('set-' + k);
+    const fid = 'field-' + k.toLowerCase().replace(/_/g, '-');
+    const el = $('set-' + k) || $(fid);
     if (el) {
       const det = el.closest('details');
       if (det) det.open = true;
+      const errEl = $('err-' + fid);
+      if (errEl) errEl.textContent = msg;
       el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
     }
   }
@@ -594,12 +625,15 @@ function addwRt() {
 }
 document.addEventListener('change', e => { if (e.target.name === 'addw-rt') addwRt(); if (e.target.name === 'su-kind') suRefresh(); });
 async function addWorkerGo() {
-  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' ? {endpoint: true} : rt === 'qwen-code' ? {} : {});
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' ? {endpoint: true} : rt === 'qwen-code' ? {key: 'qwen.key'} : {});
   if (r.endpoint) {
     const url = $('addw-urlin').value.trim(), model = $('addw-model').value.trim(), changes = {};
     if (!url) { $('addw-urlin').focus(); return; }
     if (url !== V().COMPAT_BASE_URL) changes.COMPAT_BASE_URL = url;
-    if (model) changes[rt === 'aider' ? 'WORKER_MODEL_AIDER' : 'WORKER_MODEL_COMPAT'] = model;
+    if (model) {
+      const modelKey = rt === 'opencode' ? 'OPENCODE_MODEL' : rt === 'goose' ? 'GOOSE_MODEL' : rt === 'qwen-code' ? 'QWEN_MODEL' : rt === 'aider' ? 'WORKER_MODEL_AIDER' : 'WORKER_MODEL_COMPAT';
+      changes[modelKey] = model;
+    }
     if (Object.keys(changes).length) { const s = await post('/api/settings', {changes});
       if (!s.ok) { st.textContent = 'not saved: ' + Object.entries(s.errors || {}).map(([k, v]) => k + ' ' + v).join('; '); return; } }
   }
