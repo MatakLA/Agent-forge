@@ -8,12 +8,15 @@ Invariants:
 - Authentication tokens are verified in constant time and redacted from error responses.
 - All identifiers (TASK_ID, GOAL_ID, DOC_NAME, HOST, TARGET) are validated before shell execution.
 - Readiness recommend endpoint (/api/readiness/recommend) enforces auth/host guards, calls foreman(['readiness-recommend']), and returns {top, ranked, message} JSON.
+- Control actions (autopilot on/off) and project names are validated before executing foreman commands.
+- Control actions and payload shape in web/server.py match web/static/js/overview.js exactly.
 """
 import glob
 import http.client
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -627,7 +630,6 @@ class TestWebServer(unittest.TestCase):
         assert s == 200
         self.assertGreater(len(self.calls), 0)
         assert len(self.calls) > 0
-
     def test_cli_foreman_readiness_subcommand(self):
         """Invariant: bin/foreman readiness prints valid JSON matching readiness.all_status() and exits 0."""
         foreman_bin = os.path.join(ROOT, "bin", "foreman")
@@ -889,6 +891,174 @@ class TestWebServer(unittest.TestCase):
             assert "corrupted output" in data.get("error", "")
         finally:
             srv.foreman = old_foreman
+
+    def test_control_valid_action_and_project(self):
+        """Invariant: POST /api/control with a valid project and each of the two autopilot actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
+        H = {"X-Agent-Forge": "1"}
+        orig_foreman = srv.foreman
+        foreman_calls = []
+
+        def spy_foreman(pf, args, inp=None, timeout=60):
+            foreman_calls.append((pf, args))
+            return orig_foreman(pf, args, inp=inp, timeout=timeout)
+
+        srv.foreman = spy_foreman
+        try:
+            cases = [
+                ("autopilot_on", ["autopilot", "on"], "bin/foreman --project shop autopilot on"),
+                ("autopilot_off", ["autopilot", "off"], "bin/foreman --project shop autopilot off"),
+            ]
+            for act, expected_args, expected_cmd in cases:
+                s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": act}, H)
+                self.assertEqual(s, 200)
+                assert s == 200
+                data = json.loads(body)
+                self.assertTrue(data.get("ok"))
+                assert data.get("ok") is True
+                self.assertEqual(foreman_calls[-1], (" --project shop", expected_args))
+                assert foreman_calls[-1] == (" --project shop", expected_args)
+                self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
+                assert self.calls[-1][0].endswith(expected_cmd)
+
+            # Default project (omitted or empty)
+            default_cases = [
+                ("autopilot_on", ["autopilot", "on"], "bin/foreman autopilot on"),
+                ("autopilot_off", ["autopilot", "off"], "bin/foreman autopilot off"),
+            ]
+            for act, expected_args, expected_cmd in default_cases:
+                s, _, body = self.req("POST", "/api/control", {"action": act}, H)
+                self.assertEqual(s, 200)
+                assert s == 200
+                data = json.loads(body)
+                self.assertTrue(data.get("ok"))
+                assert data.get("ok") is True
+                self.assertEqual(foreman_calls[-1], ("", expected_args))
+                assert foreman_calls[-1] == ("", expected_args)
+                self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
+                assert self.calls[-1][0].endswith(expected_cmd)
+        finally:
+            srv.foreman = orig_foreman
+
+    def test_control_foreman_failure(self):
+        """Invariant: POST /api/control returns ok:false and combined message when foreman exits non-zero."""
+        H = {"X-Agent-Forge": "1"}
+        orig_foreman = srv.foreman
+        srv.foreman = lambda pf, args, inp=None, timeout=60: (1, "", "autopilot failed")
+        try:
+            s, _, body = self.req("POST", "/api/control", {"action": "autopilot_on"}, H)
+            self.assertEqual(s, 200)
+            assert s == 200
+            data = json.loads(body)
+            self.assertFalse(data.get("ok"))
+            assert data.get("ok") is False
+            self.assertEqual(data.get("message"), "autopilot failed")
+            assert data.get("message") == "autopilot failed"
+        finally:
+            srv.foreman = orig_foreman
+
+    def test_control_unknown_action_rejected(self):
+        """Invariant: POST /api/control with an action not in CONTROL_ACTIONS (e.g. 'pause') returns HTTP 400 and ok:false before any foreman() call is made."""
+        H = {"X-Agent-Forge": "1"}
+        n = len(self.calls)
+        for bad_act in ("pause", "resume", "restart", "invalid", "", "stop", "start", "autopilot", "on", "off"):
+            s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": bad_act}, H)
+            self.assertEqual(s, 400)
+            assert s == 400
+            data = json.loads(body)
+            self.assertFalse(data.get("ok"))
+            assert data.get("ok") is False
+            self.assertEqual(data.get("message"), "unknown action")
+            assert data.get("message") == "unknown action"
+            self.assertEqual(len(self.calls), n)
+            assert len(self.calls) == n
+
+    def test_control_invalid_project_rejected(self):
+        """Invariant: POST /api/control with an invalid project name returns HTTP 400 without calling foreman()."""
+        H = {"X-Agent-Forge": "1"}
+        n = len(self.calls)
+        for bad_proj in ("../etc", "invalid name!", "bad/path", "UPPERCASE", "with spaces"):
+            s, _, body = self.req("POST", "/api/control", {"project": bad_proj, "action": "autopilot_on"}, H)
+            self.assertEqual(s, 400)
+            assert s == 400
+            self.assertEqual(len(self.calls), n)
+            assert len(self.calls) == n
+
+    def test_control_wrong_method_rejected(self):
+        """Invariant: GET or other non-POST requests to /api/control are rejected with 405 Method Not Allowed."""
+        s_ctl, _, _ = self.req("GET", "/api/control")
+        self.assertEqual(s_ctl, 405)
+        assert s_ctl == 405
+        s_head, _, _ = self.req("HEAD", "/api/control")
+        self.assertEqual(s_head, 405)
+        assert s_head == 405
+
+    def test_control_auth_and_csrf_origin_check(self):
+        """Invariant: POST /api/control missing auth cookie/token or with mismatched Origin is rejected like /api/task and /api/goal."""
+        # Missing auth
+        s, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"Cookie": ""})
+        self.assertEqual(s, 401)
+        assert s == 401
+
+        # Missing X-Agent-Forge header
+        s_no_csrf, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={})
+        self.assertEqual(s_no_csrf, 403)
+        assert s_no_csrf == 403
+
+        # Evil Origin
+        bad_origin = {"X-Agent-Forge": "1", "Origin": "http://evil.com"}
+        s_origin, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_origin)
+        self.assertEqual(s_origin, 403)
+        assert s_origin == 403
+
+        # Evil Referer
+        bad_referer = {"X-Agent-Forge": "1", "Referer": "http://evil.com/attack"}
+        s_ref, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_referer)
+        self.assertEqual(s_ref, 403)
+        assert s_ref == 403
+
+    def test_control_actions_and_payload_match_frontend_overview_js(self):
+        """Invariant: The two autopilot action identifiers and payload shape match exactly what web/static/js/overview.js's controlAction() sends."""
+        overview_js_path = os.path.join(ROOT, "web", "static", "js", "overview.js")
+        self.assertTrue(os.path.exists(overview_js_path))
+        assert os.path.exists(overview_js_path)
+        with open(overview_js_path, "r", encoding="utf-8") as f:
+            overview_js = f.read()
+
+        # Parse actions toggled into data-control for autopilot in controlsHtml:
+        ap_match = re.search(r"apAction\s*=\s*apOn\s*\?\s*['\"]([^'\"]+)['\"]\s*:\s*['\"]([^'\"]+)['\"]", overview_js)
+        self.assertIsNotNone(ap_match, "apAction ternary must exist in overview.js")
+        assert ap_match is not None
+        ap_actions = set(ap_match.groups())
+        self.assertEqual(ap_actions, {"autopilot_on", "autopilot_off"})
+        assert ap_actions == {"autopilot_on", "autopilot_off"}
+
+        # Assert backend srv.CONTROL_ACTIONS matches the extracted autopilot actions from overview.js exactly:
+        self.assertEqual(set(srv.CONTROL_ACTIONS), ap_actions)
+        assert set(srv.CONTROL_ACTIONS) == ap_actions
+        self.assertEqual(len(srv.CONTROL_ACTIONS), len(ap_actions))
+        assert len(srv.CONTROL_ACTIONS) == len(ap_actions)
+
+        # Parse request endpoint and body payload shape from controlAction:
+        post_match = re.search(r"post\(\s*['\"](/api/control)['\"]\s*,\s*\{([^}]+)\}\)", overview_js)
+        self.assertIsNotNone(post_match, "post('/api/control', {project, action}) must exist in overview.js")
+        assert post_match is not None
+        endpoint, payload_str = post_match.groups()
+        self.assertEqual(endpoint, "/api/control")
+        assert endpoint == "/api/control"
+        payload_keys = set(k.strip() for k in payload_str.split(","))
+        self.assertEqual(payload_keys, {"project", "action"})
+        assert payload_keys == {"project", "action"}
+
+        # Verify each parsed autopilot action sends the exact frontend payload shape and succeeds:
+        H = {"X-Agent-Forge": "1"}
+        for act in sorted(ap_actions):
+            payload = {"project": "shop", "action": act}
+            s, _, body = self.req("POST", endpoint, payload, H)
+            self.assertEqual(s, 200)
+            assert s == 200
+            res = json.loads(body)
+            self.assertTrue(res.get("ok"))
+            assert res.get("ok") is True
 
 
 if __name__ == "__main__":
