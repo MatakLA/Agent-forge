@@ -54,12 +54,20 @@ fi
 if [ -f tests/test_runtime_opencode.sh ]; then bash tests/test_runtime_opencode.sh || exit 1; fi
 if [ -f tests/test_runtime_qwen.sh ]; then bash tests/test_runtime_qwen.sh || exit 1; fi
 if [ -f tests/test_runtime_goose.sh ]; then bash tests/test_runtime_goose.sh || exit 1; fi
+if command -v node >/dev/null 2>&1; then
+  if [ -f tests/test_quickstart_e2e.sh ]; then bash tests/test_quickstart_e2e.sh || exit 1; fi
+else
+  echo "SKIP tests/test_quickstart_e2e.sh: node not available"
+fi
 if [ -f tests/test_runtime_anthropic_compat.sh ]; then bash tests/test_runtime_anthropic_compat.sh || exit 1; fi
 if [ -f tests/test_goose_registry.py ]; then
   $PY tests/test_goose_registry.py || exit 1
 fi
 if [ -f tests/test_runtime_goose.py ]; then
   $PY tests/test_runtime_goose.py || exit 1
+fi
+if [ -f tests/test_quickstart_e2e.py ]; then
+  $PY tests/test_quickstart_e2e.py || exit 1
 fi
 if [ -f tests/test_anthropic_compat_registry.py ]; then
   $PY tests/test_anthropic_compat_registry.py || exit 1
