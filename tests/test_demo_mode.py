@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Tests for DEMO_MODE safety guards and demo compose/script invariants.
-Public interface: python3 tests/test_demo_mode.py or unittest test runner.
+"""Tests for DEMO_MODE safety guards and static demo configuration checks.
+Public interface: python3 -m unittest tests/test_demo_mode.py or python3 tests/test_demo_mode.py.
 Invariants:
 - In DEMO_MODE, all mutating POST endpoints return HTTP 403 with JSON error body.
 - Without DEMO_MODE, mutating POST endpoints are not blocked by the demo guard.
 - In DEMO_MODE, backend worker creation and login sessions short-circuit without subprocess calls.
 - In DEMO_MODE, read-only GET endpoints remain functional and accessible.
-- Demo docker-compose configuration and launch scripts contain no secrets or host sockets.
+- demo/docker-compose.yml defines only the 'demo' service on port 8171 with DEMO_MODE=1.
+- demo/Dockerfile sets DEMO_MODE=1 and invokes tools/demo_state.py and web/server.py.
+- Neither compose nor Dockerfile references secrets or .config/sandbox paths.
 """
 import http.client
 import importlib
@@ -330,6 +332,213 @@ class TestDemoModeSafety(unittest.TestCase):
         assert "DASHBOARD_TOKEN=" not in compose_text
         assert ".config/sandbox/secrets" not in demo_sh_text
         assert not re.search(r"\b(curl|wget)\s+", demo_sh_text)
+
+
+def extract_compose_services(text):
+    """Extract top-level service names under services: in compose YAML without pyyaml."""
+    services = []
+    in_services = False
+    for line in text.splitlines():
+        line_clean = line.split("#", 1)[0].rstrip()
+        if not line_clean:
+            continue
+        if re.match(r"^services:\s*$", line_clean):
+            in_services = True
+            continue
+        if in_services and not line_clean.startswith(" ") and ":" in line_clean:
+            in_services = False
+            continue
+        if in_services:
+            m = re.match(r"^ {2}([a-zA-Z0-9_-]+):\s*$", line_clean)
+            if m:
+                services.append(m.group(1))
+    return services
+
+
+def extract_compose_published_ports(text):
+    """Extract published port specs under ports: in compose YAML without pyyaml."""
+    ports = []
+    in_ports = False
+    for line in text.splitlines():
+        line_clean = line.split("#", 1)[0].rstrip()
+        if not line_clean:
+            continue
+        if re.match(r"^\s+ports:\s*$", line_clean):
+            in_ports = True
+            continue
+        if in_ports:
+            m = re.match(r"^\s+-\s+[\"']?([0-9.:]+)[\"']?\s*$", line_clean)
+            if m:
+                ports.append(m.group(1))
+            elif not line_clean.startswith(" ") or re.match(r"^\s+[a-zA-Z0-9_-]+:", line_clean):
+                in_ports = False
+    return ports
+
+
+def validate_demo_compose_text(text):
+    """Static validation of demo/docker-compose.yml text against required invariants.
+    Raises AssertionError if any invariant is violated.
+    """
+    services = extract_compose_services(text)
+    if services != ["demo"]:
+        raise AssertionError(f"Expected only 'demo' service, got: {services}")
+
+    for forbidden in ("egress", "worker-", "forgejo"):
+        if forbidden in text.lower():
+            raise AssertionError(f"Forbidden string '{forbidden}' found in compose config")
+
+    ports = extract_compose_published_ports(text)
+    if not ports:
+        raise AssertionError("No published ports found in compose config")
+    for p in ports:
+        parts = p.split(":")
+        if len(parts) < 2 or parts[-2] != "8171" or parts[-1] != "8171":
+            raise AssertionError(f"Port mapping '{p}' publishes a port other than 8171")
+
+    if not re.search(r"\bDEMO_MODE=1\b", text):
+        raise AssertionError("DEMO_MODE=1 missing from compose config")
+
+    if "secrets" in text.lower() or ".config/sandbox" in text.lower():
+        raise AssertionError("Reference to secrets or .config/sandbox in compose config")
+
+
+def extract_dockerfile_entrypoint_and_cmd(text):
+    """Extract ENTRYPOINT and CMD instructions from Dockerfile text."""
+    commands = []
+    for line in text.splitlines():
+        line_clean = line.split("#", 1)[0].strip()
+        m = re.match(r"^(?:ENTRYPOINT|CMD)\s+(.*)", line_clean)
+        if m:
+            commands.append(m.group(1))
+    return " ".join(commands)
+
+
+def validate_demo_dockerfile_text(text):
+    """Static validation of demo/Dockerfile text against required invariants.
+    Raises AssertionError if any invariant is violated.
+    """
+    if not re.search(r"\bDEMO_MODE=1\b", text):
+        raise AssertionError("DEMO_MODE=1 missing from Dockerfile")
+
+    cmd_text = extract_dockerfile_entrypoint_and_cmd(text)
+    if "tools/demo_state.py" not in cmd_text:
+        raise AssertionError("tools/demo_state.py is not invoked by Dockerfile ENTRYPOINT/CMD")
+    if "web/server.py" not in cmd_text:
+        raise AssertionError("web/server.py is not invoked by Dockerfile ENTRYPOINT/CMD")
+
+    if "secrets" in text.lower() or ".config/sandbox" in text.lower():
+        raise AssertionError("Reference to secrets or .config/sandbox in Dockerfile")
+
+
+class TestDemoStaticConfig(unittest.TestCase):
+    """Static configuration and invariant tests for demo compose, Dockerfile, and launch script.
+    Zero Docker and zero network requirements.
+    """
+
+    def setUp(self):
+        self.compose_path = os.path.join(ROOT, "demo", "docker-compose.yml")
+        self.dockerfile_path = os.path.join(ROOT, "demo", "Dockerfile")
+        self.demo_sh_path = os.path.join(ROOT, "scripts", "demo.sh")
+        with open(self.compose_path, "r", encoding="utf-8") as f:
+            self.compose_text = f.read()
+        with open(self.dockerfile_path, "r", encoding="utf-8") as f:
+            self.dockerfile_text = f.read()
+        with open(self.demo_sh_path, "r", encoding="utf-8") as f:
+            self.demo_sh_text = f.read()
+
+    def test_compose_defines_only_demo_service(self):
+        """Invariant: demo/docker-compose.yml defines only 'demo' service and no worker, egress, or forgejo."""
+        services = extract_compose_services(self.compose_text)
+        self.assertEqual(services, ["demo"])
+        for forbidden in ("egress", "worker-", "forgejo"):
+            self.assertNotIn(forbidden, self.compose_text.lower())
+        assert services == ["demo"]
+        assert "egress" not in self.compose_text.lower()
+        assert "worker-" not in self.compose_text.lower()
+        assert "forgejo" not in self.compose_text.lower()
+
+    def test_compose_publishes_port_8171_only(self):
+        """Invariant: demo/docker-compose.yml publishes port 8171 and no other port."""
+        ports = extract_compose_published_ports(self.compose_text)
+        self.assertTrue(len(ports) > 0, "No published ports found in compose")
+        for p in ports:
+            parts = p.split(":")
+            self.assertEqual(parts[-2], "8171")
+            self.assertEqual(parts[-1], "8171")
+        assert len(ports) > 0
+        assert all(p.split(":")[-2] == "8171" and p.split(":")[-1] == "8171" for p in ports)
+
+    def test_demo_mode_env_in_compose_and_dockerfile(self):
+        """Invariant: DEMO_MODE=1 appears in both demo/docker-compose.yml and demo/Dockerfile."""
+        self.assertIn("DEMO_MODE=1", self.compose_text)
+        self.assertIn("DEMO_MODE=1", self.dockerfile_text)
+        assert "DEMO_MODE=1" in self.compose_text
+        assert "DEMO_MODE=1" in self.dockerfile_text
+
+    def test_dockerfile_entrypoint_invokes_demo_state_and_web_server(self):
+        """Invariant: demo/Dockerfile ENTRYPOINT or CMD invokes both tools/demo_state.py and web/server.py."""
+        cmd_text = extract_dockerfile_entrypoint_and_cmd(self.dockerfile_text)
+        self.assertIn("tools/demo_state.py", cmd_text)
+        self.assertIn("web/server.py", cmd_text)
+        assert "tools/demo_state.py" in cmd_text
+        assert "web/server.py" in cmd_text
+
+    def test_compose_and_dockerfile_contain_no_secrets_or_sandbox_config(self):
+        """Invariant: neither demo/docker-compose.yml, demo/Dockerfile, nor scripts/demo.sh reference secrets or .config/sandbox."""
+        self.assertNotIn("secrets", self.compose_text.lower())
+        self.assertNotIn(".config/sandbox", self.compose_text.lower())
+        self.assertNotIn("secrets", self.dockerfile_text.lower())
+        self.assertNotIn(".config/sandbox", self.dockerfile_text.lower())
+        self.assertNotIn(".config/sandbox", self.demo_sh_text.lower())
+        assert "secrets" not in self.compose_text.lower()
+        assert ".config/sandbox" not in self.compose_text.lower()
+        assert "secrets" not in self.dockerfile_text.lower()
+        assert ".config/sandbox" not in self.dockerfile_text.lower()
+
+    def test_compose_validation_rejects_worker_egress_forgejo_services(self):
+        """Invariant: compose validation fails if a worker, egress, or forgejo service is added."""
+        for forbidden in ("worker-1", "egress", "forgejo"):
+            mutated = self.compose_text + f"\n  {forbidden}:\n    image: test\n"
+            with self.assertRaises(AssertionError):
+                validate_demo_compose_text(mutated)
+        assert True
+
+    def test_compose_validation_rejects_dropping_demo_mode(self):
+        """Invariant: compose validation fails if DEMO_MODE=1 is omitted."""
+        mutated = self.compose_text.replace("DEMO_MODE=1", "DEMO_MODE=0")
+        with self.assertRaises(AssertionError):
+            validate_demo_compose_text(mutated)
+        assert True
+
+    def test_compose_validation_rejects_ports_other_than_8171(self):
+        """Invariant: compose validation fails if a port other than 8171 is published."""
+        for bad_port in ("8080:8080", "8171:8000", "9000:8171", "3000"):
+            mutated = self.compose_text.replace("8171:8171", bad_port)
+            with self.assertRaises(AssertionError):
+                validate_demo_compose_text(mutated)
+        assert True
+
+    def test_dockerfile_validation_rejects_missing_entrypoint_commands(self):
+        """Invariant: Dockerfile validation fails if demo_state.py or web/server.py is missing from CMD."""
+        mutated1 = self.dockerfile_text.replace("tools/demo_state.py", "echo skip")
+        with self.assertRaises(AssertionError):
+            validate_demo_dockerfile_text(mutated1)
+        mutated2 = self.dockerfile_text.replace("web/server.py", "echo skip")
+        with self.assertRaises(AssertionError):
+            validate_demo_dockerfile_text(mutated2)
+        assert True
+
+    def test_config_validation_rejects_secrets_and_sandbox_references(self):
+        """Invariant: validation fails if secrets or .config/sandbox references are introduced."""
+        with self.assertRaises(AssertionError):
+            validate_demo_compose_text(self.compose_text + "\n# secrets\n")
+        with self.assertRaises(AssertionError):
+            validate_demo_compose_text(self.compose_text + "\n# .config/sandbox\n")
+        with self.assertRaises(AssertionError):
+            validate_demo_dockerfile_text(self.dockerfile_text + "\n# secrets\n")
+        with self.assertRaises(AssertionError):
+            validate_demo_dockerfile_text(self.dockerfile_text + "\n# .config/sandbox\n")
+        assert True
 
 
 if __name__ == "__main__":
