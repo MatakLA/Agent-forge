@@ -122,8 +122,9 @@ def token_ok(cookie_header, query_token=""):
 
 def foreman(pf, args, inp=None, timeout=60):
     """bin/foreman for a project ("" or " --project NAME"): (rc, stdout, stderr). Owner text only ever as `inp` (stdin)."""
+    arg_str = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
     run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
-    return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {args}", timeout=timeout, inp=inp)
+    return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {arg_str}", timeout=timeout, inp=inp)
 
 
 def as_json(out, err="", rc=0):
@@ -558,7 +559,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._json({"error": (err or out)[-300:] or "settings need a newer bin/foreman"})
         elif path == "/api/readiness":
-            self._json(as_json(B.readiness_summary()))
+            rc, out, err = foreman(pf, "readiness", timeout=60)
+            self._json(as_json(out, err, rc))
         elif path.startswith("/api/jobs/"):
             j = B.JOBS.get(path.rsplit("/", 1)[-1])
             self._json(j or {"error": "unknown job"})
