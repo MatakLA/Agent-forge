@@ -357,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
                 rc, out, err = foreman(pf, f"goal {gid} {act}", timeout=30)
             self._json(as_json(out, err, rc))
         elif path == "/api/control":
+            # Project name is validated in the shared do_POST preamble via B.pflag(proj) (invalid name -> 400).
+            # Note: bin/foreman resume currently does not yet refuse while kill switch is engaged.
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
