@@ -7,6 +7,7 @@ Invariants:
 - settings_apply rejects unknown providers in PLAN_PROVIDERS and REVIEW_PROVIDERS.
 - settings_apply requires OPENAI_MODEL when openai-api is used, and GEMINI_MODEL when gemini-api is used.
 - settings_apply and settings_get validate and surface OPENCODE_MODEL, QWEN_MODEL, and GOOSE_MODEL.
+- settings_apply rejects providers or runtimes whose required egress host is missing from allowlist.
 - Sensitive API keys and tokens are never echoed in errors, event logs, or return values.
 """
 import atexit
@@ -15,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T_RUNS = tempfile.mkdtemp(prefix="af-test-settings-runs-")
@@ -25,6 +27,7 @@ os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 try:
+    import egress
     from foreman import ctx
     from foreman.settings import (
         EDITABLE,
@@ -45,6 +48,7 @@ assert EDITABLE is not None
 assert PROVIDERS_ALL is not None
 assert validate_url is not None
 assert validate_providers is not None
+assert egress is not None
 
 
 class TestSettingsProviders(unittest.TestCase):
@@ -52,6 +56,16 @@ class TestSettingsProviders(unittest.TestCase):
 
     def setUp(self):
         """Set up an isolated temporary environment for settings testing."""
+        self._allowlist_patch = patch.object(
+            egress,
+            "allowlist",
+            return_value=[
+                "api.anthropic.com",
+                "api.openai.com",
+                "generativelanguage.googleapis.com",
+            ],
+        )
+        self._allowlist_patch.start()
         self.test_dir = tempfile.mkdtemp(prefix="af-settings-prov-")
         self.etc_dir = os.path.join(self.test_dir, "etc")
         os.makedirs(self.etc_dir, exist_ok=True)
@@ -83,6 +97,7 @@ class TestSettingsProviders(unittest.TestCase):
 
     def tearDown(self):
         """Restore global ctx state and clean up temporary directory."""
+        self._allowlist_patch.stop()
         ctx.ROOT = self._orig_root
         ctx.PDIR = self._orig_pdir
         ctx.C.clear()
@@ -466,6 +481,99 @@ class TestSettingsProviders(unittest.TestCase):
             self.assertIn("GOOSE_MODEL", errs, f"Expected GOOSE_MODEL error for {m!r}")
             self.assertEqual(errs["GOOSE_MODEL"], "invalid value")
         assert "GOOSE_MODEL" in errs
+
+    def test_api_provider_egress_host_missing_rejected(self):
+        """Saving an *-api provider whose required egress host is missing is rejected naming the host."""
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs = settings_apply({"PLAN_PROVIDERS": "openai-api", "OPENAI_MODEL": "gpt-4o"})
+            self.assertIn("PLAN_PROVIDERS", errs)
+            self.assertIn("api.openai.com", errs["PLAN_PROVIDERS"])
+            self.assertIn("openai-api", errs["PLAN_PROVIDERS"])
+            self.assertIn("egress/allowlist.txt", errs["PLAN_PROVIDERS"])
+
+            errs_anthropic = settings_apply({"REVIEW_PROVIDERS": "anthropic-api", "ANTHROPIC_MODEL": "claude-3-7-sonnet"})
+            self.assertIn("REVIEW_PROVIDERS", errs_anthropic)
+            self.assertIn("api.anthropic.com", errs_anthropic["REVIEW_PROVIDERS"])
+            self.assertIn("anthropic-api", errs_anthropic["REVIEW_PROVIDERS"])
+            self.assertIn("egress/allowlist.txt", errs_anthropic["REVIEW_PROVIDERS"])
+
+            errs_gemini = settings_apply({"PLAN_PROVIDERS": "gemini-api", "GEMINI_MODEL": "gemini-2.5-pro"})
+            self.assertIn("PLAN_PROVIDERS", errs_gemini)
+            self.assertIn("generativelanguage.googleapis.com", errs_gemini["PLAN_PROVIDERS"])
+            self.assertIn("gemini-api", errs_gemini["PLAN_PROVIDERS"])
+            self.assertIn("egress/allowlist.txt", errs_gemini["PLAN_PROVIDERS"])
+        assert "PLAN_PROVIDERS" in errs and "api.openai.com" in errs["PLAN_PROVIDERS"]
+
+    def test_api_provider_egress_host_present_accepted(self):
+        """Saving an *-api provider whose required egress host is present in allowlist succeeds."""
+        with patch.object(egress, "allowlist", return_value=["api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com"]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs = settings_apply({"PLAN_PROVIDERS": "openai-api", "OPENAI_MODEL": "gpt-4o"})
+            self.assertEqual(errs, {})
+
+            errs_anthropic = settings_apply({"REVIEW_PROVIDERS": "anthropic-api", "ANTHROPIC_MODEL": "claude-3-7-sonnet"})
+            self.assertEqual(errs_anthropic, {})
+
+            errs_gemini = settings_apply({"PLAN_PROVIDERS": "gemini-api", "GEMINI_MODEL": "gemini-2.5-pro"})
+            self.assertEqual(errs_gemini, {})
+        assert not errs and not errs_anthropic and not errs_gemini
+
+    def test_agy_based_provider_accepted_regardless_of_allowlist(self):
+        """Saving an agy-based provider succeeds even when egress allowlist is completely empty."""
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            for agy_prov in ("claude-cli", "agy-claude", "agy-gemini"):
+                errs_plan = settings_apply({"PLAN_PROVIDERS": agy_prov})
+                self.assertEqual(errs_plan, {}, f"Expected agy provider {agy_prov} to be accepted when allowlist is empty")
+                errs_review = settings_apply({"REVIEW_PROVIDERS": agy_prov})
+                self.assertEqual(errs_review, {}, f"Expected agy provider {agy_prov} to be accepted when allowlist is empty")
+        assert not errs_plan and not errs_review
+
+    def test_provider_custom_api_base_egress_validation(self):
+        """Custom OPENAI_API_BASE egress host is validated and rejected when missing or accepted when present."""
+        custom_base = "https://custom-proxy.internal:8443/v1"
+        overridden_host = "custom-proxy.internal"
+        with patch.object(egress, "allowlist", return_value=["api.openai.com"]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs = settings_apply({
+                "PLAN_PROVIDERS": "openai-api",
+                "OPENAI_MODEL": "gpt-4o",
+                "OPENAI_API_BASE": custom_base,
+            })
+            self.assertIn("PLAN_PROVIDERS", errs)
+            self.assertIn(overridden_host, errs["PLAN_PROVIDERS"])
+            self.assertIn("openai-api", errs["PLAN_PROVIDERS"])
+
+        with patch.object(egress, "allowlist", return_value=[overridden_host]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs_ok = settings_apply({
+                "PLAN_PROVIDERS": "openai-api",
+                "OPENAI_MODEL": "gpt-4o",
+                "OPENAI_API_BASE": custom_base,
+            })
+            self.assertEqual(errs_ok, {})
+        assert overridden_host in errs["PLAN_PROVIDERS"] and not errs_ok
+
+    def test_runtime_egress_validation(self):
+        """Saving a runtime-selecting setting validates required egress host."""
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs_claude = settings_apply({"WORKER_RUNTIME": "claude"})
+            self.assertIn("WORKER_RUNTIME", errs_claude)
+            self.assertIn("api.anthropic.com", errs_claude["WORKER_RUNTIME"])
+            self.assertIn("claude", errs_claude["WORKER_RUNTIME"])
+            self.assertIn("egress/allowlist.txt", errs_claude["WORKER_RUNTIME"])
+
+            # agy runtime requires no pinned egress host and is accepted
+            errs_agy = settings_apply({"WORKER_RUNTIME": "agy"})
+            self.assertEqual(errs_agy, {})
+
+        with patch.object(egress, "allowlist", return_value=["api.anthropic.com"]), \
+             patch.object(egress, "local_allowlist", return_value=[]):
+            errs_ok = settings_apply({"WORKER_RUNTIME": "claude"})
+            self.assertEqual(errs_ok, {})
+        assert "WORKER_RUNTIME" in errs_claude and not errs_ok
 
 
 if __name__ == "__main__":
