@@ -79,9 +79,6 @@ FOREMAN_SERVICE_PROJECT = os.environ.get("FOREMAN_SERVICE_PROJECT", "agent-forge
 
 
 ANSI = re.compile(r"\x1b_.*?\x1b\\|\x1bP.*?\x1b\\|\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r", re.S)
-# `docker exec -it` gives a terminal of size 0x0, in which agy draws nothing at all (no login menu, no URL); a very wide one also
-# keeps agy from wrapping the long login URL over several lines.
-LOGIN_SHELL = "stty cols 3000 rows 50; exec agy-run"
 
 
 JOBS = {}
@@ -171,33 +168,44 @@ def connect_upstream_job(job, pf, changes, upstream, force):
 
 
 class LoginSessions:
-    """`docker exec -it worker-N agy-run` with a real terminal (ssh -tt / a local pty), so the owner can do agy's interactive
-    login from the browser: the page shows the output (the login URL) and sends the code back."""
+    """`docker exec -it worker-N agy-run` in a real pseudo-terminal (through ssh -tt in remote mode), so the owner can do agy's
+    interactive login from the browser: the page runs a terminal emulator (xterm.js) on the raw byte stream, types into it and resizes it."""
+    KEEP = 400000
+
     def __init__(self):
         self.s = {}
         self.lock = threading.Lock()
 
-    def start(self, w):
+    @staticmethod
+    def _size(fd, cols, rows):
+        import fcntl, struct, termios
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    def start(self, w, cols=120, rows=32):
+        import pty
+        cols, rows = min(max(int(cols), 40), 400), min(max(int(rows), 10), 120)
         with self.lock:
             old = self.s.get(w)
             if old and old["proc"].poll() is None:
                 return {"ok": True, "note": "already running"}
-            cmd = f"docker exec -it {w} sh -c '{LOGIN_SHELL}'"
-            if VM_IP:
-                argv = SSH_BASE[:1] + ["-tt"] + SSH_BASE[1:] + [cmd]
-                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-                rfd, wf = proc.stdout.fileno(), proc.stdin
-            else:
-                import pty
-                mfd, sfd = pty.openpty()
-                proc = subprocess.Popen(["docker", "exec", "-it", w, "sh", "-c", LOGIN_SHELL], stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
-                os.close(sfd)
-                rfd, wf = mfd, None
-            sess = {"proc": proc, "rfd": rfd, "wf": wf, "buf": "", "started": time.time(), "pty": not VM_IP}
+            mfd, sfd = pty.openpty()
+            self._size(mfd, cols, rows)
+            cmd = f"docker exec -it {w} agy-run"
+            argv = (SSH_BASE[:1] + ["-tt"] + SSH_BASE[1:] + [cmd]) if VM_IP else ["docker", "exec", "-it", w, "agy-run"]
+            proc = subprocess.Popen(argv, stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
+            os.close(sfd)
+            sess = {"proc": proc, "rfd": mfd, "buf": "", "raw": "", "out": b"", "base": 0, "cols": cols, "started": time.time()}
             self.s[w] = sess
             ALL_PROCS.add(proc)
             threading.Thread(target=self._pump, args=(sess,), daemon=True).start()
             return {"ok": True}
+
+    def _put(self, sess, data):
+        try:
+            os.write(sess["rfd"], data)
+            return True
+        except OSError:
+            return False
 
     def _pump(self, sess):
         while True:
@@ -207,61 +215,85 @@ class LoginSessions:
                 break
             if not chunk:
                 break
-            sess["raw"] = (sess.get("raw", "") + chunk.decode(errors="replace"))[-20000:]
+            sess["out"] += chunk
+            if len(sess["out"]) > self.KEEP:
+                cut = len(sess["out"]) - self.KEEP
+                sess["out"], sess["base"] = sess["out"][cut:], sess["base"] + cut
+            sess["raw"] = (sess["raw"] + chunk.decode(errors="replace"))[-20000:]
             sess["buf"] = ANSI.sub("", sess["raw"])
             if not sess.get("menu_done") and "Select login method" in sess["buf"] and "Google OAuth" in sess["buf"]:
                 sess["menu_done"] = True
                 time.sleep(0.5)
-                try:
-                    if sess["wf"]:
-                        sess["wf"].write(b"\r"); sess["wf"].flush()
-                    else:
-                        os.write(sess["rfd"], b"\r")
-                except OSError:
-                    pass
-        if sess.get("pty"):
-            try:
-                os.close(sess["rfd"])
-            except OSError:
-                pass
+                self._put(sess, b"\r")
+        try:
+            os.close(sess["rfd"])
+        except OSError:
+            pass
         reap(sess["proc"])
 
-    def send(self, w, text):
+    def _live(self, w):
         sess = self.s.get(w)
-        if not sess or sess["proc"].poll() is not None:
+        return sess if sess and sess["proc"].poll() is None else None
+
+    def write(self, w, b64):
+        """Raw keystrokes (or a paste) from the browser's terminal."""
+        import base64, binascii
+        sess = self._live(w)
+        if not sess:
             return {"error": "no running login session"}
-        data = (text + "\r").encode()
-        if sess["wf"]:
-            sess["wf"].write(data); sess["wf"].flush()
-        else:
-            os.write(sess["rfd"], data)
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            return {"error": "bad data"}
+        if len(data) > 8192:
+            return {"error": "too much at once"}
+        return {"ok": self._put(sess, data)}
+
+    def resize(self, w, cols, rows):
+        sess = self._live(w)
+        if not sess:
+            return {"error": "no running login session"}
+        cols, rows = min(max(int(cols), 40), 400), min(max(int(rows), 10), 120)
+        sess["cols"] = cols
+        self._size(sess["rfd"], cols, rows)
+        try:
+            os.kill(sess["proc"].pid, signal.SIGWINCH)
+        except OSError:
+            pass
         return {"ok": True}
 
-    KEYS = {"enter": b"\r", "tab": b"\t", "shift-tab": b"\x1b[Z", "up": b"\x1b[A", "down": b"\x1b[B", "right": b"\x1b[C",
-            "left": b"\x1b[D", "space": b" ", "esc": b"\x1b", "ctrl-c": b"\x03"}
-
-    def key(self, w, name):
-        """One raw key press (the dashboard's key buttons): agy's menus and the [Done] button are used with the keyboard."""
-        sess = self.s.get(w)
-        if name not in self.KEYS:
-            return {"error": "unknown key"}
-        if not sess or sess["proc"].poll() is not None:
-            return {"error": "no running login session"}
-        if sess["wf"]:
-            sess["wf"].write(self.KEYS[name]); sess["wf"].flush()
-        else:
-            os.write(sess["rfd"], self.KEYS[name])
-        return {"ok": True}
-
-    def read(self, w):
+    def read(self, w, since=None):
+        import base64
         sess = self.s.get(w)
         if not sess:
-            return {"running": False, "output": ""}
+            return {"running": False, "output": "", "next": 0}
         out = sess["buf"]
-        urls = re.findall(r"https://[^\s'\"<>]+", out)
-        oauth = [u for u in urls if "accounts.google.com" in u]
-        shown = re.sub(r"[-─━=_]{60,}", "─" * 40, out)
-        return {"running": sess["proc"].poll() is None, "output": shown[-6000:], "url": (oauth or urls or [None])[-1]}
+        res = {"running": sess["proc"].poll() is None, "url": self._url(out, sess["cols"])}
+        if since is None:
+            res["output"] = re.sub(r"[-─━=_]{60,}", "─" * 40, out)[-6000:]
+        else:
+            start = max(int(since), sess["base"])
+            res["data"] = base64.b64encode(sess["out"][start - sess["base"]:]).decode()
+            res["next"] = sess["base"] + len(sess["out"])
+        return res
+
+    @staticmethod
+    def _url(text, cols):
+        """The sign-in URL (agy breaks a long line at the terminal width: a full line continues on the next one), else the last link."""
+        lines = text.split("\n")
+        found = []
+        for i, ln in enumerate(lines):
+            m = re.search(r"https://[^\s'\"<>]+", ln)
+            if not m:
+                continue
+            u, j = m.group(0), i
+            while len(ln.rstrip()) >= cols - 3 and j + 1 < len(lines) and re.match(r"\s?(?!https?:)[^\s'\"<>]+", lines[j + 1]):
+                j += 1
+                ln = lines[j]
+                u += re.match(r"\s?([^\s'\"<>]+)", ln).group(1)
+            found.append(u)
+        oauth = [u for u in found if "accounts.google.com" in u]
+        return (oauth or found or [None])[-1]
 
     def stop(self, w):
         sess = self.s.pop(w, None)

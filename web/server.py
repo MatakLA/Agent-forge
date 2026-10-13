@@ -373,11 +373,11 @@ class Handler(BaseHTTPRequestHandler):
             if not re.fullmatch(r"worker-\d+", w):
                 self._json({"error": "bad worker"}, 400); return
             if act == "start":
-                self._json(B.LOGIN.start(w))
-            elif act == "input":
-                self._json(B.LOGIN.send(w, str(body.get("text", ""))[:500]))
-            elif act == "key":
-                self._json(B.LOGIN.key(w, str(body.get("key", ""))))
+                self._json(B.LOGIN.start(w, **self._dims(body)))
+            elif act == "write":
+                self._json(B.LOGIN.write(w, str(body.get("data", ""))))
+            elif act == "size":
+                self._json(B.LOGIN.resize(w, **self._dims(body)))
             elif act == "stop":
                 self._json(B.LOGIN.stop(w))
             else:
@@ -496,10 +496,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(j or {"error": "unknown job"})
         elif path == "/api/login":
             w = q.get("worker", "")
-            self._json(B.LOGIN.read(w) if re.fullmatch(r"worker-\d+", w) else {"error": "bad worker"})
+            since = q.get("since", "")
+            if not re.fullmatch(r"worker-\d+", w) or (since and not since.isdigit()):
+                self._json({"error": "bad request"}, 400)
+            else:
+                self._json(B.LOGIN.read(w, int(since) if since else None))
         else:
             self.send_response(404)
             self.end_headers()
+
+    @staticmethod
+    def _dims(body):
+        try:
+            return {"cols": int(body.get("cols", 120)), "rows": int(body.get("rows", 32))}
+        except (TypeError, ValueError):
+            return {"cols": 120, "rows": 32}
 
     def _stream(self, proj):
         """Server-Sent Events for one open page: the project's foreman state (first in full, then only the top-level keys that

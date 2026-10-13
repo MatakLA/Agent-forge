@@ -28,12 +28,13 @@ check("token_ok: cookie or query token, constant-time compare", srv.token_ok("a=
 
 check("login terminal: terminal queries (APC, CSI > / <) are stripped from what the page shows",
       srv.B.ANSI.sub("", "\x1b_Ga=q,i=31;AAAA\x1b\\\x1b[>4;2mhi\x1b[<1u\x1b[1;32mgo\x1b[0m") == "higo")
-check("login terminal: agy gets a real window size (a 0x0 terminal draws nothing) wide enough for its login URL",
-      "stty cols" in srv.B.LOGIN_SHELL and int(srv.B.LOGIN_SHELL.split("cols ")[1].split()[0]) >= 1000 and srv.B.LOGIN_SHELL.endswith("exec agy-run"))
-
-check("login terminal: key buttons map to raw keys, unknown keys are refused, and the OAuth URL wins over later links",
-      srv.B.LoginSessions.KEYS["tab"] == b"\t" and srv.B.LOGIN.key("worker-1", "nope").get("error") == "unknown key"
-      and srv.B.LOGIN.key("worker-1", "tab").get("error") == "no running login session")
+U = "https://accounts.google.com/o/oauth2/auth?x=" + "a" * 20
+check("login terminal: the sign-in URL is rejoined when agy wraps it at the terminal width, and wins over later links",
+      srv.B.LOGIN._url(" https://policies.google.com/privacy\n " + U[:39] + "\n" + U[39:] + "\n Copy and paste", 40) == U
+      and srv.B.LOGIN._url("see https://example.org/a b", 80) == "https://example.org/a" and srv.B.LOGIN._url("nothing", 80) is None)
+check("login terminal: input and size need a running session; bad base64 and unknown workers are refused",
+      srv.B.LOGIN.write("worker-1", "AAAA").get("error") == "no running login session"
+      and srv.B.LOGIN.resize("worker-1", 100, 30).get("error") == "no running login session")
 httpd = srv.ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 port = httpd.server_address[1]
