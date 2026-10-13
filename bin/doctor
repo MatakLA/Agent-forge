@@ -222,6 +222,129 @@ def check_readiness(status=None):
                 bad=[c for c in new_checks if c["level"] == "bad"])
 
 
+def _get_provider_api_base(provider, conf=None):
+    prefix = provider[:-4].replace("-", "_").upper() if provider.endswith("-api") else provider.replace("-", "_").upper()
+    key = f"{prefix}_API_BASE"
+    val = (conf.get(key) if conf else None) or os.environ.get(key, "")
+    if not val and provider == "openai-api":
+        val = (conf.get("OPENAI_API_BASE") if conf else None) or os.environ.get("OPENAI_API_BASE", "")
+    return str(val or "").strip()
+
+
+def check_provider_egress(conf=None):
+    """Check required egress hosts for orchestrator providers in the project's configured PROVIDERS setting."""
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    SECTION[0] = "Orchestrator Providers"
+    if conf is None:
+        conf = sbx.project_conf()
+    raw = conf.get("PROVIDERS") if (conf and "PROVIDERS" in conf) else None
+    if raw is None:
+        raw = os.environ.get("PROVIDERS", None)
+    if raw is None and conf:
+        raw = conf.get("PLAN_PROVIDERS") or conf.get("REVIEW_PROVIDERS")
+    if raw is None:
+        raw = os.environ.get("PLAN_PROVIDERS") or os.environ.get("REVIEW_PROVIDERS", "")
+
+    seen = set()
+    for p in str(raw or "").split(","):
+        provider = p.strip().lower()
+        if not provider or provider in seen:
+            continue
+        seen.add(provider)
+        api_base = _get_provider_api_base(provider, conf)
+        for h in providers.missing_hosts(provider, api_base):
+            bad(f"[FAIL] {provider}: missing egress host '{h}'",
+                f"add {h} to egress/allowlist.txt, or allow it from the dashboard's Egress page",
+                "egress-allow")
+
+    new_checks = CHECKS[start_idx:]
+    if orig_sec:
+        SECTION[0] = orig_sec
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_runtime_egress(ws=None, lim=None, conf=None):
+    """Check required egress hosts for runtimes used by this project's worker pool."""
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    SECTION[0] = "Workers"
+    if conf is None:
+        conf = sbx.project_conf()
+    if lim is None:
+        try:
+            lim = sbx.load_limits()
+        except (Exception, SystemExit):
+            lim = {}
+    if ws is None:
+        rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
+        ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)),
+                    key=lambda x: int(x[0].split("-")[1]))
+        pool = sbx.project_pool()
+        if pool:
+            ws = [w for w in ws if w[0] in pool]
+
+    known_runtimes = dict(runtimes.RUNTIMES)
+    used_runtimes = set()
+    for w in ws:
+        w_name = w[0] if isinstance(w, (list, tuple)) else str(w)
+        try:
+            used_runtimes.add(sbx.worker_runtime(w_name))
+        except Exception:
+            pass
+
+    if not used_runtimes:
+        pool = sbx.project_pool()
+        if pool:
+            for w_name in pool:
+                try:
+                    used_runtimes.add(sbx.worker_runtime(w_name))
+                except Exception:
+                    pass
+
+    if not used_runtimes and conf.get("WORKERS"):
+        for w_name in str(conf["WORKERS"]).split(","):
+            w_name = w_name.strip()
+            if w_name:
+                try:
+                    used_runtimes.add(sbx.worker_runtime(w_name))
+                except Exception:
+                    pass
+
+    checked_runtimes = set()
+    for rt in list(known_runtimes.keys()) + list(used_runtimes):
+        if rt in checked_runtimes:
+            continue
+        checked_runtimes.add(rt)
+        if rt in used_runtimes:
+            endpoint_url = str((lim or {}).get("COMPAT_BASE_URL") or conf.get("COMPAT_BASE_URL", "")).strip() if runtimes.uses_endpoint(rt) else ""
+            missing = egress.runtime_missing_hosts(rt, endpoint_url)
+            for h in missing:
+                bad(f"[FAIL] {rt}: missing egress host '{h}'",
+                    f"add {h} to egress/allowlist.txt, or allow it from the dashboard's Egress page",
+                    "egress-allow")
+
+    new_checks = CHECKS[start_idx:]
+    if orig_sec:
+        SECTION[0] = orig_sec
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_egress_hosts(conf=None, ws=None, lim=None):
+    """Check required egress hosts for used runtimes and configured providers."""
+    start_idx = len(CHECKS)
+    check_runtime_egress(ws=ws, lim=lim, conf=conf)
+    check_provider_egress(conf=conf)
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
 def main():
     global QUICK, JSON
     a = sys.argv[1:]
@@ -313,6 +436,7 @@ def main():
                 ok(n)
 
     check_orchestrator_providers(conf)
+    check_provider_egress(conf)
 
     section("Forgejo")
     try:
@@ -444,22 +568,12 @@ def main():
         if "anthropic-compat" not in known_runtimes:
             known_runtimes["anthropic-compat"] = dict(api=True, endpoint=True, hosts=[])
         for rt, r in known_runtimes.items():
-            if (r.get("api") or rt in ("opencode", "qwen-code", "goose")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
-                if r.get("endpoint") or rt in ("opencode", "goose"):
-                    rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
-                    if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
-                        bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",
-                            "save COMPAT_BASE_URL again in Settings (or bin/worker-add N --runtime " + rt + "), then bin/egress-up once")
-                    elif rule and rule[0] == "allowlist" and rule[1] not in egress.allowlist():
-                        bad(f"egress allow-list lacks {rule[1]} for the {rt} workers", "save COMPAT_BASE_URL again in Settings")
-                    rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
-                    if rule and rule[0] == "local" and rc != 0:
-                        bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)", "egress-up")
-                    continue
-                allowed = set(egress.allowlist())
-                missing = [h for h in r["hosts"] if h not in allowed]
-                if missing:
-                    bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")
+            if (r.get("endpoint") or rt in ("opencode", "goose")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
+                rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
+                rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
+                if rule and rule[0] == "local" and rc != 0:
+                    bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)", "egress-up")
+    check_runtime_egress(ws=ws, lim=lim, conf=conf)
     if lim and running > lim["MAX_PARALLEL"]:
         warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
 
