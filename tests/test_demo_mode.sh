@@ -32,6 +32,11 @@ if ! docker info >/dev/null 2>&1; then
   exit 0
 fi
 
+if ! command -v curl >/dev/null 2>&1; then
+  echo "FAIL: curl is required to run tests/test_demo_mode.sh" >&2
+  exit 1
+fi
+
 COMPOSE_FILE="demo/docker-compose.yml"
 PORT="${BIND_PORT:-8171}"
 TARGET_URL="http://localhost:${PORT}/"
@@ -39,6 +44,7 @@ TARGET_URL="http://localhost:${PORT}/"
 CLEANED_UP=0
 cleanup() {
   local rc=$?
+  [ -n "${TMP_RESP:-}" ] && rm -f "$TMP_RESP" || true
   if [ "$CLEANED_UP" -eq 0 ]; then
     CLEANED_UP=1
     echo "==> Cleaning up demo containers on exit..." >&2
@@ -88,7 +94,7 @@ echo "  ✔ Dashboard root returned HTTP 200 with recognizable marker '$MARKER'"
 
 echo "==> Asserting docker compose ps lists exactly one running container..."
 docker compose -f "$COMPOSE_FILE" ps || exit 1
-RUNNING_CONTAINERS="$(docker compose -f "$COMPOSE_FILE" ps -q || exit 1)"
+RUNNING_CONTAINERS="$(docker compose -f "$COMPOSE_FILE" ps --status running -q 2>/dev/null || docker compose -f "$COMPOSE_FILE" ps -q || exit 1)"
 CONTAINER_COUNT="$(printf '%s' "$RUNNING_CONTAINERS" | wc -w)"
 if [ "$CONTAINER_COUNT" -ne 1 ]; then
   echo "FAIL: expected exactly 1 running container in compose, found $CONTAINER_COUNT" >&2
