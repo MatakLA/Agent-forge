@@ -134,16 +134,15 @@ Execute each test script directly from the repository root:
    ```bash
    bash tests/test_issues_intake_parsing.sh
    ```
-   - **How issues become goals:** Exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible issue via `bin/foreman goal -`.
+   - **How issues become goals:** `tests/test_issues_intake_parsing.sh` exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api-github.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible GitHub issue via `bin/foreman goal -`, with the role taken from the real label-to-role mapping.
    - **Exact label-to-role mapping:** Proves that issues are associated with specific roles based on their triage labels per the exact label-to-role mapping table:
 
      | Issue Label | Mapped Goal Role | Role Playbook | Description |
      |---|---|---|---|
      | `bug` | `tester` | `roles/tester.md` | Reproduction, regression testing, and verification |
-     | `docs` / `documentation` | `technical-writer` | `roles/technical-writer.md` | Guides, reference docs, and walkthroughs |
-     | `security` / `security-audit` | `security-tester` | `roles/security-tester.md` | Security audits, boundary checks, and egress rules |
+     | `docs` | `technical-writer` | `roles/technical-writer.md` | Guides, reference docs, and walkthroughs |
+     | `security` | `security-tester` | `roles/security-tester.md` | Security audits, boundary checks, and egress rules |
      | `feature` | `backend-developer` | `roles/backend-developer.md` | New capabilities, business logic, and API endpoints |
-     | *(default / fallback)* | `backend-developer` | `roles/backend-developer.md` | Default role when no specific category label matches |
 
      The test verifies each mapped role corresponds to an existing playbook in `roles/` and that distinct labels map to distinct roles.
 
@@ -161,6 +160,6 @@ Execute each test script directly from the repository root:
 
 ### Expected Result and Troubleshooting
 
-- **Expected result:** Each test script exits with exit code `0` and outputs a confirmation message (such as `issues intake parsing tests: ALL OK` or `ok: duplicate detection passed`).
+- **Expected result:** Each test script exits with exit code `0` and outputs a confirmation message (such as `ok: parsing e2e test passed` or `ok: duplicate detection passed`).
 - **What to do when it fails:** If a test fails, the script exits with a non-zero exit code and writes failure diagnostics to standard error. Check the fixture log in the temporary runs directory printed in the error output to inspect the request payload or HTTP status.
 
