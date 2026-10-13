@@ -3,15 +3,15 @@
 Public interface:
   python3 -m unittest tests/test_issues_intake_parsing.py
   bash tests/test_issues_intake_parsing.sh
-  python3 tests/test_issues_intake_parsing.py --reproduce-role-bug
 
 Important invariants:
   - Exercises tests/test_issues_intake_parsing.sh via subprocess with tempfile-based runs paths.
   - Verifies eligible GitHub issues are parsed and queued as exactly one Foreman goal per issue.
+  - Verifies goal role field equals role from bin/issues-intake's real LABEL_TO_ROLE mapping table.
+  - Verifies expected roles differ across at least 3 distinct labels.
   - Verifies HTML tag stripping and boundary truncation of goal text at exactly 4000 characters.
   - Verifies missing or empty body cleanly falls back to issue title.
   - Verifies fixture server lifecycle on OS-assigned free port and clean shutdown on SIGTERM.
-  - Pinpoints and reproduces the missing label-to-role mapping table and goal role field as a tracked bug.
   - Every test method contains bare top-level assert statements for static gate verification.
 """
 import glob
@@ -65,7 +65,7 @@ class TestIssuesIntakeParsing(unittest.TestCase):
         assert ("ok: parsing e2e test passed" in res.stdout) or ("SKIP:" in res.stdout)
 
     def test_eligible_issues_create_exactly_one_goal_each(self):
-        """Intake parses eligible GitHub issues and creates exactly 1 goal per issue on disk."""
+        """Intake parses eligible GitHub issues and creates exactly 1 goal per issue on disk with mapped role."""
         fake_issues = [
             {"id": 1001, "title": "Fix cookie expiration", "body": "Session bug.<br><b>preserve</b>", "labels": ["agent-forge", "bug"]},
             {"id": 1002, "title": "Update provider docs", "body": "Docs in docs/PROVIDERS.md", "labels": ["agent-forge", "docs"]},
@@ -91,9 +91,70 @@ class TestIssuesIntakeParsing(unittest.TestCase):
                     seen_data = json.load(f)
             self.assertEqual(sorted(seen_data.get("seen", [])), [1001, 1002, 1003, 1004, 1005])
 
+            self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), "bin/issues-intake must define LABEL_TO_ROLE")
+            mapping = issues_intake.LABEL_TO_ROLE
+            loaded_goals = []
+            for gf in goal_files:
+                with open(gf, "r", encoding="utf-8") as f:
+                    loaded_goals.append(json.load(f))
+
+            expected_labels = ["bug", "docs", "security", "feature"]
+            for g, lbl in zip(loaded_goals[:4], expected_labels):
+                expected_role = mapping.get(lbl)
+                self.assertEqual(g.get("role"), expected_role, f"Goal {g.get('id')} role mismatch for label {lbl}")
+
         assert rc == 0
         assert len(goal_files) == 5
         assert sorted(seen_data.get("seen", [])) == [1001, 1002, 1003, 1004, 1005]
+        assert hasattr(issues_intake, "LABEL_TO_ROLE")
+        assert all(g.get("role") == mapping.get(lbl) for g, lbl in zip(loaded_goals[:4], expected_labels))
+
+    def test_label_to_role_mapping_on_created_goals(self):
+        """Verify each goal's role field equals the real mapping table from bin/issues-intake across >=3 distinct labels."""
+        self.assertTrue(hasattr(issues_intake, "LABEL_TO_ROLE"), (
+            "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
+        ))
+        assert hasattr(issues_intake, "LABEL_TO_ROLE"), (
+            "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
+        )
+
+        mapping = issues_intake.LABEL_TO_ROLE
+        self.assertGreaterEqual(len(mapping), 3, "Mapping table must cover at least 3 distinct roles")
+        assert len(mapping) >= 3, "Mapping table must cover at least 3 distinct roles"
+
+        # Assert expected roles differ across at least 3 distinct labels so the check cannot pass vacuously
+        distinct_roles = {mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")}
+        self.assertGreaterEqual(len(distinct_roles), 3, "Expected roles must differ across at least 3 distinct labels")
+        assert len(distinct_roles) >= 3, "Expected roles must differ across at least 3 distinct labels"
+
+        fake_issues = [
+            {"id": 2001, "title": "Bug issue", "body": "Content", "labels": ["agent-forge", "bug"]},
+            {"id": 2002, "title": "Doc issue", "body": "Content", "labels": ["agent-forge", "docs"]},
+            {"id": 2003, "title": "Security issue", "body": "Content", "labels": ["agent-forge", "security"]},
+            {"id": 2004, "title": "Feature issue", "body": "Content", "labels": ["agent-forge", "feature"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    mock_urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(fake_issues).encode("utf-8")
+                    rc = issues_intake.intake_issues(kind="github", repo="agent-forge/agent-forge", token="tok", runs_dir=tmpdir)
+
+            goals_dir = os.path.join(tmpdir, "foreman", "goals")
+            goal_files = sorted(glob.glob(os.path.join(goals_dir, "G*.json")))
+            self.assertEqual(len(goal_files), 4)
+
+            expected_roles = [mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")]
+            loaded_goals = []
+            for gf, exp_role in zip(goal_files, expected_roles):
+                with open(gf, "r", encoding="utf-8") as f:
+                    goal = json.load(f)
+                loaded_goals.append(goal)
+                self.assertEqual(goal.get("role"), exp_role, f"Goal {goal.get('id')} role mismatch: {goal.get('role')} != {exp_role}")
+
+        assert rc == 0
+        assert len(goal_files) == 4
+        assert len(distinct_roles) >= 3
+        assert all(g.get("role") == exp_role for g, exp_role in zip(loaded_goals, expected_roles))
 
     def test_goal_text_html_tag_stripping(self):
         """HTML formatting tags in title and body are stripped cleanly from goal text."""
@@ -257,50 +318,5 @@ class TestIssuesIntakeParsing(unittest.TestCase):
         assert all(os.path.isfile(p) for p in found_playbooks)
 
 
-def reproduce_label_to_role_mapping_gap():
-    """Failing-test reproduction: demonstrates that bin/issues-intake lacks LABEL_TO_ROLE and goals lack role field.
-
-    Spec requirement:
-    - Expected role values come from bin/issues-intake's real mapping table.
-    - Each goal's role field equals the role the real mapping assigns to that issue's label.
-
-    Production gap:
-    - bin/issues-intake does not expose a LABEL_TO_ROLE table.
-    - Goals queued via `bin/foreman goal -` (cli.py lines 127-130) do not store a role field.
-    """
-    # 1. Assert bin/issues-intake defines real mapping table
-    assert hasattr(issues_intake, "LABEL_TO_ROLE"), (
-        "FAIL REPRODUCTION: bin/issues-intake has no LABEL_TO_ROLE mapping table in source code"
-    )
-
-    mapping = issues_intake.LABEL_TO_ROLE
-    assert len(mapping) >= 3, "Mapping table must cover at least 3 distinct roles"
-
-    fake_issues = [
-        {"id": 2001, "title": "Bug issue", "body": "Content", "labels": ["agent-forge", "bug"]},
-        {"id": 2002, "title": "Doc issue", "body": "Content", "labels": ["agent-forge", "docs"]},
-        {"id": 2003, "title": "Security issue", "body": "Content", "labels": ["agent-forge", "security"]},
-        {"id": 2004, "title": "Feature issue", "body": "Content", "labels": ["agent-forge", "feature"]},
-    ]
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with patch.dict(os.environ, {"SANDBOX_TEST": "1", "SANDBOX_RUNS_DIR": tmpdir}):
-            with patch("urllib.request.urlopen") as mock_urlopen:
-                mock_urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(fake_issues).encode("utf-8")
-                rc = issues_intake.intake_issues(kind="github", repo="agent-forge/agent-forge", token="tok", runs_dir=tmpdir)
-
-        goals_dir = os.path.join(tmpdir, "foreman", "goals")
-        goal_files = sorted(glob.glob(os.path.join(goals_dir, "G*.json")))
-        assert len(goal_files) == 4
-
-        expected_roles = [mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")]
-        for gf, exp_role in zip(goal_files, expected_roles):
-            with open(gf, "r", encoding="utf-8") as f:
-                goal = json.load(f)
-            assert goal.get("role") == exp_role, f"Goal {goal.get('id')} role mismatch: {goal.get('role')} != {exp_role}"
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--reproduce-role-bug":
-        reproduce_label_to_role_mapping_gap()
-    else:
-        unittest.main()
+    unittest.main()

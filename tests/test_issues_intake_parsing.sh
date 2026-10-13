@@ -7,6 +7,7 @@
 # - Runs intake step once against temporary offline runs directory.
 # - Asserts exactly one goal exists per eligible issue matching the label filter (agent-forge).
 # - Asserts created goals have status 'new', stripped HTML in text, and clean content.
+# - Asserts each goal's role matches the real label-to-role mapping table imported from bin/issues-intake.
 # - Guaranteed cleanup of the fixture server on exit under all termination paths via trap.
 
 set -euo pipefail
@@ -103,12 +104,41 @@ if [ ! -f "$SEEN_FILE" ]; then
   exit 1
 fi
 
-# Verify created goals, goal content, HTML stripping, seen tracking, and role playbooks
+# Verify created goals, goal content, HTML stripping, seen tracking, role mapping, and role playbooks
 python3 -c '
-import glob, json, os, sys
+import glob, importlib.machinery, importlib.util, json, os, sys
 
 root_dir = sys.argv[1]
 runs_dir = sys.argv[2]
+
+# Load bin/issues-intake directly to import its real mapping table
+intake_path = os.path.join(root_dir, "bin", "issues-intake")
+loader = importlib.machinery.SourceFileLoader("issues_intake", intake_path)
+spec = importlib.util.spec_from_loader("issues_intake", loader)
+issues_intake_mod = importlib.util.module_from_spec(spec)
+loader.exec_module(issues_intake_mod)
+
+if not hasattr(issues_intake_mod, "LABEL_TO_ROLE"):
+    sys.stderr.write("FAIL: bin/issues-intake does not expose LABEL_TO_ROLE mapping table\n")
+    sys.exit(1)
+
+mapping = issues_intake_mod.LABEL_TO_ROLE
+if len(mapping) < 3:
+    sys.stderr.write("FAIL: LABEL_TO_ROLE mapping table has fewer than 3 mappings\n")
+    sys.exit(1)
+
+# Ensure expected roles differ across at least 3 distinct labels
+distinct_roles = {mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")}
+if len(distinct_roles) < 3:
+    sys.stderr.write(f"FAIL: expected roles must differ across at least 3 distinct labels: got {distinct_roles}\n")
+    sys.exit(1)
+
+def map_label_to_role(labels):
+    for lbl in labels:
+        name = lbl if isinstance(lbl, str) else (lbl.get("name") or lbl.get("title") or "")
+        if name in mapping:
+            return mapping[name]
+    return mapping.get("default", "backend-developer")
 
 seen_file = os.path.join(runs_dir, "foreman", "issues-intake.json")
 with open(seen_file, "r", encoding="utf-8") as f:
@@ -134,30 +164,35 @@ expected_issues = [
     {
         "id": 1001,
         "title": "Fix session cookie expiration bug",
+        "labels": ["agent-forge", "bug"],
         "forbidden": ["<br>", "<b>", "</b>"],
         "required": ["Fix session cookie expiration bug", "preserve session"]
     },
     {
         "id": 1002,
         "title": "Update documentation for custom providers",
+        "labels": ["agent-forge", "docs"],
         "forbidden": [],
         "required": ["Update documentation for custom providers", "docs/PROVIDERS.md"]
     },
     {
         "id": 1003,
         "title": "Perform security audit on egress firewall",
+        "labels": ["agent-forge", "security"],
         "forbidden": ["<p>", "</p>"],
         "required": ["Perform security audit on egress firewall", "Audit drop policies"]
     },
     {
         "id": 1004,
         "title": "Add token count metric in status",
+        "labels": ["agent-forge", "feature"],
         "forbidden": [],
         "required": ["Add token count metric in status", "dashboard overview"]
     },
     {
         "id": 1005,
         "title": "Triage incoming community feedback notes",
+        "labels": ["agent-forge", "triage-needed"],
         "forbidden": [],
         "required": ["Triage incoming community feedback notes", "Community discussion"]
     }
@@ -169,9 +204,18 @@ for exp in expected_issues:
         sys.stderr.write(f"FAIL: expected exactly 1 goal matching title {exp[\"title\"]!r}, found {len(matching)}\n")
         sys.exit(1)
     goal = matching[0]
+    goal_id = goal.get("id")
     if goal.get("status") != "new":
         sys.stderr.write(f"FAIL: goal status mismatch: got {goal.get(\"status\")!r}, expected \"new\"\n")
         sys.exit(1)
+
+    # Read and assert actual role field on the production goal JSON written to disk
+    actual_role = goal.get("role")
+    expected_role = map_label_to_role(exp["labels"])
+    if actual_role != expected_role:
+        sys.stderr.write(f"FAIL: goal {goal_id} role mismatch: got {actual_role!r}, expected {expected_role!r}\n")
+        sys.exit(1)
+
     text = goal.get("text", "")
     if len(text) > 4000:
         sys.stderr.write(f"FAIL: goal text exceeds 4000 characters: length={len(text)}\n")
@@ -194,4 +238,4 @@ for r in documented_roles:
         sys.exit(1)
 ' "$ROOT" "$TMP_RUNS" || exit 1
 
-echo "ok: parsing e2e test passed (exactly 5 goals created from 5 eligible issues, HTML stripped, valid playbooks)"
+echo "ok: parsing e2e test passed (exactly 5 goals created from 5 eligible issues, HTML stripped, role mapping verified, valid playbooks)"
