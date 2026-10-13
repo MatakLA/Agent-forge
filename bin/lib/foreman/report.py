@@ -501,6 +501,16 @@ def money(days=14):
             burn[e.get("worker")] = burn.get(e.get("worker"), 0) + r["week"] / 3
     week0 = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6)).strftime("%Y-%m-%d")
     conf = sbx.project_conf()
+    seen_runtimes = set()
+    for r in rs.values():
+        if isinstance(r, dict):
+            seen_runtimes.add(r.get("runtime") or "agy")
+    cost_models = {}
+    for rt in sorted(seen_runtimes):
+        try:
+            cost_models[rt] = runtimes.cost_model(rt)
+        except ValueError:
+            cost_models[rt] = dict(kind="unknown", detail=f"unknown runtime {rt}")
     return dict(per_day=[dict(date=d, **per_day.get(d, {})) for d in
                          ((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1))],
                 today=round(spent, 4), week=round(sum(e["cost_usd"] for e in led if e.get("cost_usd") and e.get("date", "") >= week0), 4),
@@ -512,7 +522,8 @@ def money(days=14):
                 project_today=sbx.api_spent(led, "day", sbx.PROJECT), project_month=sbx.api_spent(led, "month", sbx.PROJECT),
                 workers_today={w: sbx.api_spent(led, "day", worker=w) for w in sbx.worker_budgets(lim.get("WORKER_DAILY_BUDGET_USD"))},
                 quota_burn={w: round(v, 2) for w, v in burn.items() if w},
-                top_tasks=sorted(({"task": k, "usd": v} for k, v in _task_costs(month).items()), key=lambda x: -x["usd"])[:10])
+                top_tasks=sorted(({"task": k, "usd": v} for k, v in _task_costs(month).items()), key=lambda x: -x["usd"])[:10],
+                cost_models=cost_models)
 
 
 def _ts(iso):
