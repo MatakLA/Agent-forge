@@ -115,3 +115,52 @@ The template library provides GitHub Issue Forms (YAML) and GitLab Issue Templat
    - On GitLab (or when copying markdown manually into an issue description), copy the template contents into your issue description.
 3. **Fill in the fields:** Complete the questions or sections with clear, concrete steps and expected outcomes. Keep total text under 4000 characters and avoid HTML tags.
 4. **Apply labels by hand on GitLab:** GitLab does not carry labels through issue description forms. You must apply the `agent-forge` label (and optionally the category label named in the template's comment, such as `bug` or `feature`) by hand when submitting the issue.
+
+## Offline Test Coverage
+
+Contributors and operators can verify the issue intake pipeline end-to-end without network access or real API credentials using offline integration tests. These tests spin up local fake forge API fixtures to validate issue parsing, label-to-role mapping, duplicate prevention, and malformed payload handling.
+
+### Prerequisites
+
+- Python 3 and Bash.
+- Node.js (required to run the fake forge API fixtures).
+- No external network access or real upstream forge tokens are needed. Tests configure `AF_UPSTREAM_API` to point to a local ephemeral port and supply dummy tokens.
+
+### Running the Tests
+
+Execute each test script directly from the repository root:
+
+1. **Issue parsing into goals and label-to-role mapping:**
+   ```bash
+   bash tests/test_issues_intake_parsing.sh
+   ```
+   - **How issues become goals:** Exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible issue via `bin/foreman goal -`.
+   - **Exact label-to-role mapping:** Proves that issues are associated with specific roles based on their triage labels per the exact label-to-role mapping table:
+
+     | Issue Label | Mapped Goal Role | Role Playbook | Description |
+     |---|---|---|---|
+     | `bug` | `tester` | `roles/tester.md` | Reproduction, regression testing, and verification |
+     | `docs` / `documentation` | `technical-writer` | `roles/technical-writer.md` | Guides, reference docs, and walkthroughs |
+     | `security` / `security-audit` | `security-tester` | `roles/security-tester.md` | Security audits, boundary checks, and egress rules |
+     | `feature` | `backend-developer` | `roles/backend-developer.md` | New capabilities, business logic, and API endpoints |
+     | *(default / fallback)* | `backend-developer` | `roles/backend-developer.md` | Default role when no specific category label matches |
+
+     The test verifies each mapped role corresponds to an existing playbook in `roles/` and that distinct labels map to distinct roles.
+
+2. **Duplicate issue detection:**
+   ```bash
+   bash tests/test_issues_intake_duplicates.sh
+   ```
+   - **Duplicate prevention:** Proves that running `bin/issues-intake` twice against the same GitLab-style issue creates exactly one goal, not two. The first run queues the goal and records the issue ID in `runs/[projects/<name>/]foreman/issues-intake.json`. The subsequent run detects the previously processed ID in the seen list and skips it, preventing duplicate goals.
+
+3. **Malformed payload rejection:**
+   ```bash
+   bash tests/test_issues_intake_malformed.sh
+   ```
+   - **Malformed payload handling:** Proves that distinct malformed webhook payloads (such as invalid JSON syntax, missing required fields like `title` or `labels`, invalid field types like non-list labels or non-numeric IDs, control characters or embedded NUL bytes, and oversized payloads) are rejected with clear error messages on standard error and create no goals (no goal files in `runs/foreman/goals/` and no state recorded in `issues-intake.json`), exiting non-zero with no raw Python tracebacks.
+
+### Expected Result and Troubleshooting
+
+- **Expected result:** Each test script exits with exit code `0` and outputs a confirmation message (such as `issues intake parsing tests: ALL OK` or `ok: duplicate detection passed`).
+- **What to do when it fails:** If a test fails, the script exits with a non-zero exit code and writes failure diagnostics to standard error. Check the fixture log in the temporary runs directory printed in the error output to inspect the request payload or HTTP status.
+
