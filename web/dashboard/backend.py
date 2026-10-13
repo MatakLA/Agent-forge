@@ -78,7 +78,10 @@ FOREMAN_SERVICE = os.environ.get("FOREMAN_SERVICE", "agent-forge-foreman")     #
 FOREMAN_SERVICE_PROJECT = os.environ.get("FOREMAN_SERVICE_PROJECT", "agent-forge-foreman-{project}")
 
 
-ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
+ANSI = re.compile(r"\x1b_.*?\x1b\\|\x1bP.*?\x1b\\|\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r", re.S)
+# `docker exec -it` gives a terminal of size 0x0, in which agy draws nothing at all (no login menu, no URL); a very wide one also
+# keeps agy from wrapping the long login URL over several lines.
+LOGIN_SHELL = "stty cols 3000 rows 50; exec agy-run"
 
 
 JOBS = {}
@@ -179,7 +182,7 @@ class LoginSessions:
             old = self.s.get(w)
             if old and old["proc"].poll() is None:
                 return {"ok": True, "note": "already running"}
-            cmd = f"docker exec -it {w} agy-run"
+            cmd = f"docker exec -it {w} sh -c '{LOGIN_SHELL}'"
             if VM_IP:
                 argv = SSH_BASE[:1] + ["-tt"] + SSH_BASE[1:] + [cmd]
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -187,7 +190,7 @@ class LoginSessions:
             else:
                 import pty
                 mfd, sfd = pty.openpty()
-                proc = subprocess.Popen(["docker", "exec", "-it", w, "agy-run"], stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
+                proc = subprocess.Popen(["docker", "exec", "-it", w, "sh", "-c", LOGIN_SHELL], stdin=sfd, stdout=sfd, stderr=sfd, start_new_session=True)
                 os.close(sfd)
                 rfd, wf = mfd, None
             sess = {"proc": proc, "rfd": rfd, "wf": wf, "buf": "", "started": time.time(), "pty": not VM_IP}
@@ -204,7 +207,18 @@ class LoginSessions:
                 break
             if not chunk:
                 break
-            sess["buf"] = (sess["buf"] + ANSI.sub("", chunk.decode(errors="replace")))[-20000:]
+            sess["raw"] = (sess.get("raw", "") + chunk.decode(errors="replace"))[-20000:]
+            sess["buf"] = ANSI.sub("", sess["raw"])
+            if not sess.get("menu_done") and "Select login method" in sess["buf"] and "Google OAuth" in sess["buf"]:
+                sess["menu_done"] = True
+                time.sleep(0.5)
+                try:
+                    if sess["wf"]:
+                        sess["wf"].write(b"\r"); sess["wf"].flush()
+                    else:
+                        os.write(sess["rfd"], b"\r")
+                except OSError:
+                    pass
         if sess.get("pty"):
             try:
                 os.close(sess["rfd"])
