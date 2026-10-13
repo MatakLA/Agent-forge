@@ -9,15 +9,18 @@ request headers only (never in a URL, so they cannot end up in proxy or access l
 """
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-try:
-    import egress
-except ImportError:
-    from bin.lib import egress
+_lib_dir = os.path.dirname(os.path.abspath(__file__))
+if _lib_dir not in sys.path:
+    sys.path.insert(0, _lib_dir)
+if "egress" in sys.modules and not hasattr(sys.modules["egress"], "allowlist"):
+    del sys.modules["egress"]
+import egress
 
 DEFAULT_TIMEOUT = 600
 
