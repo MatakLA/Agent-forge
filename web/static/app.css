@@ -62,7 +62,7 @@ h4 { font-size:13px; margin:12px 0 6px; }
 .seg.sm button { padding:3px 10px; font-size:12px; }
 .badge { font-size:11px; padding:1px 7px; border-radius:999px; background:var(--card2); color:var(--muted); font-weight:600; white-space:nowrap; }
 .badge.ok { color:var(--ok); background:color-mix(in srgb, var(--ok) 14%, transparent); } .badge.warn { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); }
-.badge.bad { color:var(--bad); background:color-mix(in srgb, var(--bad) 14%, transparent); } .badge.hot { color:#1a1205; background:var(--hot); }
+.badge.bad { color:var(--bad); background:color-mix(in srgb, var(--bad) 14%, transparent); } .badge.hot { color:#1a1205; background:var(--hot); } .badge.unknown { color:var(--muted); background:color-mix(in srgb, var(--muted) 14%, transparent); }
 .dot { width:8px; height:8px; border-radius:50%; background:var(--idle); flex-shrink:0; display:inline-block; }
 .dot.running { background:var(--ok); animation:pulse 1.6s infinite; } .dot.think { background:var(--accent); animation:pulse 1.2s infinite; } .dot.bad { background:var(--bad); }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
