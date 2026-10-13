@@ -30,9 +30,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         return false;
       }
       d.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', {key: 'Tab', code: 'Tab', keyCode: 9, bubbles: true}));
-      if (target.tabIndex < 0 && !target.hasAttribute('tabindex')) {
-        target.tabIndex = 0;
-      }
       target.focus();
       target.dispatchEvent(new w.Event('focus', {bubbles: true}));
       if (d.activeElement !== target) {
