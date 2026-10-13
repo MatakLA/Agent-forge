@@ -96,6 +96,28 @@ def hosts(rt, endpoint_url=""):
     return list(r["hosts"])
 
 
+def cost_model(rt: str) -> dict:
+    """Return the cost/quota model classification for a runtime.
+
+    Returns a dict with exactly two keys:
+    - 'kind': 'metered' (API with token cost), 'quota' (CLI with subscription quota), or 'unknown'
+    - 'detail': short human-readable explanation
+    """
+    if rt not in RUNTIMES:
+        raise ValueError(f"unknown runtime {rt!r}")
+    unknown_details = {
+        "opencode": "OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge",
+        "qwen-code": "Qwen Code (qwen-code) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge",
+        "goose": "Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge",
+        "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
+    }
+    if rt in unknown_details:
+        return {"kind": "unknown", "detail": unknown_details[rt]}
+    if is_api(rt):
+        return {"kind": "metered", "detail": "billed per token, see Money page"}
+    return {"kind": "quota", "detail": "tracked via agy /usage, not USD"}
+
+
 def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
     """(argv inside the worker container, stdin text). API runtimes get the prompt on stdin (no 128 KiB argv limit). The model
     server URL of compat / aider comes in the environment (AF_ENDPOINT, set by bin/run-supervisor), not in argv."""
