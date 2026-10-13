@@ -113,7 +113,7 @@ def fetch_issues(kind, repo, token, label="agent-forge"):
     except OSError as e:
         sys.stderr.write(f"Network error fetching issues from {kind}: {e}\n")
         sys.exit(1)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         sys.stderr.write(f"Failed to parse JSON issues response from {kind}: {e}\n")
         sys.exit(1)
 
