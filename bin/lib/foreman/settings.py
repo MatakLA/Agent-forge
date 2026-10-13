@@ -40,7 +40,6 @@ NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|appro
 EDITABLE = {
     "PLAN_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
     "REVIEW_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
-    "PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
     "WORKER_RUNTIME": (r"|" + "|".join(runtimes.RUNTIMES.keys()), "project"),
     "CLAUDE_MODEL": (MODEL_RE, "project"), "AGY_PLAN_MODEL": (MODEL_RE, "project"), "AGY_REVIEW_MODEL": (MODEL_RE, "project"),
     "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
@@ -95,14 +94,13 @@ EDITABLE = {
 HELP = {
     "PLAN_PROVIDERS": "Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
     "REVIEW_PROVIDERS": "Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
-    "PROVIDERS": "Ordered orchestrator providers: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
     "WORKER_RUNTIME": "Default worker runtime (e.g. agy, claude, codex, gemini). Egress host check happens at save time. Applies live.",
     "OPENCODE_MODEL": "Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.",
     "QWEN_MODEL": "Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.",
     "GOOSE_MODEL": "Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.",
 }
 
-CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3, "WORKER_RUNTIME": "agy", "PROVIDERS": ""}
+CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3, "WORKER_RUNTIME": "agy"}
 
 
 def conf_path(scope):
@@ -240,7 +238,7 @@ def settings_apply(changes):
             err = validate_url(v)
             if err:
                 errors[k] = err; continue
-        elif k in ("PLAN_PROVIDERS", "REVIEW_PROVIDERS", "PROVIDERS"):
+        elif k in ("PLAN_PROVIDERS", "REVIEW_PROVIDERS"):
             err = validate_providers(v, k)
             if err:
                 errors[k] = err; continue
@@ -282,8 +280,7 @@ def settings_apply(changes):
 
     eff_plan = [p.strip() for p in str(cleaned.get("PLAN_PROVIDERS", ctx.C.get("PLAN_PROVIDERS", ""))).split(",") if p.strip()]
     eff_review = [p.strip() for p in str(cleaned.get("REVIEW_PROVIDERS", ctx.C.get("REVIEW_PROVIDERS", ""))).split(",") if p.strip()]
-    eff_prov = [p.strip() for p in str(cleaned.get("PROVIDERS", ctx.C.get("PROVIDERS", ""))).split(",") if p.strip()]
-    eff_providers = set(eff_plan + eff_review + eff_prov)
+    eff_providers = set(eff_plan + eff_review)
 
     eff_openai_model = cleaned.get("OPENAI_MODEL", ctx.C.get("OPENAI_MODEL", "")).strip()
     eff_gemini_model = cleaned.get("GEMINI_MODEL", ctx.C.get("GEMINI_MODEL", "")).strip()
