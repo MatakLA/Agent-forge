@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Runtime cost model: add honest per-runtime cost/quota classifier `cost_model()` to `bin/lib/runtimes.py` with explicit unknown classification for unpriced runtimes.
 - Cross-link docs/CHOOSING-AN-AI.md with the dashboard Settings Onboarding checklist.
 - Settings: surface file-only settings with human-readable explanations via `FILE_ONLY` in `bin/lib/foreman/settings.py` and `settings_get()`.
 - Dashboard: Overview tab can now toggle autopilot and pause/resume the foreman without the CLI.
