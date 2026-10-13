@@ -6,29 +6,25 @@
 # ==============================================================================
 FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1 \
+ENV DEMO_MODE=1 \
+    BIND_PORT=8171 \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/opt/agent-forge/bin:${PATH}" \
-    PYTHONPATH="/opt/agent-forge/bin/lib:/opt/agent-forge/web"
+    PATH="/app/bin:${PATH}" \
+    PYTHONPATH="/app/bin/lib:/app/web"
 
 # Run as non-root user 'forge' (UID 1000) for safe local evaluation
 RUN groupadd -g 1000 forge \
  && useradd -u 1000 -g forge -m -s /bin/bash forge \
- && mkdir -p /opt/agent-forge/bin/lib /opt/agent-forge/etc /demo-data \
- && chown -R forge:forge /opt/agent-forge /demo-data
+ && mkdir -p /app \
+ && chown -R forge:forge /app
 
-WORKDIR /opt/agent-forge
+WORKDIR /app
 
-# Copy application files from repository build context
-COPY --chown=forge:forge web/ /opt/agent-forge/web/
-COPY --chown=forge:forge bin/lib/foreman/ /opt/agent-forge/bin/lib/foreman/
-COPY --chown=forge:forge bin/foreman /opt/agent-forge/bin/foreman
-COPY --chown=forge:forge bin/status /opt/agent-forge/bin/status
-COPY --chown=forge:forge roles/ /opt/agent-forge/roles/
-COPY --chown=forge:forge prompts/ /opt/agent-forge/prompts/
-COPY --chown=forge:forge etc/*.example.conf /opt/agent-forge/etc/
+# Copy repository into /app
+COPY --chown=forge:forge . /app
 
-RUN chmod 755 /opt/agent-forge/bin/foreman /opt/agent-forge/bin/status
+RUN chmod 755 /app/bin/foreman /app/bin/status 2>/dev/null || true
 
 USER forge
 
@@ -37,4 +33,4 @@ EXPOSE 8171
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
   CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8171/api/status')"
 
-CMD ["python3", "web/server.py"]
+CMD ["sh", "-c", "python3 tools/demo_state.py /app && exec python3 web/server.py"]
