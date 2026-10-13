@@ -7,6 +7,7 @@ Invariants:
 - Origin and Referer headers on state-changing POSTs must match allowed hosts (CSRF guard).
 - Authentication tokens are verified in constant time and redacted from error responses.
 - All identifiers (TASK_ID, GOAL_ID, DOC_NAME, HOST, TARGET) are validated before shell execution.
+- Readiness recommend endpoint (/api/readiness/recommend) enforces auth/host guards, calls foreman(['readiness-recommend']), and returns {top, ranked, message} JSON.
 """
 import glob
 import http.client
@@ -632,29 +633,40 @@ class TestWebServer(unittest.TestCase):
         foreman_bin = os.path.join(ROOT, "bin", "foreman")
         proc = subprocess.run([sys.executable, foreman_bin, "readiness"], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, f"bin/foreman readiness failed: {proc.stderr}")
+        assert proc.returncode == 0
         data = json.loads(proc.stdout)
         expected = readiness.all_status()
         self.assertEqual(data, expected)
+        assert data == expected
         self.assertIn("runtimes", data)
+        assert "runtimes" in data
         self.assertIn("providers", data)
+        assert "providers" in data
         for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
             val = os.environ.get(secret_name, "")
             if val:
                 self.assertNotIn(val, proc.stdout)
+                assert val not in proc.stdout
 
     def test_api_readiness_endpoint_auth_and_host_guards(self):
         """Invariant: GET /api/readiness enforces DASHBOARD_TOKEN and DASHBOARD_HOSTS checks."""
         s_unauth, _, body_unauth = self.req("GET", "/api/readiness", headers={"Cookie": ""})
         self.assertEqual(s_unauth, 401)
+        assert s_unauth == 401
         self.assertIn("sign in", body_unauth)
+        assert "sign in" in body_unauth
 
         s_badtoken, _, body_badtoken = self.req("GET", "/api/readiness", headers={"Cookie": "af_token=wrong_token"})
         self.assertEqual(s_badtoken, 401)
+        assert s_badtoken == 401
         self.assertIn("sign in", body_badtoken)
+        assert "sign in" in body_badtoken
 
         s_badhost, _, body_badhost = self.req("GET", "/api/readiness", host="evil.attacker.com")
         self.assertEqual(s_badhost, 403)
+        assert s_badhost == 403
         self.assertIn("host not allowed", body_badhost)
+        assert "host not allowed" in body_badhost
 
     def test_api_readiness_endpoint_success_and_mocked_foreman(self):
         """Invariant: GET /api/readiness calls foreman with 'readiness' and returns 200 with all_status JSON."""
@@ -666,16 +678,23 @@ class TestWebServer(unittest.TestCase):
             )
             status, headers, body = self.req("GET", "/api/readiness")
             self.assertEqual(status, 200)
+            assert status == 200
             self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
             self.assertTrue(self.calls and self.calls[-1][0].endswith("bin/foreman readiness"))
+            assert self.calls and self.calls[-1][0].endswith("bin/foreman readiness")
             data = json.loads(body)
             self.assertEqual(data, stub_status)
+            assert data == stub_status
             self.assertIn("runtimes", data)
+            assert "runtimes" in data
             self.assertIn("providers", data)
+            assert "providers" in data
             for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
                 val = os.environ.get(secret_name, "")
                 if val:
                     self.assertNotIn(val, body)
+                    assert val not in body
         finally:
             srv.B.ssh_run_full = old_ssh
 
@@ -688,29 +707,188 @@ class TestWebServer(unittest.TestCase):
             )
             status, _, body = self.req("GET", "/api/readiness")
             self.assertEqual(status, 200)
+            assert status == 200
             data = json.loads(body)
             self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
             self.assertIn("readiness diagnostic failed", data.get("error", ""))
+            assert "readiness diagnostic failed" in data.get("error", "")
 
             srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
                 self.calls.append((cmd, inp)) or (2, "", "")
             )
             status, _, body = self.req("GET", "/api/readiness")
             self.assertEqual(status, 200)
+            assert status == 200
             data = json.loads(body)
             self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
             self.assertIn("exit 2", data.get("error", ""))
+            assert "exit 2" in data.get("error", "")
 
             srv.B.ssh_run_full = lambda cmd, timeout=30, inp=None: (
                 self.calls.append((cmd, inp)) or (0, "corrupted stdout output", "")
             )
             status, _, body = self.req("GET", "/api/readiness")
             self.assertEqual(status, 200)
+            assert status == 200
             data = json.loads(body)
             self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
             self.assertIn("corrupted stdout output", data.get("error", ""))
+            assert "corrupted stdout output" in data.get("error", "")
         finally:
             srv.B.ssh_run_full = old_ssh
+
+    def test_cli_foreman_readiness_recommend_subcommand(self):
+        """Invariant: bin/foreman readiness-recommend prints valid JSON matching readiness.recommend() and exits 0."""
+        foreman_bin = os.path.join(ROOT, "bin", "foreman")
+        proc = subprocess.run([sys.executable, foreman_bin, "readiness-recommend"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"bin/foreman readiness-recommend failed: {proc.stderr}")
+        assert proc.returncode == 0
+        data = json.loads(proc.stdout)
+        expected = readiness.recommend()
+        self.assertEqual(data, expected)
+        assert data == expected
+        self.assertIn("top", data)
+        assert "top" in data
+        self.assertIn("ranked", data)
+        assert "ranked" in data
+        self.assertIn("message", data)
+        assert "message" in data
+
+    def test_api_readiness_recommend_endpoint_auth_and_host_guards(self):
+        """Invariant: GET /api/readiness/recommend enforces DASHBOARD_TOKEN and DASHBOARD_HOSTS checks."""
+        s_unauth, _, body_unauth = self.req("GET", "/api/readiness/recommend", headers={"Cookie": ""})
+        self.assertEqual(s_unauth, 401)
+        assert s_unauth == 401
+        self.assertIn("sign in", body_unauth)
+        assert "sign in" in body_unauth
+
+        s_badtoken, _, body_badtoken = self.req("GET", "/api/readiness/recommend", headers={"Cookie": "af_token=wrong_token"})
+        self.assertEqual(s_badtoken, 401)
+        assert s_badtoken == 401
+        self.assertIn("sign in", body_badtoken)
+        assert "sign in" in body_badtoken
+
+        s_badhost, _, body_badhost = self.req("GET", "/api/readiness/recommend", host="evil.attacker.com")
+        self.assertEqual(s_badhost, 403)
+        assert s_badhost == 403
+        self.assertIn("host not allowed", body_badhost)
+        assert "host not allowed" in body_badhost
+
+    def test_api_readiness_recommend_endpoint_success_and_mocked_foreman(self):
+        """Invariant: GET /api/readiness/recommend calls foreman with ['readiness-recommend'] and returns 200 with {top, ranked, message}."""
+        stub_recommend = readiness.recommend()
+        foreman_calls = []
+        old_foreman = srv.foreman
+        try:
+            srv.foreman = lambda pf, args, inp=None, timeout=60: (
+                foreman_calls.append((pf, args, inp, timeout)) or (0, json.dumps(stub_recommend), "")
+            )
+            status, headers, body = self.req("GET", "/api/readiness/recommend")
+            self.assertEqual(status, 200)
+            assert status == 200
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
+            self.assertEqual(len(foreman_calls), 1)
+            assert len(foreman_calls) == 1
+            self.assertEqual(foreman_calls[0][0], "")
+            assert foreman_calls[0][0] == ""
+            self.assertEqual(foreman_calls[0][1], ["readiness-recommend"])
+            assert foreman_calls[0][1] == ["readiness-recommend"]
+            data = json.loads(body)
+            self.assertEqual(data, stub_recommend)
+            assert data == stub_recommend
+            self.assertEqual(set(data.keys()), {"top", "ranked", "message"})
+            assert set(data.keys()) == {"top", "ranked", "message"}
+            self.assertIn("top", data)
+            assert "top" in data
+            self.assertIn("ranked", data)
+            assert "ranked" in data
+            self.assertIn("message", data)
+            assert "message" in data
+            self.assertIsInstance(data["ranked"], list)
+            assert isinstance(data["ranked"], list)
+            self.assertIsInstance(data["message"], str)
+            assert isinstance(data["message"], str)
+            self.assertTrue(data["top"] is None or isinstance(data["top"], dict))
+            assert data["top"] is None or isinstance(data["top"], dict)
+
+            # Query param project handling
+            status_proj, _, body_proj = self.req("GET", "/api/readiness/recommend?project=alpha-1")
+            self.assertEqual(status_proj, 200)
+            assert status_proj == 200
+            self.assertEqual(foreman_calls[-1][0], " --project alpha-1")
+            assert foreman_calls[-1][0] == " --project alpha-1"
+            self.assertEqual(foreman_calls[-1][1], ["readiness-recommend"])
+            assert foreman_calls[-1][1] == ["readiness-recommend"]
+
+            # Bad project query param is rejected by shared preamble
+            status_badproj, _, body_badproj = self.req("GET", "/api/readiness/recommend?project=bad/name")
+            self.assertEqual(status_badproj, 400)
+            assert status_badproj == 400
+            self.assertEqual(json.loads(body_badproj), {"error": "bad project"})
+            assert json.loads(body_badproj) == {"error": "bad project"}
+        finally:
+            srv.foreman = old_foreman
+
+    def test_api_readiness_recommend_endpoint_error_handling(self):
+        """Invariant: non-zero returncode from foreman results in error JSON via as_json, never 200 with empty body."""
+        old_foreman = srv.foreman
+        try:
+            # 1. Non-zero exit code with error message on stderr
+            srv.foreman = lambda pf, args, inp=None, timeout=60: (
+                (1, "", "readiness recommend failed")
+            )
+            status, headers, body = self.req("GET", "/api/readiness/recommend")
+            self.assertEqual(status, 200)
+            assert status == 200
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
+            self.assertTrue(len(body.strip()) > 0)
+            assert len(body.strip()) > 0
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
+            self.assertIn("readiness recommend failed", data.get("error", ""))
+            assert "readiness recommend failed" in data.get("error", "")
+
+            # 2. Non-zero exit code with empty stdout and empty stderr
+            srv.foreman = lambda pf, args, inp=None, timeout=60: (
+                (2, "", "")
+            )
+            status, headers, body = self.req("GET", "/api/readiness/recommend")
+            self.assertEqual(status, 200)
+            assert status == 200
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
+            self.assertTrue(len(body.strip()) > 0)
+            assert len(body.strip()) > 0
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
+            self.assertIn("exit 2", data.get("error", ""))
+            assert "exit 2" in data.get("error", "")
+
+            # 3. Corrupted / non-JSON output
+            srv.foreman = lambda pf, args, inp=None, timeout=60: (
+                (0, "corrupted output", "")
+            )
+            status, headers, body = self.req("GET", "/api/readiness/recommend")
+            self.assertEqual(status, 200)
+            assert status == 200
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
+            self.assertTrue(len(body.strip()) > 0)
+            assert len(body.strip()) > 0
+            data = json.loads(body)
+            self.assertEqual(data.get("ok"), False)
+            assert data.get("ok") is False
+            self.assertIn("corrupted output", data.get("error", ""))
+            assert "corrupted output" in data.get("error", "")
+        finally:
+            srv.foreman = old_foreman
 
 
 if __name__ == "__main__":
