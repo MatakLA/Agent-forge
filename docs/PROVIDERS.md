@@ -16,65 +16,52 @@ The same summary is shown on the dashboard's Settings page, so the owner no long
 
 ## Egress host readiness
 
-When saving orchestrator providers for `PLAN_PROVIDERS` or `REVIEW_PROVIDERS` in the dashboard (**Settings &rarr; Models**) or via `settings_apply()` in `bin/lib/foreman/settings.py`, the system validates that every configured provider's required egress host is present in the egress allowlist before persisting changes.
+When applying settings for `PLAN_PROVIDERS` or `REVIEW_PROVIDERS`, `settings_apply()` in `bin/lib/foreman/settings.py` validates that every configured provider's required egress host is present in the egress allowlist.
 
 ### Settings-save validation error
 
-If a provider's required egress host is missing from `egress/allowlist.txt` and `egress/allowlist.local.txt`, `settings_apply()` rejects the save and returns the literal error message:
+If a provider's required egress host is missing, `settings_apply()` rejects the save and returns the literal error message:
 
 ```
 missing egress host '<host>' for provider '<provider>' (add to egress/allowlist.txt or the dashboard's Egress page)
 ```
 
-In the dashboard UI, the settings save is aborted with the status message:
-```
-not saved — fix the marked fields
-```
-and the exact error string is highlighted directly on the `PLAN_PROVIDERS` or `REVIEW_PROVIDERS` input field:
+Literal error text for each provider requiring an egress host:
 
-- **`openai-api`**:
-  ```
-  missing egress host 'api.openai.com' for provider 'openai-api' (add to egress/allowlist.txt or the dashboard's Egress page)
-  ```
-  *(When `OPENAI_API_BASE` is configured, the error names the hostname from the custom base URL instead of `api.openai.com`.)*
-- **`anthropic-api`**:
+- `anthropic-api`:
   ```
   missing egress host 'api.anthropic.com' for provider 'anthropic-api' (add to egress/allowlist.txt or the dashboard's Egress page)
   ```
-- **`gemini-api`**:
+- `openai-api`:
+  ```
+  missing egress host 'api.openai.com' for provider 'openai-api' (add to egress/allowlist.txt or the dashboard's Egress page)
+  ```
+- `gemini-api`:
   ```
   missing egress host 'generativelanguage.googleapis.com' for provider 'gemini-api' (add to egress/allowlist.txt or the dashboard's Egress page)
   ```
 
 ### Required egress hosts by provider
 
-Each orchestrator provider in `bin/lib/foreman/settings.py` (`PROVIDERS_ALL`) resolves its egress host requirements via `bin/lib/providers.py` (`PROVIDER_HOSTS` and `missing_hosts()`):
+For each provider in `bin/lib/foreman/settings.py` (`PROVIDERS_ALL`), the required egress host from `bin/lib/providers.py` (`PROVIDER_HOSTS`) is:
 
-| Provider (`PROVIDERS_ALL`) | Required egress host (`PROVIDER_HOSTS`) | Egress check behavior |
-|---|---|---|
-| `claude-cli` | *(none)* | Routed through `agy` / host CLI; requires no pinned egress host (`missing_hosts()` returns `[]`). |
-| `agy-claude` | *(none)* | Routed through `agy` in worker containers; requires no pinned egress host (`missing_hosts()` returns `[]`). |
-| `agy-gemini` | *(none)* | Routed through `agy` in worker containers; requires no pinned egress host (`missing_hosts()` returns `[]`). |
-| `anthropic-api` | `api.anthropic.com` | Requires `api.anthropic.com` in `egress/allowlist.txt` or `egress/allowlist.local.txt`. |
-| `openai-api` | `api.openai.com` | Defaults to `api.openai.com` (from `PROVIDER_HOSTS`), or the hostname parsed from `OPENAI_API_BASE` if set. |
-| `gemini-api` | `generativelanguage.googleapis.com` | Requires `generativelanguage.googleapis.com` in `egress/allowlist.txt` or `egress/allowlist.local.txt`. |
+| Provider (`PROVIDERS_ALL`) | Required egress host (`PROVIDER_HOSTS`) |
+|---|---|
+| `claude-cli` | *(none)* |
+| `agy-claude` | *(none)* |
+| `agy-gemini` | *(none)* |
+| `anthropic-api` | `api.anthropic.com` |
+| `openai-api` | `api.openai.com` |
+| `gemini-api` | `generativelanguage.googleapis.com` |
+
+As defined in `bin/lib/providers.py` `missing_hosts()`, providers routed through `agy` (`claude-cli`, `agy-claude`, and `agy-gemini`) need no pinned egress host and return `[]`.
 
 ### How to resolve a missing egress host
 
-To resolve the error and allow settings to be saved successfully, add the required host to one of the following files:
+To fix the error, add the required host to one of the following files:
 
-1. **`egress/allowlist.local.txt`** (recommended for local / API-key providers):
-   - **Dashboard**: Open **System &rarr; Egress**, submit the missing host in the allow field, and apply.
-   - **Python API**: Call `allow_host("<host>")` from `bin/lib/egress.py` to append the host and reload the proxy.
-   - **CLI**: Append the host to `egress/allowlist.local.txt` and reload egress:
-     ```bash
-     printf '%s\n' "api.openai.com" >> egress/allowlist.local.txt
-     bin/egress-up
-     ```
-2. **`egress/allowlist.txt`** (repository-wide allowlist):
-   - Edit `egress/allowlist.txt` directly to include the host on its own line if it should be committed and version-controlled for the whole team.
-
-Both `egress/allowlist.txt` and `egress/allowlist.local.txt` are evaluated by `egress.allowlist()`. Once the required host is present in either file, `providers.missing_hosts()` returns empty (`[]`), and saving `PLAN_PROVIDERS` or `REVIEW_PROVIDERS` will succeed.
+- `egress/allowlist.txt`: edit this file directly to add the required host.
+- `egress/allowlist.local.txt`: edit this file directly, or use `bin/lib/egress.py` `allow_host()` for API-key providers.
 
 ## How provider fallback works
 
