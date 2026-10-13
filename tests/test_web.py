@@ -31,6 +31,9 @@ check("login terminal: terminal queries (APC, CSI > / <) are stripped from what 
 check("login terminal: agy gets a real window size (a 0x0 terminal draws nothing) wide enough for its login URL",
       "stty cols" in srv.B.LOGIN_SHELL and int(srv.B.LOGIN_SHELL.split("cols ")[1].split()[0]) >= 1000 and srv.B.LOGIN_SHELL.endswith("exec agy-run"))
 
+check("login terminal: key buttons map to raw keys, unknown keys are refused, and the OAuth URL wins over later links",
+      srv.B.LoginSessions.KEYS["tab"] == b"\t" and srv.B.LOGIN.key("worker-1", "nope").get("error") == "unknown key"
+      and srv.B.LOGIN.key("worker-1", "tab").get("error") == "no running login session")
 httpd = srv.ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 port = httpd.server_address[1]

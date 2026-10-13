@@ -271,6 +271,8 @@ document.addEventListener('click', async e => {
   const lg = e.target.closest('[data-login]'); if (lg) { openLogin(lg.dataset.login); return; }
   if (e.target.id === 'login-send') { const i = $('login-in');
     await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'input', text: i.value})}); i.value = ''; return; }
+  const kb = e.target.closest('[data-key]'); if (kb) {
+    await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Agent-Forge': '1'}, body: JSON.stringify({worker: loginW, action: 'key', key: kb.dataset.key})}); return; }
   if (e.target.id === 'login-done' || e.target.id === 'login-close') { closeLogin(e.target.id === 'login-done'); return; }
   if (e.target.id === 'su-close' || e.target.id === 'su-later') { $('setup').classList.remove('on'); setupDismissed[project] = true; return; }
   if (e.target.id === 'su-go') { setupGo(); return; }
