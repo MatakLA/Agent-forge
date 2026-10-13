@@ -1,5 +1,6 @@
-// Overview tab: what needs the owner (approvals, questions, blocked tasks), the first steps of a new install, new goals, the
-// team (with why an idle worker is idle), the goals and the backlog (drag to reorder, click to edit, forecast).
+// Overview tab: what needs the owner (approvals, questions, blocked tasks), autopilot and foreman pause/resume switches,
+// the first steps of a new install, new goals, the team (with why an idle worker is idle), the goals and the backlog (drag
+// to reorder, click to edit, forecast).
 
 // ---- "Needs you": everything that waits for the owner, most urgent first
 function inboxItems() {
@@ -219,7 +220,63 @@ document.addEventListener('pointerup', async () => {
   refreshSoon();
 });
 
+// ---- controls: autopilot and foreman pause/resume switches
+function killswitchReason(ks) {
+  if (!ks) return '';
+  if (typeof ks === 'object') return String(ks.reason || '').trim();
+  if (typeof ks === 'string') return ks.trim();
+  return '';
+}
+
+function controlsHtml(model) {
+  const m = model || F || {};
+  const apOn = Boolean(m.autopilot);
+  const apAction = apOn ? 'autopilot_off' : 'autopilot_on';
+  const apLabel = 'Autopilot: ' + (apOn ? 'on' : 'off');
+  const apTip = apOn
+    ? 'Autopilot on: when a worker would idle and the backlog is empty, the orchestrator proposes new goals from the vision.'
+    : 'Autopilot off: when a worker would idle and the backlog is empty, the orchestrator does not propose new goals from the vision.';
+
+  const isPaused = Boolean(m.paused || m.killswitch);
+  const fmAction = isPaused ? 'resume' : 'pause';
+  const fmLabel = 'Foreman: ' + (isPaused ? 'paused' : 'running');
+
+  const ks = m.killswitch;
+  const ksBlocked = isPaused && Boolean(ks);
+  let fmTip = '';
+  if (ksBlocked) {
+    const ksReason = killswitchReason(ks);
+    fmTip = 'Resume is blocked while the kill switch is engaged' + (ksReason ? ': ' + ksReason : '');
+  } else if (isPaused) {
+    fmTip = 'Paused: no new tasks are dispatched; tasks already running continue to completion.';
+  } else {
+    fmTip = 'Running: tasks are dispatched to workers as they become available.';
+  }
+
+  return '<div class="control-wrap" title="' + esc(apTip) + '">' +
+    '<button id="autopilot-toggle" class="control-toggle mini" data-control="' + esc(apAction) + '" title="' + esc(apTip) + '">' + esc(apLabel) + '</button>' +
+    '<span class="hint">' + esc(apTip) + '</span>' +
+  '</div>' +
+  '<div class="control-wrap" title="' + esc(fmTip) + '">' +
+    '<button id="foreman-pause-toggle" class="control-toggle mini" data-control="' + esc(fmAction) + '" title="' + esc(fmTip) + '"' + (ksBlocked ? ' disabled' : '') + '>' + esc(fmLabel) + '</button>' +
+    '<span class="hint">' + esc(fmTip) + '</span>' +
+  '</div>';
+}
+
+function ensureControlsContainer() {
+  const sec = $('t-overview');
+  if (sec && !$('overview-controls')) {
+    const ctl = document.createElement('div');
+    ctl.id = 'overview-controls';
+    ctl.className = 'overview-controls';
+    sec.insertBefore(ctl, sec.firstChild);
+  }
+}
+ensureControlsContainer();
+
 function renderOverview(force) {
+  ensureControlsContainer();
+  setHTML('overview-controls', controlsHtml(), force);
   if (!busyIn('inbox')) setHTML('inbox', inboxHtml(), force);
   setHTML('onboarding', onboardingHtml(), force);
   setHTML('team', F ? teamHtml() : window._ferr ? '<div class="empty bad">Could not load team: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>', force);
@@ -244,6 +301,21 @@ $('goal-backlog').addEventListener('click', () => addGoal('backlog'));
 $('goal-roadmap').addEventListener('click', () => addGoal('roadmap'));
 $('goal-text').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addGoal('now'); });
 
+// control actions: data-control="autopilot_on|autopilot_off|pause|resume"
+async function controlAction(action) {
+  if (action === 'resume' && F && F.killswitch) return false;
+  const okText = {
+    autopilot_on: 'Autopilot turned on',
+    autopilot_off: 'Autopilot turned off',
+    pause: 'Foreman paused',
+    resume: 'Foreman resumed'
+  }[action];
+  const r = await post('/api/control', {project, action});
+  const ok = done(r, okText);
+  refreshSoon();
+  return ok;
+}
+
 // task / goal actions anywhere on the page: data-ta="approve|cancel|retry" data-id, data-ga="approve|pause|..." data-id
 async function taskAction(id, action, extra) {
   if (action === 'cancel' && !confirm('Cancel task ' + id + '?' + ((F.tasks || []).find(t => t.id === id && t.status === 'running') ? ' Its run is stopped; the work stays on its branch.' : ''))) return false;
@@ -259,6 +331,14 @@ async function goalAction(id, action, text) {
   return ok;
 }
 document.addEventListener('click', async e => {
+  const ctl = e.target.closest('[data-control]');
+  if (ctl) {
+    if (ctl.disabled) return;
+    ctl.disabled = true;
+    await controlAction(ctl.dataset.control);
+    ctl.disabled = false;
+    return;
+  }
   const ta = e.target.closest('[data-ta]'); if (ta) { ta.disabled = true; await taskAction(ta.dataset.id, ta.dataset.ta); ta.disabled = false; return; }
   const ga = e.target.closest('[data-ga]'); if (ga) { ga.disabled = true; await goalAction(ga.dataset.id, ga.dataset.ga); ga.disabled = false; return; }
   const op = e.target.closest('[data-open]');
