@@ -123,12 +123,33 @@ function moneyInsights() {
       return '<div title="' + esc(d.date + ': ' + rts.map(r => (RTNAME[r] || r) + ' ' + usd(d[r] || 0) + ' USD').join(', ')) + '"><span>' + (tot ? usd(tot) : '') + '</span><div class="stack" style="height:' + (100 * tot / mx) + '%">' +
         rts.map(r => d[r] ? '<b style="flex:' + d[r] + ';background:' + (RTCOL[r] || 'var(--accent)') + '"></b>' : '').join('') + '</div><span>' + esc(d.date.slice(5)) + '</span></div>'; }).join('') + '</div>' +
       '<div class="legend">' + rts.map(r => '<span><i style="background:' + (RTCOL[r] || 'var(--accent)') + '"></i>' + esc(RTNAME[r] || r) + '</span>').join('') + '</div>';
-    const tbl = (title, obj, nameFn) => { const e = Object.entries(obj || {}).filter(x => x[1]).sort((a, b) => b[1] - a[1]); return e.length ? '<div><h4>' + title + '</h4><table class="m">' +
-      e.map(([k, v]) => '<tr><td>' + esc(nameFn ? nameFn(k) : (k || 'default')) + '</td><td class="num">' + usd(v) + ' USD</td></tr>').join('') + '</table></div>' : ''; };
-    h += '<h3>This month</h3><div class="cols3">' + tbl('By runtime (USD)', m.by_runtime, k => RTNAME[k] || k) + tbl('By project (USD)', m.by_project) + tbl('By model (this project, USD)', m.by_model) + '</div>';
-    if ((m.top_tasks || []).length) h += '<h3>Most expensive tasks this month</h3><div class="tablewrap"><table class="m click"><tr><th>task</th><th class="num">cost (USD)</th></tr>' + m.top_tasks.map(t => '<tr data-open="task:' + esc(t.task) +
-      '" tabindex="0" role="button" aria-label="Open task ' + esc(t.task) + '"><td>' + esc(t.task) + '</td><td class="num">' + usd(t.usd) + ' USD</td></tr>').join('') + '</table></div>';
   } else h += '<div class="empty small" style="margin-top:10px">No API spend recorded in the last 14 days' + ((F.api && (F.api.workers || []).length) ? '.' : ' — no API workers in this project.') + '</div>';
+  const cms = m.cost_models || {};
+  const rtKeys = [...new Set([...Object.keys(cms), ...Object.keys(m.by_runtime || {})])];
+  rtKeys.sort((a, b) => {
+    const va = (m.by_runtime || {})[a] || 0, vb = (m.by_runtime || {})[b] || 0;
+    return (vb - va) || a.localeCompare(b);
+  });
+  const rtTbl = rtKeys.length ? '<div><h4>By runtime (USD)</h4><table class="m">' +
+    rtKeys.map(k => {
+      const cm = cms[k];
+      const v = (m.by_runtime || {})[k];
+      let cell;
+      if (cm && cm.kind === 'quota') {
+        cell = '<span class="badge quota" title="' + esc(cm.detail || '') + '">quota</span>';
+      } else if (cm && cm.kind === 'unknown') {
+        cell = '<span class="badge unknown" title="' + esc(cm.detail || '') + '">unknown</span>';
+      } else {
+        cell = usd(v || 0) + ' USD';
+      }
+      return '<tr data-runtime="' + esc(k) + '"><td>' + esc(RTNAME[k] || k) + '</td><td class="num">' + cell + '</td></tr>';
+    }).join('') + '</table></div>' : '';
+  const tbl = (title, obj, nameFn) => { const e = Object.entries(obj || {}).filter(x => x[1]).sort((a, b) => b[1] - a[1]); return e.length ? '<div><h4>' + title + '</h4><table class="m">' +
+    e.map(([k, v]) => '<tr><td>' + esc(nameFn ? nameFn(k) : (k || 'default')) + '</td><td class="num">' + usd(v) + ' USD</td></tr>').join('') + '</table></div>' : ''; };
+  const monthHtml = rtTbl + tbl('By project (USD)', m.by_project) + tbl('By model (this project, USD)', m.by_model);
+  if (monthHtml) h += '<h3>This month</h3><div class="cols3">' + monthHtml + '</div>';
+  if ((m.top_tasks || []).length) h += '<h3>Most expensive tasks this month</h3><div class="tablewrap"><table class="m click"><tr><th>task</th><th class="num">cost (USD)</th></tr>' + m.top_tasks.map(t => '<tr data-open="task:' + esc(t.task) +
+    '" tabindex="0" role="button" aria-label="Open task ' + esc(t.task) + '"><td>' + esc(t.task) + '</td><td class="num">' + usd(t.usd) + ' USD</td></tr>').join('') + '</table></div>';
   return h + quotaHtml(m);
 }
 
