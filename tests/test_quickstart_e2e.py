@@ -101,15 +101,9 @@ class TestQuickstartE2ERunner(unittest.TestCase):
         monotonic_sequence = [0.0, 350.0, 351.0, 352.0, 353.0, 354.0, 355.0, 356.0, 357.0, 358.0]
         monotonic_iter = iter(monotonic_sequence)
 
-        steps = [
-            ("install", ["python3", "-m", "unittest", "discover", "-s", "tests"]),
-            ("plan", ["bin/foreman", "goal", "test goal"]),
-            ("dispatch", ["bin/foreman", "status"]),
-            ("gate", ["bin/foreman", "status"]),
-            ("merge", ["bin/foreman", "status"]),
-        ]
+        steps = get_pipeline_steps()
 
-        with patch("subprocess.run", side_effect=mock_subprocess_run):
+        with patch("tests.fixtures.quickstart_e2e_runner.subprocess.run", side_effect=mock_subprocess_run):
             with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
                 ok, msg, timings = run_all(steps)
 
@@ -153,7 +147,7 @@ class TestQuickstartE2ERunner(unittest.TestCase):
         monotonic_iter = iter(monotonic_sequence)
 
         steps = get_pipeline_steps()
-        with patch("subprocess.run", side_effect=mock_subprocess_run):
+        with patch("tests.fixtures.quickstart_e2e_runner.subprocess.run", side_effect=mock_subprocess_run):
             with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
                 ok, msg, timings = run_all(steps)
 
@@ -195,7 +189,7 @@ class TestQuickstartE2ERunner(unittest.TestCase):
         monotonic_iter = iter(seq)
 
         steps = get_pipeline_steps()
-        with patch("subprocess.run", side_effect=mock_subprocess_run):
+        with patch("tests.fixtures.quickstart_e2e_runner.subprocess.run", side_effect=mock_subprocess_run):
             with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
                 ok, msg, timings = run_all(steps)
 
@@ -226,7 +220,7 @@ class TestQuickstartE2ERunner(unittest.TestCase):
         seq = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
         monotonic_iter = iter(seq)
 
-        with patch("subprocess.run", side_effect=mock_subprocess_run):
+        with patch("tests.fixtures.quickstart_e2e_runner.subprocess.run", side_effect=mock_subprocess_run):
             with patch("time.monotonic", side_effect=lambda: next(monotonic_iter)):
                 ok, msg, timings = run_all(steps)
 

@@ -22,11 +22,16 @@ if ! command -v node >/dev/null 2>&1; then
   exit 0
 fi
 
-# 2. Arm cleanup trap for EXIT
-trap 'tests/test_quickstart_setup.sh down' EXIT
+# 2. Arm cleanup trap for EXIT (invokes teardown so no dangling fake processes or dirs)
+cleanup() {
+  if [ -n "${QUICKSTART_RUNS_DIR:-}" ] && [ -n "${QUICKSTART_FAKE_API_PID:-}" ]; then
+    bash "$ROOT/scripts/quickstart-e2e-setup.sh" down "$QUICKSTART_RUNS_DIR" "$QUICKSTART_FAKE_API_PID" || true
+  fi
+}
+trap cleanup EXIT
 
 # 3. Run setup up and export all six KEY=VALUE lines
-UP_OUT=$(tests/test_quickstart_setup.sh up)
+UP_OUT=$(bash "$ROOT/scripts/quickstart-e2e-setup.sh" up)
 eval "$UP_OUT"
 export ANTHROPIC_API_BASE OPENAI_API_BASE GEMINI_API_BASE QUICKSTART_RUNS_DIR QUICKSTART_FAKE_API_PID QUICKSTART_FAKE_DOCKER_DIR
 
