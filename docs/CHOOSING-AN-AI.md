@@ -8,6 +8,31 @@ If you are using the web dashboard, you can also check readiness status interact
 
 ---
 
+## Runtime recommendation in Settings > Onboarding
+
+In addition to viewing readiness status for individual runtimes and providers, the dashboard provides a "pick a runtime for me" recommendation surfaced directly in **Settings > Onboarding** next to the readiness table.
+
+The recommendation is backed by `GET /api/readiness/recommend` (also available via the `bin/foreman readiness-recommend` CLI subcommand). The endpoint returns a JSON payload containing `top`, `ranked`, and `message` fields:
+
+- `top`: An object (`name`, `cost_tier`, `reason`) representing the top recommended runtime among those currently ready, or `null` if no runtime is ready yet.
+- `ranked`: A complete list of all evaluated runtimes (`name`, `ready`, `cost_tier`, `note`) ordered according to the ranking rule.
+- `message`: An explanatory string returned when no runtime is ready (empty when a top pick is available).
+
+### Ranking rule
+
+The recommendation ranks only worker runtimes that currently pass `bin/lib/foreman/readiness.py`'s own checks (validating that required configuration settings, API keys, and egress proxy rules are present and satisfied):
+
+1. **Readiness separation**: Only runtimes in an `ok` readiness state are eligible to be recommended. Runtimes that are not ready are never ranked ahead of ready runtimes.
+2. **Cheapest cost tier first**: Ready runtimes are sorted by cost tier, placing cheaper options ahead of more expensive ones:
+   - **Subscription / quota** (`quota`): Account quotas that incur no per-token charges are ranked first.
+   - **Pay-per-token** (`metered`): Metered API runtimes are ranked next.
+   - **Unknown** (`unknown`): Unpriced runtimes whose costs are not quantified are ranked last among ready runtimes.
+3. **Honest fallback**: If no runtime passes its readiness check, the endpoint does not guess or assume a default choice. Instead, `top` is `null` and `message` returns an honest explanation indicating that no runtime is ready yet.
+
+In the dashboard UI, **Settings > Onboarding** displays the top recommendation (`top`) along with its reason, or displays the fallback message if nothing is ready, accompanied by the full ranked list (`ranked`). Which runtime is recommended depends entirely on which models, keys, and egress rules are configured in your specific installation.
+
+---
+
 ## Quick decision flowchart
 
 Use this flowchart to find the recommended configuration based on what subscriptions, API keys, or local infrastructure you already have:
