@@ -26,6 +26,11 @@ check("host_allowed: localhost, 127.0.0.1:port, *.ts.net; not other names",
 check("token_ok: cookie or query token, constant-time compare", srv.token_ok("a=1; af_token=s3cret") and srv.token_ok("", "s3cret")
       and not srv.token_ok("af_token=nope") and not srv.token_ok(None))
 
+check("login terminal: terminal queries (APC, CSI > / <) are stripped from what the page shows",
+      srv.B.ANSI.sub("", "\x1b_Ga=q,i=31;AAAA\x1b\\\x1b[>4;2mhi\x1b[<1u\x1b[1;32mgo\x1b[0m") == "higo")
+check("login terminal: agy gets a real window size (a 0x0 terminal draws nothing) wide enough for its login URL",
+      "stty cols" in srv.B.LOGIN_SHELL and int(srv.B.LOGIN_SHELL.split("cols ")[1].split()[0]) >= 1000 and srv.B.LOGIN_SHELL.endswith("exec agy-run"))
+
 httpd = srv.ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 port = httpd.server_address[1]
