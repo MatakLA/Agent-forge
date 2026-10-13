@@ -19,6 +19,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="$ROOT/scripts/quickstart-e2e-setup.sh"
 
+# Delegate up and down to scripts/quickstart-e2e-setup.sh
+if [ "${1:-}" = "up" ]; then
+  exec "$SETUP" up
+elif [ "${1:-}" = "down" ]; then
+  sdir="${2:-${QUICKSTART_RUNS_DIR:-}}"
+  spid="${3:-${QUICKSTART_FAKE_API_PID:-}}"
+  if [ -n "$sdir" ] && [ -n "$spid" ]; then
+    exec "$SETUP" down "$sdir" "$spid"
+  fi
+  exit 0
+fi
+
 [ -f "$SETUP" ] || exit 1
 [ -x "$SETUP" ] || exit 1
 
