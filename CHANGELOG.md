@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Control endpoint: POST /api/control triggers autopilot on/off and foreman pause/resume per project or default via bin/foreman.
 - Readiness API and CLI: expose runtime and provider readiness status via GET /api/readiness and `bin/foreman readiness` subcommand.
 - Runtime cost model: add honest per-runtime cost/quota classifier `cost_model()` to `bin/lib/runtimes.py` with explicit unknown classification for unpriced runtimes.
 - Documentation: document honest cost/quota model per runtime in docs/RUNTIMES.md with explicit unknown classification for OpenCode, Qwen Code, Goose, and Anthropic-compat.
