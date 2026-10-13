@@ -893,7 +893,7 @@ class TestWebServer(unittest.TestCase):
             srv.foreman = old_foreman
 
     def test_control_valid_action_and_project(self):
-        """Invariant: POST /api/control with a valid project and each of the two autopilot actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
+        """Invariant: POST /api/control with a valid project and each of the four control actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
         H = {"X-Agent-Forge": "1"}
         orig_foreman = srv.foreman
         foreman_calls = []
@@ -907,6 +907,8 @@ class TestWebServer(unittest.TestCase):
             cases = [
                 ("autopilot_on", ["autopilot", "on"], "bin/foreman --project shop autopilot on"),
                 ("autopilot_off", ["autopilot", "off"], "bin/foreman --project shop autopilot off"),
+                ("pause", ["pause"], "bin/foreman --project shop pause"),
+                ("resume", ["resume"], "bin/foreman --project shop resume"),
             ]
             for act, expected_args, expected_cmd in cases:
                 s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": act}, H)
@@ -924,6 +926,8 @@ class TestWebServer(unittest.TestCase):
             default_cases = [
                 ("autopilot_on", ["autopilot", "on"], "bin/foreman autopilot on"),
                 ("autopilot_off", ["autopilot", "off"], "bin/foreman autopilot off"),
+                ("pause", ["pause"], "bin/foreman pause"),
+                ("resume", ["resume"], "bin/foreman resume"),
             ]
             for act, expected_args, expected_cmd in default_cases:
                 s, _, body = self.req("POST", "/api/control", {"action": act}, H)
@@ -956,11 +960,29 @@ class TestWebServer(unittest.TestCase):
         finally:
             srv.foreman = orig_foreman
 
+    def test_control_resume_killswitch_refusal(self):
+        """Invariant: POST /api/control with resume while the kill switch is engaged returns the CLI's own refusal message verbatim, with no duplicate kill-switch check in web/server.py."""
+        H = {"X-Agent-Forge": "1"}
+        orig_foreman = srv.foreman
+        cli_refusal = "refusing to resume: kill switch is engaged (egress violation)"
+        srv.foreman = lambda pf, args, inp=None, timeout=60: (1, "", cli_refusal)
+        try:
+            s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": "resume"}, H)
+            self.assertEqual(s, 200)
+            assert s == 200
+            data = json.loads(body)
+            self.assertFalse(data.get("ok"))
+            assert data.get("ok") is False
+            self.assertEqual(data.get("message"), cli_refusal)
+            assert data.get("message") == cli_refusal
+        finally:
+            srv.foreman = orig_foreman
+
     def test_control_unknown_action_rejected(self):
-        """Invariant: POST /api/control with an action not in CONTROL_ACTIONS (e.g. 'pause') returns HTTP 400 and ok:false before any foreman() call is made."""
+        """Invariant: POST /api/control with an action outside the full four-action CONTROL_ACTIONS set returns HTTP 400 and ok:false before any foreman() call is made."""
         H = {"X-Agent-Forge": "1"}
         n = len(self.calls)
-        for bad_act in ("pause", "resume", "restart", "invalid", "", "stop", "start", "autopilot", "on", "off"):
+        for bad_act in ("restart", "invalid", "", "stop", "start", "autopilot", "on", "off", "kill", "halt", "status"):
             s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": bad_act}, H)
             self.assertEqual(s, 400)
             assert s == 400
@@ -1017,7 +1039,7 @@ class TestWebServer(unittest.TestCase):
         assert s_ref == 403
 
     def test_control_actions_and_payload_match_frontend_overview_js(self):
-        """Invariant: The two autopilot action identifiers and payload shape match exactly what web/static/js/overview.js's controlAction() sends."""
+        """Invariant: All four action identifiers and the payload shape match exactly what web/static/js/overview.js's controlAction() sends."""
         overview_js_path = os.path.join(ROOT, "web", "static", "js", "overview.js")
         self.assertTrue(os.path.exists(overview_js_path))
         assert os.path.exists(overview_js_path)
@@ -1032,11 +1054,23 @@ class TestWebServer(unittest.TestCase):
         self.assertEqual(ap_actions, {"autopilot_on", "autopilot_off"})
         assert ap_actions == {"autopilot_on", "autopilot_off"}
 
-        # Assert backend srv.CONTROL_ACTIONS matches the extracted autopilot actions from overview.js exactly:
-        self.assertEqual(set(srv.CONTROL_ACTIONS), ap_actions)
-        assert set(srv.CONTROL_ACTIONS) == ap_actions
-        self.assertEqual(len(srv.CONTROL_ACTIONS), len(ap_actions))
-        assert len(srv.CONTROL_ACTIONS) == len(ap_actions)
+        # Parse actions toggled into data-control for foreman in controlsHtml:
+        fm_match = re.search(r"fmAction\s*=\s*isPaused\s*\?\s*['\"]([^'\"]+)['\"]\s*:\s*['\"]([^'\"]+)['\"]", overview_js)
+        self.assertIsNotNone(fm_match, "fmAction ternary must exist in overview.js")
+        assert fm_match is not None
+        fm_actions = set(fm_match.groups())
+        self.assertEqual(fm_actions, {"pause", "resume"})
+        assert fm_actions == {"pause", "resume"}
+
+        all_actions = ap_actions | fm_actions
+        self.assertEqual(all_actions, {"autopilot_on", "autopilot_off", "pause", "resume"})
+        assert all_actions == {"autopilot_on", "autopilot_off", "pause", "resume"}
+
+        # Assert backend srv.CONTROL_ACTIONS matches the extracted actions from overview.js exactly:
+        self.assertEqual(set(srv.CONTROL_ACTIONS), all_actions)
+        assert set(srv.CONTROL_ACTIONS) == all_actions
+        self.assertEqual(len(srv.CONTROL_ACTIONS), len(all_actions))
+        assert len(srv.CONTROL_ACTIONS) == len(all_actions)
 
         # Parse request endpoint and body payload shape from controlAction:
         post_match = re.search(r"post\(\s*['\"](/api/control)['\"]\s*,\s*\{([^}]+)\}\)", overview_js)
@@ -1049,9 +1083,9 @@ class TestWebServer(unittest.TestCase):
         self.assertEqual(payload_keys, {"project", "action"})
         assert payload_keys == {"project", "action"}
 
-        # Verify each parsed autopilot action sends the exact frontend payload shape and succeeds:
+        # Verify each parsed action sends the exact frontend payload shape and succeeds:
         H = {"X-Agent-Forge": "1"}
-        for act in sorted(ap_actions):
+        for act in sorted(all_actions):
             payload = {"project": "shop", "action": act}
             s, _, body = self.req("POST", endpoint, payload, H)
             self.assertEqual(s, 200)
