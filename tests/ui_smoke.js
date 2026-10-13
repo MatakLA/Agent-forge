@@ -848,15 +848,75 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   w.eval(`
     window._origONBOARDING = (typeof ONBOARDING !== 'undefined') ? ONBOARDING : null;
+    window._origONBOARDING_RECOMMEND = (typeof ONBOARDING_RECOMMEND !== 'undefined') ? ONBOARDING_RECOMMEND : null;
     window._origOnboardingErr = (typeof onboardingErr !== 'undefined') ? onboardingErr : null;
     window._origOnboardingBusy = (typeof onboardingBusy !== 'undefined') ? onboardingBusy : false;
     window._origOnboardingAt = (typeof onboardingAt !== 'undefined') ? onboardingAt : 0;
   `);
 
+  const recommendPickFixture = {
+    top: {
+      name: 'claude-cli',
+      cost_tier: 'subscription',
+      reason: "Runtime 'claude-cli' is ready."
+    },
+    ranked: [
+      {
+        name: 'claude-cli',
+        ready: true,
+        cost_tier: 'subscription',
+        note: "Runtime 'claude-cli' is ready."
+      },
+      {
+        name: 'codex',
+        ready: false,
+        cost_tier: 'unknown',
+        note: "Runtime 'codex' is missing setting(s): openai.key."
+      }
+    ],
+    message: ''
+  };
+
+  const recommendNoneFixture = {
+    top: null,
+    ranked: [
+      {
+        name: 'claude-cli',
+        ready: false,
+        cost_tier: 'subscription',
+        note: "Runtime 'claude-cli' is missing subscription."
+      },
+      {
+        name: 'codex',
+        ready: false,
+        cost_tier: 'unknown',
+        note: "Runtime 'codex' is missing setting(s): openai.key."
+      }
+    ],
+    message: 'No runtime passed its readiness check yet.'
+  };
+
+  let currentRecommendMock = recommendPickFixture;
   const origFetchOnboarding = w.fetch;
   let onboardingFetchFail = false;
   w.fetch = async (url, opts) => {
     const u = String(url);
+    if (u.includes('/api/readiness/recommend')) {
+      if (onboardingFetchFail) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: 'HTTP 500' }),
+          text: async () => 'HTTP 500'
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => currentRecommendMock,
+        text: async () => JSON.stringify(currentRecommendMock)
+      };
+    }
     if (u.includes('/api/readiness')) {
       if (onboardingFetchFail) {
         return {
@@ -940,10 +1000,116 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / onboarding: Tab key sequence reaches table/rows proving keyboard reachability',
         onbTableReached);
 
+  // Task 0184: Onboarding recommendation widget (Fixture 1: has top pick)
+  const recWidget = d.getElementById('onboarding-recommend');
+  check('settings / onboarding: #onboarding-recommend container element is rendered',
+        !!recWidget);
+
+  // Assert .recommend-top is present, .recommend-none is absent (mutually exclusive)
+  const recTop = d.querySelector('#onboarding-recommend .recommend-top');
+  const recNone = d.querySelector('#onboarding-recommend .recommend-none');
+  const topPickExclusivityOk = !!recTop && !recNone;
+  check('settings / onboarding (top pick): .recommend-top is present and .recommend-none is absent',
+        topPickExclusivityOk);
+
+  // Assert top runtime name, tier, and reason appear in visible text and structured attributes
+  const recTopTxt = recTop ? recTop.textContent : '';
+  const topNameInText = recTopTxt.includes(recommendPickFixture.top.name);
+  const topTierInText = recTopTxt.includes(recommendPickFixture.top.cost_tier);
+  const topReasonInText = recTopTxt.includes(recommendPickFixture.top.reason);
+  const topNameEl = recTop ? recTop.querySelector('[data-runtime-name]') : null;
+  const topTierEl = recTop ? recTop.querySelector('[data-cost-tier]') : null;
+  const topReasonEl = recTop ? recTop.querySelector('[data-reason]') : null;
+  const topStructureOk = !!topNameEl && topNameEl.textContent === recommendPickFixture.top.name &&
+                         !!topTierEl && topTierEl.textContent === recommendPickFixture.top.cost_tier &&
+                         !!topReasonEl && topReasonEl.textContent === recommendPickFixture.top.reason;
+  check('settings / onboarding (top pick): top runtime name, tier, and reason appear in visible text and structured attributes',
+        topNameInText && topTierInText && topReasonInText && topStructureOk);
+
+  // Assert ranked entries count and each data-ready attribute matches fixture ready value in order
+  const pickRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const pickRankedCountOk = pickRankedLis.length === recommendPickFixture.ranked.length && pickRankedLis.length > 0;
+  const pickRankedDataReadyOk = pickRankedCountOk && recommendPickFixture.ranked.every(r => {
+    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
+    return !!li && li.getAttribute('data-ready') === String(r.ready);
+  });
+  const pickRankedOrderOk = pickRankedCountOk &&
+    pickRankedLis[0].getAttribute('data-runtime') === recommendPickFixture.ranked[0].name &&
+    pickRankedLis[0].getAttribute('data-ready') === String(recommendPickFixture.ranked[0].ready) &&
+    pickRankedLis[1].getAttribute('data-runtime') === recommendPickFixture.ranked[1].name &&
+    pickRankedLis[1].getAttribute('data-ready') === String(recommendPickFixture.ranked[1].ready);
+  check('settings / onboarding (top pick): ranked entries data-ready attribute matches fixture ready value for each runtime in order',
+        pickRankedDataReadyOk && pickRankedOrderOk);
+
+  // Assert recommendation widget and ranked items are reachable by keyboard/screen order consistent with Onboarding subsection
+  const recFocusTargets = [recWidget, recTop, ...pickRankedLis].filter(Boolean);
+  const recFocusStart = (onbRows && onbRows.length > 0 && d.activeElement === onbRows[onbRows.length - 1])
+    ? onbRows[onbRows.length - 1]
+    : (onbTable || onbNavBtn);
+  const recFocusOk = !!recWidget && pickRankedLis.length > 0 &&
+                     walkFocus(recFocusStart, recFocusTargets) &&
+                     d.activeElement === pickRankedLis[pickRankedLis.length - 1];
+  check('settings / onboarding (top pick): recommendation widget and ranked entries are reachable in keyboard/screen order via focus walking',
+        recFocusOk);
+
+  // Task 0184: Onboarding recommendation widget (Fixture 2: no runtime ready, top is null)
+  currentRecommendMock = recommendNoneFixture;
+  w.eval(`
+    if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
+    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = null;
+    if (typeof onboardingErr !== 'undefined') onboardingErr = null;
+    if (typeof onboardingBusy !== 'undefined') onboardingBusy = false;
+    if (typeof onboardingAt !== 'undefined') onboardingAt = 0;
+  `);
+  if (w.eval('typeof loadOnboarding === "function"')) {
+    await w.eval('loadOnboarding(true)');
+    await sleep(400);
+  }
+
+  // Assert .recommend-none is present, .recommend-top is absent (mutually exclusive)
+  const noneRecTop = d.querySelector('#onboarding-recommend .recommend-top');
+  const noneRecNone = d.querySelector('#onboarding-recommend .recommend-none');
+  const noneExclusivityOk = !noneRecTop && !!noneRecNone;
+  check('settings / onboarding (no ready runtime): .recommend-none is present and .recommend-top is absent',
+        noneExclusivityOk);
+
+  // Assert .recommend-none shows the server's message text verbatim
+  const noneMsgOk = !!noneRecNone && noneRecNone.textContent.trim() === recommendNoneFixture.message;
+  check('settings / onboarding (no ready runtime): .recommend-none displays the server message text verbatim',
+        noneMsgOk);
+
+  // Assert every .recommend-ranked li has data-ready="false" and matches fixture ready values in order
+  const noneRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
+  const noneRankedCountOk = noneRankedLis.length === recommendNoneFixture.ranked.length && noneRankedLis.length > 0;
+  const noneRankedAllFalse = noneRankedCountOk && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
+  const noneRankedMatchesFixture = noneRankedCountOk && recommendNoneFixture.ranked.every(r => {
+    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
+    return !!li && li.getAttribute('data-ready') === String(r.ready);
+  });
+  check('settings / onboarding (no ready runtime): every ranked entry has data-ready="false" matching fixture ready value in order',
+        noneRankedAllFalse && noneRankedMatchesFixture);
+
+  // Task 0184: Onboarding recommendation widget (Fixture 3: top is an object with falsy-but-valid fields)
+  w.eval(`
+    ONBOARDING_RECOMMEND = {
+      top: {name: 'claude-cli', cost_tier: '', reason: ''},
+      ranked: [{name: 'claude-cli', ready: true, cost_tier: '', note: ''}],
+      message: 'should be ignored'
+    };
+    renderSettings(true);
+  `);
+  const falsyRecTop = d.querySelector('#onboarding-recommend .recommend-top');
+  const falsyRecNone = d.querySelector('#onboarding-recommend .recommend-none');
+  const falsyTopNameEl = falsyRecTop ? falsyRecTop.querySelector('[data-runtime-name]') : null;
+  const falsyFieldsOk = !!falsyRecTop && !falsyRecNone && !!falsyTopNameEl && falsyTopNameEl.textContent === 'claude-cli';
+  check('settings / onboarding (falsy fields): .recommend-top renders correctly when data.top has falsy-but-valid fields',
+        falsyFieldsOk);
+
   // 5. Assert: mocked fetch failure for /api/readiness produces visible error state (toast text or error row), not blank subsection
   onboardingFetchFail = true;
   w.eval(`
     if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
+    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = null;
     if (typeof onboardingErr !== 'undefined') onboardingErr = null;
     if (typeof onboardingBusy !== 'undefined') onboardingBusy = false;
     if (typeof onboardingAt !== 'undefined') onboardingAt = 0;
@@ -966,6 +1132,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   w.fetch = origFetchOnboarding;
   w.eval(`
     if (typeof ONBOARDING !== 'undefined') ONBOARDING = window._origONBOARDING;
+    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = window._origONBOARDING_RECOMMEND;
     if (typeof onboardingErr !== 'undefined') onboardingErr = window._origOnboardingErr;
     if (typeof onboardingBusy !== 'undefined') onboardingBusy = window._origOnboardingBusy;
     if (typeof onboardingAt !== 'undefined') onboardingAt = window._origOnboardingAt;
