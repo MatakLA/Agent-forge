@@ -73,6 +73,12 @@ fi
 if [ -f tests/test_issues_intake.py ]; then
   $PY tests/test_issues_intake.py || exit 1
 fi
+if [ -f tests/test_issues_intake_malformed.sh ]; then
+  bash tests/test_issues_intake_malformed.sh || exit 1
+fi
+if [ -f tests/test_issues_intake_malformed.py ]; then
+  $PY tests/test_issues_intake_malformed.py || exit 1
+fi
 if [ -f tests/test_install_smoke.sh ]; then
   bash tests/test_install_smoke.sh || exit 1
 fi
