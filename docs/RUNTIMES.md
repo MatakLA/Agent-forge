@@ -17,6 +17,12 @@ Each worker is one container running one agent CLI. You can mix them in one team
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
 
+- `agy`: **Cost / quota model**: quota (tracked via `agy /usage`, not USD).
+- `claude`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+- `codex`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+- `gemini`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+
+
 ## Checking readiness
 
 `bin/doctor` now prints, for every runtime, one of three states:
@@ -93,8 +99,7 @@ with the runtime `compat` or `aider`:
 - Models: `WORKER_MODEL_COMPAT` / `WORKER_MODEL_AIDER` (per project) - the name the server knows (`qwen3-coder:30b`,
   `Qwen/Qwen3-Coder-30B-A3B-Instruct`, `anthropic/claude-sonnet-4.5` on OpenRouter). A coding model with tool use and a long
   context works best; small local models do small tasks.
-- Cost: `PRICE_COMPAT` (USD per million tokens, input,cached,output) - `0,0,0` for your own hardware, the provider's prices for
-  OpenRouter. The budgets below apply as for any API runtime.
+- **Cost / quota model**: metered for `compat` and `aider` (a real USD estimate is shown on the Money page, calculated from `PRICE_COMPAT`: `0,0,0` for your own hardware, or the provider's prices for OpenRouter). The budgets below apply as for any API runtime.
 - Network: a public HTTPS server is added to the allow-list; a server on your network or without TLS gets an exception for
   exactly its address and port (see SECURITY.md). A proxy created before this feature needs `bin/egress-up` once - `bin/doctor`
   says so.
@@ -108,7 +113,7 @@ An Anthropic-compatible endpoint connects worker containers running Claude Code 
 - **Setup**: Add workers with `bin/worker-add N --runtime anthropic-compat` (or in Settings → "+ Add worker" → Anthropic-compatible endpoint). Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's Anthropic-compatible base URL.
 - **Endpoint and Network**: The owner pins the endpoint host via Settings > System > Egress exactly like `compat` (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Credentials**: Needs an API key secret (e.g. `compat.key`), set the same way as other API runtimes: in the dashboard under Settings → Workers, or from a shell with `printf '%s' "$KEY" | bin/secret-set compat.key`. For an unauthenticated local server, an empty key or local configuration is supported.
-- **Cost model**: The cost model is `unknown` unless the owner supplies a USD/1K-token price (or per million tokens via `PRICE_COMPAT`, input,cached,output), same as `compat` (`0,0,0` for your own hardware, or the provider's prices for OpenRouter/proxies). When unspecified, no USD estimate is recorded.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge).
 
 ## OpenCode
 OpenCode (SST's OpenCode CLI) runs inside the worker container using the standard agy worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local server the owner configures (Anthropic, OpenAI, OpenRouter, Ollama, etc.).
@@ -116,7 +121,7 @@ OpenCode (SST's OpenCode CLI) runs inside the worker container using the standar
 - **Setup**: Add workers with `bin/worker-add N --runtime opencode` (or in Settings → "+ Add worker" → OpenCode). Configure the model server or provider endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`). Its model is now configurable from the dashboard's Settings page (key `OPENCODE_MODEL`) and its readiness is shown in the same Settings page readiness summary as Claude Code/Codex/Gemini.
 - **Endpoint and Network**: OpenCode is endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A model can be passed via `--model`, and a rework continues the existing session with `--session <conversation_id>`.
-- **Cost model**: The cost model is honest: it reports tokens when available in stream usage metrics (returning `tokens: None` when omitted), and cost is unknown otherwise (`cost_usd: None`, no USD spend recorded).
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge).
 - **Testing**: Tested offline against `tests/fixtures/fake-opencode-server.js` with zero real network calls in `tests/test_runtime_opencode.sh`.
 
 ## Goose
@@ -126,7 +131,7 @@ Goose (Block's open-source CLI agent, `goose`) runs inside the worker container 
 - **Endpoint and Network**: Goose is provider-agnostic and endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must pin the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
 - **Environment and Config**: Goose configures its target model, provider, and server endpoint through environment variables (such as `GOOSE_PROVIDER`, `GOOSE_MODEL`, and provider base URLs / keys) or via its configuration file (`~/.config/goose/config.yaml`), pointing at the configured endpoint.
 - **Invocation**: `bin/run-supervisor` starts Goose non-interactively using `goose run --instructions -` (using `GOOSE_QUIET` flags). The task prompt is supplied on stdin (per Goose CLI documentation) rather than in argv, preventing sensitive instructions and task data from leaking in `/proc/*/cmdline`.
-- **Cost model**: The cost model is honest: it reports tokens when available in stream usage metrics (returning `tokens: None` when omitted), and cost is unknown otherwise (`cost_usd: None`, no USD spend recorded, runs do not count against API budget caps).
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge).
 - **Testing**: Tested offline against `tests/fixtures/fake-goose-server.js` with zero real network calls in `tests/test_runtime_goose.sh`.
 
 ## Qwen Code
@@ -135,7 +140,7 @@ Qwen Code runs Alibaba's Qwen Code CLI (`qwen`) inside the worker container usin
 - **Setup**: Add workers with `bin/worker-add N --runtime qwen-code` (or in Settings → "+ Add worker" → Qwen Code). The worker requires a DashScope API key secret (`qwen.key`), configured via `printf '%s' "$KEY" | bin/secret-set qwen.key` or in Settings → Workers, which is mounted into the container as a read-only secret. Its model is now configurable from the dashboard's Settings page (key `QWEN_MODEL`) and its readiness is shown in the same Settings page readiness summary as Claude Code/Codex/Gemini.
 - **Egress and Network**: Egress is allowed via pinned entries in `egress/allowlist.txt` (`dashscope.aliyuncs.com` and `dashscope-intl.aliyuncs.com`) rather than through the dynamic endpoint mechanism. The egress proxy restricts outbound network traffic to these verified DashScope API hosts only.
 - **Invocation**: `bin/run-supervisor` starts the CLI non-interactively using `qwen --output-format stream-json --yolo` (the `QWEN_QUIET` flags) with the prompt supplied on stdin and `-p "Do the task described above."` (`QWEN_TRAILER`) appended. This keeps prompts and sensitive instructions out of `/proc/*/cmdline`. A rework continues the existing conversation with `--resume <conversation_id>`, and an optional model is passed with `-m <model>`.
-- **Cost model**: The cost model is `unknown/not tracked`. `RUNTIMES['qwen-code']` sets `api=False` and has no price table configured (`prices: None`), so `bin/lib/runtimes.py` does not compute a real USD cost (`cost_usd: None`), and runs do not count against API budget caps.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Qwen Code talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge).
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
