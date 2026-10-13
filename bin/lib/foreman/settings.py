@@ -54,6 +54,9 @@ EDITABLE = {
     "RUNS_KEEP_DAYS": ((1, 3650), "project"),
     "COMPAT_BASE_URL": ("|" + runtimes.ENDPOINT_RE.pattern, "limits"), "PRICE_COMPAT": (r"\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?,\d{1,4}(\.\d{1,4})?", "limits"),
     "WORKER_MODEL_COMPAT": ("|" + SERVER_MODEL_RE, "project"), "WORKER_MODEL_AIDER": ("|" + SERVER_MODEL_RE, "project"),
+    "OPENCODE_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),  # Model name for OpenCode CLI (empty for default)
+    "QWEN_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),      # Model name for Qwen Code CLI (empty for default)
+    "GOOSE_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),     # Model name for Goose CLI agent (empty for default)
     "API_MONTHLY_BUDGET_USD": (USD_RE, "limits"), "PROJECT_DAILY_BUDGET_USD": (USD_RE, "project"), "PROJECT_MONTHLY_BUDGET_USD": (USD_RE, "project"),
     "WORKER_DAILY_BUDGET_USD": (r"|worker-\d+=%s(,worker-\d+=%s)*" % (USD_RE, USD_RE), "limits"),
     "APPROVE": (r"|(plan|risky|merge)(,(plan|risky|merge))*", "project"),
@@ -71,6 +74,12 @@ EDITABLE = {
     "PROJECT_DIR": (r"|(?!.*\.\.)[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", "project"),
     "ORPHAN_LIMIT": ((1, 100), "project"),  # consecutive orphan recoveries before the task is blocked
     "ORPHAN_WARN": ((1, 100), "project"),   # consecutive orphan recoveries before a warning
+}
+
+HELP = {
+    "OPENCODE_MODEL": "Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.",
+    "QWEN_MODEL": "Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.",
+    "GOOSE_MODEL": "Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.",
 }
 
 CONF_DEFAULTS = {"ORPHAN_LIMIT": 5, "ORPHAN_WARN": 3}
@@ -183,7 +192,7 @@ def settings_get():
     allw = sorted((x.split() + ["agy"])[:3] for x in out.splitlines() if re.match(r"worker-\d+ \w+", x))
     allw.sort(key=lambda x: int(x[0].split("-")[1]))
     keys = {n: os.path.exists(os.path.join(sbx.SECRETS, n)) and os.path.getsize(os.path.join(sbx.SECRETS, n)) > 0
-            for n in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token")}
+            for n in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "qwen.key", "github.token", "gitlab.token")}
     for sk in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
         if sk in vals and vals[sk]:
             vals[sk] = mask_secret(vals[sk])
