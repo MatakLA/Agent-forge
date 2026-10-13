@@ -13,9 +13,13 @@ Important invariants:
 - Inapplicable settings (e.g. claude-cli, agy) report state 'ok' with empty missing lists.
 - Secrets are never leaked into any return value or status dictionary.
 - Provider requirements are derived generically from settings.EDITABLE and verified unmocked.
+- recommend() ranks ready runtimes before not-ready runtimes and cheapest cost tier first.
+- recommend() returns top=null and non-empty message when no runtime is ready.
 """
+import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -344,6 +348,176 @@ class TestForemanReadiness(unittest.TestCase):
             readiness.status_of("provider", "unknown_provider_xyz")
         self.assertIn("unknown provider", str(ctx_pr.exception))
         assert "unknown runtime" in str(ctx_rt.exception) and "unknown provider" in str(ctx_pr.exception)
+
+    def test_recommend_smoke_and_contract_shape(self):
+        """Invariant: recommend() returns the exact documented {top, ranked, message} shape."""
+        self.assertTrue(callable(readiness.recommend))
+        res = readiness.recommend()
+        self.assertIsInstance(res, dict)
+        self.assertEqual(set(res.keys()), {"top", "ranked", "message"})
+        self.assertIsInstance(res["ranked"], list)
+        self.assertEqual(len(res["ranked"]), len(readiness.runtime_items()))
+        self.assertIsInstance(res["message"], str)
+        for entry in res["ranked"]:
+            self.assertEqual(set(entry.keys()), {"name", "ready", "cost_tier", "note"})
+            self.assertIsInstance(entry["name"], str)
+            self.assertIsInstance(entry["ready"], bool)
+            self.assertIsInstance(entry["cost_tier"], str)
+            self.assertIsInstance(entry["note"], str)
+        if res["top"] is not None:
+            self.assertEqual(set(res["top"].keys()), {"name", "cost_tier", "reason"})
+            self.assertIsInstance(res["top"]["name"], str)
+            self.assertIsInstance(res["top"]["cost_tier"], str)
+            self.assertIsInstance(res["top"]["reason"], str)
+            self.assertEqual(res["message"], "")
+        else:
+            self.assertTrue(len(res["message"].strip()) > 0)
+
+    def test_recommend_case_a_multiple_ready_ranks_cheaper_tier_first_and_top(self):
+        """Case (a): Multiple runtimes are ready with different cost tiers -> cheaper tier ranked first and is top."""
+        # Setup: codex (quota), claude (metered), compat (metered) are ready.
+        # Codex appears AFTER claude in runtime_items(), but because codex has tier 'quota' (cheaper),
+        # codex must rank before claude and be top.
+        def fake_status(kind, name):
+            if name in ("claude", "codex", "compat"):
+                return {"state": "ok", "detail": f"Runtime '{name}' is ready.", "missing_settings": [], "missing_egress": []}
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' is missing setting.", "missing_settings": ["key"], "missing_egress": []}
+
+        def fake_cost_model(name):
+            if name == "codex":
+                return {"kind": "quota", "detail": "quota subscription"}
+            if name in ("claude", "compat"):
+                return {"kind": "metered", "detail": "billed per token"}
+            return {"kind": "unknown", "detail": "unknown pricing"}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status), \
+             patch.object(readiness, "cost_model", side_effect=fake_cost_model):
+            res = readiness.recommend()
+
+        self.assertIsNotNone(res["top"])
+        self.assertEqual(res["top"]["name"], "codex")
+        self.assertEqual(res["top"]["cost_tier"], "quota")
+        self.assertEqual(res["top"]["reason"], "Runtime 'codex' is ready.")
+        self.assertEqual(res["message"], "")
+
+        # ranked[0] must be codex
+        self.assertEqual(res["ranked"][0]["name"], "codex")
+        self.assertEqual(res["ranked"][0]["cost_tier"], "quota")
+        self.assertTrue(res["ranked"][0]["ready"])
+
+        # claude and compat come next as metered (cheaper than unknown, but after quota)
+        ranked_ready_names = [r["name"] for r in res["ranked"] if r["ready"]]
+        self.assertEqual(ranked_ready_names, ["codex", "claude", "compat"])
+
+    def test_recommend_case_b_unknown_tier_ranks_after_known_cheap_tier(self):
+        """Case (b): Ready runtime's tier is 'unknown' and another ready runtime has known cheap tier -> unknown ranks after."""
+        # opencode is 'unknown' and ready; claude is 'metered' and ready; agy is 'quota' and ready.
+        # Priority order must be quota -> metered -> unknown.
+        def fake_status(kind, name):
+            if name in ("opencode", "claude", "agy"):
+                return {"state": "ok", "detail": f"Runtime '{name}' is ready.", "missing_settings": [], "missing_egress": []}
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' is missing setting.", "missing_settings": ["k"], "missing_egress": []}
+
+        def fake_cost_model(name):
+            if name == "agy":
+                return {"kind": "quota", "detail": "quota"}
+            if name == "claude":
+                return {"kind": "metered", "detail": "metered"}
+            if name == "opencode":
+                return {"kind": "unknown", "detail": "unknown"}
+            return {"kind": "unknown", "detail": "other"}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status), \
+             patch.object(readiness, "cost_model", side_effect=fake_cost_model):
+            res = readiness.recommend()
+
+        ready_names = [r["name"] for r in res["ranked"] if r["ready"]]
+        self.assertEqual(ready_names, ["agy", "claude", "opencode"])
+
+        # Even if only opencode (unknown) and claude (metered) are ready
+        def fake_status_two(kind, name):
+            if name in ("opencode", "claude"):
+                return {"state": "ok", "detail": f"Runtime '{name}' is ready.", "missing_settings": [], "missing_egress": []}
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' not ready.", "missing_settings": ["k"], "missing_egress": []}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status_two), \
+             patch.object(readiness, "cost_model", side_effect=fake_cost_model):
+            res2 = readiness.recommend()
+
+        ready_names_2 = [r["name"] for r in res2["ranked"] if r["ready"]]
+        self.assertEqual(ready_names_2, ["claude", "opencode"])
+        self.assertEqual(res2["top"]["name"], "claude")
+        self.assertEqual(res2["top"]["cost_tier"], "metered")
+
+    def test_recommend_case_c_no_runtime_ready_top_null_and_message_non_empty(self):
+        """Case (c): No runtime is ready -> top is null and message is non-empty."""
+        def fake_status(kind, name):
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' is missing required setting(s): secret.key.", "missing_settings": ["secret.key"], "missing_egress": []}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status):
+            res = readiness.recommend()
+
+        self.assertIsNone(res["top"])
+        self.assertIsInstance(res["message"], str)
+        self.assertTrue(len(res["message"].strip()) > 0)
+        self.assertEqual(len(res["ranked"]), len(readiness.runtime_items()))
+        self.assertTrue(all(not r["ready"] for r in res["ranked"]))
+        # In runtime_items order when all are not ready
+        self.assertEqual([r["name"] for r in res["ranked"]], readiness.runtime_items())
+        # Notes must reuse status_of's own detail
+        for r in res["ranked"]:
+            self.assertEqual(r["note"], f"Runtime '{r['name']}' is missing required setting(s): secret.key.")
+
+    def test_recommend_case_d_not_ready_never_appears_before_ready(self):
+        """Case (d): A not-ready runtime never appears before a ready one regardless of tier."""
+        # agy is tier 'quota' (cheapest), but NOT ready.
+        # claude is tier 'metered' and IS ready.
+        # opencode is tier 'unknown' and IS ready.
+        def fake_status(kind, name):
+            if name in ("claude", "opencode"):
+                return {"state": "ok", "detail": f"Runtime '{name}' is ready.", "missing_settings": [], "missing_egress": []}
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' is missing setting.", "missing_settings": ["key"], "missing_egress": []}
+
+        def fake_cost_model(name):
+            if name == "agy":
+                return {"kind": "quota", "detail": "quota"}
+            if name == "claude":
+                return {"kind": "metered", "detail": "metered"}
+            if name == "opencode":
+                return {"kind": "unknown", "detail": "unknown"}
+            return {"kind": "metered", "detail": "metered"}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status), \
+             patch.object(readiness, "cost_model", side_effect=fake_cost_model):
+            res = readiness.recommend()
+
+        self.assertIsNotNone(res["top"])
+        self.assertEqual(res["top"]["name"], "claude")
+        self.assertEqual(res["top"]["cost_tier"], "metered")
+
+        # Every ready entry must appear before every not-ready entry
+        ready_indices = [i for i, r in enumerate(res["ranked"]) if r["ready"]]
+        not_ready_indices = [i for i, r in enumerate(res["ranked"]) if not r["ready"]]
+        self.assertTrue(len(ready_indices) > 0)
+        self.assertTrue(len(not_ready_indices) > 0)
+        self.assertLess(max(ready_indices), min(not_ready_indices))
+
+        # agy is not-ready, so index of agy must be strictly greater than claude and opencode
+        names = [r["name"] for r in res["ranked"]]
+        idx_claude = names.index("claude")
+        idx_opencode = names.index("opencode")
+        idx_agy = names.index("agy")
+        self.assertLess(idx_claude, idx_agy)
+        self.assertLess(idx_opencode, idx_agy)
+
+    def test_cli_readiness_recommend_subcommand(self):
+        """Invariant: bin/foreman readiness-recommend prints valid JSON matching recommend()."""
+        foreman_bin = os.path.join(ROOT, "bin", "foreman")
+        proc = subprocess.run([sys.executable, foreman_bin, "readiness-recommend"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Command failed: {proc.stderr}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(set(data.keys()), {"top", "ranked", "message"})
+        self.assertEqual(data, readiness.recommend())
 
 
 if __name__ == "__main__":

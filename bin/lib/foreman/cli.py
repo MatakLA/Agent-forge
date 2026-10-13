@@ -47,7 +47,7 @@ import json, os, re, sys, time
 
 import sbx
 
-from . import ctx
+from . import ctx, readiness
 from .store import event, jload, jsave, locked, new_goal_id, save_goal, save_task, state_tx, tasks
 from .jobs import INFLIGHT
 from .repo import context_pack, refresh_repo, variant
@@ -108,6 +108,8 @@ def main():
             sys.exit(2 if err else 0)
     if a == ["disk"]:
         print(json.dumps(disk_usage())); return
+    if a[:1] == ["readiness-recommend"]:
+        print(json.dumps(readiness.recommend(), ensure_ascii=False)); return
     if a[:1] == ["cleanup"] and len(a) in (2, 3) and (len(a) == 2 or a[2].isdigit()):
         print(json.dumps({"ok": True, "message": cleanup(a[1], int(a[2]) if len(a) == 3 else None)})); return
     if a[:2] == ["backlog", "edit"] and len(a) == 4 and a[2].isdigit() and a[3] == "-":
