@@ -572,6 +572,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/readiness":
             rc, out, err = foreman(pf, "readiness", timeout=60)
             self._json(as_json(out, err, rc))
+        elif path == "/api/readiness/recommend":
+            rc, out, err = foreman(pf, ["readiness-recommend"])
+            self._json(as_json(out, err, rc))
         elif path.startswith("/api/jobs/"):
             j = B.JOBS.get(path.rsplit("/", 1)[-1])
             self._json(j or {"error": "unknown job"})
