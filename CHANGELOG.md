@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Dashboard: Overview tab can now toggle autopilot and pause/resume the foreman without the CLI.
 - Quickstart CI workflow: `.github/workflows/quickstart-e2e.yml` runs the quickstart e2e check on demand and on relevant path changes.
 - Add docs/QUICKSTART.md: exact commands for git-clone-to-merged-PR in under 30 minutes on examples/sample-project.
 - Settings UI: add-worker runtime picker entries and per-runtime model fields with readiness badges for OpenCode, Qwen Code and Goose in `web/static/js/settings.js`.

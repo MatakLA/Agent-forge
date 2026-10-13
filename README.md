@@ -142,12 +142,16 @@ Everything is in the dashboard; the same from a shell:
 bin/foreman goal "Add a CSV export to the expenses module, with tests"
 bin/foreman project "Build the app described in docs/vision.md"   # → a roadmap of goals in the backlog
 bin/foreman status | backlog | questions
+bin/foreman pause | resume                                        # stop / resume taking new steps (running runs finish)
+bin/foreman autopilot on|off                                      # toggle automatic goal proposals from vision
 echo "Use PostgreSQL" | bin/foreman answer 1                      # becomes a binding decision for later plans
 bin/foreman goal <goal-id> approve | pause | prioritize | cancel   # APPROVE=plan,risky,merge makes the team wait for you
 echo "Use the existing parser" | bin/foreman task <task-id> feedback -   # send its work back with your words
 bin/killswitch on [--hard] [--all]                                # stop this project (or every project) now
 bin/doctor
 ```
+
+On the Overview tab, switches toggle **autopilot** (`bin/foreman autopilot on|off`) and **pause/resume** the foreman (`bin/foreman pause` / `resume`), each with a tooltip explaining its effect. Pausing stops new dispatches while letting running runs finish (same semantics as the CLI); resume is blocked while the kill switch is engaged (the UI explains why).
 
 One install runs **several projects** side by side, each with its own orchestrator, repository and worker pool (dashboard →
 project picker → "+ New project", or `bin/foreman init-project`).
