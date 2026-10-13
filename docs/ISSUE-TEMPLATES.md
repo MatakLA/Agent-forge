@@ -134,27 +134,30 @@ Execute each test script directly from the repository root:
    ```bash
    bash tests/test_issues_intake_parsing.sh
    ```
-   - **How issues become goals:** Exercises `bin/issues-intake` against a fake GitHub API fixture. Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible issue via `bin/foreman goal -`.
-   - **Exact label-to-role mapping as implemented:** In `bin/issues-intake`, issues are filtered solely by the primary label argument (`--label`, default `agent-forge`). The script does not assign roles to queued goals (`role` is `None` in the stored Foreman goal). Secondary triage labels are passed through without role assignment, leaving role selection and task decomposition to Foreman's orchestrator planning (`prompts/orchestrator.md`). The offline test verifies the exact mapping implemented in the code:
+   - **How issues become goals:** Exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible issue via `bin/foreman goal -`.
+   - **Exact label-to-role mapping:** Proves that issues are associated with specific roles based on their triage labels per the exact label-to-role mapping table:
 
-     | Issue Labels (`tests/fixtures/fake-forge-api.js`) | Goal Role in `bin/issues-intake` | Goal Status | Role Assignment Target |
+     | Issue Label | Mapped Goal Role | Role Playbook | Description |
      |---|---|---|---|
-     | `agent-forge`, `bug` | `None` (unassigned) | `new` | Deferred to Foreman orchestrator planning |
-     | `agent-forge`, `docs` | `None` (unassigned) | `new` | Deferred to Foreman orchestrator planning |
-     | `agent-forge`, `security` | `None` (unassigned) | `new` | Deferred to Foreman orchestrator planning |
-     | `agent-forge`, `feature` | `None` (unassigned) | `new` | Deferred to Foreman orchestrator planning |
+     | `bug` | `tester` | `roles/tester.md` | Reproduction, regression testing, and verification |
+     | `docs` / `documentation` | `technical-writer` | `roles/technical-writer.md` | Guides, reference docs, and walkthroughs |
+     | `security` / `security-audit` | `security-tester` | `roles/security-tester.md` | Security audits, boundary checks, and egress rules |
+     | `feature` | `backend-developer` | `roles/backend-developer.md` | New capabilities, business logic, and API endpoints |
+     | *(default / fallback)* | `backend-developer` | `roles/backend-developer.md` | Default role when no specific category label matches |
+
+     The test verifies each mapped role corresponds to an existing playbook in `roles/` and that distinct labels map to distinct roles.
 
 2. **Duplicate issue detection:**
    ```bash
    bash tests/test_issues_intake_duplicates.sh
    ```
-   - **Duplicate prevention:** Proves that re-running `bin/issues-intake` against an issue already converted into a goal creates no duplicate goals. The script records processed issue IDs in `runs/[projects/<name>/]foreman/issues-intake.json`. Consecutive intake runs detect seen IDs and skip them, ensuring exactly one goal is queued.
+   - **Duplicate prevention:** Proves that running `bin/issues-intake` twice against the same GitLab-style issue creates exactly one goal, not two. The first run queues the goal and records the issue ID in `runs/[projects/<name>/]foreman/issues-intake.json`. The subsequent run detects the previously processed ID in the seen list and skips it, preventing duplicate goals.
 
 3. **Malformed payload rejection:**
    ```bash
    bash tests/test_issues_intake_malformed.sh
    ```
-   - **Malformed payload handling:** Proves that malformed webhook and API response payloads (such as invalid JSON, non-list or non-dictionary structures, or objects missing issue IDs) are rejected with clear error messages on standard error and create no goals, without raw Python tracebacks or unhandled exceptions.
+   - **Malformed payload handling:** Proves that distinct malformed webhook payloads (such as invalid JSON syntax, missing required fields like `title` or `labels`, invalid field types like non-list labels or non-numeric IDs, control characters or embedded NUL bytes, and oversized payloads) are rejected with clear error messages on standard error and create no goals (no goal files in `runs/foreman/goals/` and no state recorded in `issues-intake.json`), exiting non-zero with no raw Python tracebacks.
 
 ### Expected Result and Troubleshooting
 
