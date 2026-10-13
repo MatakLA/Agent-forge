@@ -6,6 +6,7 @@ Invariants:
 - settings_apply validates OPENAI_API_BASE for scheme, hostname, traversal, and shell safety.
 - settings_apply rejects unknown providers in PLAN_PROVIDERS and REVIEW_PROVIDERS.
 - settings_apply requires OPENAI_MODEL when openai-api is used, and GEMINI_MODEL when gemini-api is used.
+- settings_apply and settings_get validate and surface OPENCODE_MODEL, QWEN_MODEL, and GOOSE_MODEL.
 - Sensitive API keys and tokens are never echoed in errors, event logs, or return values.
 """
 import atexit
@@ -75,6 +76,9 @@ class TestSettingsProviders(unittest.TestCase):
             "OPENAI_API_BASE": "https://api.openai.com/v1",
             "OPENAI_API_KEY": "",
             "GEMINI_API_KEY": "",
+            "OPENCODE_MODEL": "",
+            "QWEN_MODEL": "",
+            "GOOSE_MODEL": "",
         })
 
     def tearDown(self):
@@ -370,6 +374,98 @@ class TestSettingsProviders(unittest.TestCase):
             finally:
                 ctx.PDIR = old_conf_path
         assert "OPENAI_API_BASE=https://api.openai.com/v1" in content
+
+    def test_opencode_model_settings(self):
+        """OPENCODE_MODEL is included in settings_get, accepts valid model strings, and rejects invalid ones."""
+        self.assertIn("OPENCODE_MODEL", EDITABLE)
+        res = settings_get()
+        self.assertIn("OPENCODE_MODEL", res["values"])
+        self.assertEqual(res["scopes"].get("OPENCODE_MODEL"), "project")
+
+        valid_models = [
+            "gpt-4o",
+            "anthropic/claude-sonnet-4.5",
+            "qwen2.5-coder:32b",
+            "Qwen/Qwen3-32B",
+            "",
+        ]
+        for m in valid_models:
+            errs = settings_apply({"OPENCODE_MODEL": m})
+            self.assertEqual(errs, {}, f"Expected valid OPENCODE_MODEL {m!r}, got: {errs}")
+
+        invalid_models = [
+            "invalid model with spaces",
+            "model; injection",
+            "model\nnewline",
+            "$VAR",
+            "`whoami`",
+        ]
+        for m in invalid_models:
+            errs = settings_apply({"OPENCODE_MODEL": m})
+            self.assertIn("OPENCODE_MODEL", errs, f"Expected OPENCODE_MODEL error for {m!r}")
+            self.assertEqual(errs["OPENCODE_MODEL"], "invalid value")
+        assert "OPENCODE_MODEL" in errs
+
+    def test_qwen_model_settings(self):
+        """QWEN_MODEL is included in settings_get, accepts valid model strings, and rejects invalid ones."""
+        self.assertIn("QWEN_MODEL", EDITABLE)
+        res = settings_get()
+        self.assertIn("QWEN_MODEL", res["values"])
+        self.assertEqual(res["scopes"].get("QWEN_MODEL"), "project")
+
+        valid_models = [
+            "qwen-max",
+            "qwen-plus",
+            "qwen2.5-coder:32b",
+            "qwen-turbo",
+            "",
+        ]
+        for m in valid_models:
+            errs = settings_apply({"QWEN_MODEL": m})
+            self.assertEqual(errs, {}, f"Expected valid QWEN_MODEL {m!r}, got: {errs}")
+
+        invalid_models = [
+            "invalid model with spaces",
+            "model; injection",
+            "model\nnewline",
+            "$VAR",
+            "`whoami`",
+        ]
+        for m in invalid_models:
+            errs = settings_apply({"QWEN_MODEL": m})
+            self.assertIn("QWEN_MODEL", errs, f"Expected QWEN_MODEL error for {m!r}")
+            self.assertEqual(errs["QWEN_MODEL"], "invalid value")
+        assert "QWEN_MODEL" in errs
+
+    def test_goose_model_settings(self):
+        """GOOSE_MODEL is included in settings_get, accepts valid model strings, and rejects invalid ones."""
+        self.assertIn("GOOSE_MODEL", EDITABLE)
+        res = settings_get()
+        self.assertIn("GOOSE_MODEL", res["values"])
+        self.assertEqual(res["scopes"].get("GOOSE_MODEL"), "project")
+
+        valid_models = [
+            "gpt-4o",
+            "qwen2.5-coder:32b",
+            "claude-3-7-sonnet",
+            "",
+        ]
+        for m in valid_models:
+            errs = settings_apply({"GOOSE_MODEL": m})
+            self.assertEqual(errs, {}, f"Expected valid GOOSE_MODEL {m!r}, got: {errs}")
+
+        invalid_models = [
+            "invalid model with spaces",
+            "model; injection",
+            "model\nnewline",
+            "$VAR",
+            "`whoami`",
+        ]
+        for m in invalid_models:
+            errs = settings_apply({"GOOSE_MODEL": m})
+            self.assertIn("GOOSE_MODEL", errs, f"Expected GOOSE_MODEL error for {m!r}")
+            self.assertEqual(errs["GOOSE_MODEL"], "invalid value")
+        assert "GOOSE_MODEL" in errs
 
 
 if __name__ == "__main__":
