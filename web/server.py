@@ -361,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
             rc, out, err = foreman(pf, act.split("_"))
-            self._json({"ok": rc == 0, "message": (out or err or "").strip()[-400:]})
+            self._json(as_json(out, err, rc))
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
@@ -455,16 +455,6 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
         self.send_response(405); self.end_headers()
 
-    def do_PUT(self):
-        if not host_allowed(self.headers.get("Host")):
-            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
-        self.send_response(405); self.end_headers()
-
-    def do_DELETE(self):
-        if not host_allowed(self.headers.get("Host")):
-            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
-        self.send_response(405); self.end_headers()
-
     def do_GET(self):
         if not host_allowed(self.headers.get("Host")):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
@@ -489,10 +479,10 @@ class Handler(BaseHTTPRequestHandler):
             if not f:
                 self.send_response(404); self.end_headers(); return
             self._raw(f[0], f[1], cache="public, max-age=31536000, immutable" if "v" in q else "no-cache"); return
-        if not path.startswith("/api/"):
-            self.send_response(404); self.end_headers(); return
         if path == "/api/control":
             self.send_response(405); self.end_headers(); return
+        if not path.startswith("/api/"):
+            self.send_response(404); self.end_headers(); return
         proj = q.get("project", "default")
         try:
             pf = B.pflag(proj)
