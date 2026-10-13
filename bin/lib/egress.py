@@ -1,6 +1,13 @@
-"""Egress proxy log analysis and health checks (V7 step 3). Reads the squid logs from the `egress_logs` volume."""
+"""Egress proxy log analysis and health checks (V7 step 3). Reads the squid logs from the `egress_logs` volume.
+
+Public interface: allowlist(), local_allowlist(), local_endpoint(), runtime_missing_hosts(), proxy_health(), analyze().
+Invariants:
+- All allowlist filtering ignores blank lines and '#' comments, matching hostnames case-insensitively.
+- Missing egress host resolution enforces offline coverage rules without making network calls.
+"""
 import ipaddress, json, os, re, subprocess, time
 from collections import Counter
+import runtimes
 import sbx
 
 IMAGE = "sandbox-worker:1.2.11"          # any image with `sh`+`cat`; used to read the log volume even when the proxy is stopped
@@ -369,3 +376,23 @@ def ignore_host(host):
         with open(BASELINE, "a") as f:
             f.write(h + "\n")
     return [f"{h} stays blocked but no longer raises an alarm"]
+
+
+def runtime_missing_hosts(rt, endpoint_url=''):
+    """Hosts bin/lib/runtimes.py hosts(rt, endpoint_url) requires for runtime `rt` that this
+    install's egress will NOT currently let a worker reach. A host counts as covered when it
+    matches (verbatim, case-insensitive; blank lines and lines starting with '#' ignored) a
+    line of allowlist() or local_allowlist(), or - when runtimes.uses_endpoint(rt) is True -
+    equals the host local_endpoint() currently allows. Returns a sorted list of the missing
+    hostnames (empty = fully covered). An rt unknown to runtimes.RUNTIMES returns whatever
+    runtimes.hosts(rt, endpoint_url) returns filtered the same way (do not add a new guard;
+    hosts() already defines that edge case)."""
+    covered = {
+        line.strip().lower()
+        for line in (allowlist() + local_allowlist())
+        if line.strip() and not line.strip().startswith('#')
+    }
+    ep = local_endpoint()
+    if runtimes.uses_endpoint(rt) and ep is not None:
+        covered.add(ep[0].lower())
+    return sorted(h for h in runtimes.hosts(rt, endpoint_url) if h.lower() not in covered)
