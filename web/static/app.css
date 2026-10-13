@@ -311,3 +311,8 @@ mark { background:color-mix(in srgb, var(--hot) 40%, transparent); color:inherit
 .control-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .control-toggle:disabled { opacity:.55; cursor:not-allowed; }
 .control-wrap .hint { font-size:11.5px; color:var(--muted); line-height:1.35; flex:1 1 200px; }
+ 
+/* onboarding readiness */
+#onboarding-readiness-table { width:100%; }
+.onboarding-ref { margin-top:12px; font-size:12.5px; color:var(--muted); line-height:1.45; }
+.onboarding-ref code { font-size:12px; color:var(--text); background:var(--card2); padding:2px 5px; border-radius:4px; }
