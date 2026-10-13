@@ -24,7 +24,8 @@ The end-to-end pipeline operates under wall-clock step budgets defined in `tests
 When evaluated, timings are formatted matching `tests/fixtures/quickstart_budget.format_report`:
 
 ```text
-<step>: <N>s (budget <N>s) OK
+<step>: <elapsed:.1f>s (budget <budget>s) <OK|SLOW>
+total: <sum:.1f>s (budget <TOTAL_BUDGET>s) <OK|SLOW>
 ```
 
 ## Step-by-Step Walkthrough
@@ -38,8 +39,7 @@ Rather than re-describing host installation from scratch, follow the documented 
 First, verify that the seed repository passes its existing test suite locally:
 
 ```bash
-cd examples/sample-project/seed-repo
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s examples/sample-project/seed-repo/tests
 ```
 
 Next, follow the setup steps in [examples/sample-project/README.md](../examples/sample-project/README.md) to initialize the project pointing at `seed-repo/`, copy `project.conf` and `vision.md` into your project configuration directory, and ensure the foreman service is active.
@@ -89,8 +89,20 @@ The repository contains the new `bookmarks search <tag>` command, the new unit t
 ## What to Do When It Fails
 
 - **Budget exceeded:** If any step exceeds its budget limit, the runner exits non-zero and reports the offending step along with its elapsed time and budget ceiling.
-- **Test or gate failure:** If tests fail during the gate step, inspect the test output returned by the gate runner and verify that `seed-repo/tests` pass locally (`python3 -m unittest discover -s tests`).
+- **Test or gate failure:** If tests fail during the gate step, inspect the test output returned by the gate runner and verify that `seed-repo/tests` pass locally (`python3 -m unittest discover -s examples/sample-project/seed-repo/tests`).
 
 ## How This Is Verified
 
-This walkthrough is verified by `tests/test_quickstart_e2e.sh`. The verification script needs Node.js and uses no real API keys or Docker (`tools/fake-docker`, `tests/fixtures/fake-model-api.js`).
+This walkthrough is verified by running:
+
+```bash
+bash tests/test_quickstart_e2e.sh
+```
+
+Full verification needs Node.js, matching `tests/test_quickstart_e2e.sh`'s actual skip-without-node behavior: if Node.js is not available on the host, the script skips cleanly with:
+
+```text
+SKIP: node is not available on host; quickstart e2e check requires node
+```
+
+When Node.js is present, the verification script uses no real API keys or Docker (`tools/fake-docker`, `tests/fixtures/fake-model-api.js`).
