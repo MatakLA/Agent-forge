@@ -342,14 +342,14 @@ def extract_compose_services(text):
         line_clean = line.split("#", 1)[0].rstrip()
         if not line_clean:
             continue
-        if re.match(r"^services:\s*$", line_clean):
+        if re.match(r"^\s*services:\s*$", line_clean):
             in_services = True
             continue
-        if in_services and not line_clean.startswith(" ") and ":" in line_clean:
+        if in_services and not line_clean.startswith(" ") and not line_clean.startswith("\t") and ":" in line_clean:
             in_services = False
             continue
         if in_services:
-            m = re.match(r"^ {2}([a-zA-Z0-9_-]+):\s*$", line_clean)
+            m = re.match(r"^[ \t]{2}([a-zA-Z0-9_-]+):\s*$", line_clean)
             if m:
                 services.append(m.group(1))
     return services
@@ -370,7 +370,7 @@ def extract_compose_published_ports(text):
             m = re.match(r"^\s+-\s+[\"']?([0-9.:]+)[\"']?\s*$", line_clean)
             if m:
                 ports.append(m.group(1))
-            elif not line_clean.startswith(" ") or re.match(r"^\s+[a-zA-Z0-9_-]+:", line_clean):
+            elif (not line_clean.startswith(" ") and not line_clean.startswith("\t")) or re.match(r"^\s+[a-zA-Z0-9_-]+:", line_clean):
                 in_ports = False
     return ports
 
@@ -403,11 +403,25 @@ def validate_demo_compose_text(text):
 
 
 def extract_dockerfile_entrypoint_and_cmd(text):
-    """Extract ENTRYPOINT and CMD instructions from Dockerfile text."""
-    commands = []
+    """Extract ENTRYPOINT and CMD instructions from Dockerfile text, supporting backslash continuations."""
+    normalized_lines = []
+    buf = ""
     for line in text.splitlines():
-        line_clean = line.split("#", 1)[0].strip()
-        m = re.match(r"^(?:ENTRYPOINT|CMD)\s+(.*)", line_clean)
+        line_clean = line.split("#", 1)[0].rstrip()
+        if buf:
+            line_clean = (buf + " " + line_clean.lstrip()).rstrip()
+            buf = ""
+        if line_clean.endswith("\\"):
+            buf = line_clean[:-1].rstrip()
+        else:
+            if line_clean:
+                normalized_lines.append(line_clean)
+    if buf:
+        normalized_lines.append(buf)
+
+    commands = []
+    for line in normalized_lines:
+        m = re.match(r"^(?:ENTRYPOINT|CMD)\s+(.*)", line.strip(), re.IGNORECASE)
         if m:
             commands.append(m.group(1))
     return " ".join(commands)
@@ -463,10 +477,11 @@ class TestDemoStaticConfig(unittest.TestCase):
         self.assertTrue(len(ports) > 0, "No published ports found in compose")
         for p in ports:
             parts = p.split(":")
+            self.assertGreaterEqual(len(parts), 2, f"Port spec '{p}' is not host:container")
             self.assertEqual(parts[-2], "8171")
             self.assertEqual(parts[-1], "8171")
         assert len(ports) > 0
-        assert all(p.split(":")[-2] == "8171" and p.split(":")[-1] == "8171" for p in ports)
+        assert all(len(p.split(":")) >= 2 and p.split(":")[-2] == "8171" and p.split(":")[-1] == "8171" for p in ports)
 
     def test_demo_mode_env_in_compose_and_dockerfile(self):
         """Invariant: DEMO_MODE=1 appears in both demo/docker-compose.yml and demo/Dockerfile."""
@@ -489,57 +504,171 @@ class TestDemoStaticConfig(unittest.TestCase):
         self.assertNotIn(".config/sandbox", self.compose_text.lower())
         self.assertNotIn("secrets", self.dockerfile_text.lower())
         self.assertNotIn(".config/sandbox", self.dockerfile_text.lower())
+        self.assertNotIn("secrets", self.demo_sh_text.lower())
         self.assertNotIn(".config/sandbox", self.demo_sh_text.lower())
         assert "secrets" not in self.compose_text.lower()
         assert ".config/sandbox" not in self.compose_text.lower()
         assert "secrets" not in self.dockerfile_text.lower()
         assert ".config/sandbox" not in self.dockerfile_text.lower()
+        assert "secrets" not in self.demo_sh_text.lower()
+        assert ".config/sandbox" not in self.demo_sh_text.lower()
 
     def test_compose_validation_rejects_worker_egress_forgejo_services(self):
         """Invariant: compose validation fails if a worker, egress, or forgejo service is added."""
+        failures = 0
         for forbidden in ("worker-1", "egress", "forgejo"):
             mutated = self.compose_text + f"\n  {forbidden}:\n    image: test\n"
-            with self.assertRaises(AssertionError):
+            try:
                 validate_demo_compose_text(mutated)
-        assert True
+            except AssertionError:
+                failures += 1
+        self.assertEqual(failures, 3)
+        assert failures == 3
+
+    def test_compose_validation_rejects_non_demo_service(self):
+        """Invariant: compose validation fails if an extra service like 'database' or 'web' is added."""
+        mutated = self.compose_text + "\n  database:\n    image: postgres:alpine\n"
+        caught = False
+        err_msg = ""
+        try:
+            validate_demo_compose_text(mutated)
+        except AssertionError as e:
+            caught = True
+            err_msg = str(e)
+        self.assertTrue(caught)
+        assert caught is True
+        assert "Expected only 'demo' service" in err_msg
+
+    def test_compose_validation_rejects_empty_services(self):
+        """Invariant: compose validation fails if no services or no demo service is defined."""
+        mutated = "name: demo\nservices:\n"
+        caught = False
+        try:
+            validate_demo_compose_text(mutated)
+        except AssertionError:
+            caught = True
+        self.assertTrue(caught)
+        assert caught is True
 
     def test_compose_validation_rejects_dropping_demo_mode(self):
         """Invariant: compose validation fails if DEMO_MODE=1 is omitted."""
         mutated = self.compose_text.replace("DEMO_MODE=1", "DEMO_MODE=0")
-        with self.assertRaises(AssertionError):
+        caught = False
+        err_msg = ""
+        try:
             validate_demo_compose_text(mutated)
-        assert True
+        except AssertionError as e:
+            caught = True
+            err_msg = str(e)
+        self.assertTrue(caught)
+        assert caught is True
+        assert "DEMO_MODE=1" in err_msg
+
+    def test_compose_validation_rejects_missing_ports(self):
+        """Invariant: compose validation fails if ports section is removed."""
+        mutated = self.compose_text.replace('ports:\n      - "8171:8171"', "# no ports")
+        caught = False
+        err_msg = ""
+        try:
+            validate_demo_compose_text(mutated)
+        except AssertionError as e:
+            caught = True
+            err_msg = str(e)
+        self.assertTrue(caught)
+        assert caught is True
+        assert "No published ports found" in err_msg
 
     def test_compose_validation_rejects_ports_other_than_8171(self):
         """Invariant: compose validation fails if a port other than 8171 is published."""
-        for bad_port in ("8080:8080", "8171:8000", "9000:8171", "3000"):
+        failures = 0
+        bad_ports = ("8080:8080", "8171:8000", "9000:8171", "3000")
+        for bad_port in bad_ports:
             mutated = self.compose_text.replace("8171:8171", bad_port)
-            with self.assertRaises(AssertionError):
+            try:
                 validate_demo_compose_text(mutated)
-        assert True
+            except AssertionError:
+                failures += 1
+        self.assertEqual(failures, len(bad_ports))
+        assert failures == len(bad_ports)
+
+    def test_dockerfile_validation_rejects_dropping_demo_mode(self):
+        """Invariant: Dockerfile validation fails if DEMO_MODE=1 is omitted."""
+        mutated = self.dockerfile_text.replace("DEMO_MODE=1", "DEMO_MODE=0")
+        caught = False
+        err_msg = ""
+        try:
+            validate_demo_dockerfile_text(mutated)
+        except AssertionError as e:
+            caught = True
+            err_msg = str(e)
+        self.assertTrue(caught)
+        assert caught is True
+        assert "DEMO_MODE=1 missing" in err_msg
 
     def test_dockerfile_validation_rejects_missing_entrypoint_commands(self):
         """Invariant: Dockerfile validation fails if demo_state.py or web/server.py is missing from CMD."""
         mutated1 = self.dockerfile_text.replace("tools/demo_state.py", "echo skip")
-        with self.assertRaises(AssertionError):
+        caught1 = False
+        err1 = ""
+        try:
             validate_demo_dockerfile_text(mutated1)
+        except AssertionError as e1:
+            caught1 = True
+            err1 = str(e1)
+
         mutated2 = self.dockerfile_text.replace("web/server.py", "echo skip")
-        with self.assertRaises(AssertionError):
+        caught2 = False
+        err2 = ""
+        try:
             validate_demo_dockerfile_text(mutated2)
-        assert True
+        except AssertionError as e2:
+            caught2 = True
+            err2 = str(e2)
+
+        self.assertTrue(caught1 and caught2)
+        assert caught1 is True
+        assert caught2 is True
+        assert "tools/demo_state.py" in err1
+        assert "web/server.py" in err2
+
+    def test_extract_dockerfile_entrypoint_with_multiline_continuation(self):
+        """Invariant: extract_dockerfile_entrypoint_and_cmd handles backslash line continuations."""
+        dockerfile = 'CMD ["sh", "-c", \\\n     "python3 tools/demo_state.py /app && exec python3 web/server.py"]'
+        extracted = extract_dockerfile_entrypoint_and_cmd(dockerfile)
+        self.assertIn("tools/demo_state.py", extracted)
+        self.assertIn("web/server.py", extracted)
+        assert "tools/demo_state.py" in extracted
+        assert "web/server.py" in extracted
 
     def test_config_validation_rejects_secrets_and_sandbox_references(self):
         """Invariant: validation fails if secrets or .config/sandbox references are introduced."""
-        with self.assertRaises(AssertionError):
-            validate_demo_compose_text(self.compose_text + "\n# secrets\n")
-        with self.assertRaises(AssertionError):
-            validate_demo_compose_text(self.compose_text + "\n# .config/sandbox\n")
-        with self.assertRaises(AssertionError):
-            validate_demo_dockerfile_text(self.dockerfile_text + "\n# secrets\n")
-        with self.assertRaises(AssertionError):
-            validate_demo_dockerfile_text(self.dockerfile_text + "\n# .config/sandbox\n")
-        assert True
+        failures = 0
+        bad_configs = [
+            (validate_demo_compose_text, self.compose_text + "\n# secrets\n"),
+            (validate_demo_compose_text, self.compose_text + "\n# .config/sandbox\n"),
+            (validate_demo_dockerfile_text, self.dockerfile_text + "\n# secrets\n"),
+            (validate_demo_dockerfile_text, self.dockerfile_text + "\n# .config/sandbox\n"),
+        ]
+        for fn, text in bad_configs:
+            try:
+                fn(text)
+            except AssertionError:
+                failures += 1
+        self.assertEqual(failures, len(bad_configs))
+        assert failures == len(bad_configs)
+
+    def test_real_compose_and_dockerfile_pass_validation(self):
+        """Invariant: real demo/docker-compose.yml and demo/Dockerfile pass all validation checks without error."""
+        validate_demo_compose_text(self.compose_text)
+        validate_demo_dockerfile_text(self.dockerfile_text)
+        services = extract_compose_services(self.compose_text)
+        ports = extract_compose_published_ports(self.compose_text)
+        self.assertEqual(services, ["demo"])
+        self.assertEqual(len(ports), 1)
+        assert services == ["demo"]
+        assert len(ports) == 1
 
 
 if __name__ == "__main__":
     unittest.main()
+
