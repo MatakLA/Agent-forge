@@ -194,19 +194,35 @@ class TestIssuesIntakeMalformed(unittest.TestCase):
         assert len(goals3) == 0
 
     def test_case5_oversized_payload(self):
-        """Case 5: oversized payload (multi-MB title) rejects bounded input without hanging or crashing."""
-        oversized = json.dumps({"id": 501, "title": "A" * 2000000, "labels": ["agent-forge"]})
-        rc, out, err, goals, seen = self._execute_intake(oversized)
-        self.assertNotEqual(rc, 0)
-        self.assertNotIn("Traceback (most recent call last)", err)
-        self.assertIn("exceeds", err)
-        self.assertEqual(len(goals), 0)
-        self.assertFalse(seen)
-        assert rc != 0
-        assert "Traceback (most recent call last)" not in err
-        assert "exceeds" in err
-        assert len(goals) == 0
-        assert not seen
+        """Case 5: oversized title and oversized file payload reject bounded input without hanging or crashing."""
+        # 5a: Title exceeding MAX_TITLE_LEN (50,000 chars) within 1MB payload file limit
+        oversized_title = json.dumps({"id": 501, "title": "A" * 50000, "labels": ["agent-forge"]})
+        rc1, out1, err1, goals1, seen1 = self._execute_intake(oversized_title)
+        self.assertNotEqual(rc1, 0)
+        self.assertNotIn("Traceback (most recent call last)", err1)
+        self.assertIn("title exceeds maximum allowed length", err1)
+        self.assertEqual(len(goals1), 0)
+        self.assertFalse(seen1)
+
+        # 5b: Multi-MB payload file exceeding MAX_PAYLOAD_BYTES limit
+        oversized_file = json.dumps({"id": 502, "title": "A" * 2000000, "labels": ["agent-forge"]})
+        rc2, out2, err2, goals2, seen2 = self._execute_intake(oversized_file)
+        self.assertNotEqual(rc2, 0)
+        self.assertNotIn("Traceback (most recent call last)", err2)
+        self.assertIn("exceeds", err2)
+        self.assertEqual(len(goals2), 0)
+        self.assertFalse(seen2)
+
+        assert rc1 != 0
+        assert rc2 != 0
+        assert "Traceback (most recent call last)" not in err1
+        assert "Traceback (most recent call last)" not in err2
+        assert "title exceeds maximum allowed length" in err1
+        assert "exceeds" in err2
+        assert len(goals1) == 0
+        assert len(goals2) == 0
+        assert not seen1
+        assert not seen2
 
     def test_webhook_wrapper_envelopes(self):
         """Webhook envelope shapes (GitHub and GitLab) are unwrapped and validated cleanly."""
