@@ -128,30 +128,16 @@ def foreman(pf, args, inp=None, timeout=60):
     return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {arg_str}", timeout=timeout, inp=inp)
 
 
-def as_json(out, err="", rc=0, raw=False):
+def as_json(out, err="", rc=0):
     if isinstance(out, (dict, list)):
         return out
-    if not raw:
-        try:
-            return json.loads(out)
-        except (ValueError, TypeError):
-            msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
-            if DASHBOARD_TOKEN:
-                msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
-            return {"ok": False, "error": msg}
     try:
-        res = json.loads(out)
-        if isinstance(res, (dict, list)):
-            return res
+        return json.loads(out)
     except (ValueError, TypeError):
-        pass
-    combined = ((out if isinstance(out, str) else "") + ("\n" if out and err else "") + (err if isinstance(err, str) else "")).strip()
-    msg = (combined or (f"exit {rc}" if rc else "")).strip()[-400:]
-    if DASHBOARD_TOKEN:
-        msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
-    if rc == 0:
-        return {"ok": True, "message": msg}
-    return {"ok": False, "error": msg, "message": msg}
+        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+        return {"ok": False, "error": msg}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -375,9 +361,14 @@ class Handler(BaseHTTPRequestHandler):
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
-            cmd = "autopilot on" if act == "autopilot_on" else "autopilot off"
+            cmd = ["autopilot", "on"] if act == "autopilot_on" else ["autopilot", "off"]
             rc, out, err = foreman(pf, cmd)
-            self._json(as_json(out, err, rc, raw=True))
+            combined = ((out if isinstance(out, str) else "") + ("\n" if out and err else "") + (err if isinstance(err, str) else "")).strip()[-400:]
+            if not combined and rc != 0:
+                combined = f"exit {rc}"
+            if DASHBOARD_TOKEN:
+                combined = combined.replace(DASHBOARD_TOKEN, "[REDACTED]")
+            self._json({"ok": rc == 0, "message": combined})
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
@@ -495,6 +486,8 @@ class Handler(BaseHTTPRequestHandler):
             if not f:
                 self.send_response(404); self.end_headers(); return
             self._raw(f[0], f[1], cache="public, max-age=31536000, immutable" if "v" in q else "no-cache"); return
+        if path == "/api/control":
+            self.send_response(405); self.end_headers(); return
         if not path.startswith("/api/"):
             self.send_response(404); self.end_headers(); return
         proj = q.get("project", "default")

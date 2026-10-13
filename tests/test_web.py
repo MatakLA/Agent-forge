@@ -893,36 +893,68 @@ class TestWebServer(unittest.TestCase):
             srv.foreman = old_foreman
 
     def test_control_valid_action_and_project(self):
-        """Invariant: POST /api/control with a valid project and each of the two autopilot actions calls bin/foreman with the correct subcommand and returns ok:true on rc=0."""
+        """Invariant: POST /api/control with a valid project and each of the two autopilot actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
         H = {"X-Agent-Forge": "1"}
-        cases = [
-            ("autopilot_on", "bin/foreman --project shop autopilot on"),
-            ("autopilot_off", "bin/foreman --project shop autopilot off"),
-        ]
-        for act, expected_cmd in cases:
-            s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": act}, H)
-            self.assertEqual(s, 200)
-            assert s == 200
-            data = json.loads(body)
-            self.assertTrue(data.get("ok"))
-            assert data.get("ok") is True
-            self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
-            assert self.calls[-1][0].endswith(expected_cmd)
+        orig_foreman = srv.foreman
+        foreman_calls = []
 
-        # Default project (omitted or empty)
-        default_cases = [
-            ("autopilot_on", "bin/foreman autopilot on"),
-            ("autopilot_off", "bin/foreman autopilot off"),
-        ]
-        for act, expected_cmd in default_cases:
-            s, _, body = self.req("POST", "/api/control", {"action": act}, H)
+        def spy_foreman(pf, args, inp=None, timeout=60):
+            foreman_calls.append((pf, args))
+            return orig_foreman(pf, args, inp=inp, timeout=timeout)
+
+        srv.foreman = spy_foreman
+        try:
+            cases = [
+                ("autopilot_on", ["autopilot", "on"], "bin/foreman --project shop autopilot on"),
+                ("autopilot_off", ["autopilot", "off"], "bin/foreman --project shop autopilot off"),
+            ]
+            for act, expected_args, expected_cmd in cases:
+                s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": act}, H)
+                self.assertEqual(s, 200)
+                assert s == 200
+                data = json.loads(body)
+                self.assertTrue(data.get("ok"))
+                assert data.get("ok") is True
+                self.assertEqual(foreman_calls[-1], (" --project shop", expected_args))
+                assert foreman_calls[-1] == (" --project shop", expected_args)
+                self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
+                assert self.calls[-1][0].endswith(expected_cmd)
+
+            # Default project (omitted or empty)
+            default_cases = [
+                ("autopilot_on", ["autopilot", "on"], "bin/foreman autopilot on"),
+                ("autopilot_off", ["autopilot", "off"], "bin/foreman autopilot off"),
+            ]
+            for act, expected_args, expected_cmd in default_cases:
+                s, _, body = self.req("POST", "/api/control", {"action": act}, H)
+                self.assertEqual(s, 200)
+                assert s == 200
+                data = json.loads(body)
+                self.assertTrue(data.get("ok"))
+                assert data.get("ok") is True
+                self.assertEqual(foreman_calls[-1], ("", expected_args))
+                assert foreman_calls[-1] == ("", expected_args)
+                self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
+                assert self.calls[-1][0].endswith(expected_cmd)
+        finally:
+            srv.foreman = orig_foreman
+
+    def test_control_foreman_failure(self):
+        """Invariant: POST /api/control returns ok:false and combined message when foreman exits non-zero."""
+        H = {"X-Agent-Forge": "1"}
+        orig_foreman = srv.foreman
+        srv.foreman = lambda pf, args, inp=None, timeout=60: (1, "", "autopilot failed")
+        try:
+            s, _, body = self.req("POST", "/api/control", {"action": "autopilot_on"}, H)
             self.assertEqual(s, 200)
             assert s == 200
             data = json.loads(body)
-            self.assertTrue(data.get("ok"))
-            assert data.get("ok") is True
-            self.assertTrue(self.calls[-1][0].endswith(expected_cmd))
-            assert self.calls[-1][0].endswith(expected_cmd)
+            self.assertFalse(data.get("ok"))
+            assert data.get("ok") is False
+            self.assertEqual(data.get("message"), "autopilot failed")
+            assert data.get("message") == "autopilot failed"
+        finally:
+            srv.foreman = orig_foreman
 
     def test_control_unknown_action_rejected(self):
         """Invariant: POST /api/control with an action not in CONTROL_ACTIONS (e.g. 'pause') returns HTTP 400 and ok:false before any foreman() call is made."""
@@ -952,13 +984,10 @@ class TestWebServer(unittest.TestCase):
             assert len(self.calls) == n
 
     def test_control_wrong_method_rejected(self):
-        """Invariant: GET or other non-POST requests to /api/control are rejected the same way other POST-only routes reject wrong methods."""
+        """Invariant: GET or other non-POST requests to /api/control are rejected with 405 Method Not Allowed."""
         s_ctl, _, _ = self.req("GET", "/api/control")
-        s_backlog, _, _ = self.req("GET", "/api/backlog")
-        self.assertEqual(s_ctl, s_backlog)
-        assert s_ctl == s_backlog
-        self.assertEqual(s_ctl, 404)
-        assert s_ctl == 404
+        self.assertEqual(s_ctl, 405)
+        assert s_ctl == 405
         s_head, _, _ = self.req("HEAD", "/api/control")
         self.assertEqual(s_head, 405)
         assert s_head == 405
