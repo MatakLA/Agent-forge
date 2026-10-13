@@ -376,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(B.LOGIN.start(w))
             elif act == "input":
                 self._json(B.LOGIN.send(w, str(body.get("text", ""))[:500]))
+            elif act == "key":
+                self._json(B.LOGIN.key(w, str(body.get("key", ""))))
             elif act == "stop":
                 self._json(B.LOGIN.stop(w))
             else:

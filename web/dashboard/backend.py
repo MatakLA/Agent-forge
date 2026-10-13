@@ -237,13 +237,31 @@ class LoginSessions:
             os.write(sess["rfd"], data)
         return {"ok": True}
 
+    KEYS = {"enter": b"\r", "tab": b"\t", "shift-tab": b"\x1b[Z", "up": b"\x1b[A", "down": b"\x1b[B", "right": b"\x1b[C",
+            "left": b"\x1b[D", "space": b" ", "esc": b"\x1b", "ctrl-c": b"\x03"}
+
+    def key(self, w, name):
+        """One raw key press (the dashboard's key buttons): agy's menus and the [Done] button are used with the keyboard."""
+        sess = self.s.get(w)
+        if name not in self.KEYS:
+            return {"error": "unknown key"}
+        if not sess or sess["proc"].poll() is not None:
+            return {"error": "no running login session"}
+        if sess["wf"]:
+            sess["wf"].write(self.KEYS[name]); sess["wf"].flush()
+        else:
+            os.write(sess["rfd"], self.KEYS[name])
+        return {"ok": True}
+
     def read(self, w):
         sess = self.s.get(w)
         if not sess:
             return {"running": False, "output": ""}
         out = sess["buf"]
         urls = re.findall(r"https://[^\s'\"<>]+", out)
-        return {"running": sess["proc"].poll() is None, "output": out[-6000:], "url": urls[-1] if urls else None}
+        oauth = [u for u in urls if "accounts.google.com" in u]
+        shown = re.sub(r"[-─━=_]{60,}", "─" * 40, out)
+        return {"running": sess["proc"].poll() is None, "output": shown[-6000:], "url": (oauth or urls or [None])[-1]}
 
     def stop(self, w):
         sess = self.s.pop(w, None)
