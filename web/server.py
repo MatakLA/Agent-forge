@@ -57,7 +57,7 @@ HOST = re.compile(r"[a-z0-9][a-z0-9.-]{2,252}")          # bin/lib/egress.py che
 TARGET = re.compile(r"|worker-\d+|[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
 TASK_ACTIONS = ("approve", "cancel", "retry", "feedback", "assign", "model")
 GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "cancel")
-CONTROL_ACTIONS = ("autopilot_on", "autopilot_off", "pause", "resume")
+CONTROL_ACTIONS = ("autopilot_on", "autopilot_off")
 
 
 def load_static():
@@ -128,16 +128,30 @@ def foreman(pf, args, inp=None, timeout=60):
     return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {arg_str}", timeout=timeout, inp=inp)
 
 
-def as_json(out, err="", rc=0):
+def as_json(out, err="", rc=0, raw=False):
     if isinstance(out, (dict, list)):
         return out
+    if not raw:
+        try:
+            return json.loads(out)
+        except (ValueError, TypeError):
+            msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
+            if DASHBOARD_TOKEN:
+                msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+            return {"ok": False, "error": msg}
     try:
-        return json.loads(out)
+        res = json.loads(out)
+        if isinstance(res, (dict, list)):
+            return res
     except (ValueError, TypeError):
-        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
-        if DASHBOARD_TOKEN:
-            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
-        return {"ok": False, "error": msg}
+        pass
+    combined = ((out if isinstance(out, str) else "") + ("\n" if out and err else "") + (err if isinstance(err, str) else "")).strip()
+    msg = (combined or (f"exit {rc}" if rc else "")).strip()[-400:]
+    if DASHBOARD_TOKEN:
+        msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+    if rc == 0:
+        return {"ok": True, "message": msg}
+    return {"ok": False, "error": msg, "message": msg}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -358,12 +372,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(as_json(out, err, rc))
         elif path == "/api/control":
             # Project name is validated in the shared do_POST preamble via B.pflag(proj) (invalid name -> 400).
-            # Note: bin/foreman resume currently does not yet refuse while kill switch is engaged.
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
-            rc, out, err = foreman(pf, act.split("_"))
-            self._json(as_json(out, err, rc))
+            cmd = "autopilot on" if act == "autopilot_on" else "autopilot off"
+            rc, out, err = foreman(pf, cmd)
+            self._json(as_json(out, err, rc, raw=True))
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
@@ -481,8 +495,6 @@ class Handler(BaseHTTPRequestHandler):
             if not f:
                 self.send_response(404); self.end_headers(); return
             self._raw(f[0], f[1], cache="public, max-age=31536000, immutable" if "v" in q else "no-cache"); return
-        if path == "/api/control":
-            self.send_response(405); self.end_headers(); return
         if not path.startswith("/api/"):
             self.send_response(404); self.end_headers(); return
         proj = q.get("project", "default")
