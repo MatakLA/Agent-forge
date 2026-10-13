@@ -1,6 +1,7 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
 // sub-view renders, overview controls (autopilot and foreman pause switches) match fixture state and are keyboard reachable,
-// readiness summary on Settings checks runtimes and providers, file-only settings render with reasons, each kind of sheet opens
+// readiness summary on Settings checks runtimes and providers, file-only settings render with reasons, onboarding subsection
+// displays human-readable runtime/provider readiness and choosing AI guide, each kind of sheet opens
 // (task, goal, run replay, search, document), the graph finds the critical path, and no script error happens on the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
@@ -18,6 +19,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(6000);
   const txt = id => (d.getElementById(id) || {}).textContent || '';
   const check = (name, ok) => { failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); };
+  const walkFocus = (startEl, targets) => {
+    if (!startEl) return false;
+    const list = Array.isArray(targets) ? targets : [targets];
+    if (!list.length) return false;
+    startEl.focus();
+    if (d.activeElement !== startEl) return false;
+    for (const target of list) {
+      if (!target || !d.body.contains(target) || target.style.display === 'none') {
+        return false;
+      }
+      d.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', {key: 'Tab', code: 'Tab', keyCode: 9, bubbles: true}));
+      target.focus();
+      target.dispatchEvent(new w.Event('focus', {bubbles: true}));
+      if (d.activeElement !== target) {
+        return false;
+      }
+    }
+    return true;
+  };
   check('overview: needs-you list rendered', txt('inbox').includes('Needs you'));
   check('overview: team shows idle reasons', txt('team').includes('waits for 0008-usage'));
   check('overview: backlog has the forecast', txt('backlog-h').includes('Backlog'));
@@ -719,6 +739,237 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     READINESS = window._origREADINESS;
     readinessErr = window._origReadinessErr;
     readinessBusy = window._origReadinessBusy;
+    renderSettings(true);
+  `);
+
+  // Settings / Onboarding: task 0172 onboarding readiness subsection
+  const onboardingMock = {
+    runtimes: {
+      agy: {
+        state: 'ok',
+        detail: "Runtime 'agy' is ready.",
+        missing_settings: [],
+        missing_egress: []
+      },
+      claude: {
+        state: 'missing_setting',
+        detail: "Runtime 'claude' is missing setting(s): anthropic.key, and egress allowlist for: api.anthropic.com.",
+        missing_settings: ['anthropic.key'],
+        missing_egress: ['api.anthropic.com']
+      },
+      codex: {
+        state: 'missing_setting',
+        detail: "Runtime 'codex' is missing setting(s): openai.key, and egress allowlist for: api.openai.com.",
+        missing_settings: ['openai.key'],
+        missing_egress: ['api.openai.com']
+      },
+      gemini: {
+        state: 'missing_setting',
+        detail: "Runtime 'gemini' is missing setting(s): gemini.key, and egress allowlist for: generativelanguage.googleapis.com.",
+        missing_settings: ['gemini.key'],
+        missing_egress: ['generativelanguage.googleapis.com']
+      },
+      compat: {
+        state: 'missing_setting',
+        detail: "Runtime 'compat' is missing required setting(s): COMPAT_BASE_URL.",
+        missing_settings: ['COMPAT_BASE_URL'],
+        missing_egress: []
+      },
+      aider: {
+        state: 'missing_setting',
+        detail: "Runtime 'aider' is missing required setting(s): COMPAT_BASE_URL.",
+        missing_settings: ['COMPAT_BASE_URL'],
+        missing_egress: []
+      },
+      opencode: {
+        state: 'missing_setting',
+        detail: "Runtime 'opencode' is missing required setting(s): COMPAT_BASE_URL.",
+        missing_settings: ['COMPAT_BASE_URL'],
+        missing_egress: []
+      },
+      goose: {
+        state: 'missing_setting',
+        detail: "Runtime 'goose' is missing required setting(s): COMPAT_BASE_URL.",
+        missing_settings: ['COMPAT_BASE_URL'],
+        missing_egress: []
+      },
+      'qwen-code': {
+        state: 'missing_setting',
+        detail: "Runtime 'qwen-code' is missing required setting(s): qwen.key.",
+        missing_settings: ['qwen.key'],
+        missing_egress: []
+      },
+      'anthropic-compat': {
+        state: 'missing_setting',
+        detail: "Runtime 'anthropic-compat' is missing required setting(s): COMPAT_BASE_URL.",
+        missing_settings: ['COMPAT_BASE_URL'],
+        missing_egress: []
+      }
+    },
+    providers: {
+      'claude-cli': {
+        state: 'ok',
+        detail: "Provider 'claude-cli' is ready.",
+        missing_settings: [],
+        missing_egress: []
+      },
+      'agy-claude': {
+        state: 'ok',
+        detail: "Provider 'agy-claude' is ready.",
+        missing_settings: [],
+        missing_egress: []
+      },
+      'agy-gemini': {
+        state: 'ok',
+        detail: "Provider 'agy-gemini' is ready.",
+        missing_settings: [],
+        missing_egress: []
+      },
+      'anthropic-api': {
+        state: 'missing_setting',
+        detail: "Provider 'anthropic-api' is missing required setting(s): ANTHROPIC_MODEL, ANTHROPIC_API_KEY.",
+        missing_settings: ['ANTHROPIC_MODEL', 'ANTHROPIC_API_KEY'],
+        missing_egress: []
+      },
+      'openai-api': {
+        state: 'missing_setting',
+        detail: "Provider 'openai-api' is missing setting(s): OPENAI_MODEL, OPENAI_API_KEY, and egress allowlist for: api.openai.com.",
+        missing_settings: ['OPENAI_MODEL', 'OPENAI_API_KEY'],
+        missing_egress: ['api.openai.com']
+      },
+      'gemini-api': {
+        state: 'missing_egress',
+        detail: "Provider 'gemini-api' is missing egress allowlist for: generativelanguage.googleapis.com.",
+        missing_settings: [],
+        missing_egress: ['generativelanguage.googleapis.com']
+      }
+    }
+  };
+
+  w.eval(`
+    window._origONBOARDING = (typeof ONBOARDING !== 'undefined') ? ONBOARDING : null;
+    window._origOnboardingErr = (typeof onboardingErr !== 'undefined') ? onboardingErr : null;
+    window._origOnboardingBusy = (typeof onboardingBusy !== 'undefined') ? onboardingBusy : false;
+    window._origOnboardingAt = (typeof onboardingAt !== 'undefined') ? onboardingAt : 0;
+  `);
+
+  const origFetchOnboarding = w.fetch;
+  let onboardingFetchFail = false;
+  w.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/api/readiness')) {
+      if (onboardingFetchFail) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: 'HTTP 500' }),
+          text: async () => 'HTTP 500'
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => onboardingMock,
+        text: async () => JSON.stringify(onboardingMock)
+      };
+    }
+    return origFetchOnboarding(url, opts);
+  };
+
+  // Navigate to Settings > Onboarding subsection via existing Settings sub-nav
+  click('nav button[data-t="settings"]'); await sleep(400);
+  w.eval(`
+    if (typeof ensureSettingsNav === 'function') ensureSettingsNav();
+  `);
+  click('#settings-seg button[data-v="onboarding"]');
+  await sleep(1000);
+
+  if (w.eval('typeof ONBOARDING !== "undefined" && ONBOARDING === null && typeof loadOnboarding === "function"')) {
+    await w.eval('loadOnboarding(true)');
+    await sleep(400);
+  }
+
+  // 1. Assert: opening subsection renders one row per mocked runtime and provider entry in #onboarding-readiness-table
+  const onbTable = d.getElementById('onboarding-readiness-table');
+  const onbRows = [...d.querySelectorAll('#onboarding-readiness-table tbody tr[data-kind][data-name]')];
+  const mockRtNames = Object.keys(onboardingMock.runtimes);
+  const mockProvNames = Object.keys(onboardingMock.providers);
+  const totalMockEntries = mockRtNames.length + mockProvNames.length;
+  const rtRowsOk = mockRtNames.every(n => d.querySelector('#onboarding-readiness-table tbody tr[data-kind="runtime"][data-name="' + n + '"]'));
+  const provRowsOk = mockProvNames.every(n => d.querySelector('#onboarding-readiness-table tbody tr[data-kind="provider"][data-name="' + n + '"]'));
+  const onbRowsCountOk = onbRows.length === totalMockEntries && rtRowsOk && provRowsOk;
+  check('settings / onboarding: opening subsection renders one row per mocked runtime and provider entry in #onboarding-readiness-table',
+        !!onbTable && onbRowsCountOk);
+
+  // 2. Assert: rendered status text for at least one 'missing'/'untested' case is a human-readable label, not raw status string from mock
+  const rawStatusCodes = ['ok', 'missing_setting', 'missing_egress', 'untested'];
+  const allOnbBadges = [...d.querySelectorAll('#onboarding-readiness-table tbody tr .badge')];
+  const allBadgesNonEmpty = allOnbBadges.length > 0 && allOnbBadges.every(b => b.textContent.trim().length > 0);
+  const noRawStatusCodes = allBadgesNonEmpty && allOnbBadges.every(b => {
+    const t = b.textContent.trim();
+    return !rawStatusCodes.includes(t.toLowerCase()) && !t.includes('_');
+  });
+  const claudeRow = d.querySelector('#onboarding-readiness-table tr[data-kind="runtime"][data-name="claude"]');
+  const claudeBadge = claudeRow ? claudeRow.querySelector('.badge') : null;
+  const claudeStatusText = claudeBadge ? claudeBadge.textContent.trim() : '';
+  const claudeNotRaw = claudeStatusText.length > 0 &&
+    claudeStatusText !== 'missing_setting' &&
+    !claudeStatusText.includes('_') &&
+    /^[A-Z]/.test(claudeStatusText);
+  const geminiProvRow = d.querySelector('#onboarding-readiness-table tr[data-kind="provider"][data-name="gemini-api"]');
+  const geminiProvBadge = geminiProvRow ? geminiProvRow.querySelector('.badge') : null;
+  const geminiProvStatusText = geminiProvBadge ? geminiProvBadge.textContent.trim() : '';
+  const geminiNotRaw = geminiProvStatusText.length > 0 &&
+    geminiProvStatusText !== 'missing_egress' &&
+    !geminiProvStatusText.includes('_') &&
+    /^[A-Z]/.test(geminiProvStatusText);
+  const statusLabelsHumanReadable = noRawStatusCodes && claudeNotRaw && geminiNotRaw;
+  check('settings / onboarding: rendered status text for missing cases is human-readable label, not raw status code',
+        statusLabelsHumanReadable);
+
+  // 3. Assert: the text 'CHOOSING-AN-AI.md' is present somewhere in the subsection
+  const choosingAiPresent = txt('settings').includes('CHOOSING-AN-AI.md');
+  check('settings / onboarding: CHOOSING-AN-AI.md text is present in the subsection',
+        choosingAiPresent);
+
+  // 4. Assert: a Tab key sequence (or focus-walking helper) can reach table/rows, proving keyboard reachability
+  const onbNavBtn = d.querySelector('#settings-seg button[data-v="onboarding"]');
+  const onbTableReached = !!onbNavBtn && !!onbTable && onbRows.length > 0 &&
+                          walkFocus(onbNavBtn, [onbTable, ...onbRows]) &&
+                          d.activeElement === onbRows[onbRows.length - 1];
+  check('settings / onboarding: Tab key sequence reaches table/rows proving keyboard reachability',
+        onbTableReached);
+
+  // 5. Assert: mocked fetch failure for /api/readiness produces visible error state (toast text or error row), not blank subsection
+  onboardingFetchFail = true;
+  w.eval(`
+    if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
+    if (typeof onboardingErr !== 'undefined') onboardingErr = null;
+    if (typeof onboardingBusy !== 'undefined') onboardingBusy = false;
+    if (typeof onboardingAt !== 'undefined') onboardingAt = 0;
+  `);
+  click('#settings-seg button[data-v="onboarding"]');
+  await sleep(1000);
+  if (w.eval('typeof ONBOARDING !== "undefined" && ONBOARDING === null && typeof loadOnboarding === "function"')) {
+    try { await w.eval('loadOnboarding(true)'); } catch (e) {}
+    await sleep(400);
+  }
+  const onbErrorRow = d.querySelector('#onboarding-readiness-table tr.error-row');
+  const onbToastHasError = txt('toasts').includes('Could not load readiness');
+  const onbVisibleError = txt('settings').includes('Could not load readiness') || (onbErrorRow && onbErrorRow.textContent.includes('Could not load readiness'));
+  const onbSubsectionNotBlank = txt('settings').trim().length > 30;
+  const onbErrorStateOk = (!!onbErrorRow || onbToastHasError || onbVisibleError) && onbSubsectionNotBlank;
+  check('settings / onboarding: mocked fetch failure produces visible error state (toast or error row), not a blank subsection',
+        onbErrorStateOk);
+
+  // Restore onboarding state and fetch
+  w.fetch = origFetchOnboarding;
+  w.eval(`
+    if (typeof ONBOARDING !== 'undefined') ONBOARDING = window._origONBOARDING;
+    if (typeof onboardingErr !== 'undefined') onboardingErr = window._origOnboardingErr;
+    if (typeof onboardingBusy !== 'undefined') onboardingBusy = window._origOnboardingBusy;
+    if (typeof onboardingAt !== 'undefined') onboardingAt = window._origOnboardingAt;
+    SUB.settings = 'team';
     renderSettings(true);
   `);
 
