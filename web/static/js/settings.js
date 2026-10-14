@@ -1,4 +1,5 @@
-// Settings: Runtimes & providers readiness summary (doctor check), followed by seven short pages: Workers (kill switch,
+// Settings: Runtimes & providers readiness summary (doctor check), Runtime readiness & cost summary table,
+// followed by seven short pages: Workers (kill switch,
 // the pool, adding workers, keys and your model server), Models (who plans and reviews, worker models, routing, experiments),
 // Project (where the code lives, approvals, behaviour, tests, notifications), Money (budgets and prices), Knowledge (vision,
 // team rules, decisions, lessons, roles), Limits (all projects) and Onboarding (plain-language readiness table, runtime
@@ -34,6 +35,7 @@ document.addEventListener('click', e => {
 
 let S = null, sLoadedFor = null, sMsg = '';
 let READINESS = null, readinessBusy = false, readinessErr = null, readinessAt = 0;
+let RUNTIME_STATUS = null, runtimeStatusBusy = false, runtimeStatusErr = null, runtimeStatusAt = 0;
 const READINESS_RTNAME = {
   agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI',
   compat: 'Codex · own server', aider: 'Aider · own server', opencode: 'OpenCode',
@@ -196,11 +198,34 @@ async function loadReadiness(force) {
   }
   schedule(true);
 }
+async function loadRuntimeStatus(force) {
+  if (runtimeStatusBusy) return;
+  if (!force && RUNTIME_STATUS !== null && Date.now() - runtimeStatusAt < 30000) return;
+  runtimeStatusBusy = true;
+  try {
+    const data = await getJSON('/api/readiness/status');
+    if (data && data.error && !data.runtimes) {
+      runtimeStatusErr = data.error;
+      RUNTIME_STATUS = null;
+    } else {
+      RUNTIME_STATUS = data || {};
+      runtimeStatusErr = null;
+    }
+  } catch (e) {
+    runtimeStatusErr = String(e && e.message ? e.message : e);
+    if (!RUNTIME_STATUS) RUNTIME_STATUS = null;
+  } finally {
+    runtimeStatusBusy = false;
+    runtimeStatusAt = Date.now();
+  }
+  schedule(true);
+}
 async function loadSettings(force) {
   if (!force && sLoadedFor === project && S) return;
   sLoadedFor = project;
   try { S = await (await fetch('/api/settings?project=' + encodeURIComponent(project))).json(); } catch (e) { S = {error: String(e)}; }
   loadReadiness(force);
+  loadRuntimeStatus(force);
   schedule(true);
 }
 function sval(k) {
@@ -304,6 +329,91 @@ function readinessCard() {
     }
   }
   return card('Runtimes & providers', body, 'Doctor check for worker runtimes and orchestrator providers.');
+}
+
+// ---- Runtime readiness & cost summary table
+function runtimeReadyBadge(ready) {
+  if (ready === true || ready === 'true') {
+    return '<span class="badge ok" data-ready="true">Ready</span>';
+  }
+  if (ready === false || ready === 'false') {
+    return '<span class="badge bad" data-ready="false">Not ready</span>';
+  }
+  return '<span class="badge unknown" data-ready="unknown">unknown</span>';
+}
+
+function runtimeCostLabel(cm) {
+  if (!cm || typeof cm !== 'object') {
+    return 'unknown';
+  }
+  const kind = String(cm.kind || '').trim().toLowerCase();
+  const detail = String(cm.detail || '').trim();
+  const detailLower = detail.toLowerCase();
+
+  // Self-hosted local runtimes (ollama, vllm, lmstudio, llamacpp)
+  if (kind === 'self-hosted' || detailLower.includes('self-hosted')) {
+    return 'self-hosted, no API cost';
+  }
+
+  // Quota runtimes (e.g. agy tracked via agy /usage, not USD)
+  if (kind === 'quota') {
+    return 'quota';
+  }
+
+  // Metered runtimes (e.g. per-token API runtimes)
+  if (kind === 'metered') {
+    return 'metered';
+  }
+
+  // Unknown runtimes without self-hosted classification (e.g. copilot, mistral-vibe)
+  return 'unknown';
+}
+
+function runtimeReadinessRow(name, info) {
+  info = info || {};
+  const ready = info.ready;
+  const readyAttr = ready === true ? 'true' : ready === false ? 'false' : 'unknown';
+  const label = (typeof RTNAME !== 'undefined' && RTNAME[name]) || READINESS_RTNAME[name] || name;
+  const nameHtml = '<b class="runtime-name">' + esc(label) + '</b>' + (label !== name ? ' <span class="muted small">(' + esc(name) + ')</span>' : '');
+  const costLabel = runtimeCostLabel(info.cost_model);
+  const reason = (info.reason != null && String(info.reason).trim().length > 0)
+    ? String(info.reason)
+    : ((info.cost_model && info.cost_model.detail) ? String(info.cost_model.detail) : '');
+
+  return '<tr class="runtime-readiness-row" data-runtime="' + esc(name) + '" data-ready="' + esc(readyAttr) + '">' +
+    '<td class="runtime-name-cell">' + nameHtml + '</td>' +
+    '<td class="runtime-status-cell">' + runtimeReadyBadge(ready) + '</td>' +
+    '<td class="runtime-cost"><span class="cost-label">' + esc(costLabel) + '</span></td>' +
+    '<td class="runtime-reason" style="white-space:normal;word-break:break-word;">' + esc(reason) + '</td>' +
+    '</tr>';
+}
+
+function runtimeReadinessCard() {
+  if (RUNTIME_STATUS === null && !runtimeStatusBusy && !runtimeStatusErr) {
+    loadRuntimeStatus();
+  }
+  let body = '';
+  if (runtimeStatusBusy && !RUNTIME_STATUS) {
+    body = '<div class="empty" id="runtime-readiness-loading">loading…</div>';
+  } else if (runtimeStatusErr && !RUNTIME_STATUS) {
+    body = '<div class="empty bad" id="runtime-readiness-error">Runtime readiness unavailable: ' + esc(runtimeStatusErr) + '</div>';
+  } else {
+    const data = RUNTIME_STATUS || {};
+    if (data.error && !data.runtimes) {
+      body = '<div class="empty bad" id="runtime-readiness-error">Runtime readiness unavailable: ' + esc(data.error) + '</div>';
+    } else {
+      const rtEntries = Object.entries(data.runtimes || {});
+      if (!rtEntries.length) {
+        body = '<div class="empty" id="runtime-readiness-empty">No runtimes reported.</div>';
+      } else {
+        const rows = rtEntries.map(([name, info]) => runtimeReadinessRow(name, info)).join('');
+        body = '<div class="tablewrap"><table class="m runtime-readiness-table" id="runtime-readiness-table" aria-label="Runtime readiness and cost summary">' +
+          '<thead><tr><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col">Cost / Quota</th><th scope="col">Reason</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table></div>';
+      }
+    }
+  }
+  return card('Runtime readiness', body, 'Runtime readiness and cost summary.');
 }
 
 // ---- the six pages
@@ -727,7 +837,7 @@ function settingsHtml() {
   if (S.error) return '<div class="empty bad">Could not load settings: ' + esc(S.error) + '</div>';
   const p = SUB.settings;
   const body = p === 'onboarding' ? pageOnboarding() : p === 'models' ? pageModels() : p === 'project' ? pageProject() : p === 'money' ? pageMoney() : p === 'knowledge' ? pageKnowledge() : p === 'limits' ? pageLimits() : pageWorkers();
-  return (p === 'onboarding' ? '' : readinessCard()) + body + (p === 'onboarding' ? '' : fileOnlyCard()) + (p === 'knowledge' || p === 'onboarding' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
+  return (p === 'onboarding' ? '' : readinessCard()) + (p === 'onboarding' ? '' : runtimeReadinessCard()) + body + (p === 'onboarding' ? '' : fileOnlyCard()) + (p === 'knowledge' || p === 'onboarding' ? '' : '<div class="btnrow sticky"><button class="primary" id="save-settings">Save changes</button><span class="muted small" id="save-msg">' + esc(sMsg) + '</span></div>');
 }
 function renderSettings(force) {
   ensureSettingsNav();
@@ -779,7 +889,11 @@ document.addEventListener('click', async e => {
     if (d < 0 && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
     if (d > 0 && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); return; }
   if (e.target.id === 'save-settings') { saveSettings(); return; }
-  if (e.target.id === 'refresh-readiness') { loadReadiness(true); return; }
+  if (e.target.id === 'refresh-readiness' || e.target.id === 'refresh-runtime-readiness') {
+    loadReadiness(true);
+    loadRuntimeStatus(true);
+    return;
+  }
   if (e.target.id === 'refresh-models') { e.target.textContent = 'loading…';
     try { await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, refresh_models: true})}); } catch (err) {}
     loadSettings(true); return; }
@@ -942,4 +1056,5 @@ projectResets.push(() => {
   READINESS = null; readinessErr = null; readinessAt = 0;
   ONBOARDING = null; onboardingErr = null; onboardingAt = 0;
   ONBOARDING_RECOMMEND = null;
+  RUNTIME_STATUS = null; runtimeStatusErr = null; runtimeStatusAt = 0;
 });
