@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Local-compat runtimes: add ollama, vllm, lmstudio, and llamacpp to RUNTIMES with local endpoint resolution, honest zero-cost classification, and OpenAI-compatible completions command and scan handling.
 - Documentation: document six new selectable worker runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with cost models and egress requirements in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
 - Quickstart offline E2E check: verify examples/sample-project install, plan, dispatch, gate, and merge steps within wall-clock budgets using fake model API and fake Docker fixtures (tests/test_quickstart_e2e.sh, tests/test_quickstart_e2e.py).
 - Issue intake parsing E2E test: verify bin/issues-intake creates one goal per eligible GitHub issue with role taken from label-to-role mapping against a fake GitHub API fixture (tests/test_issues_intake_parsing.sh, tests/fixtures/fake-forge-api-github.js).
