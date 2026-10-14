@@ -566,6 +566,9 @@ def main():
                 else:
                     ok(f"{name} runs {rt} with an API key")
                 continue
+            if rt == "copilot":
+                ok(f"{name} runs {rt} (GitHub Copilot CLI)")
+                continue
             key = r_info.get("key")
             if not key or not sbx.read(os.path.join(S, key)):
                 bad(f"{name} ({rt}): API key {key or 'missing'} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
