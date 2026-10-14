@@ -6,6 +6,8 @@ This guide provides an honest comparison of every supported worker runtime and o
 
 If you are using the web dashboard, you can also check readiness status interactively. The dashboard's Settings tab now has an Onboarding subsection (Settings > Onboarding) that displays live status for every runtime and provider. It indicates whether each option is configured, missing a host, missing a secret, or untested without reading any code. You can use either this document or the dashboard to determine which AI will work for your setup.
 
+If you are working from the command line right after `git clone`, you can also run the setup wizard (`scripts/pick-ai.sh`) to get an instant offline recommendation directly in your terminal.
+
 ---
 
 ## Runtime recommendation in Settings > Onboarding
@@ -30,6 +32,43 @@ The recommendation ranks only worker runtimes that currently pass `bin/lib/forem
 3. **Honest fallback**: If no runtime passes its readiness check, the endpoint does not guess or assume a default choice. Instead, `top` is `null` and `message` returns an honest explanation indicating that no runtime is ready yet.
 
 In the dashboard UI, **Settings > Onboarding** displays the top recommendation (`top`) along with its reason, or displays the fallback message if nothing is ready, accompanied by the full ranked list (`ranked`). Which runtime is recommended depends entirely on which models, keys, and egress rules are configured in your specific installation.
+
+---
+
+## Setup wizard: scripts/pick-ai.sh
+
+If you want an immediate answer to "which AI should I pick?" without opening the web dashboard, Agent-Forge provides a command-line setup wizard: `scripts/pick-ai.sh`.
+
+### What it does
+
+The setup wizard runs two checks in sequence:
+1. `bin/doctor` to inspect your local environment, configuration, and dependencies.
+2. The offline readiness summary (`bin/lib/foreman/wizard.py`) to rank all available worker runtimes and orchestrator providers.
+
+It prints a ranked, offline recommendation with next steps for enabling your top pick. The script operates entirely offline: no network connectivity, no running Docker daemon, and no API keys or secrets are required. It runs safely on a fresh, unconfigured checkout.
+
+### How to run it
+
+Run `scripts/pick-ai.sh` directly from the repository root right after `git clone`:
+
+```bash
+scripts/pick-ai.sh
+```
+
+### What the output contains
+
+The wizard output provides a structured, high-level summary:
+- **Ranked list of supported AIs**: A ranked listing of the closed set of supported worker runtimes and orchestrator providers with their readiness state and cost tier (such as subscription/quota, metered API, or unmetered local inference).
+- **Highlighted recommendation**: A single highlighted recommendation chosen based on what is currently ready. If nothing is configured or ready yet, the wizard clearly indicates this and highlights the easiest and cheapest option to get started.
+- **Concrete next steps**: Actionable next steps and commands for enabling the recommended AI (such as setting an API key, pointing to a local model endpoint, or logging into an account).
+
+### Complements doctor and dashboard
+
+The setup wizard complements, but does not replace, other diagnostic tools in Agent-Forge:
+- **`bin/doctor`**: Remains the definitive tool for deep system health checks, verifying tools, file permissions, secret paths, container images, and egress firewall rules.
+- **Dashboard readiness table (`web/static/js/settings.js`)**: Provides an interactive browser-based view under **Settings > Onboarding** with live status badges and form fields to configure runtimes.
+
+Running `scripts/pick-ai.sh` right after cloning gives you a fast, offline starting point before proceeding to container provisioning or dashboard configuration.
 
 ---
 
