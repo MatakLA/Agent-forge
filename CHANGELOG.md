@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Local-compat runtimes (ollama/vllm/lmstudio/llamacpp) are now fully wired end to end (implementation + tests + check.sh).
 - Local-compat runtimes: add ollama, vllm, lmstudio, and llamacpp to RUNTIMES with local endpoint resolution, honest zero-cost classification, and OpenAI-compatible completions command and scan handling.
 - Documentation: document six new selectable worker runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with cost models and egress requirements in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
 - Quickstart offline E2E check: verify examples/sample-project install, plan, dispatch, gate, and merge steps within wall-clock budgets using fake model API and fake Docker fixtures (tests/test_quickstart_e2e.sh, tests/test_quickstart_e2e.py).
