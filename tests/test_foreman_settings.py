@@ -18,10 +18,13 @@ T = tempfile.mkdtemp(prefix="af-test-settings-")
 os.environ["SANDBOX_TEST"] = "1"
 os.environ["SANDBOX_RUNS_DIR"] = T
 os.environ["LIMITS_FILE"] = os.path.join(ROOT, "etc", "limits.example.conf")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
+import re
 from foreman import ctx
-from foreman.settings import EDITABLE, settings_apply, settings_get, write_conf
+from foreman.settings import EDITABLE, VALID_RUNTIMES, settings_apply, settings_get, write_conf
 
 
 class TestForemanSettings(unittest.TestCase):
@@ -242,6 +245,37 @@ class TestForemanSettings(unittest.TestCase):
         self.assertNotIn("ORPHAN_LIMIT=0", foreman_content)
         self.assertNotIn("ORPHAN_LIMIT=101", foreman_content)
         assert errs_zero["ORPHAN_LIMIT"] == "number 1-100" and errs_high["ORPHAN_LIMIT"] == "number 1-100"
+
+    def test_worker_runtime_validation_new_runtimes_and_unknown_rejected(self):
+        """settings_apply accepts each of the six new runtimes and rejects unknown runtimes through the production validation path."""
+        new_runtimes = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
+        rule, scope = EDITABLE["WORKER_RUNTIME"]
+        self.assertEqual(scope, "project")
+
+        # 1. Assert each of the six new keys is accepted by the production validation path and persists to config
+        for rt in new_runtimes:
+            self.assertIsNotNone(re.fullmatch(rule, rt), f"Production EDITABLE rule for WORKER_RUNTIME must accept {rt}")
+            errs = settings_apply({"WORKER_RUNTIME": rt})
+            self.assertEqual(errs, {}, f"settings_apply failed for {rt}: {errs}")
+            foreman_content = open(self.foreman_conf).read()
+            self.assertIn(f"WORKER_RUNTIME={rt}", foreman_content)
+
+        # 2. Assert unknown keys are rejected by production validation path
+        for bad in ["unknown-runtime", "bogus", "copilot-extra", "not_a_runtime"]:
+            self.assertIsNone(re.fullmatch(rule, bad), f"Production EDITABLE rule must reject {bad}")
+            errs_bad = settings_apply({"WORKER_RUNTIME": bad})
+            self.assertIn("WORKER_RUNTIME", errs_bad)
+            self.assertEqual(errs_bad.get("WORKER_RUNTIME"), "invalid value")
+
+        # 3. Verify backend VALID_RUNTIMES and settings VALID_RUNTIMES include all six new keys
+        from web.dashboard.backend import VALID_RUNTIMES as BACKEND_VALID_RUNTIMES
+        for rt in new_runtimes:
+            self.assertIn(rt, BACKEND_VALID_RUNTIMES, f"backend.VALID_RUNTIMES missing {rt}")
+            self.assertIn(rt, VALID_RUNTIMES, f"foreman.settings.VALID_RUNTIMES missing {rt}")
+
+        # 4. Production validation path fails if one of the six keys is removed from the rule
+        self.assertTrue(all(re.fullmatch(rule, rt) for rt in new_runtimes))
+        assert all(re.fullmatch(rule, rt) for rt in new_runtimes) and "WORKER_RUNTIME" in errs_bad
 
 
 
