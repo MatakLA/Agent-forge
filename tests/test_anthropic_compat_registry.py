@@ -81,28 +81,23 @@ class TestAnthropicCompatBackendRegistry(unittest.TestCase):
 
 
 class TestAnthropicCompatSettingsUI(unittest.TestCase):
-    """Verifies that web/static/js/settings.js offers 'anthropic-compat' in the worker-add form."""
+    """Verifies that web/static/js/settings.js offers only the runtimes a worker can really be created for (the server's `creatable` flag)."""
 
     def setUp(self):
         js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
         with open(js_path, "r", encoding="utf-8") as f:
             self.settings_js = f.read()
 
-    def test_settings_js_contains_anthropic_compat_option(self):
-        """Invariant: settings.js mentions 'anthropic-compat' slug with human-readable label."""
-        self.assertIn("anthropic-compat", self.settings_js)
-        assert "anthropic-compat" in self.settings_js
-        self.assertIn("Anthropic-compatible endpoint", self.settings_js)
-        assert "Anthropic-compatible endpoint" in self.settings_js
+    def test_anthropic_compat_is_not_offered_as_a_worker_yet(self):
+        """Invariant: no worker image ships the CLI of 'anthropic-compat', so runtimes.CREATABLE excludes it and the add-worker picker does not list it."""
+        import runtimes
+        self.assertNotIn("anthropic-compat", runtimes.CREATABLE)
+        self.assertNotRegex(self.settings_js, r"""value=["']anthropic-compat["']""")
 
-    def test_settings_js_add_worker_form_and_addwrt_support_anthropic_compat(self):
-        """Invariant: addWorkerForm and addwRt explicitly handle 'anthropic-compat' as an endpoint runtime."""
-        self.assertTrue("anthropic-compat" in self.settings_js)
-        assert "anthropic-compat" in self.settings_js
-        self.assertTrue(re.search(r"rt\s*===\s*['\"]anthropic-compat['\"]", self.settings_js) is not None)
-        assert re.search(r"rt\s*===\s*['\"]anthropic-compat['\"]", self.settings_js) is not None
-
-
+    def test_picker_is_built_from_the_server_flag(self):
+        """Invariant: the picker lists exactly the runtimes with creatable=true in the settings payload (no hard-coded list to drift)."""
+        self.assertIn("creatable", self.settings_js)
+        self.assertNotRegex(self.settings_js, r"rt\s*===\s*['\"]anthropic-compat['\"]")
 class TestAnthropicCompatDocs(unittest.TestCase):
     """Verifies that docs/RUNTIMES.md documents setup, endpoint requirements, credentials and cost model."""
 

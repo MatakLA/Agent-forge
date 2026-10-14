@@ -38,6 +38,10 @@ API_IMAGE = "agent-forge-worker-api:1"
 # api: paid per token (budgets apply, no subscription quota); endpoint: talks to COMPAT_BASE_URL; optional_key: works without a
 # key (a local model server); prices: the limits.conf key with "in,cached,out" USD per million tokens (None = the CLI reports cost);
 # own_git: the agent runs git itself (else the supervisor checks out the task branch before the run)
+# the runtimes bin/worker-add can create a worker for; the others are registered (prices, hosts, onboarding) but no worker image ships their CLI
+CREATABLE = frozenset({"agy", "claude", "codex", "gemini", "compat", "aider"})
+
+
 RUNTIMES = {
     "agy": dict(label="Antigravity (Google account, subscription)", image=AGY_IMAGE, key=None, hosts=[], api=False),
     "claude": dict(label="Claude Code (Anthropic API key)", image=API_IMAGE, key="anthropic.key", hosts=["api.anthropic.com"], api=True),

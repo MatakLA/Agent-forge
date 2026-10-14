@@ -50,7 +50,8 @@ for flag, fn in (("--baseline-add", egress.ignore_host), ("--allow", egress.allo
 since = parse_since(a[a.index("--since") + 1]) if "--since" in a else time.time() - 86400
 worker = a[a.index("--worker") + 1] if "--worker" in a else None
 health = egress.proxy_health()
-res = egress.analyze(since=since, client=worker)
+logs = egress.load_logs(since)                  # one docker run for the events and the file sizes
+res = egress.analyze(since=since, client=worker, events=logs["events"])
 al = egress.alarms(res, health)
 
 if "--check" in a:
@@ -70,7 +71,7 @@ if "--json" in a:
     print(json.dumps(dict(since=iso(since), health=health, allowed=res["allowed"], denied=res["denied"], noise=res["noise"],
                           private=res["private"], new_domains={f"{w} {h}": n for (w, h), n in res["new_domains"].items()},
                           plain_http={f"{w} {h}": n for (w, h), n in res["plain_http"].items()},
-                          alarms=[dict(level=l, code=c, message=m) for l, c, m in al], log_sizes=egress.log_sizes(),
+                          alarms=[dict(level=l, code=c, message=m) for l, c, m in al], log_sizes=logs["sizes"],
                           local_allowlist=egress.local_allowlist(), baseline=sorted(egress.baseline()),
                           killswitch=sbx.killswitch_active()), indent=1))
     sys.exit(2 if any(x[0] == "HIGH" for x in al) else 0)
@@ -86,4 +87,4 @@ for h, n in res["noise"].most_common():
 print("alarms (unacknowledged events only):" if al else "alarms: none")
 for lvl, code, msg in al:
     print(f"  {lvl:4} {code}: {msg}")
-print("log files: " + ", ".join(f"{k} {v//1024} KB" for k, v in sorted(egress.log_sizes().items())))
+print("log files: " + ", ".join(f"{k} {v//1024} KB" for k, v in sorted(logs["sizes"].items())))

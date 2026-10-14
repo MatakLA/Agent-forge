@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Settings rebuilt as eight short pages (Workers, Runtimes, Models, Project, Money, Knowledge, Limits, Advanced). Every setting is on exactly one page, has a plain-language label and description, and unsaved edits are collected in one Save bar (with Discard, a warning before leaving, and a refused value marked at its field). New: remove a worker (`bin/worker-remove`: refuses while a run is in progress or when it is a project's only worker; deletes the container, volume, Forgejo bot user and secrets), add a role from the Knowledge page, and set API keys / the notification token from the page (write-only). The add-worker picker lists exactly the runtimes the server says it can create (`creatable`); the readiness table and the onboarding card are now part of Runtimes.
+
+System → Health, Disk and Egress open at once: the server answers from a cache and refreshes it in the background (`?fresh=1` measures again), `docker system df` / `docker ps -s` (minutes on a slow disk) are replaced by cheap queries, and the egress proxy log is rotated hourly instead of being re-read at 100+ MB.
+
 A task whose branch is identical to main (its change already landed, e.g. after the auto-rebase) is finished as "nothing to merge" instead of looping on Forgejo's 405 for an empty pull request.
 
 Merging survives a busy Forgejo. `bin/merge-pr` now waits up to a minute for "Please try again later" (405), 5xx or a refused connection and exits 75; the foreman then retries the merge later with growing pauses (up to 12 tries) instead of blocking the task, and spends no extra review round on it. Real conflicts (409) behave as before.

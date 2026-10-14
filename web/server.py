@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
+from dashboard.cache import SWR  # noqa: E402
 readiness = B.readiness   # may be None when bin/lib is not next to the dashboard; the readiness endpoint then says so
 
 
@@ -128,6 +129,10 @@ def foreman(pf, args, inp=None, timeout=60):
     arg_str = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
     run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
     return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {arg_str}", timeout=timeout, inp=inp)
+
+
+SLOW = SWR()      # health, egress, disk, settings, readiness: seen again within the TTL costs no ssh at all
+TTL = {"health": 120, "egress": 120, "disk": 120, "settings": 30, "readiness": 60}
 
 
 def as_json(out, err="", rc=0):
@@ -264,6 +269,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _slow(self, key, ttl, compute, q):
+        """Answer from the cache (see SLOW); ?fresh=1 - the page's refresh button - waits for a new answer instead."""
+        val, age = SLOW.get(key, ttl, compute, fresh=bool(q.get("fresh")))
+        if isinstance(val, dict) and age >= 0:
+            val = dict(val, _age=int(age))
+        self._json(val)
+
     def _query(self):
         return {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
 
@@ -278,6 +290,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Demo mode: read-only"}, 403)
             return
         body = self._body()
+        SLOW.drop()             # whatever the owner just changed, the next read must see it
         proj = str(body.get("project", "default"))
         try:
             pf = B.pflag(proj)
@@ -431,10 +444,16 @@ class Handler(BaseHTTPRequestHandler):
                 rc, out, err = foreman(pf, f"doc set {name}", inp=str(body.get("text", ""))[:200000], timeout=30)
             self._json(as_json(out, err, rc))
         elif path == "/api/workers":
-            rt = str(body.get("runtime") or "agy")
-            if body.get("action") != "add" or rt not in ("agy", "claude", "codex", "gemini", "compat", "aider"):
-                self._json({"error": "action add, runtime agy|claude|codex|gemini|compat|aider"}, 400); return
-            self._json(B.start_job("add-worker", lambda job: B.add_worker_job(job, rt)))
+            rt, act = str(body.get("runtime") or "agy"), body.get("action")
+            if act == "remove":
+                w = str(body.get("worker", ""))
+                if not re.fullmatch(r"worker-\d+", w):
+                    self._json({"error": "bad worker"}, 400); return
+                self._json(B.start_job("remove-worker", lambda job: B.remove_worker_job(job, w)))
+            elif act == "add" and rt in ("agy", "claude", "codex", "gemini", "compat", "aider"):
+                self._json(B.start_job("add-worker", lambda job: B.add_worker_job(job, rt)))
+            else:
+                self._json({"error": "action add (runtime agy|claude|codex|gemini|compat|aider) or remove (worker worker-N)"}, 400)
         elif path == "/api/secret":
             # an API key or forge token typed by the owner: goes to bin/secret-set on stdin, never into a command line or a log
             name, value = str(body.get("name", "")), str(body.get("value", "")).strip()
@@ -609,28 +628,41 @@ class Handler(BaseHTTPRequestHandler):
                                                                         "duration_s", "cost_usd", "dispatched", "finished", "variant")},
                         "lines": L.render_run(stream), "missing": not stream.strip()})
         elif path == "/api/health":
-            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
-            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if q.get("full") else " --quick"), timeout=300)
-            self._json(as_json(out, err, rc))
+            full = bool(q.get("full"))
+
+            def compute():
+                run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+                rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if full else " --quick"), timeout=300)
+                return as_json(out, err, rc)
+            self._slow(f"health:{proj}:{full}", TTL["health"], compute, q)
         elif path == "/api/egress":
             since = q.get("since", "24h")
             if not re.fullmatch(r"\d{1,3}[hd]", since):
                 since = "24h"
-            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
-            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
-            self._json(as_json(out, err, rc))
+
+            def compute():
+                run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+                rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
+                return as_json(out, err, rc)
+            self._slow(f"egress:{since}", TTL["egress"], compute, q)
         elif path == "/api/disk":
-            rc, out, err = foreman(pf, "disk", timeout=120)
-            self._json(as_json(out, err, rc))
+            def compute():
+                rc, out, err = foreman(pf, "disk", timeout=120)
+                return as_json(out, err, rc)
+            self._slow(f"disk:{proj}", TTL["disk"], compute, q)
         elif path == "/api/settings":
-            rc, out, err = foreman(pf, "settings", timeout=60)
-            try:
-                self._json(json.loads(out))
-            except Exception:
-                self._json({"error": (err or out)[-300:] or "settings need a newer bin/foreman"})
+            def compute():
+                rc, out, err = foreman(pf, "settings", timeout=60)
+                try:
+                    return json.loads(out)
+                except Exception:
+                    return {"error": (err or out)[-300:] or "settings need a newer bin/foreman"}
+            self._slow(f"settings:{proj}", TTL["settings"], compute, q)
         elif path == "/api/readiness":
-            rc, out, err = foreman(pf, "readiness", timeout=60)
-            self._json(as_json(out, err, rc))
+            def compute():
+                rc, out, err = foreman(pf, "readiness", timeout=60)
+                return as_json(out, err, rc)
+            self._slow(f"readiness:{proj}", TTL["readiness"], compute, q)
         elif path == "/api/readiness/recommend":
             rc, out, err = foreman(pf, ["readiness-recommend"])
             self._json(as_json(out, err, rc))
@@ -703,6 +735,7 @@ def main():
     threading.Thread(target=L.discover_loop, daemon=True).start()
     threading.Thread(target=L.quota_loop, daemon=True).start()
     threading.Thread(target=B.foreman_loop, daemon=True).start()
+    threading.Thread(target=SLOW.warm_loop, daemon=True).start()
     srv = Server(("127.0.0.1", B.BIND_PORT), Handler)
     srv.serve_forever()
 

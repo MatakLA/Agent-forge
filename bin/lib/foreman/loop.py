@@ -24,7 +24,7 @@ from .llm import Unavailable, llm_available
 from .prompts import worker_spec
 from .planning import step_next, step_plan, step_roadmap, step_split
 from .merge import maybe_upstream_sync, step_gate_review_merge, step_owner_merge, step_upstream_merge
-from .maintenance import maybe_maintenance
+from .maintenance import maybe_maintenance, maybe_rotate_egress
 
 
 def write_live():
@@ -654,6 +654,7 @@ def reload_conf_if_changed():
 def tick():
     reload_conf_if_changed()
     collect()
+    maybe_rotate_egress()
     try:
         if os.path.exists(os.path.join(ctx.FD, "PAUSED")) or sbx.killswitch_active():
             return

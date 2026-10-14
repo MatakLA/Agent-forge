@@ -35,7 +35,7 @@ const chip = s => '<span class="st st-' + esc(s) + '">' + esc(STATUS[s] || s) + 
 const small = t => '<span class="muted small">' + t + '</span>';
 
 let tab = 'overview', F = null, P = {roster: {}, panes: []}, project = 'default', foremanFetchedAt = 0, PROJ_LIST = [];
-const SUB = {tasks: 'board', insights: 'team', system: 'health', settings: 'team'};
+const SUB = {tasks: 'board', insights: 'team', system: 'health', settings: 'workers'};
 const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; };
 project = store('af-project') || 'default';
 tab = store('af-tab') || 'overview';

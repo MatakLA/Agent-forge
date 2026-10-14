@@ -112,13 +112,23 @@ def _parse(text, private=False):
     return ev
 
 
-def load_events():
-    """All events from access.log* and private.log*; events listed in the private log are flagged private."""
+def _read_logs(since=0.0):
+    """One throwaway container: the log file sizes plus the access/private log lines newer than `since` (cut inside the container -
+    an unrotated access.log can be 100+ MB). Returns (sizes, access_text, private_text), or None without the volume/docker."""
     if sh("docker", "volume", "inspect", VOLUME).returncode != 0:
-        return []
+        return None
+    cut = f" | awk -v s={since:.3f} '$1>s'" if since > 0 else ""
     r = sh("docker", "run", "--rm", "--network", "none", "--user", "13:13", "--cap-drop", "ALL", "-v", f"{VOLUME}:/logs:ro",
-           "--entrypoint", "sh", IMAGE, "-c", "cat /logs/access.log* 2>/dev/null; echo '===PRIVATE==='; cat /logs/private.log* 2>/dev/null")
-    a, _, b = r.stdout.partition("===PRIVATE===\n")
+           "--entrypoint", "sh", IMAGE, "-c",
+           'for f in /logs/*; do echo "$(stat -c %s "$f") $(basename "$f")"; done; echo ===ACCESS===; '
+           f"cat /logs/access.log* 2>/dev/null{cut}; echo ===PRIVATE===; cat /logs/private.log* 2>/dev/null{cut}", timeout=120)
+    head, _, rest = r.stdout.partition("===ACCESS===\n")
+    a, _, b = rest.partition("===PRIVATE===\n")
+    sizes = {l.split()[1]: int(l.split()[0]) for l in head.splitlines() if len(l.split()) == 2 and l.split()[0].isdigit()}
+    return sizes, a, b
+
+
+def _events(a, b):
     main = _parse(a)
     priv = {(e["ts"], e["client"], e["url"]) for e in _parse(b, private=True)}
     for e in main:
@@ -128,9 +138,20 @@ def load_events():
     return main
 
 
+def load_logs(since=0.0):
+    """Events newer than `since` (events listed in the private log are flagged private) and the log file sizes, in ONE docker run."""
+    got = _read_logs(since)
+    return dict(events=[], sizes={}) if got is None else dict(events=_events(got[1], got[2]), sizes=got[0])
+
+
+def load_events(since=0.0):
+    """Events from access.log* and private.log* newer than `since`."""
+    return load_logs(since)["events"]
+
+
 def analyze(since=0.0, until=None, client=None, events=None, ack=True):
     """Summarize events in (since, until]; `client` = container name or IP to restrict to. Unacknowledged events raise alarms."""
-    ev = load_events() if events is None else events
+    ev = load_events(since) if events is None else events
     cmap = client_map()
     ips = {v: k for k, v in cmap.items()}
     want = ips.get(client, client) if client else None

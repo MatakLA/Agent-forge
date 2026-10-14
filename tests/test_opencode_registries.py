@@ -82,31 +82,31 @@ class TestOpenCodeBackendRegistry(unittest.TestCase):
 
 
 class TestOpenCodeSettingsUI(unittest.TestCase):
-    """Verifies that web/static/js/settings.js offers 'opencode' in the worker-add form."""
+    """Verifies that web/static/js/settings.js offers only the runtimes a worker can really be created for (the server's `creatable` flag)."""
 
     def setUp(self):
         js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
         with open(js_path, "r", encoding="utf-8") as f:
             self.settings_js = f.read()
 
-    def test_settings_js_contains_opencode_option(self):
-        """Invariant: settings.js mentions 'opencode' slug with 'OpenCode' label."""
-        self.assertIn("opencode", self.settings_js)
-        assert "opencode" in self.settings_js
-        self.assertIn("OpenCode", self.settings_js)
-        assert "OpenCode" in self.settings_js
+    def test_opencode_is_not_offered_as_a_worker_yet(self):
+        """Invariant: no worker image ships the CLI of 'opencode', so runtimes.CREATABLE excludes it and the add-worker picker does not list it."""
+        import runtimes
+        self.assertIn("opencode", runtimes.RUNTIMES)
+        self.assertNotIn("opencode", runtimes.CREATABLE)
+        self.assertNotRegex(self.settings_js, r"""value=["']opencode["']""")
 
-    def test_settings_js_add_worker_form_and_addwrt_support_opencode(self):
-        """Invariant: addWorkerForm and addwRt explicitly handle 'opencode' as an endpoint runtime."""
-        # addWorkerForm provides fallback for opencode
-        self.assertTrue(re.search(r"R\.opencode\s*=", self.settings_js) or "opencode" in self.settings_js)
-        assert re.search(r"R\.opencode\s*=", self.settings_js) or "opencode" in self.settings_js
+    def test_picker_is_built_from_the_server_flag(self):
+        """Invariant: the picker lists exactly the runtimes with creatable=true in the settings payload (no hard-coded list to drift)."""
+        self.assertIn("creatable", self.settings_js)
+        self.assertNotRegex(self.settings_js, r"rt\s*===\s*['\"]opencode['\"]")
 
-        # addwRt handles endpoint visibility for opencode
-        self.assertTrue(re.search(r"rt\s*===\s*['\"]opencode['\"]", self.settings_js))
-        assert re.search(r"rt\s*===\s*['\"]opencode['\"]", self.settings_js)
-
-
+    def test_model_setting_lives_on_advanced_page(self):
+        """Invariant: the model of a registered-but-not-creatable runtime is still editable, on the Advanced page."""
+        self.assertIn("OPENCODE_MODEL", self.settings_js)
+        body = self.settings_js[self.settings_js.index("function pageAdvanced"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("OPENCODE_MODEL", body)
 class TestOpenCodeDoctorCheck(unittest.TestCase):
     """Verifies bin/doctor checks for opencode CLI and endpoint configuration."""
 

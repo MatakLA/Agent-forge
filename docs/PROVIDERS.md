@@ -153,7 +153,7 @@ To point the orchestrator at an OpenAI-compatible provider:
 
    > [!IMPORTANT]
    > **Credential storage invariants**:
-   > API keys must **never** be placed in `etc/foreman.conf`, `project.conf`, or committed to git. In the web dashboard under **Settings &rarr; Models**, the credential setting field (`OPENAI_API_KEY`) is strictly file-only: it displays whether `openai.key` is present on disk, but never accepts or edits raw tokens in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw values with `***`, and `mask_log_value()` ensures secrets are never recorded in settings event logs.
+   > API keys must **never** be placed in `etc/foreman.conf`, `project.conf`, or committed to git. In the web dashboard the key lives under **Settings &rarr; Runtimes** ("API keys"): the page only shows whether `openai.key` is set, you can set or replace it (the value goes straight to the secrets file through a password field that exists only while it is open), and it is never shown again. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw values with `***`, and `mask_log_value()` ensures secrets are never recorded in settings event logs.
 
 ### Cost and quota caveats
 
@@ -223,7 +223,7 @@ To point the orchestrator at the Gemini API provider:
 
    > [!IMPORTANT]
    > **Credential storage invariants**:
-   > Never store API keys in `etc/foreman.conf`, `project.conf`, or dashboard inputs. The dashboard's **Settings &rarr; Models** page marks `GEMINI_API_KEY` as file-only: it indicates whether `gemini.key` is set on disk, but is not editable in the browser. In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw keys with `***`, and `mask_log_value()` ensures sensitive tokens never appear in event logs.
+   > Never store API keys in `etc/foreman.conf`, `project.conf`, or dashboard inputs. The dashboard's **Settings &rarr; Runtimes** page shows only whether `gemini.key` is set; you can set or replace it there (write-only, the value is never shown again). In `bin/lib/foreman/settings.py`, `SECRET_KEY_RE` (`r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"`) validates secret references, `mask_secret()` masks raw keys with `***`, and `mask_log_value()` ensures sensitive tokens never appear in event logs.
 
 ### Cost and quota caveats
 

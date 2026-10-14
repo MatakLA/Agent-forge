@@ -2,14 +2,29 @@
 // Disk (space usage, cleanups) and Activity (event log). All sections provide as-of indicators, explicit empty states, and full keyboard access.
 
 const SYS = {health: null, healthAt: 0, healthBusy: false, egress: null, egressAt: 0, disk: null, diskAt: 0, err: {}, evq: ''};
-async function sysLoad(kind, path, params, maxAge) {
-  if (SYS[kind + 'Busy'] || (SYS[kind] && Date.now() - SYS[kind + 'At'] < (maxAge || 60000))) return;
+const SYSREQ = {health: ['/api/health', {}], egress: ['/api/egress', {since: '24h'}], disk: ['/api/disk', {}]};
+// The server answers from its cache at once (and refreshes it in the background), so a load is cheap; `fresh` is an explicit
+// "again" (?fresh=1: wait for a new measurement). The old answer stays on screen while the new one is coming.
+async function sysLoad(kind, maxAge, fresh, extra) {
+  if (SYS[kind + 'Busy'] || (!fresh && SYS[kind] && Date.now() - SYS[kind + 'At'] < (maxAge || 60000))) return;
   SYS[kind + 'Busy'] = true;
-  try { const d = await getJSON(path, params); if (d && d.error && !d.checks && !d.health && !d.runs) SYS.err[kind] = d.error; else { SYS[kind] = d; SYS.err[kind] = null; } }
-  catch (e) { SYS.err[kind] = String(e); }
+  if (fresh) schedule(true);
+  try {
+    const d = await getJSON(SYSREQ[kind][0], Object.assign({}, SYSREQ[kind][1], extra || {}, fresh ? {fresh: 1} : {}));
+    if (d && d.error && !d.checks && !d.health && !d.runs) SYS.err[kind] = d.error; else { SYS[kind] = d; SYS.err[kind] = null; }
+  } catch (e) { SYS.err[kind] = String(e); }
   SYS[kind + 'Busy'] = false; SYS[kind + 'At'] = Date.now();
   if (kind === 'health' && SYS.health) { const n = SYS.health.bad || 0; $('c-system').hidden = !n; $('c-system').textContent = n; }
   schedule(true);
+}
+// how old the measurement really is: the server may have answered from its cache
+const sysAge = kind => SYS[kind + 'At'] ? ago(SYS[kind + 'At'] / 1000 - ((SYS[kind] && SYS[kind]._age) || 0)) + ' ago' : 'just now';
+const sysBusy = kind => SYS[kind + 'Busy'] ? ' <span class="muted small">· updating…</span>' : '';
+// the other tabs are loaded quietly once the visible one is there, so switching between them is instant
+function sysPrefetch(except) {
+  if (SYS.prefetched || !SYS[except]) return;
+  SYS.prefetched = true;
+  ['health', 'egress', 'disk'].filter(k => k !== except).forEach((k, i) => setTimeout(() => sysLoad(k, 120000), 1500 * (i + 1)));
 }
 
 // ---- Health
@@ -23,7 +38,7 @@ function fixButton(id) {
   return '';
 }
 function healthHtml() {
-  sysLoad('health', '/api/health', {}, 120000);
+  sysLoad('health', 120000); sysPrefetch('health');
   const H = SYS.health;
   if (!H) return '<div class="empty">' + esc(SYS.err.health ? 'Health check failed: ' + SYS.err.health : SYS.healthBusy ? 'Checking the install…' : 'Health check not yet run.') + '</div>';
   const checks = H.checks || [], bad = checks.filter(c => c.level !== 'ok');
@@ -31,7 +46,7 @@ function healthHtml() {
   const row = c => '<div class="check ' + esc(c.level) + '"><span class="ci">' + (c.level === 'ok' ? '✔' : c.level === 'warn' ? '!' : '✘') + '</span><div><div>' + esc(c.message) + '</div>' +
     (c.fix ? '<div class="muted small">→ ' + esc(c.fix) + '</div>' : '') + '</div><div class="check-act">' + fixButton(c.fix_id) + '</div></div>';
   return '<div class="health-head ' + (H.bad ? 'bad' : H.warn ? 'warn' : 'ok') + '">' + (H.bad ? H.bad + ' problem(s)' : H.warn ? 'All working - ' + H.warn + ' warning(s)' : 'All good') +
-    ' <span class="muted small">checked ' + ago(H.at) + ' ago · Agent-Forge ' + esc(H.version || '') + '</span>' +
+    ' <span class="muted small">checked ' + sysAge('health') + ' · Agent-Forge ' + esc(H.version || '') + '</span>' + sysBusy('health') +
     '<button class="mini" data-health="quick">Check again</button><button class="mini" data-health="full" title="also asks each Antigravity worker for its quota (slower)">Full check</button></div>' +
     (bad.length ? bad.map(row).join('') : '') + '<details' + (bad.length ? '' : ' open') + ' id="all-checks"><summary class="muted" role="button" tabindex="0">All checks (' + checks.length + ')</summary>' +
     [...new Set(checks.map(c => c.section))].map(s => '<h4>' + esc(s) + '</h4>' + checks.filter(c => c.section === s).map(row).join('')).join('') + '</details>';
@@ -41,7 +56,7 @@ function healthHtml() {
 // harmless noise), then acknowledges the alarms and lets the project continue
 const isIp = h => /^[\d.]+$|^\[?[0-9a-f:]+\]?$/i.test(h);
 function egressHtml() {
-  sysLoad('egress', '/api/egress', {since: '24h'}, 60000);
+  sysLoad('egress', 120000); sysPrefetch('egress');
   const E = SYS.egress;
   if (!E) return '<div class="empty">' + esc(SYS.err.egress ? 'Failed to read proxy log: ' + SYS.err.egress : SYS.egressBusy ? 'Reading the proxy log…' : 'Egress log not yet loaded.') + '</div>';
   const h0 = E.health || {}, al = (E.alarms || []).filter(a => a.code !== 'proxy'), ks = E.killswitch || (F && F.killswitch);
@@ -60,7 +75,7 @@ function egressHtml() {
     '(it stays blocked, only the alarm stops). 2. Then continue: the alarms are acknowledged and the workers start again.</div>' +
     '<div class="btnrow"><button class="primary sm" data-act="resume">Acknowledge and continue</button></div></div>';
   html += '<div class="health-head ' + (h0.ok ? 'ok' : 'bad') + '">Proxy: ' + (h0.ok ? 'enforcing' : 'PROBLEM') + ' <span class="muted small">mode ' + esc(h0.mode || '?') +
-    ' · last 24 h · checked ' + (SYS.egressAt ? ago(SYS.egressAt) + ' ago' : 'recently') + '</span><button class="mini" data-egress-reload>Refresh</button></div>' +
+    ' · last 24 h · checked ' + sysAge('egress') + '</span>' + sysBusy('egress') + '<button class="mini" data-egress-reload>Refresh</button></div>' +
     (h0.ok ? '' : (h0.problems || []).map(p => '<div class="check bad"><span class="ci">✘</span><div>' + esc(p) + '<div class="muted small">workers cannot run until the proxy enforces the allow-list</div></div><div class="check-act">' +
       fixButton('egress-up') + '</div></div>').join(''));
   if (al.length && !byEgress) html += '<div class="note">' + al.length + ' unacknowledged alarm(s) - they block new runs. Decide about the hosts below, then ' +
@@ -77,7 +92,7 @@ function egressHtml() {
     : '<div class="note ok">No allowed egress connections recorded in the last 24 h.</div>') +
     small('Hosts in egress/allowlist.txt (the agents\' own APIs) are part of Agent-Forge and cannot be removed here.');
   if ((E.private || []).length) html += '<h3 class="bad">Attempts to reach a private network</h3>' + E.private.map(p => '<div class="mono small">' + esc(dfmt(p.ts)) + ' ' +
-    esc(p.worker) + ' → ' + esc(p.target) + '</div>').join('') + small('These can never be allowed here (your own model server is set in Settings → Workers).');
+    esc(p.worker) + ' → ' + esc(p.target) + '</div>').join('') + small('These can never be allowed here (your own model server is set in Settings → Runtimes).');
   return html;
 }
 document.addEventListener('click', async e => {
@@ -89,17 +104,17 @@ document.addEventListener('click', async e => {
   b.disabled = true;
   const r = await post('/api/egress', {action: a, host: h});
   done(r); if (r.ok && /recreate it once/.test(r.message || '')) alert(r.message);
-  SYS.egressAt = 0; SYS.egress = null; schedule(true);
+  sysLoad('egress', 0, true);
 });
 
 // ---- Disk
 const MB = n => n == null || isNaN(n) ? '–' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : n >= 2 ** 20 ? Math.round(n / 2 ** 20) + ' MB' : Math.max(n ? 1 : 0, Math.round(n / 1024)) + ' kB';
 function diskHtml() {
-  sysLoad('disk', '/api/disk', {}, 120000);
+  sysLoad('disk', 120000); sysPrefetch('disk');
   const D = SYS.disk;
   if (!D) return '<div class="empty">' + esc(SYS.err.disk ? 'Disk measurement failed: ' + SYS.err.disk : SYS.diskBusy ? 'Measuring disk usage…' : 'Disk usage not yet measured.') + '</div>';
   const r = D.runs || {}, tot = (r.transcripts || 0) + (r.compressed || 0) + (r.other || 0), freePct = D.total ? 100 * D.free / D.total : 100;
-  return '<div class="health-head ok">Disk usage <span class="muted small">measured ' + (SYS.diskAt ? ago(SYS.diskAt) + ' ago' : 'recently') + '</span><button class="mini" data-disk-reload>Measure again</button></div>' +
+  return '<div class="health-head ok">Disk usage <span class="muted small">measured ' + sysAge('disk') + '</span>' + sysBusy('disk') + '<button class="mini" data-disk-reload>Measure again</button></div>' +
     '<div class="stats">' + box(MB(D.free), 'free' + (D.total ? ' of ' + MB(D.total) : ''), freePct < 10 ? 'bad' : '') + box(MB(tot), 'runs (' + (r.runs || 0) + ')') +
     box(MB(r.transcripts || 0), 'transcripts') + box(MB(r.compressed || 0), 'compressed') + '</div>' +
     '<h3>Runs</h3><div class="note">Transcripts of finished runs older than ' + D.keep_days + ' days are compressed by the maintenance automatically' +
@@ -130,10 +145,7 @@ document.addEventListener('input', e => { if (e.target.id === 'ev-q') { SYS.evq 
   setHTML('system', activityHtml(), true); const i = $('ev-q'); i.focus(); i.setSelectionRange(pos, pos); } });
 document.addEventListener('click', async e => {
   const hb = e.target.closest('[data-health]');
-  if (hb) { SYS.healthAt = 0; SYS.health = null; hb.disabled = true; schedule(true);
-    SYS.healthBusy = true;
-    try { SYS.health = await getJSON('/api/health', hb.dataset.health === 'full' ? {full: 1} : {}); } catch (err) { SYS.err.health = String(err); }
-    SYS.healthBusy = false; SYS.healthAt = Date.now(); schedule(true); return; }
+  if (hb) { sysLoad('health', 0, true, hb.dataset.health === 'full' ? {full: 1} : {}); return; }
   const fx = e.target.closest('[data-fix]');
   if (fx) { const id = fx.dataset.fix;
     if (id === 'continue') { resumeDev(); return; }
@@ -141,18 +153,18 @@ document.addEventListener('click', async e => {
     fx.disabled = true; fx.textContent = 'working…';
     const r = await post('/api/fix', {fix: id});
     done(r, 'Done'); if (r.message && !r.ok) alert(r.message);
-    SYS.healthAt = 0; SYS.health = null; refreshSoon(); schedule(true); return; }
+    refreshSoon(); sysLoad('health', 0, true); return; }
   const gs = e.target.closest('[data-goset]');
-  if (gs) { const k = gs.dataset.goset; SUB.settings = /COMPAT|key:/.test(k) ? 'team' : /NOTIFY/.test(k) ? 'project' : 'team'; setTab('settings'); return; }
-  if (e.target.closest('[data-egress-reload]')) { SYS.egressAt = 0; SYS.egress = null; schedule(true); return; }
+  if (gs) { settingsGoto(gs.dataset.goset); return; }
+  if (e.target.closest('[data-egress-reload]')) { sysLoad('egress', 0, true); return; }
   if (e.target.closest('[data-egress-ack]')) { if (!confirm('Acknowledge every alarm up to now? Only do this after reading them.')) return;
-    done(await post('/api/egress', {action: 'ack'}), 'Acknowledged'); SYS.egressAt = 0; SYS.egress = null; schedule(true); return; }
-  if (e.target.closest('[data-disk-reload]')) { SYS.diskAt = 0; SYS.disk = null; schedule(true); return; }
+    done(await post('/api/egress', {action: 'ack'}), 'Acknowledged'); sysLoad('egress', 0, true); return; }
+  if (e.target.closest('[data-disk-reload]')) { sysLoad('disk', 0, true); return; }
   const cl = e.target.closest('[data-clean]');
   if (cl) { const act = cl.dataset.clean; let days = '';
     if (act === 'transcripts') { days = prompt('Delete the transcripts of finished runs older than how many days? (the run numbers stay)', '30'); if (!days || !/^\d+$/.test(days)) return; }
     else if (act === 'docker' && !confirm('Remove dangling Docker images and the build cache?')) return;
     cl.disabled = true; cl.textContent = 'working…';
-    done(await post('/api/disk', {action: act, days})); SYS.diskAt = 0; SYS.disk = null; schedule(true); }
+    done(await post('/api/disk', {action: act, days})); sysLoad('disk', 0, true); }
 });
-projectResets.push(() => { SYS.health = null; SYS.healthAt = 0; SYS.disk = null; SYS.diskAt = 0; });
+projectResets.push(() => { SYS.health = null; SYS.healthAt = 0; SYS.disk = null; SYS.diskAt = 0; SYS.egress = null; SYS.egressAt = 0; SYS.prefetched = false; });
