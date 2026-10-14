@@ -278,50 +278,6 @@ def _status_of_provider(name: str) -> dict:
     return _build_result(name, "Provider", missing_settings, missing_egress)
 
 
-class RuntimeStatusDict(dict):
-    """Dictionary of runtime readiness statuses supporting both 'qwen' and 'qwen-code'."""
-
-    def __getitem__(self, key):
-        if key == "qwen" and not super().__contains__("qwen") and super().__contains__("qwen-code"):
-            res = self["qwen-code"]
-            if isinstance(res, dict):
-                return _build_result("qwen", "Runtime", res.get("missing_settings", []), res.get("missing_egress", []))
-            return res
-        return super().__getitem__(key)
-
-    def __contains__(self, key):
-        if key == "qwen" and super().__contains__("qwen-code"):
-            return True
-        return super().__contains__(key)
-
-    def get(self, key, default=None):
-        if key == "qwen" and not super().__contains__("qwen") and super().__contains__("qwen-code"):
-            return self["qwen"]
-        return super().get(key, default)
-
-    def keys(self):
-        class _KeysView:
-            def __init__(kself, d):
-                kself._d = d
-
-            def __iter__(kself):
-                return iter(super(RuntimeStatusDict, kself._d).keys())
-
-            def __len__(kself):
-                return len(super(RuntimeStatusDict, kself._d))
-
-            def __contains__(kself, item):
-                return item in kself._d
-
-            def __repr__(kself):
-                return repr(super(RuntimeStatusDict, kself._d).keys())
-
-            def __eq__(kself, other):
-                return set(super(RuntimeStatusDict, kself._d).keys()) == set(other)
-
-        return _KeysView(self)
-
-
 def status_of(kind: str, name: str) -> dict:
     """Check readiness status for a runtime or orchestrator provider.
 
@@ -333,9 +289,6 @@ def status_of(kind: str, name: str) -> dict:
         raise ValueError(f"unknown kind {kind!r}: must be 'runtime' or 'provider'")
 
     if kind == "runtime":
-        if name == "qwen" and "qwen" not in runtimes.RUNTIMES and "qwen-code" in runtimes.RUNTIMES:
-            res = _status_of_runtime("qwen-code")
-            return _build_result("qwen", "Runtime", res["missing_settings"], res["missing_egress"])
         if name not in runtimes.RUNTIMES:
             raise ValueError(f"unknown runtime {name!r}")
         return _status_of_runtime(name)
@@ -349,7 +302,7 @@ def status_of(kind: str, name: str) -> dict:
 def all_status() -> dict:
     """Return status of all registered runtimes and providers."""
     return {
-        "runtimes": RuntimeStatusDict({rt: status_of("runtime", rt) for rt in runtime_items()}),
+        "runtimes": {rt: status_of("runtime", rt) for rt in runtime_items()},
         "providers": {pr: status_of("provider", pr) for pr in provider_items()},
     }
 
