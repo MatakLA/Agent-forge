@@ -8,6 +8,7 @@ Public interface:
 Important invariants:
 - bin/doctor prints exactly one line per runtime (16 entries) and per provider (6 entries).
 - All six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) are covered by doctor readiness checks.
+- Opencode, qwen-code and goose runtimes report honest ready/reason status dictionaries across ready and not-ready states.
 - Local-compat runtimes without configured endpoints report not-ready/not-configured ([WARN]), never falsely ready ([OK]).
 - Output format matches doctor conventions with [OK] and [WARN] markers.
 - Secrets are NEVER printed in stdout, stderr, or check dictionaries.
@@ -777,8 +778,207 @@ class TestDoctorReadiness(unittest.TestCase):
         assert f"[WARN] ollama: endpoint http://127.0.0.1:{closed_port}/v1 is unreachable" in proc_unreach.stdout
         assert f"[OK] ollama: Runtime 'ollama' is ready (http://127.0.0.1:{ready_port}/v1)" in proc_ready.stdout
 
+    def test_doctor_readiness_opencode_qwen_goose_all_status_includes_three_keys(self):
+        """Acceptance criterion: readiness.all_status() includes opencode, qwen-code and goose with same dict shape.
+
+        Dict shape matches the other runtimes: ready (bool), reason (str), state (str), detail (str),
+        missing_settings (list), and missing_egress (list).
+        """
+        target_keys = ("opencode", "qwen-code", "goose")
+        other_six = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
+
+        st = readiness.all_status()
+        self.assertIn("runtimes", st)
+        rt_status = st["runtimes"]
+
+        # Assert no phantom 'qwen' alias key exists in all_status()["runtimes"]
+        self.assertNotIn("qwen", rt_status)
+        assert "qwen" not in rt_status
+
+        # 1. Assert all other six existing runtimes are present and check their dict keys
+        for rt in other_six:
+            self.assertIn(rt, rt_status)
+            info = rt_status[rt]
+            self.assertIn("ready", info)
+            self.assertIn("reason", info)
+            self.assertIn("state", info)
+            self.assertIn("detail", info)
+            self.assertIsInstance(info["ready"], bool)
+            self.assertIsInstance(info["reason"], str)
+
+        # 2. Assert opencode, qwen-code, and goose are present in all_status()["runtimes"]
+        for rt in target_keys:
+            self.assertIn(rt, rt_status, f"Runtime '{rt}' missing from readiness.all_status()['runtimes']")
+            info = rt_status[rt]
+            self.assertIsInstance(info, dict)
+            self.assertIn("ready", info, f"Runtime '{rt}' status missing 'ready' key")
+            self.assertIn("reason", info, f"Runtime '{rt}' status missing 'reason' key")
+            self.assertIn("state", info, f"Runtime '{rt}' status missing 'state' key")
+            self.assertIn("detail", info, f"Runtime '{rt}' status missing 'detail' key")
+            self.assertIn("missing_settings", info, f"Runtime '{rt}' status missing 'missing_settings' key")
+            self.assertIn("missing_egress", info, f"Runtime '{rt}' status missing 'missing_egress' key")
+            self.assertIsInstance(info["ready"], bool)
+            self.assertIsInstance(info["reason"], str)
+            self.assertIsInstance(info["state"], str)
+            self.assertIsInstance(info["detail"], str)
+            self.assertIsInstance(info["missing_settings"], list)
+            self.assertIsInstance(info["missing_egress"], list)
+
+        # AST-detectable direct assert statements
+        assert all(rt in rt_status for rt in target_keys)
+        assert all(isinstance(rt_status[rt]["ready"], bool) for rt in target_keys)
+        assert all(isinstance(rt_status[rt]["reason"], str) and len(rt_status[rt]["reason"]) > 0 for rt in target_keys)
+        assert all(rt_status[rt]["state"] in ("ok", "missing_setting", "missing_egress") for rt in target_keys)
+
+    def test_status_of_opencode_readiness_states(self):
+        """Invariant: status_of('runtime', 'opencode') evaluates COMPAT_BASE_URL and egress honestly."""
+        # 1. Not ready: missing COMPAT_BASE_URL
+        with patch.object(readiness, "_get_compat_base_url", return_value=""):
+            st_not_ready = readiness.status_of("runtime", "opencode")
+            self.assertIsInstance(st_not_ready, dict)
+            self.assertFalse(st_not_ready["ready"])
+            self.assertEqual(st_not_ready["state"], "missing_setting")
+            self.assertIn("COMPAT_BASE_URL", st_not_ready["missing_settings"])
+            self.assertIn("COMPAT_BASE_URL", st_not_ready["reason"])
+            self.assertIn("opencode", st_not_ready["reason"])
+            assert st_not_ready["ready"] is False
+            assert "COMPAT_BASE_URL" in st_not_ready["missing_settings"]
+            assert "COMPAT_BASE_URL" in st_not_ready["reason"]
+
+        # 2. Ready: COMPAT_BASE_URL valid and host allowed
+        with patch.object(readiness, "_get_compat_base_url", return_value="http://127.0.0.1:11434/v1"), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"127.0.0.1"}):
+            st_ready = readiness.status_of("runtime", "opencode")
+            self.assertIsInstance(st_ready, dict)
+            self.assertTrue(st_ready["ready"])
+            self.assertEqual(st_ready["state"], "ok")
+            self.assertEqual(st_ready["missing_settings"], [])
+            self.assertEqual(st_ready["missing_egress"], [])
+            self.assertIn("is ready", st_ready["reason"])
+            assert st_ready["ready"] is True
+            assert st_ready["state"] == "ok"
+            assert st_ready["missing_settings"] == []
+            assert "is ready" in st_ready["reason"]
+
+        # 3. Not ready: COMPAT_BASE_URL valid but host missing from egress allowlist
+        with patch.object(readiness, "_get_compat_base_url", return_value="http://opencode-ext.corp:8000/v1"), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
+             patch.object(readiness, "_local_endpoint_host", return_value=""):
+            st_egress = readiness.status_of("runtime", "opencode")
+            self.assertIsInstance(st_egress, dict)
+            self.assertFalse(st_egress["ready"])
+            self.assertEqual(st_egress["state"], "missing_egress")
+            self.assertIn("opencode-ext.corp", st_egress["missing_egress"])
+            self.assertIn("opencode-ext.corp", st_egress["reason"])
+            assert st_egress["ready"] is False
+            assert "opencode-ext.corp" in st_egress["missing_egress"]
+
+    def test_status_of_goose_readiness_states(self):
+        """Invariant: status_of('runtime', 'goose') evaluates COMPAT_BASE_URL and egress honestly."""
+        # 1. Not ready: missing COMPAT_BASE_URL
+        with patch.object(readiness, "_get_compat_base_url", return_value=""):
+            st_not_ready = readiness.status_of("runtime", "goose")
+            self.assertIsInstance(st_not_ready, dict)
+            self.assertFalse(st_not_ready["ready"])
+            self.assertEqual(st_not_ready["state"], "missing_setting")
+            self.assertIn("COMPAT_BASE_URL", st_not_ready["missing_settings"])
+            self.assertIn("COMPAT_BASE_URL", st_not_ready["reason"])
+            self.assertIn("goose", st_not_ready["reason"])
+            assert st_not_ready["ready"] is False
+            assert "COMPAT_BASE_URL" in st_not_ready["missing_settings"]
+            assert "COMPAT_BASE_URL" in st_not_ready["reason"]
+
+        # 2. Ready: COMPAT_BASE_URL valid and host allowed
+        with patch.object(readiness, "_get_compat_base_url", return_value="http://127.0.0.1:11434/v1"), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"127.0.0.1"}):
+            st_ready = readiness.status_of("runtime", "goose")
+            self.assertIsInstance(st_ready, dict)
+            self.assertTrue(st_ready["ready"])
+            self.assertEqual(st_ready["state"], "ok")
+            self.assertEqual(st_ready["missing_settings"], [])
+            self.assertEqual(st_ready["missing_egress"], [])
+            self.assertIn("is ready", st_ready["reason"])
+            assert st_ready["ready"] is True
+            assert st_ready["state"] == "ok"
+            assert st_ready["missing_settings"] == []
+            assert "is ready" in st_ready["reason"]
+
+        # 3. Not ready: COMPAT_BASE_URL valid but host missing from egress allowlist
+        with patch.object(readiness, "_get_compat_base_url", return_value="http://goose-ext.corp:5000/v1"), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
+             patch.object(readiness, "_local_endpoint_host", return_value=""):
+            st_egress = readiness.status_of("runtime", "goose")
+            self.assertIsInstance(st_egress, dict)
+            self.assertFalse(st_egress["ready"])
+            self.assertEqual(st_egress["state"], "missing_egress")
+            self.assertIn("goose-ext.corp", st_egress["missing_egress"])
+            self.assertIn("goose-ext.corp", st_egress["reason"])
+            assert st_egress["ready"] is False
+            assert "goose-ext.corp" in st_egress["missing_egress"]
+
+    def test_status_of_qwen_readiness_states(self):
+        """Invariant: status_of('runtime', 'qwen-code') evaluates qwen.key and DashScope egress honestly."""
+        # Verify unknown alias 'qwen' raises ValueError honestly
+        with self.assertRaises(ValueError) as ctx_alias:
+            readiness.status_of("runtime", "qwen")
+        self.assertIn("unknown runtime 'qwen'", str(ctx_alias.exception))
+        assert "unknown runtime 'qwen'" in str(ctx_alias.exception)
+
+        # 1. Not ready: missing secret qwen.key
+        with patch.object(readiness, "_has_secret", return_value=False), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}):
+            st_not_ready = readiness.status_of("runtime", "qwen-code")
+            self.assertIsInstance(st_not_ready, dict)
+            self.assertFalse(st_not_ready["ready"])
+            self.assertEqual(st_not_ready["state"], "missing_setting")
+            self.assertIn("qwen.key", st_not_ready["missing_settings"])
+            self.assertIn("qwen.key", st_not_ready["reason"])
+            assert st_not_ready["ready"] is False
+            assert "qwen.key" in st_not_ready["missing_settings"]
+            assert "qwen.key" in st_not_ready["reason"]
+
+        # 2. Ready: secret present and egress allowed
+        with patch.object(readiness, "_has_secret", return_value=True), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}):
+            st_ready = readiness.status_of("runtime", "qwen-code")
+            self.assertIsInstance(st_ready, dict)
+            self.assertTrue(st_ready["ready"])
+            self.assertEqual(st_ready["state"], "ok")
+            self.assertEqual(st_ready["missing_settings"], [])
+            self.assertEqual(st_ready["missing_egress"], [])
+            self.assertIn("is ready", st_ready["reason"])
+            assert st_ready["ready"] is True
+            assert st_ready["state"] == "ok"
+            assert "is ready" in st_ready["reason"]
+
+        # 3. Not ready: secret present but egress missing
+        with patch.object(readiness, "_has_secret", return_value=True), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
+             patch.object(readiness, "_local_endpoint_host", return_value=""):
+            st_egress = readiness.status_of("runtime", "qwen-code")
+            self.assertIsInstance(st_egress, dict)
+            self.assertFalse(st_egress["ready"])
+            self.assertEqual(st_egress["state"], "missing_egress")
+            self.assertIn("dashscope.aliyuncs.com", st_egress["missing_egress"])
+            self.assertIn("dashscope.aliyuncs.com", st_egress["reason"])
+            assert st_egress["ready"] is False
+            assert "dashscope.aliyuncs.com" in st_egress["missing_egress"]
+
+    def test_status_of_invalid_runtime_or_kind_raises(self):
+        """Invariant: status_of rejects unknown runtime slugs and invalid kinds with ValueError."""
+        with self.assertRaises(ValueError) as ctx_rt:
+            readiness.status_of("runtime", "nonexistent-runtime-xyz")
+        self.assertIn("unknown runtime", str(ctx_rt.exception))
+        assert "unknown runtime" in str(ctx_rt.exception)
+
+        with self.assertRaises(ValueError) as ctx_kind:
+            readiness.status_of("invalid-kind", "opencode")
+        self.assertIn("unknown kind", str(ctx_kind.exception))
+        assert "unknown kind" in str(ctx_kind.exception)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
