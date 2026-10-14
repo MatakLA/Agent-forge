@@ -9,6 +9,7 @@
 # - cost_model("copilot"): kind="unknown", detail="GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge"
 # - command("copilot", ...): argv=["copilot", "--output-format", "stream-json", ...], stdin=prompt
 # - scan("copilot", ...): initial tokens=None, parses session, tool, message, step_finish, result, error, turn.failed.
+# - Requires node on PATH to run fake-copilot-server.js; skips fixture integration cleanly when node is unavailable.
 
 set -euo pipefail
 
@@ -126,73 +127,23 @@ assert \"--model\" not in argv_empty
 assert \"--resume\" not in argv_empty
 "'
 
-# 3. Start fake Copilot server
-PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
-export COPILOT_SERVER_PORT="$PORT"
-
-if command -v node >/dev/null 2>&1; then
+# 3. Check node availability for fixture-dependent integration tests
+if ! command -v node >/dev/null 2>&1; then
+  echo "SKIP: node is not available on host; fake-copilot-server.js requires node"
+else
+  PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+  export COPILOT_SERVER_PORT="$PORT"
   node "$ROOT/tests/fixtures/fake-copilot-server.js" "$PORT" > "$T/server.log" 2>&1 &
   SERVER_PID=$!
-else
-  # Python fallback server providing identical behavior when node is absent
-  python3 -c "
-import http.server, json, sys, os
-port = int(sys.argv[1])
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8') if length > 0 else ''
-        try:
-            j = json.loads(body)
-        except Exception:
-            j = {}
-        sid = j.get('sessionID') or j.get('session_id') or j.get('sessionId') or j.get('session') or 'ses_copilot_test_01'
-        sys.stderr.write(f'{self.command} {self.path} session={sid} bytes={len(body)}\n')
-        sys.stderr.flush()
-        if self.path in ('/health', '/healthz'):
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{\"status\":\"ok\"}')
-            return
-        if '/error' in self.path or j.get('error'):
-            err = j.get('error') or 'simulated rate limit'
-            events = [
-                {'type': 'start', 'sessionID': sid},
-                {'type': 'result', 'status': 'error', 'error': err, 'sessionID': sid, 'part': {'reason': 'error', 'error': err}}
-            ]
-        else:
-            events = [
-                {'type': 'start', 'sessionID': sid, 'part': {'id': 'part_start_01'}},
-                {'type': 'message', 'sessionID': sid, 'part': {'text': 'Done: wrote hello.txt.'}},
-                {'type': 'tool', 'name': 'bash', 'sessionID': sid, 'part': {'type': 'tool', 'tool': 'bash', 'command': 'echo \"hello from copilot\" > hello.txt'}},
-                {'type': 'result', 'status': 'success', 'sessionID': sid, 'part': {'reason': 'stop'}}
-            ]
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/x-ndjson')
-        self.end_headers()
-        for ev in events:
-            self.wfile.write((json.dumps(ev) + '\n').encode('utf-8'))
-    def do_GET(self):
-        self.do_POST()
-    def log_message(self, format, *args):
-        pass
-server = http.server.HTTPServer(('127.0.0.1', port), Handler)
-sys.stderr.write(f'fake Copilot server listening on 127.0.0.1:{port}\n')
-sys.stderr.flush()
-server.serve_forever()
-" "$PORT" > "$T/server.log" 2>&1 &
-  SERVER_PID=$!
-fi
 
-# Wait for fake server to accept connections
-for _ in $(seq 1 40); do
-  python3 -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', $PORT)); s.close()" 2>/dev/null && break
-  sleep 0.1
-done
+  # Wait for fake server to accept connections
+  for _ in $(seq 1 40); do
+    python3 -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', $PORT)); s.close()" 2>/dev/null && break
+    sleep 0.1
+  done
 
-# 4. Create stub CLI standing in for copilot binary
-cat > "$T/bin/copilot" <<'EOF'
+  # 4. Create stub CLI standing in for copilot binary
+  cat > "$T/bin/copilot" <<'EOF'
 #!/usr/bin/env python3
 """Stub standing in for Copilot CLI binary during tests."""
 import json
@@ -234,11 +185,11 @@ except Exception as e:
     sys.stderr.write(f"copilot stub error: {e}\n")
     sys.exit(1)
 EOF
-chmod +x "$T/bin/copilot"
-export PATH="$T/bin:$PATH"
+  chmod +x "$T/bin/copilot"
+  export PATH="$T/bin:$PATH"
 
-# 5. Drive copilot command() through CLI stub against fake server, feed lines to scan()
-RUN_JSON=$(python3 -c "
+  # 5. Drive copilot command() through CLI stub against fake server, feed lines to scan()
+  RUN_JSON=$(python3 -c "
 import json, os, subprocess, sys
 sys.path.insert(0, '$ROOT/bin/lib')
 import runtimes
@@ -256,26 +207,26 @@ parsed = runtimes.scan('copilot', lines)
 print(json.dumps(parsed))
 ")
 
-check "copilot scan(): tools count increments on tool event (tools == 1)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, f\"expected tools=1, got {r[\"tools\"]}\"" "$RUN_JSON"'
+  check "copilot scan(): tools count increments on tool event (tools == 1)" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, f\"expected tools=1, got {r[\"tools\"]}\"" "$RUN_JSON"'
 
-check "copilot scan(): conversation_id parsed from start event" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_test_01\", f\"got {r[\"conversation_id\"]}\"" "$RUN_JSON"'
+  check "copilot scan(): conversation_id parsed from start event" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_test_01\", f\"got {r[\"conversation_id\"]}\"" "$RUN_JSON"'
 
-check "copilot scan(): result status is SUCCESS" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$RUN_JSON"'
+  check "copilot scan(): result status is SUCCESS" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$RUN_JSON"'
 
-check "copilot scan(): response text extracted from message" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"response\"] == \"Done: wrote hello.txt.\"" "$RUN_JSON"'
+  check "copilot scan(): response text extracted from message" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"response\"] == \"Done: wrote hello.txt.\"" "$RUN_JSON"'
 
-check "copilot scan(): cost_usd is None by default (subscription cost model)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] is None" "$RUN_JSON"'
+  check "copilot scan(): cost_usd is None by default (subscription cost model)" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] is None" "$RUN_JSON"'
 
-check "copilot scan(): tokens is None by default (no usage in default fixture)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] is None" "$RUN_JSON"'
+  check "copilot scan(): tokens is None by default (no usage in default fixture)" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] is None" "$RUN_JSON"'
 
-# 6. Rework / resume existing conversation session
-REWORK_JSON=$(python3 -c "
+  # 6. Rework / resume existing conversation session
+  REWORK_JSON=$(python3 -c "
 import json, os, subprocess, sys
 sys.path.insert(0, '$ROOT/bin/lib')
 import runtimes
@@ -290,11 +241,11 @@ parsed = runtimes.scan('copilot', lines)
 print(json.dumps(parsed))
 ")
 
-check "copilot rework: command() preserves session and scan() extracts resumed conversation_id" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_rework_99\"" "$REWORK_JSON"'
+  check "copilot rework: command() preserves session and scan() extracts resumed conversation_id" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_rework_99\"" "$REWORK_JSON"'
 
-# 7. Error handling via stub and fake server
-ERROR_JSON=$(python3 -c "
+  # 7. Error handling via stub and fake server
+  ERROR_JSON=$(python3 -c "
 import json, os, subprocess, sys
 sys.path.insert(0, '$ROOT/bin/lib')
 import runtimes
@@ -308,10 +259,15 @@ parsed = runtimes.scan('copilot', lines)
 print(json.dumps(parsed))
 ")
 
-check "copilot scan(): error events parse as status ERROR with error message" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"ERROR\"; assert \"simulated rate limit\" in r[\"result\"][\"error\"]" "$ERROR_JSON"'
+  check "copilot scan(): error events parse as status ERROR with error message" \
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"ERROR\"; assert \"simulated rate limit\" in r[\"result\"][\"error\"]" "$ERROR_JSON"'
 
-# 8. scan() edge cases and boundary tests
+  # 8. Fake server logged requests
+  check "fake server saw and logged requests" \
+    'grep -q "session=" "$T/server.log"'
+fi
+
+# 9. scan() edge cases and boundary tests (pure unit tests, offline)
 check "copilot scan(): empty stream yields tokens=None and default structure" \
   'python3 -c "
 import sys
@@ -478,7 +434,7 @@ r = runtimes.scan(\"copilot\", stream, prices=\"2.0,0.5,6.0\")
 assert r[\"result\"][\"cost_usd\"] is None
 "'
 
-# 9. scan_file('copilot', path) helper
+# 10. scan_file('copilot', path) helper
 check "copilot scan_file(): parses events from file and handles missing file" \
   'python3 -c "
 import json, os, sys, tempfile
@@ -500,11 +456,7 @@ assert missing[\"tokens\"] is None
 assert missing[\"result\"] is None
 "'
 
-# 10. Fake server logged requests
-check "fake server saw and logged requests" \
-  'grep -q "session=" "$T/server.log"'
-
-# 11. Run Python unittest suite against the running fake server
+# 11. Run Python unittest suite
 python3 "$ROOT/tests/test_runtime_copilot.py" || exit 1
 
 echo "copilot runtime tests: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
