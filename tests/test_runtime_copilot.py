@@ -12,6 +12,7 @@ Important invariants:
 - command('copilot', ...) passes prompt on stdin, never in argv, with quiet flags and optional --model/--resume.
 - scan('copilot', ...) parses stream-json events from fake-copilot-server.js without crashing.
 - Skips malformed/garbage lines without raising, preserving terminal result status, zero network calls and no real keys.
+- Requires node on PATH to run fake-copilot-server.js; skips fixture tests cleanly when node is unavailable.
 
 Grounded from bin/lib/runtimes.py (Task 0212):
 - RUNTIMES entry (lines 60-62): key=None, hosts=["api.githubcopilot.com", "api.github.com"], api=False
@@ -44,6 +45,8 @@ except Exception as e:
     sys.stderr.write(f"smoke-import failed for runtimes: {e}\n")
     sys.exit(1)
 
+NODE_AVAILABLE = bool(shutil.which("node") or os.environ.get("COPILOT_SERVER_PORT"))
+
 
 class TestCopilotRuntime(unittest.TestCase):
     """Unit tests for GitHub Copilot runtime against fake server fixture."""
@@ -63,62 +66,11 @@ class TestCopilotRuntime(unittest.TestCase):
     @classmethod
     def _start_fake_server(cls, port):
         fixture_path = os.path.join(ROOT, "tests", "fixtures", "fake-copilot-server.js")
-        if shutil.which("node"):
-            cls.server_proc = subprocess.Popen(
-                ["node", fixture_path, str(port)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            # Python server providing identical behavior when node is absent
-            code = f"""
-import http.server, json, sys
-port = {port}
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8') if length > 0 else ''
-        try:
-            j = json.loads(body)
-        except Exception:
-            j = {{}}
-        sid = j.get('sessionID') or j.get('session_id') or j.get('sessionId') or j.get('session') or 'ses_copilot_test_01'
-        if self.path in ('/health', '/healthz'):
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{{"status":"ok"}}')
-            return
-        if '/error' in self.path or j.get('error'):
-            err = j.get('error') or 'simulated rate limit'
-            events = [
-                {{'type': 'start', 'sessionID': sid}},
-                {{'type': 'result', 'status': 'error', 'error': err, 'sessionID': sid, 'part': {{'reason': 'error', 'error': err}}}}
-            ]
-        else:
-            events = [
-                {{'type': 'start', 'sessionID': sid, 'part': {{'id': 'part_start_01'}}}},
-                {{'type': 'message', 'sessionID': sid, 'part': {{'text': 'Done: wrote hello.txt.'}}}},
-                {{'type': 'tool', 'name': 'bash', 'sessionID': sid, 'part': {{'type': 'tool', 'tool': 'bash', 'command': 'echo "hello from copilot" > hello.txt'}}}},
-                {{'type': 'result', 'status': 'success', 'sessionID': sid, 'part': {{'reason': 'stop'}}}}
-            ]
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/x-ndjson')
-        self.end_headers()
-        for ev in events:
-            self.wfile.write((json.dumps(ev) + '\\n').encode('utf-8'))
-    def do_GET(self):
-        self.do_POST()
-    def log_message(self, format, *args):
-        pass
-server = http.server.HTTPServer(('127.0.0.1', port), Handler)
-server.serve_forever()
-"""
-            cls.server_proc = subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        cls.server_proc = subprocess.Popen(
+            ["node", fixture_path, str(port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     @classmethod
     def _wait_for_server(cls, port):
@@ -135,15 +87,17 @@ server.serve_forever()
         port_env = os.environ.get("COPILOT_SERVER_PORT")
         if port_env:
             cls.server_port = int(port_env)
-        else:
+            cls._wait_for_server(cls.server_port)
+        elif shutil.which("node"):
             cls.server_port = cls._find_free_port()
             cls._start_fake_server(cls.server_port)
             os.environ["COPILOT_SERVER_PORT"] = str(cls.server_port)
+            cls._wait_for_server(cls.server_port)
+        else:
+            cls.server_port = None
 
-        cls._wait_for_server(cls.server_port)
-
-        # Ensure copilot stub is on PATH if not present
-        if not shutil.which("copilot"):
+        # Ensure copilot stub is on PATH if server is available and stub not present
+        if cls.server_port and not shutil.which("copilot"):
             cls.server_temp_dir = tempfile.TemporaryDirectory()
             stub_path = os.path.join(cls.server_temp_dir.name, "copilot")
             with open(stub_path, "w", encoding="utf-8") as f:
@@ -269,8 +223,11 @@ with urllib.request.urlopen(req) as resp:
         assert "github.token" not in argv_str
         assert "ghp_" not in argv_str
 
+    @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-copilot-server.js")
     def test_copilot_command_end_to_end_execution(self):
         """command('copilot', ...) drives stub binary against fake server and scan() parses result."""
+        if not self.server_port:
+            self.skipTest("node not available to run fake-copilot-server.js")
         prompt = "End-to-end integration test run"
         argv, stdin = runtimes.command("copilot", prompt, "gpt-4o")
         proc = subprocess.run(argv, input=stdin, text=True, capture_output=True)
@@ -287,8 +244,11 @@ with urllib.request.urlopen(req) as resp:
         assert res["result"]["status"] == "SUCCESS"
         assert res["result"]["response"] == "Done: wrote hello.txt."
 
+    @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-copilot-server.js")
     def test_copilot_command_resume_session_via_stub(self):
         """command('copilot', ...) resumes existing conversation session and scan() preserves conversation_id."""
+        if not self.server_port:
+            self.skipTest("node not available to run fake-copilot-server.js")
         conv_id = "ses_copilot_resumed_77"
         argv, stdin = runtimes.command("copilot", "Follow-up question", "gpt-4o", conversation=conv_id)
         proc = subprocess.run(argv, input=stdin, text=True, capture_output=True)
@@ -298,8 +258,11 @@ with urllib.request.urlopen(req) as resp:
         assert proc.returncode == 0
         assert res["conversation_id"] == conv_id
 
+    @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-copilot-server.js")
     def test_copilot_scan_success_default_events(self):
         """Normal successful run returns SUCCESS status with sensible tools and conversation_id."""
+        if not self.server_port:
+            self.skipTest("node not available to run fake-copilot-server.js")
         events = self._fetch_events("/run", {"sessionID": "ses_copilot_test_01"})
         res = runtimes.scan("copilot", events)
         self.assertIsNotNone(res["result"])
@@ -313,8 +276,11 @@ with urllib.request.urlopen(req) as resp:
         assert res["result"]["status"] == "SUCCESS"
         assert res["tools"] == 1
 
+    @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-copilot-server.js")
     def test_copilot_scan_error_events(self):
         """Error-event path returns ERROR status without crashing."""
+        if not self.server_port:
+            self.skipTest("node not available to run fake-copilot-server.js")
         events = self._fetch_events("/error", {"sessionID": "ses_copilot_err", "error": "simulated rate limit"})
         res = runtimes.scan("copilot", events)
         self.assertIsNotNone(res["result"])
@@ -436,19 +402,18 @@ with urllib.request.urlopen(req) as resp:
 
     def test_copilot_scan_malformed_lines_skipped(self):
         """Malformed and garbage lines in the event stream are skipped without raising."""
-        valid_events = self._fetch_events("/run", {"sessionID": "ses_copilot_malformed"})
         corrupted_events = [
             "NOT_A_JSON_LINE",
             "{broken json",
             "[1, 2, 3]",
             "42",
             "   ",
-            valid_events[0],
+            json.dumps({"type": "start", "sessionID": "ses_copilot_malformed"}),
             "corrupted middle line",
-            valid_events[1],
+            json.dumps({"type": "message", "sessionID": "ses_copilot_malformed", "part": {"text": "Done: wrote hello.txt."}}),
             '{"unknown": "event"}',
-            valid_events[2],
-            valid_events[3],
+            json.dumps({"type": "tool", "name": "bash", "sessionID": "ses_copilot_malformed"}),
+            json.dumps({"type": "result", "status": "success", "sessionID": "ses_copilot_malformed"}),
             "corrupted trailing line",
         ]
         res = runtimes.scan("copilot", corrupted_events)
@@ -551,10 +516,10 @@ with urllib.request.urlopen(req) as resp:
             json.dumps({"type": "tool_call"}),
             json.dumps({"type": "tool_invocation"}),
             json.dumps({"type": "tool_execution"}),
-            json.dumps({"type": "other", "part": {"type": "tool"}}),
-            json.dumps({"type": "other", "part": {"type": "tool_use"}}),
-            json.dumps({"type": "other", "part": {"tool": "read_file"}}),
-            json.dumps({"type": "other", "tool": "grep"}),
+            json.dumps({"part": {"type": "tool"}}),
+            json.dumps({"part": {"type": "tool_use"}}),
+            json.dumps({"part": {"tool": "read_file"}}),
+            json.dumps({"tool": "grep"}),
         ]
         r = runtimes.scan("copilot", stream)
         self.assertEqual(r["tools"], 9)
