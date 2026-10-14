@@ -387,9 +387,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   });
   check('settings / workers: add-worker runtime picker exposes selectable elements with ids runtime-opt-opencode, runtime-opt-qwen-code and runtime-opt-goose', rtPickerPresent);
 
+  // Settings / Workers: task 0200 selectable runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)
+  const newRtConfigs = [
+    {id: 'runtime-opt-copilot', val: 'copilot'},
+    {id: 'runtime-opt-mistral-vibe', val: 'mistral-vibe'},
+    {id: 'runtime-opt-ollama', val: 'ollama'},
+    {id: 'runtime-opt-vllm', val: 'vllm'},
+    {id: 'runtime-opt-lmstudio', val: 'lmstudio'},
+    {id: 'runtime-opt-llamacpp', val: 'llamacpp'}
+  ];
+  const newRtPresent = newRtConfigs.length === 6 && newRtConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
+    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
+    const help = label ? label.querySelector('.muted') : null;
+    return !!label && !!help && help.textContent.trim().length > 0;
+  });
+  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', newRtPresent);
+
   let rtPickerNoThrow = true;
   let rtPickerUpdatesSelection = true;
-  for (const cfg of rtPickerConfigs) {
+  for (const cfg of [...rtPickerConfigs, ...newRtConfigs]) {
     const el = d.getElementById(cfg.id);
     if (!el) {
       rtPickerUpdatesSelection = false;
