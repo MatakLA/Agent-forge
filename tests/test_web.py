@@ -940,29 +940,43 @@ class TestWebServer(unittest.TestCase):
                 self.assertIn(rt, data["runtimes"])
                 assert rt in data["runtimes"]
 
-            # Assert shape for every runtime: {"ready": bool|None, "reason": str, "cost_model": dict}
+            # Ground every runtime's ready, reason, and cost_model directly against readiness.status_of and cost_model
             for rt, entry in data["runtimes"].items():
                 self.assertIsInstance(entry, dict)
                 assert isinstance(entry, dict)
-                self.assertIn("ready", entry)
-                assert "ready" in entry
-                self.assertIn(entry["ready"], (True, False, None))
-                assert entry["ready"] in (True, False, None)
 
-                self.assertIn("reason", entry)
-                assert "reason" in entry
-                self.assertIsInstance(entry["reason"], str)
-                assert isinstance(entry["reason"], str)
-
-                self.assertIn("cost_model", entry)
-                assert "cost_model" in entry
-                self.assertIsInstance(entry["cost_model"], dict)
-                assert isinstance(entry["cost_model"], dict)
-
-                # Ground cost_model against real readiness.cost_model(rt)
+                real_st = readiness.status_of("runtime", rt)
+                expected_ready = True if real_st.get("state") == "ok" else (False if real_st.get("state") in ("missing_setting", "missing_egress") else None)
+                expected_reason = real_st.get("detail", "")
                 expected_cm = readiness.cost_model(rt)
+
+                self.assertEqual(entry["ready"], expected_ready)
+                assert entry["ready"] == expected_ready
+
+                self.assertEqual(entry["reason"], expected_reason)
+                assert entry["reason"] == expected_reason
+
                 self.assertEqual(entry["cost_model"], expected_cm)
                 assert entry["cost_model"] == expected_cm
+
+                # Prove status_of was actually invoked successfully with the right args, never hit fallback string
+                self.assertFalse(entry["reason"].startswith("readiness check failed:"),
+                                 f"Runtime '{rt}' reason indicates status_of invocation failure: {entry['reason']}")
+                assert not entry["reason"].startswith("readiness check failed:")
+
+            # Explicitly verify all six new runtimes have grounded ready, reason and cost_model
+            for rt in six_keys:
+                self.assertIn(rt, data["runtimes"])
+                assert rt in data["runtimes"]
+                rt_entry = data["runtimes"][rt]
+                rt_st = readiness.status_of("runtime", rt)
+                rt_cm = readiness.cost_model(rt)
+                self.assertEqual(rt_entry["ready"], True if rt_st.get("state") == "ok" else False)
+                assert rt_entry["ready"] == (True if rt_st.get("state") == "ok" else False)
+                self.assertEqual(rt_entry["reason"], rt_st.get("detail", ""))
+                assert rt_entry["reason"] == rt_st.get("detail", "")
+                self.assertEqual(rt_entry["cost_model"], rt_cm)
+                assert rt_entry["cost_model"] == rt_cm
 
             # Query param project handling
             status_proj, _, body_proj = self.req("GET", f"{path}?project=alpha-1")
@@ -1021,6 +1035,38 @@ class TestWebServer(unittest.TestCase):
             assert "error" in data
         finally:
             srv.readiness = old_readiness
+
+    def test_api_readiness_summary_grounds_status_of_contract_mappings(self):
+        """Invariant: ready/reason mapping strictly reflects status_of() contract states (ok, missing_setting, missing_egress)."""
+        test_states = [
+            ("ok", True, "Runtime 'test-rt' is ready."),
+            ("missing_setting", False, "Runtime 'test-rt' is missing required setting(s): test.key."),
+            ("missing_egress", False, "Runtime 'test-rt' is missing egress allowlist for: test.host."),
+            ("unknown_other", None, "Runtime 'test-rt' has unknown state."),
+        ]
+        old_status_of = srv.readiness.status_of
+        try:
+            for state_val, expected_ready, detail_str in test_states:
+                srv.readiness.status_of = lambda kind, name, s=state_val, d=detail_str: {
+                    "state": s,
+                    "detail": d,
+                    "missing_settings": [] if s == "ok" else ["test.key"],
+                    "missing_egress": [] if s != "missing_egress" else ["test.host"],
+                }
+                status, _, body = self.req("GET", "/api/readiness/summary")
+                self.assertEqual(status, 200)
+                assert status == 200
+                data = json.loads(body)
+                self.assertIn("copilot", data["runtimes"])
+                entry = data["runtimes"]["copilot"]
+                self.assertEqual(entry["ready"], expected_ready)
+                assert entry["ready"] == expected_ready
+                self.assertEqual(entry["reason"], detail_str)
+                assert entry["reason"] == detail_str
+                self.assertFalse(entry["reason"].startswith("readiness check failed:"))
+                assert not entry["reason"].startswith("readiness check failed:")
+        finally:
+            srv.readiness.status_of = old_status_of
 
     def test_control_valid_action_and_project(self):
         """Invariant: POST /api/control with a valid project and each of the four control actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
