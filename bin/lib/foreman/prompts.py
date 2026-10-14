@@ -47,6 +47,17 @@ def context_bundle():
             f"## Tasks so far\n{hist}\n")
 
 
+def finite_rule():
+    return (
+        "## Goals must be finite\n"
+        "A goal has a checkable END STATE: a concrete deliverable, a closed list, a number, or a test that passes - something a reviewer can tick "
+        "off as done. Open-ended wording (\"more\", \"improve\", \"keep\", \"continue\", \"all possible\", \"production ready\", \"better\", no list of what "
+        "exactly) can never be finished. If the goal is open-ended and you can name a finite version of it yourself without guessing the owner's "
+        "intent, plan that finite version and write its closed list into goal_acceptance. If you cannot, DO NOT plan it: reply with ONLY "
+        f"{{\"open_ended\": true, \"question\": \"one precise question to the owner in {ctx.C['OWNER_LANG']}\", \"finite_goal\": \"your proposed finite "
+        "wording of the goal, with a closed list or number\"}\n\n")
+
+
 def plan_prompt(g, followup=None):
     w_list = workers() or ["worker-1", "worker-2", "worker-3", "worker-4"]
     n = len(w_list)
@@ -57,7 +68,7 @@ def plan_prompt(g, followup=None):
         pass
     notes = (f"\n## The owner's notes on an earlier plan of this goal - follow them\n{g['owner_notes']}\n" if g.get("owner_notes") else "")
     if followup is None:
-        ask = (f"## Goal from the owner\n{g['text']}\n{notes}\nBreak this goal into tasks.\n"
+        ask = (f"## Goal from the owner\n{g['text']}\n{notes}\n{finite_rule()}\nBreak this goal into tasks.\n"
                f"- PARALLEL FIRST: aim for at least {n} tasks that can start right now. Each task owns DISJOINT files; write the interface "
                f"other tasks rely on (function names, data shapes, schemas) into every spec that needs it, so they are built at the same time "
                f"instead of waiting. depends_on only when a task cannot even start without another task's merged code.\n"

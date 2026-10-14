@@ -14,6 +14,19 @@ from .llm import llm
 from .prompts import TASK_SCHEMA, context_bundle, plan_prompt
 
 
+def hold_open_ended(g2, d):
+    """An open-ended goal is never planned: the owner is asked for its finite version, and the answer replaces the goal's text."""
+    question = str(d.get("question") or "").strip()[:300] or "What exactly should be finished, and how will we know it is done?"
+    proposal = str(d.get("finite_goal") or "").strip()[:600]
+    g2.update(status="blocked", blocked_why="open-ended goal: waiting for the owner's finite version"); save_goal(g2)
+    q = f"[{g2['id']}] {question}" + (f" Proposed finite goal: {proposal}" if proposal else "")
+    with locked():
+        p = os.path.join(ctx.FD, "owner_questions.json")
+        jsave(p, jload(p, []) + [q])
+    event(f"goal {g2['id']} is open-ended - not planned, asking the owner: {question[:200]}", goal=g2["id"])
+    notify("questions", text=q)
+
+
 def step_plan(g, followup=None):
     refresh_repo()
     text, who = llm("check" if followup else "plan", plan_prompt(g, followup), g["id"])
@@ -26,6 +39,9 @@ def step_plan(g, followup=None):
         if g2.get("status") != g.get("status") or g2.get("text") != g.get("text"):
             event(f"goal {g['id']}: changed by the owner while it was planned - this plan is dropped", goal=g["id"])
             return                                  # edited, cancelled or re-planned meanwhile: the next round plans the new text
+        if d and d.get("open_ended") is True and followup is None:
+            hold_open_ended(g2, d)
+            return
         if not d or (not d.get("done") and not norm_tasks(d, 0) and followup is None):
             g2["plan_errors"] = g2.get("plan_errors", 0) + 1
             event(f"goal {g['id']}: {who} replied without valid JSON (attempt {g2['plan_errors']})", goal=g["id"])
@@ -126,7 +142,11 @@ def step_next():
               f"Workers are idle. Propose the single most valuable NEXT goal from the owner's vision that is not done or in progress yet, "
               f"formulated so it can be split into 2-5 parallel tasks across {w_count} workers, "
               "buildable offline inside the sandbox (skip anything needing external APIs, "
-              "real personal data or decisions only the owner can make). Reply with ONLY one JSON object: "
+              "real personal data or decisions only the owner can make).\n"
+              "The goal MUST BE FINITE: a concrete deliverable or a closed list with an end state a reviewer can tick off. Never propose "
+              "'more', 'improve', 'finish X to production readiness', 'continue' or a variation of a goal above (check every goal above, "
+              "done or not, for overlap); if the vision's remaining work is only open-ended polishing, the project is DONE: reply with goal null. "
+              "Reply with ONLY one JSON object: "
               f'{{"goal": "the goal in {ctx.C["OWNER_LANG"]}, concrete, as the owner would write it", "why": "one sentence"}} '
               'or {"goal": null, "why": "..."} if nothing sensible is left.\n')
     text, who = llm("next", prompt)
@@ -138,9 +158,10 @@ def step_next():
             save_goal(dict(id=gid, text=str(d["goal"])[:4000], status="new", created=sbx.now(), source="autopilot"))
             event(f"autopilot ({who}): new goal {gid}: {str(d['goal'])[:200]} - {str(d.get('why', ''))[:200]}", goal=gid)
         else:
-            with state_tx() as st:
-                st["autopilot_quiet_until"] = time.time() + 6 * 3600
-            event(f"autopilot ({who}): nothing sensible left to start ({str(d.get('why', ''))[:200]}); quiet for 6 h")
+            why = str(d.get("why", ""))[:300]
+            open(os.path.join(ctx.FD, "AUTOPILOT_OFF"), "w").write(sbx.now() + "\n")       # a finished project is not worked on forever
+            event(f"autopilot ({who}): PROJECT DONE - nothing left from the vision ({why}); autopilot switched off")
+            notify("project_done", text=f"Nothing is left from the vision, so the autopilot switched itself off.\n{why}\nAdd a goal or edit the vision to continue.")
     return apply
 
 

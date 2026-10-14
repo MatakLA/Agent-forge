@@ -33,6 +33,12 @@ def answer_question(n, answer):
             return None
         q = qs.pop(n - 1)
         jsave(p, qs)
+        m = re.match(r"\[(G\d{8}-\d{6}(?:-[\w-]{1,30})?)\] ", q)
+        g = jload(os.path.join(ctx.FD, "goals", m.group(1) + ".json")) if m else None
+        if g and answer.strip() and g.get("status") == "blocked":      # the answer to "what exactly is the end state?" becomes the goal
+            g.update(text=" ".join(answer.split())[:4000], status="new", plan_errors=0, owner_finite=True); g.pop("blocked_why", None)
+            save_goal(g)
+            event(f"goal {g['id']}: the owner's finite version replaces the open-ended text - planned again", goal=g["id"])
         if answer.strip():
             dp = os.path.join(ctx.CFG_DIR, "decisions.md")
             new = not os.path.exists(dp)

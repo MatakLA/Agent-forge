@@ -16,7 +16,7 @@ MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"
 # a model on the owner's own server: "qwen3-coder:30b" (Ollama), "anthropic/claude-sonnet-4.5" (OpenRouter), "Qwen/Qwen3-32B" (vLLM)
 SERVER_MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,99}"
 USD_RE = r"\d{1,6}(\.\d{1,2})?"
-NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval"
+NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval|project_done"
 
 
 # key -> (validation regex or (min, max), scope: "project" = this project's config, "limits" = etc/limits.conf for ALL projects)
