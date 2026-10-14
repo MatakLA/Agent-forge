@@ -45,6 +45,10 @@ def _has_secret(name: str) -> bool:
     try:
         if bool(providers.get_secret(name)):
             return True
+        if name == "qwen.key":
+            for alt in ("DASHSCOPE_API_KEY", "QWEN_API_KEY"):
+                if bool(providers.get_secret(alt)):
+                    return True
     except Exception:
         pass
     # 2. Check via sbx.SECRETS directory
@@ -59,6 +63,10 @@ def _has_secret(name: str) -> bool:
     val = os.environ.get(name, "").strip()
     if bool(val):
         return True
+    if name == "qwen.key":
+        for alt in ("DASHSCOPE_API_KEY", "QWEN_API_KEY"):
+            if bool(os.environ.get(alt, "").strip()):
+                return True
     # 4. Check ctx.C and ctx.CONF
     if hasattr(ctx, "C") and isinstance(ctx.C, dict):
         if bool(ctx.C.get(name)):
@@ -147,7 +155,10 @@ def _build_result(name: str, entity_type: str, missing_settings: list[str], miss
         state = "missing_egress"
         detail = f"{entity_type} '{name}' is missing egress allowlist for: {', '.join(missing_egress)}."
 
+    ready = (state == "ok")
     return {
+        "ready": ready,
+        "reason": detail,
         "state": state,
         "detail": detail,
         "missing_settings": missing_settings,
@@ -271,7 +282,7 @@ def status_of(kind: str, name: str) -> dict:
     """Check readiness status for a runtime or orchestrator provider.
 
     kind is 'runtime' or 'provider'. Returns:
-    {"state": "ok"|"missing_setting"|"missing_egress", "detail": "<one sentence>", "missing_settings": [...], "missing_egress": [...]}
+    {"ready": bool, "reason": str, "state": "ok"|"missing_setting"|"missing_egress", "detail": "<one sentence>", "missing_settings": [...], "missing_egress": [...]}
     state priority when both apply: missing_setting wins (list both in detail/lists regardless).
     """
     if kind not in ("runtime", "provider"):
