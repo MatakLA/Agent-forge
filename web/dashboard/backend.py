@@ -140,7 +140,10 @@ PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]{1,40}/[A-Za-z0-9_.-]{1,60}")
 WORKER_RE = re.compile(r"worker-\d+")
 LANG_RE = re.compile(r"[A-Za-z][A-Za-z ()-]{0,30}")
-VALID_RUNTIMES = frozenset({"agy", "claude", "codex", "gemini", "compat", "aider", "opencode", "goose", "qwen-code", "anthropic-compat"})
+VALID_RUNTIMES = frozenset({
+    "agy", "claude", "codex", "gemini", "compat", "aider", "opencode", "goose", "qwen-code", "anthropic-compat",
+    "copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp"
+})
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
