@@ -1,6 +1,6 @@
 // Fake Copilot HTTP server for tests/test_runtime_copilot.sh (no key, no network, no cost).
-// Serves newline-delimited JSON events mimicking SST's OpenCode wire format for Copilot CLI output stream:
-// step_start, tool_use, text, and step_finish events with sessionID and non-zero tool count.
+// Serves newline-delimited JSON events mimicking Copilot CLI output stream:
+// start, message, tool, and result events with sessionID and non-zero tool count.
 // Starts on configured port (process.env.PORT or argv or 8098), logs every request, stops cleanly.
 const http = require('http');
 
@@ -36,26 +36,31 @@ const server = http.createServer((req, res) => {
 
     if (req.url.includes('/error') || j.error) {
       const errEvents = [
-        { type: 'step_start', sessionID: sid },
-        { type: 'step_finish', sessionID: sid, part: { reason: 'error', error: j.error || 'simulated rate limit' } }
+        { type: 'start', sessionID: sid },
+        { type: 'result', status: 'error', error: j.error || 'simulated rate limit', sessionID: sid, part: { reason: 'error', error: j.error || 'simulated rate limit' } }
       ];
       return ndjson(res, errEvents);
     }
 
     // Default response: non-interactive Copilot run event stream
     // Events parsed by bin/lib/runtimes.py's scan('copilot', ...):
-    // 1. step_start with sessionID
-    // 2. tool_use with tool type / name
-    // 3. text / message with text content
-    // 4. step_finish with reason="stop" and status SUCCESS
+    // 1. start with sessionID
+    // 2. message with text content
+    // 3. tool with tool type / name
+    // 4. result with reason="stop" and status SUCCESS
     const events = [
       {
-        type: 'step_start',
+        type: 'start',
         sessionID: sid,
         part: { id: 'part_start_01' }
       },
       {
-        type: 'tool_use',
+        type: 'message',
+        sessionID: sid,
+        part: { text: 'Done: wrote hello.txt.' }
+      },
+      {
+        type: 'tool',
         name: 'bash',
         sessionID: sid,
         part: {
@@ -65,12 +70,8 @@ const server = http.createServer((req, res) => {
         }
       },
       {
-        type: 'text',
-        sessionID: sid,
-        part: { text: 'Done: wrote hello.txt.' }
-      },
-      {
-        type: 'step_finish',
+        type: 'result',
+        status: 'success',
         sessionID: sid,
         part: { reason: 'stop' }
       }
