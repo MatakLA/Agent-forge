@@ -76,6 +76,14 @@ fi
 if [ -f tests/test_runtime_copilot.py ]; then
   $PY tests/test_runtime_copilot.py || exit 1
 fi
+if command -v node >/dev/null 2>&1; then
+  if [ -f tests/test_runtime_local_compat.sh ]; then bash tests/test_runtime_local_compat.sh || exit 1; fi
+else
+  echo "SKIP tests/test_runtime_local_compat.sh: node not available"
+fi
+if [ -f tests/test_runtime_local_compat.py ]; then
+  $PY tests/test_runtime_local_compat.py || exit 1
+fi
 if [ -f tests/test_goose_registry.py ]; then
   $PY tests/test_goose_registry.py || exit 1
 fi
