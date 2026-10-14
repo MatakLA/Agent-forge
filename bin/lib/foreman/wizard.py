@@ -10,7 +10,8 @@ Important invariants:
 - Pure offline module with zero network calls, zero docker calls, and no secret leaks.
 - Plain functions and stdlib only, no classes, matching readiness.py style.
 - Never raises KeyError or unhandled exceptions for unknown keys or status shapes.
-- Reuses readiness.recommend() ranking logic without monkeypatching module internals.
+- Reuses readiness.recommend() ranking logic directly without private attribute access.
+- Directly consumes actual status schema keys (state, detail) without speculative fallbacks.
 - When nothing is ready, explicitly reports not-ready status and recommends easiest next step.
 """
 import os
@@ -84,63 +85,55 @@ def _cost_tier(name: str) -> str:
 def generate_report(status: dict | None = None) -> str:
     """Produce a deterministic multi-line text report ranking runtimes and providers.
 
-    If status is None, calls readiness.all_status(). Reuses readiness.recommend()
-    for ranking order. Each line shows readiness state and cost tier.
+    If status is None, calls readiness.all_status(). Reuses readiness.recommend()'s
+    ranking order directly. Each line shows readiness state and cost tier.
     Highlights a 'Recommended' block with next_steps() for the top candidate.
     When nothing is ready, explicitly states so and suggests the cheapest/easiest candidate.
     """
     if status is None:
-        raw_status = readiness.all_status()
-        rec = readiness.recommend()
-        ranked_runtimes = rec.get("ranked", [])
-        top_runtime = rec.get("top")
-    else:
-        raw_status = status
-        # Rank runtimes from provided status conforming to readiness.recommend() ranking logic
-        runtimes_st = raw_status.get("runtimes", {}) if isinstance(raw_status, dict) else {}
-        ready_entries = []
-        not_ready_entries = []
-        for name in readiness.runtime_items():
-            st = runtimes_st.get(name, {})
-            cm = readiness.cost_model(name)
-            is_ready = bool(isinstance(st, dict) and (st.get("state") == "ok" or st.get("ready") is True))
-            tier = cm.get("kind", "unknown") if isinstance(cm, dict) else "unknown"
-            note = str(st.get("detail", "")) if isinstance(st, dict) else ""
-            entry = {
-                "name": name,
-                "ready": is_ready,
-                "cost_tier": tier,
-                "note": note,
-            }
-            if is_ready:
-                ready_entries.append(entry)
-            else:
-                not_ready_entries.append(entry)
+        status = readiness.all_status()
 
-        ready_entries.sort(key=lambda x: readiness._TIER_PRIORITY.get(x["cost_tier"], 99))
-        ranked_runtimes = ready_entries + not_ready_entries
-        top_runtime = {
-            "name": ready_entries[0]["name"],
-            "cost_tier": ready_entries[0]["cost_tier"],
-            "reason": ready_entries[0]["note"],
-        } if ready_entries else None
+    # Reuse readiness.recommend()'s ranked runtimes and cost tier metadata directly
+    rec = readiness.recommend()
 
-    providers_st = raw_status.get("providers", {}) if isinstance(raw_status, dict) else {}
+    runtimes_st = status.get("runtimes", {}) if isinstance(status, dict) else {}
+    providers_st = status.get("providers", {}) if isinstance(status, dict) else {}
 
-    # Select top candidate conforming to readiness.recommend():
-    # 1. Top runtime from recommend() ranking if any runtime is ready.
-    # 2. If no runtime is ready, check providers (e.g. claude-cli).
-    # 3. If nothing is ready, explicitly report not ready and suggest cheapest/easiest candidate.
+    # Project status onto the ranked runtimes from readiness.recommend()
+    ready_entries = []
+    not_ready_entries = []
+    for r in rec.get("ranked", []):
+        name = r["name"]
+        st = runtimes_st.get(name, {})
+        is_ready = bool(isinstance(st, dict) and st.get("state") == "ok")
+        note = str(st.get("detail", r.get("note", ""))) if isinstance(st, dict) else r.get("note", "")
+        entry = {
+            "name": name,
+            "ready": is_ready,
+            "cost_tier": r["cost_tier"],
+            "note": note,
+        }
+        if is_ready:
+            ready_entries.append(entry)
+        else:
+            not_ready_entries.append(entry)
+
+    ranked_runtimes = ready_entries + not_ready_entries
+    top_runtime = ready_entries[0] if ready_entries else None
+
+    # Determine top candidate:
+    # 1. Top ready runtime conforming to readiness.recommend() ranking.
+    # 2. If no runtime is ready, check ready providers in provider_items order.
+    # 3. If nothing is ready, explicitly report not ready and suggest initial candidate.
     nothing_ready = False
     if top_runtime is not None:
         top_name = top_runtime["name"]
-        top_tier = top_runtime.get("cost_tier", _cost_tier(top_name))
-        top_reason = top_runtime.get("reason", "")
+        top_tier = top_runtime["cost_tier"]
+        top_reason = top_runtime["note"]
     else:
-        # Check if any provider is ready
         ready_providers = [
             pr for pr in readiness.provider_items()
-            if isinstance(providers_st.get(pr), dict) and (providers_st[pr].get("state") == "ok" or providers_st[pr].get("ready") is True)
+            if isinstance(providers_st.get(pr), dict) and providers_st[pr].get("state") == "ok"
         ]
         if ready_providers:
             top_name = ready_providers[0]
@@ -158,19 +151,19 @@ def generate_report(status: dict | None = None) -> str:
         "Ranked Runtimes:",
     ]
     for idx, r in enumerate(ranked_runtimes, 1):
-        st_val = (raw_status.get("runtimes") or {}).get(r["name"], {}) if isinstance(raw_status, dict) else {}
-        state = st_val.get("state", "ok" if r.get("ready") else "missing_setting") if isinstance(st_val, dict) else "missing_setting"
-        tier = r.get("cost_tier", _cost_tier(r["name"]))
-        note = r.get("note", "")
+        st_val = runtimes_st.get(r["name"], {}) if isinstance(runtimes_st, dict) else {}
+        state = str(st_val.get("state", "missing_setting")) if isinstance(st_val, dict) else "missing_setting"
+        tier = r["cost_tier"]
+        note = r["note"]
         lines.append(f"  {idx}. {r['name']}: state={state}, cost_tier={tier} - {note}")
 
     lines.append("")
     lines.append("Providers:")
     for pr in readiness.provider_items():
         st_p = providers_st.get(pr, {}) if isinstance(providers_st, dict) else {}
-        state = st_p.get("state", "ok" if (isinstance(st_p, dict) and st_p.get("ready")) else "missing_setting") if isinstance(st_p, dict) else "missing_setting"
+        state = str(st_p.get("state", "missing_setting")) if isinstance(st_p, dict) else "missing_setting"
         tier = _cost_tier(pr)
-        note = st_p.get("detail", "") if isinstance(st_p, dict) else ""
+        note = str(st_p.get("detail", "")) if isinstance(st_p, dict) else ""
         lines.append(f"  - {pr}: state={state}, cost_tier={tier} - {note}")
 
     lines.append("")
