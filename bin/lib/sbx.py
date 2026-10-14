@@ -1,5 +1,8 @@
-"""Shared helpers for bin/dispatch, bin/run-supervisor, bin/killswitch and bin/status (V7)."""
-import fcntl, json, os, subprocess, time
+"""Shared helpers for bin/dispatch, bin/run-supervisor, bin/killswitch and bin/status (V7).
+Provides path construction under runs and secrets, kill switch management, ledger tracking,
+safe regex validation (PROJECT_RE, ROLE_RE, WORKER_RE, MODEL_RE, SAFE_ARG, TEST_CMD_RE, IMAGE_RE),
+and safe test_cmd / gate_image retrieval with injection guards."""
+import fcntl, json, os, re, subprocess, time
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,12 +31,36 @@ FORGE_REPO = os.environ.get("FORGE_REPO") or _FORGE.get("FORGE_REPO", "sandbox/p
 FORGE_ORG = FORGE_REPO.split("/")[0]
 # Several projects can share one Agent-Forge install (each with its own foreman, repository and worker pool: bin/foreman --project).
 # FORGE_PROJECT is set by bin/foreman for everything it starts; "" = the default project (legacy single-project layout).
+PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+PROJECT_NAME_RE = PROJECT_RE
+ROLE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+ROLE_SLUG = ROLE_RE
+WORKER_RE = re.compile(r"worker-\d+")
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
+MODEL_NAME_RE = MODEL_RE
+RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+SECRET_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+SAFE_ARG = re.compile(r"[A-Za-z0-9._/:-]{1,200}")
+
 PROJECT = os.environ.get("FORGE_PROJECT", "")
-if PROJECT and not __import__("re").fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", PROJECT):
+if PROJECT and not PROJECT_RE.fullmatch(PROJECT):
     raise SystemExit(f"invalid FORGE_PROJECT {PROJECT!r} (lowercase letters, digits, dashes)")
 WORKER_CLONE = f"/home/worker/work/{PROJECT}" if PROJECT else "/home/worker/playground"
-SAFE_ARG = __import__("re").compile(r"[A-Za-z0-9._/:-]{1,200}")
 SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
+
+
+def _check_project(project):
+    p = PROJECT if project is None else project
+    if p:
+        if not PROJECT_RE.fullmatch(p) or ".." in p or "/" in p or "\\" in p:
+            raise ValueError(f"invalid project {p!r}")
+    return p
+
+
+def sh(*args, **kw):
+    """Run a subprocess with args as a list (never shell=True)."""
+    cmd = list(args[0]) if len(args) == 1 and isinstance(args[0], (list, tuple)) else list(args)
+    return subprocess.run(cmd, capture_output=kw.pop("capture_output", True), text=kw.pop("text", True), **kw)
 DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=1500000, DAILY_TOKEN_BUDGET=3000000,
                 MAX_RUNS_PER_DAY=6, MAX_PARALLEL=2, QUOTA_MODEL_FILTER="Gemini", QUOTA_MIN_5H_PCT=25,
                 QUOTA_MIN_WEEK_PCT=15, CONSEC_FAIL_TRIP=3, POLL_SEC=2, WORKER_MODEL="gemini-3.8-flash-high",
@@ -97,7 +124,7 @@ def alert(msg):
 # Kill switches: one per project (the default project keeps the original runs/KILLSWITCH) plus one for ALL projects
 # (bin/killswitch on --all). A project is stopped when its own or the global one is on.
 def ks_path(project=None):
-    p = PROJECT if project is None else project
+    p = _check_project(project)
     return os.path.join(RUNS, "projects", p, "KILLSWITCH") if p else os.path.join(RUNS, "KILLSWITCH")
 
 
@@ -124,7 +151,7 @@ def killswitch_active():
 
 def project_pool(project=None):
     """The worker containers a project may use (its WORKERS setting), or None for 'every worker'."""
-    p = PROJECT if project is None else project
+    p = _check_project(project)
     conf = _kv(os.path.join(ROOT, "projects", p, "project.conf")) if p else _kv(os.path.join(ROOT, "etc", "foreman.conf"))
     pool = {w.strip() for w in conf.get("WORKERS", "").split(",") if w.strip()}
     return pool or None
@@ -145,13 +172,15 @@ def killswitch_on(reason, by="orchestrator", hard=False, all_projects=False):
 # ---- how a project is tested (TEST_CMD / GATE_IMAGE in its config): the gate, the self-check and maintenance all use it
 DEFAULT_TEST_CMD = "python3 -m pytest -q -p no:cacheprovider"
 DEFAULT_GATE_IMAGE = "sandbox-worker:1.2.11"
-TEST_CMD_RE = __import__("re").compile(r"[A-Za-z0-9 ._/=:,+@%-]{1,200}")       # a plain command line: no shell syntax
-IMAGE_RE = __import__("re").compile(r"[a-z0-9][a-z0-9._/:@-]{0,200}")
+TEST_CMD_RE = re.compile(r"[A-Za-z0-9 ._/=:,+@%-]{1,200}")       # a plain command line: no shell syntax
+IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._/:@-]{0,200}")
 
 
 def test_cmd(project=None):
     v = project_conf(project).get("TEST_CMD", "").strip()
-    return v if v and TEST_CMD_RE.fullmatch(v) else DEFAULT_TEST_CMD
+    if v and not TEST_CMD_RE.fullmatch(v):
+        raise ValueError(f"invalid TEST_CMD {v!r}")
+    return v or DEFAULT_TEST_CMD
 
 
 def is_pytest(cmd):
@@ -160,7 +189,9 @@ def is_pytest(cmd):
 
 def gate_image(project=None):
     v = project_conf(project).get("GATE_IMAGE", "").strip() or os.environ.get("GATE_IMAGE", "")
-    return v if v and IMAGE_RE.fullmatch(v) else DEFAULT_GATE_IMAGE
+    if v and not IMAGE_RE.fullmatch(v):
+        raise ValueError(f"invalid GATE_IMAGE {v!r}")
+    return v or DEFAULT_GATE_IMAGE
 
 
 # ---- notifications (optional): NOTIFY_URL in etc/foreman.conf or projects/<name>/project.conf
@@ -169,7 +200,7 @@ NOTIFY_DEFAULT_EVENTS = "goal_done,task_blocked,killswitch,questions,quota_out,a
 
 def project_conf(project=None):
     """etc/foreman.conf with the project's project.conf on top (plain key=value, no defaults)."""
-    p = PROJECT if project is None else project
+    p = _check_project(project)
     c = _kv(os.path.join(ROOT, "etc", "foreman.conf"))
     if p:
         c.update(_kv(os.path.join(ROOT, "projects", p, "project.conf")))
@@ -191,8 +222,7 @@ def notify_payload(fmt, event, title, message):
 
 
 def no_nul(text):
-    """A NUL byte cannot be part of an argv (subprocess raises "embedded null byte"); test output that quotes a hostile payload
-    reaches the next attempt's prompt, so it is spelled out instead of passed on."""
+    """A NUL cannot be part of an argv; test output that quotes a hostile payload reaches the next attempt's prompt, so it is spelled out."""
     return str(text).replace("\x00", "\\x00")
 
 
@@ -238,8 +268,28 @@ def killswitch_off(all_projects=False):
         return False
 
 
-def ledger_path():
+def ledger_path(project=None):
+    if project:
+        if not PROJECT_RE.fullmatch(project) or ".." in project or "/" in project or "\\" in project:
+            raise ValueError(f"invalid project {project!r}")
+        return os.path.join(RUNS, "projects", project, "ledger.jsonl")
     return os.path.join(RUNS, "ledger.jsonl")
+
+
+def run_path(run_id):
+    if not run_id or not RUN_ID_RE.fullmatch(run_id) or ".." in run_id or "/" in run_id or "\\" in run_id:
+        raise ValueError(f"invalid run_id {run_id!r}")
+    return os.path.join(RUNS, run_id)
+
+
+def run_dir(run_id):
+    return run_path(run_id)
+
+
+def secret_path(name):
+    if not name or not SECRET_NAME_RE.fullmatch(name) or ".." in name or "/" in name or "\\" in name:
+        raise ValueError(f"invalid secret name {name!r}")
+    return os.path.join(SECRETS, name)
 
 
 def read_ledger():
@@ -286,6 +336,8 @@ def consecutive_failures(ledger, project):
 
 def worker_runtime(worker):
     """The runtime of a worker container (label agent-forge.runtime set by bin/worker-up; none = agy, older workers)."""
+    if not WORKER_RE.fullmatch(worker):
+        raise ValueError(f"invalid worker {worker!r}")
     import runtimes
     r = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "agent-forge.runtime"}}', worker], capture_output=True, text=True)
     v = r.stdout.strip()
@@ -442,6 +494,8 @@ def parse_usage(text):
 
 
 def read_quota(worker):
+    if not WORKER_RE.fullmatch(worker):
+        raise ValueError(f"invalid worker {worker!r}")
     r = subprocess.run(["docker", "exec", worker, "agy-run", "-p", "/usage", "--print-timeout", "60s"],
                        capture_output=True, text=True, timeout=120)
     return parse_usage(r.stdout)

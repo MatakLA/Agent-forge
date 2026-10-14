@@ -1,14 +1,65 @@
 """The orchestrator's LLM calls. Every call is a fresh, tool-less session; providers are tried in the configured order
-(Claude Code, Claude/Gemini via Antigravity, paid APIs) and one out of quota is retried after its reset."""
-import json, os, threading, time
+(Claude Code, Claude/Gemini via Antigravity, paid APIs: OpenAI-compatible, Gemini API, Anthropic API).
+Public interface: llm(kind, prompt, subject=""), providers_for(kind), llm_available(), log_llm().
+Invariants:
+- providers_for resolves configured providers by decision kind with fallback to ORCHESTRATOR_PROVIDER.
+- llm validates JSON responses against schemas (REVIEW_SCHEMA, OBJECT_SCHEMA), extracting JSON from code fences and prose.
+- Provider errors or credential failures cascade to the next provider, raising Unavailable only on total exhaustion.
+- Raw API keys, tokens, and Authorization headers are stripped before logging, event recording, or exception re-raising.
+"""
+import json, os, re, threading, time, urllib.parse
 
 import sbx
 
-from . import ctx
+from . import ctx, util
 from .util import extract_json, fmt_ts, parse_limit, sh
-from .store import event, gstate, state_tx
+from .store import event as _raw_event, gstate, state_tx
 from .pool import RESERVED, has_quota, order_by_quota, quota_pct, quota_rows, runtime_of, worker_busy, workers
 from .knowledge import load_system_prompt
+
+
+def _sanitize_secrets(text):
+    """Strips API keys, bearer tokens, and Authorization/x-api-key headers from text."""
+    if not isinstance(text, str) or not text:
+        return text
+    secrets = set()
+    try:
+        import providers
+        for k in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+            try:
+                s = providers.get_secret(k)
+                if s and isinstance(s, str) and s.strip():
+                    secrets.add(s.strip())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for k in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+        val = os.environ.get(k, "").strip()
+        if val:
+            secrets.add(val)
+
+    for s in secrets:
+        if len(s) >= 3:
+            text = text.replace(s, "[REDACTED]")
+            try:
+                enc = urllib.parse.quote(s)
+                if enc != s:
+                    text = text.replace(enc, "[REDACTED]")
+            except Exception:
+                pass
+
+    text = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9_\-\.\:\+]+', 'Bearer [REDACTED]', text)
+    text = re.sub(r'''(?i)(['"](?:authorization|x-api-key|x-goog-api-key)['"]\s*:\s*['"])(?:Bearer\s+)?[^'"]+(['"])''', r'\1[REDACTED]\2', text)
+    text = re.sub(r'''(?i)(['"](?:authorization|x-api-key|x-goog-api-key)['"]\s*,\s*['"])(?:Bearer\s+)?[^'"]+(['"])''', r'\1[REDACTED]\2', text)
+    text = re.sub(r'(?i)\b(authorization)\s*:\s*(?:token\s+|basic\s+|bearer\s+)?([^\s,;\'"\}]+)', r'\1: [REDACTED]', text)
+    text = re.sub(r'(?i)\b(x-api-key|x-goog-api-key)\s*[:=]\s*[\'"]?[^\s,;\'"\}]+[\'"]?', r'\1: [REDACTED]', text)
+    text = re.sub(r'(?i)([?&](?:api_?key|key|token|secret)=)[^\s&\'"\}]+', r'\1[REDACTED]', text)
+    return text
+
+
+def event(msg, **kw):
+    _raw_event(_sanitize_secrets(str(msg)), **kw)
 
 
 # ---------------------------------------------------------------- LLM layer: free subscription providers first, paid APIs only if configured
@@ -17,8 +68,24 @@ class Unavailable(Exception):
 
 
 def providers_for(kind):
-    order = ctx.C["REVIEW_PROVIDERS"] if kind == "review" else ctx.C["PLAN_PROVIDERS"]
-    return [p.strip() for p in str(order).split(",") if p.strip()]
+    order = ctx.C.get("REVIEW_PROVIDERS") if kind == "review" else ctx.C.get("PLAN_PROVIDERS")
+    if isinstance(order, (list, tuple)):
+        provs = [str(p).strip() for p in order if str(p).strip()]
+    else:
+        provs = [p.strip() for p in str(order or "").split(",") if p.strip()]
+    if not provs:
+        fallback = ctx.C.get("ORCHESTRATOR_PROVIDER")
+        if isinstance(fallback, (list, tuple)):
+            provs = [str(p).strip() for p in fallback if str(p).strip()]
+        else:
+            provs = [p.strip() for p in str(fallback or "").split(",") if p.strip()]
+        if not provs:
+            env_fallback = os.environ.get("ORCHESTRATOR_PROVIDER", "")
+            if isinstance(env_fallback, (list, tuple)):
+                provs = [str(p).strip() for p in env_fallback if str(p).strip()]
+            else:
+                provs = [p.strip() for p in str(env_fallback or "").split(",") if p.strip()]
+    return provs
 
 
 def llm_available():
@@ -73,7 +140,7 @@ def _via_agy(kind, prompt, family):
             RESERVED.add(w)
         LAST_LLM[w] = time.time()
         try:
-            ok, text, reset_ts, why = _agy(w, prompt, model, REVIEW_SCHEMA if kind == "review" else None if kind == "ask" else OBJECT_SCHEMA)
+            ok, text, reset_ts, why = _agy(w, prompt, model, schema_for(kind))
         finally:
             RESERVED.discard(w)
         if ok:
@@ -120,44 +187,145 @@ def _via_claude_cli(prompt, system):
 
 def _via_paid_api(name, prompt, system):
     import providers
+    model = (
+        ctx.C.get("ANTHROPIC_MODEL") if name == "anthropic-api" else
+        ctx.C.get("OPENAI_MODEL") if name == "openai-api" else
+        ctx.C.get("GEMINI_MODEL") if name == "gemini-api" else ""
+    )
+    if not str(model or "").strip():
+        model = (
+            os.environ.get("ANTHROPIC_MODEL") if name == "anthropic-api" else
+            os.environ.get("OPENAI_MODEL") if name == "openai-api" else
+            os.environ.get("GEMINI_MODEL") if name == "gemini-api" else ""
+        )
+    model = str(model or "").strip()
+    if not model:
+        return None, None
+    who = f"{name}:{model}"
+    t0 = time.time()
     try:
-        if name == "anthropic-api" and ctx.C["ANTHROPIC_MODEL"]:
-            r = providers.call_anthropic_api(prompt, model=ctx.C["ANTHROPIC_MODEL"], system=system)
-        elif name == "openai-api" and ctx.C["OPENAI_MODEL"]:
-            r = providers.call_openai_api(prompt, model=ctx.C["OPENAI_MODEL"], api_base=ctx.C["OPENAI_API_BASE"], system=system)
-        elif name == "gemini-api" and ctx.C["GEMINI_MODEL"]:
-            r = providers.call_gemini_api(prompt, model=ctx.C["GEMINI_MODEL"], system=system)
+        if name == "anthropic-api":
+            r = providers.call_anthropic_api(prompt, model, system=system)
+        elif name == "openai-api":
+            api_base = str(ctx.C.get("OPENAI_API_BASE") or "").strip() or os.environ.get("OPENAI_API_BASE", "").strip() or "https://api.openai.com/v1"
+            r = providers.call_openai_api(prompt, model, system=system, api_base=api_base)
+        elif name == "gemini-api":
+            r = providers.call_gemini_api(prompt, model, system=system)
         else:
-            return None
+            return None, None
     except ValueError:          # no key configured
+        return None, None
+    except Exception as e:
+        safe_err = _sanitize_secrets(str(e))
+        log_llm(KIND.k, who, 1, time.time() - t0, None, None, safe_err[:300])
+        return None, None
+
+    if not isinstance(r, dict):
+        return None, None
+    is_err = r.get("is_error") or not (r.get("text") or "").strip()
+    dur = r.get("duration_s")
+    dur = (time.time() - t0) if dur is None else dur
+    raw_head = r.get("text") or r.get("error") or ""
+    safe_head = _sanitize_secrets(raw_head)[:300]
+    log_llm(KIND.k, who, 1 if is_err else 0, dur, r.get("cost_usd"), r.get("usage"), safe_head)
+    if is_err:
+        return None, None
+    return r["text"], who
+
+
+def schema_for(kind):
+    if kind == "review":
+        return REVIEW_SCHEMA
+    if kind == "ask":
         return None
-    log_llm(KIND.k, f"{name}:{r.get('model')}", 1 if r["is_error"] else 0, r["duration_s"], None, r.get("usage"), r["text"][:300])
-    return r["text"] if not r["is_error"] and r["text"].strip() else None
+    return OBJECT_SCHEMA
+
+
+def validate_schema(data, schema):
+    """Validates that parsed dict `data` satisfies JSON schema dict/string `schema`."""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except Exception:
+            return False
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("type") == "object":
+        if not isinstance(data, dict):
+            return False
+    for req in schema.get("required", []):
+        if req not in data:
+            return False
+    props = schema.get("properties", {})
+    if "verdict" in props and "verdict" in data:
+        allowed = props["verdict"].get("enum")
+        if allowed and data["verdict"] not in allowed:
+            return False
+    return True
+
+
+def parse_and_validate(text, schema_str):
+    """Extracts JSON and validates against schema. Returns parsed dict, or text for schemaless, or None if invalid."""
+    if not text:
+        return None
+    if not schema_str:
+        return text if bool(text.strip()) else None
+    data = util.extract_json(text)
+    if data is None or not validate_schema(data, schema_str):
+        return None
+    return data
+
+
+def _llm_inner(kind, prompt, subject=""):
+    KIND.k, KIND.subject = kind, subject
+    system = load_system_prompt()
+    schema = schema_for(kind)
+    for p in providers_for(kind):
+        text, who = None, p
+        try:
+            if p == "claude-cli":
+                text = _via_claude_cli(prompt, system)
+                who = "claude-cli"
+            elif p == "agy-claude":
+                text = _via_agy(kind, system + "\n\n" + prompt, "claude")
+                who = "agy-claude"
+            elif p == "agy-gemini":
+                text = _via_agy(kind, system + "\n\n" + prompt, "gemini")
+                who = "agy-gemini"
+            else:
+                text, who = _via_paid_api(p, prompt, system)
+        except Unavailable:
+            continue
+        except Exception:
+            continue
+        if text and parse_and_validate(text, schema) is not None:
+            return text, who
+    raise Unavailable(_sanitize_secrets(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})"))
 
 
 def llm(kind, prompt, subject=""):
     """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
     tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code). `subject`: the task or
     goal id the call is about (logged, for the cost of a task or goal)."""
-    KIND.k, KIND.subject = kind, subject
-    system = load_system_prompt()
-    for p in providers_for(kind):
-        if p == "claude-cli":
-            text = _via_claude_cli(prompt, system)
-        elif p == "agy-claude":
-            text = _via_agy(kind, system + "\n\n" + prompt, "claude")
-        elif p == "agy-gemini":
-            text = _via_agy(kind, system + "\n\n" + prompt, "gemini")
-        else:
-            text = _via_paid_api(p, prompt, system)
-        if text:
-            return text, p
-    raise Unavailable(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})")
+    try:
+        return _llm_inner(kind, prompt, subject)
+    except Unavailable as e:
+        raise Unavailable(_sanitize_secrets(str(e))) from None
+    except Exception as e:
+        safe_msg = _sanitize_secrets(str(e))
+        raise type(e)(safe_msg) from None
 
 
 def log_llm(kind, who, rc, secs, cost, usage, head):
-    with open(os.path.join(ctx.FD, "llm.jsonl"), "a") as f:
-        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc, secs=round(secs, 1), cost_usd=cost, usage=usage, head=head,
+    if ctx.FD:
+        os.makedirs(ctx.FD, exist_ok=True)
+    safe_head = _sanitize_secrets(head) if isinstance(head, str) else head
+    with open(os.path.join(ctx.FD or ".", "llm.jsonl"), "a") as f:
+        f.write(json.dumps(dict(at=sbx.now(), kind=kind, who=who, rc=rc,
+                                secs=round(secs, 1) if secs is not None else 0.0,
+                                cost_usd=cost, usage=usage, head=safe_head,
                                 subject=KIND.subject or None), ensure_ascii=False) + "\n")
 
 

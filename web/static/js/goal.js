@@ -32,7 +32,7 @@ function goalForm(g) {
 function renderGoalSheet() {
   if (SHEET.kind !== 'goal') return;
   const id = GD.id, live = F && (F.goals || []).find(x => x.id === id), d = GD.data;
-  if (!d && !live) return setSheet('goal', id, GD.err ? '<div class="empty">' + esc(GD.err) + '</div>' : '<div class="empty">loading the goal…</div>');
+  if (!d && !live) return setSheet('goal', id, GD.err ? '<div class="empty bad">Could not load goal: ' + esc(GD.err) + '</div>' : '<div class="empty">loading the goal…</div>');
   const g = Object.assign({}, d ? d.goal : {}, live || {});
   if (live && d && (live.status !== d.goal.status || (F.tasks || []).filter(t => t.goal === id).map(t => t.status).join() !== (d.tasks || []).map(t => t.status).join())
       && Date.now() - GD.at > 4000) { GD.at = Date.now(); loadGoalDetail(id); }
@@ -43,33 +43,36 @@ function renderGoalSheet() {
   const crit = acc.length ? acc.map((a, i) => { const c = cr[i];
     return '<div class="critrow">' + (!c ? '<span class="cm wait">○</span>' : c.met ? '<span class="cm ok">✓</span>' : '<span class="cm no">✗</span>') + '<span>' + esc(a) +
       (c && c.evidence ? '<br><span class="muted small">' + esc(c.evidence) + '</span>' : '') + '</span></div>'; }).join('') +
-    (g.criteria_at ? small('checked ' + esc(dfmt(g.criteria_at))) : small('checked when all its tasks are finished')) : small('No acceptance criteria yet - the planner writes them with the plan.');
+    (g.criteria_at ? small('checked ' + esc(dfmt(g.criteria_at))) : small('checked when all its tasks are finished')) : '<div class="empty">No acceptance criteria yet — the planner writes them with the plan.</div>';
   const plan = g.status === 'approval' ? '<h3 class="hot">The plan waiting for you</h3>' + ts.filter(t => liveT(t.id).awaiting === 'plan').map(t =>
     '<div class="plantask"><b>' + esc(t.title) + '</b> ' + roleTag(t.role) + (liveT(t.id).risk === 'risky' ? ' <span class="badge warn">risky</span>' : '') +
     '<div class="muted small">' + esc((liveT(t.id).spec || '').slice(0, 260)) + '</div></div>').join('') : '';
   const tasksT = ts.length ? '<div class="tablewrap"><table class="m click"><tr><th>task</th><th>role</th><th>status</th><th>worker</th><th class="num">reworks</th><th class="num">lines</th><th>PR</th></tr>' +
     ts.map(t => { const lt = Object.assign({}, t, liveT(t.id));
-      return '<tr data-open="task:' + esc(t.id) + '"><td><span class="mono small">' + esc(t.id) + '</span><br>' + esc(lt.title) + '</td><td>' + roleTag(lt.role) + '</td><td>' + chip(lt.status) +
-        '</td><td>' + esc(lt.worker || '') + '</td><td class="num">' + (t.reworks || 0) + '</td><td class="num">' + (lt.diff ? '<span class="plus">+' + lt.diff.added + '</span> <span class="minus">−' + lt.diff.removed + '</span>' : '') +
-        '</td><td>' + (lt.pr_url ? '<a href="' + esc(lt.pr_url) + '" target="_blank" rel="noopener">#' + esc(lt.pr) + '</a>' : lt.pr ? '#' + esc(lt.pr) : '') + '</td></tr>'; }).join('') + '</table></div>' : small('No tasks yet.');
+      return '<tr data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Open task ' + esc(t.id) + '"><td><span class="mono small">' + esc(t.id) + '</span><br>' + esc(lt.title) + '</td><td>' + roleTag(lt.role) + '</td><td>' + chip(lt.status) +
+        '</td><td>' + esc(lt.worker || '') + '</td><td class="num">' + (t.reworks || 0) + '</td><td class="num">' + (lt.diff ? '<span class="plus" title="added">+' + lt.diff.added + '</span> <span class="minus" title="removed">−' + lt.diff.removed + '</span>' : '–') +
+        '</td><td>' + (lt.pr_url ? '<a href="' + esc(lt.pr_url) + '" target="_blank" rel="noopener">#' + esc(lt.pr) + '</a>' : lt.pr ? '#' + esc(lt.pr) : '') + '</td></tr>'; }).join('') + '</table></div>' : '<div class="empty">No tasks yet — the planner creates tasks when the goal is planned.</div>';
   let day = '';
-  const evs = (d ? d.events : []).map(e => { const dd = String(e.at || '').slice(0, 10), head = dd !== day ? '<div class="evday">' + esc(dd) + '</div>' : ''; day = dd;
+  const evs = (d ? d.events : []).map(e => {
+    const dte = toDate(e.at);
+    const dd = isNaN(dte) ? '' : (new Date().toDateString() === dte.toDateString() ? 'Today' : dte.toLocaleDateString([], {day: 'numeric', month: 'numeric', year: 'numeric'}));
+    const head = dd !== day ? '<div class="evday">' + esc(dd) + '</div>' : ''; day = dd;
     return head + '<div class="ev2"><span class="ico">' + evIcon(e.msg || '') + '</span><time>' + esc(tfmt(e.at)) + '</time><span>' +
-      esc(e.msg || '').replace(/\b(\d{4}-[\w-]+)\b/, m => ts.some(t => t.id === m) ? '<a data-open="task:' + m + '">' + m + '</a>' : m) + '</span></div>'; }).join('');
+      esc(tsloc(e.msg || '')).replace(/\b(\d{4}-[\w-]+)\b/, m => ts.some(t => t.id === m) ? '<button class="linkbtn" data-open="task:' + m + '" style="font:inherit;padding:0">' + m + '</button>' : m) + '</span></div>'; }).join('');
   const html = '<h2>' + esc(g.text) + '</h2><div class="sub">' + [GSTATUS[g.status] || g.status, g.paused ? '<b class="warn">paused</b>' : '', g.priority ? '<b>first</b>' : '',
       'created ' + esc(dfmt(g.created)), g.finished ? 'finished ' + esc(dfmt(g.finished)) : '', g.rounds > 1 ? 'round ' + g.rounds : '', g.source && g.source !== 'owner' ? esc(g.source) : '']
       .filter(Boolean).join(' · ') + '</div><div class="btnrow">' + goalActions(g) + '</div>' + goalForm(g) +
-    (g.owner_notes ? '<div class="note">Your notes: ' + esc(g.owner_notes) + '</div>' : '') +
-    (g.summary || g.notes ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') + plan +
+    (g.owner_notes ? '<div class="note">Your notes: ' + esc(tsloc(g.owner_notes)) + '</div>' : '') +
+    (g.summary || g.notes ? '<div class="goal-sum">' + esc(tsloc(g.summary || g.notes)) + '</div>' : '') + plan +
     '<div class="kpis">' + '<div><b>' + doneN + '/' + ts.length + '</b><span>tasks done</span></div><div><b>' + reworks + '</b><span>sent back</span></div>' +
-    (tot && tot.runs ? '<div><b>' + fmtTok(tot.tokens) + '</b><span>tokens, ' + tot.runs + ' runs</span></div>' + (tot.cost_usd ? '<div><b>' + usd(tot.cost_usd) + '</b><span>API cost</span></div>' : '') +
+    (tot && tot.runs ? '<div><b>' + fmtTok(tot.tokens) + '</b><span>tokens (' + tot.runs + ' runs)</span></div>' + (tot.cost_usd ? '<div><b>' + usd(tot.cost_usd) + '</b><span>API cost</span></div>' : '') +
       (tot.week ? '<div><b>' + tot.week + ' %</b><span>of a week\'s quota</span></div>' : '') + '<div><b>' + dur(tot.duration_s) + '</b><span>worker time</span></div>' : '') +
     (tot && tot.wall_s ? '<div><b>' + dur(tot.wall_s) + '</b><span>' + (g.finished ? 'from start to done' : 'since it was created') + '</span></div>' : '') +
-    (orch && orch.calls ? '<div><b>' + orch.calls + '</b><span>orchestrator calls</span></div>' : '') + '</div>' +
+    (orch && orch.calls ? '<div><b>' + orch.calls + '</b><span>orchestrator calls' + (orch.cost_usd ? ' · ' + usd(orch.cost_usd) : '') + '</span></div>' : '') + '</div>' +
     '<h3>Done when</h3><div class="crit">' + crit + '</div><h3>Tasks</h3>' + tasksT +
-    '<h3>What happened</h3>' + (evs ? '<div class="evlist">' + evs + '</div>' : small(d ? 'nothing yet' : 'loading…')) +
-    '<h3>All changes</h3>' + (GD.diffs == null ? '<button class="mini" data-gdiff>' + (GD.diffLoading ? 'loading…' : 'Show the combined diff of its merged tasks') + '</button>' :
-      GD.diffs.map(x => '<h4 class="mono">' + esc(x.id) + ' — ' + esc(x.title) + '</h4>' + diffHtml(x.text)).join('') || small('nothing merged yet'));
+    '<h3>What happened</h3>' + (evs ? '<div class="evlist">' + evs + '</div>' : '<div class="empty">' + (d ? 'No events recorded yet.' : 'loading…') + '</div>') +
+    '<h3>All changes</h3>' + (GD.diffs == null ? '<button class="mini" data-gdiff' + (GD.diffLoading ? ' disabled' : '') + '>' + (GD.diffLoading ? 'loading diffs…' : 'Show the combined diff of its merged tasks') + '</button>' :
+      (GD.diffs.length ? GD.diffs.map(x => '<h4 class="mono">' + esc(x.id) + ' — ' + esc(x.title) + '</h4>' + diffHtml(x.text)).join('') : '<div class="empty">No diff available — no tasks merged yet.</div>'));
   setSheet('goal', id, html);
 }
 async function loadGoalDiffs() {
@@ -90,5 +93,13 @@ document.addEventListener('click', async e => {
     if (!text.trim()) { $('gf-text').focus(); return; }
     gs.disabled = true; const ok = await goalAction(GD.id, gs.dataset.gsend, text); gs.disabled = false;
     if (ok) { GD.form = null; $('sheet').dataset.html = ''; renderGoalSheet(); } }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (e.target.id === 'gf-text') {
+      const sendBtn = document.querySelector('[data-gsend]');
+      if (sendBtn) { e.preventDefault(); sendBtn.click(); }
+    }
+  }
 });
 projectResets.push(() => { GD.id = null; GD.data = null; });

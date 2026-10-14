@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent-Forge web dashboard and admin console: the team live (orchestrator, every worker), goals with their acceptance criteria,
 the task board and dependency graph, run replays, timeline, money and quota, metrics, health, egress and disk; and the owner's
-controls - goals and backlog, approvals, task and goal actions, answers to the planner's questions, kill switch per project or
+controls - autopilot toggle, foreman pause/resume, goals and backlog, approvals, task and goal actions, answers to the planner's questions, kill switch per project or
 for all, settings, the team's documents, new workers with their Antigravity login in a browser terminal, and new projects.
 
 Python standard library only: this file is the HTTP side, web/dashboard/ the backend, web/static/ the page. Runs next to
@@ -14,12 +14,18 @@ Live updates are pushed with Server-Sent Events (/api/stream): the foreman's sta
 Config (environment): BIND_PORT (8171), FORGE_DIR, VM_IP / VM_USER / VM_KEY / VM_KNOWN_HOSTS for remote mode, DASHBOARD_HOSTS,
 DASHBOARD_TOKEN (optional sign-in), FOREMAN_SERVICE / FOREMAN_SERVICE_PROJECT (systemd unit names), CLAUDE_PROJECT.
 """
-import atexit, json, os, re, shlex, signal, sys, threading, time, urllib.parse
+import atexit, hmac, json, os, re, shlex, signal, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
+from foreman import readiness
+
+
+DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
+if DEMO_MODE or B.DEMO_MODE:
+    L.ssh_run = B.local_run
 
 
 def shutdown(*_a):
@@ -53,6 +59,7 @@ HOST = re.compile(r"[a-z0-9][a-z0-9.-]{2,252}")          # bin/lib/egress.py che
 TARGET = re.compile(r"|worker-\d+|[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}")
 TASK_ACTIONS = ("approve", "cancel", "retry", "feedback", "assign", "model")
 GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "cancel")
+CONTROL_ACTIONS = ("autopilot_on", "autopilot_off", "pause", "resume")
 
 
 def load_static():
@@ -78,34 +85,106 @@ STATIC = load_static()
 
 
 def host_allowed(host):
+    if (DEMO_MODE or B.DEMO_MODE) and not DASHBOARD_HOSTS:
+        return True
     host = (host or "").strip().lower()
-    name = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]
-    return name in ("127.0.0.1", "localhost", "[::1]") or name.endswith(".ts.net") or name in DASHBOARD_HOSTS
+    if not host:
+        return False
+    if host.startswith("["):
+        if "]" not in host:
+            return False
+        name, _, rest = host.partition("]")
+        name = name + "]"
+        if rest and (not rest.startswith(":") or not rest[1:].isdigit() or len(rest) == 1):
+            return False
+    elif ":" in host:
+        name, port = host.rsplit(":", 1)
+        if not port or not port.isdigit():
+            return False
+    else:
+        name = host
+    if not name:
+        return False
+    return (name in ("127.0.0.1", "localhost", "[::1]")
+            or (name.endswith(".ts.net") and len(name) > 7 and not name.startswith("."))
+            or name in DASHBOARD_HOSTS or host in DASHBOARD_HOSTS)
 
 
 def token_ok(cookie_header, query_token=""):
     if not DASHBOARD_TOKEN:
         return True
-    import hmac
-    if query_token and hmac.compare_digest(query_token, DASHBOARD_TOKEN):
+    qtok = str(query_token or "").strip()
+    if qtok and hmac.compare_digest(qtok, DASHBOARD_TOKEN):
         return True
     for part in (cookie_header or "").split(";"):
         k, _, v = part.strip().partition("=")
-        if k == "af_token" and hmac.compare_digest(v, DASHBOARD_TOKEN):
+        if k.strip() == "af_token" and hmac.compare_digest(v.strip().strip('"'), DASHBOARD_TOKEN):
             return True
     return False
 
 
 def foreman(pf, args, inp=None, timeout=60):
     """bin/foreman for a project ("" or " --project NAME"): (rc, stdout, stderr). Owner text only ever as `inp` (stdin)."""
-    return B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/foreman{pf} {args}", timeout=timeout, inp=inp)
+    arg_str = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
+    run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+    return run_fn(f"cd {B.FORGE_DIR} && bin/foreman{pf} {arg_str}", timeout=timeout, inp=inp)
 
 
-def as_json(out, err, rc):
+def as_json(out, err="", rc=0):
+    if isinstance(out, (dict, list)):
+        return out
     try:
         return json.loads(out)
-    except ValueError:
-        return {"ok": False, "error": (err or out or f"exit {rc}").strip()[-400:]}
+    except (ValueError, TypeError):
+        msg = (err or (out if isinstance(out, str) else "") or f"exit {rc}").strip()[-400:]
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
+        return {"ok": False, "error": msg}
+
+
+# status_of() contract from bin/lib/foreman/readiness.py:
+# Returns {"state": "ok" | "missing_setting" | "missing_egress", "detail": str, ...}
+_STATUS_STATE_TO_READY = {
+    "ok": True,
+    "missing_setting": False,
+    "missing_egress": False,
+}
+
+
+def readiness_summary():
+    """Return honest per-runtime readiness and cost model summary.
+
+    Returns dict matching shape:
+    {"runtimes": {"<key>": {"ready": bool | None, "reason": str, "cost_model": dict}, ...}}
+    """
+    if readiness is None:
+        return {"runtimes": {}, "error": "readiness module unavailable"}
+
+    summary = {}
+    try:
+        items = readiness.runtime_items()
+    except Exception as e:
+        return {"runtimes": {}, "error": str(e) or type(e).__name__}
+
+    for rt in items:
+        try:
+            st = readiness.status_of("runtime", rt)
+        except Exception as e:
+            st = {"state": "error", "detail": f"readiness check failed: {e}"}
+        try:
+            cm = readiness.cost_model(rt)
+        except Exception as e:
+            cm = {"kind": "unknown", "detail": f"cost model check failed: {e}"}
+
+        state = st.get("state") if isinstance(st, dict) else None
+        ready = _STATUS_STATE_TO_READY.get(state)
+        reason = st.get("detail", "") if isinstance(st, dict) else ""
+        summary[rt] = {
+            "ready": ready,
+            "reason": reason,
+            "cost_model": cm if isinstance(cm, dict) else {"kind": "unknown", "detail": str(cm or "")},
+        }
+    return {"runtimes": summary}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -120,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def _deny(self, code, msg):
+        if DASHBOARD_TOKEN:
+            msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
         raw = msg.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -133,12 +214,33 @@ class Handler(BaseHTTPRequestHandler):
         qtok = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("token", [""])[0]
         if not token_ok(self.headers.get("Cookie"), qtok):
             self._deny(401, "sign in: open this page as /?token=<DASHBOARD_TOKEN>"); return False
-        if post and self.headers.get("X-Agent-Forge") != "1":
-            self._deny(403, "missing X-Agent-Forge header"); return False
+        if post:
+            if DEMO_MODE or B.DEMO_MODE:
+                return True
+            if self.headers.get("X-Agent-Forge") != "1":
+                self._deny(403, "missing X-Agent-Forge header"); return False
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                origin = origin.strip()
+                if origin == "null" or not origin:
+                    self._deny(403, "origin not allowed"); return False
+                o_host = urllib.parse.urlsplit(origin).netloc if "://" in origin else origin
+                if not host_allowed(o_host):
+                    self._deny(403, "origin not allowed"); return False
+            referer = self.headers.get("Referer")
+            if referer is not None:
+                referer = referer.strip()
+                if referer == "null" or not referer:
+                    self._deny(403, "referer not allowed"); return False
+                r_host = urllib.parse.urlsplit(referer).netloc if "://" in referer else referer
+                if not host_allowed(r_host):
+                    self._deny(403, "referer not allowed"); return False
         return True
 
     def _json(self, obj, code=200):
         raw = json.dumps(obj).encode()
+        if DASHBOARD_TOKEN:
+            raw = raw.replace(DASHBOARD_TOKEN.encode(), b"[REDACTED]")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -146,6 +248,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _raw(self, raw, ctype, cache="no-store"):
+        if DASHBOARD_TOKEN and isinstance(raw, (bytes, bytearray)):
+            raw = raw.replace(DASHBOARD_TOKEN.encode(), b"[REDACTED]")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
@@ -169,6 +273,9 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------------------------------------------- POST: writes
     def do_POST(self):
         if not self._allowed(post=True):
+            return
+        if DEMO_MODE or B.DEMO_MODE:
+            self._json({"error": "Demo mode: read-only"}, 403)
             return
         body = self._body()
         proj = str(body.get("project", "default"))
@@ -296,6 +403,24 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 rc, out, err = foreman(pf, f"goal {gid} {act}", timeout=30)
             self._json(as_json(out, err, rc))
+        elif path == "/api/control":
+            # Project name is validated in the shared do_POST preamble via B.pflag(proj) (invalid name -> 400).
+            act = str(body.get("action", ""))
+            if act not in CONTROL_ACTIONS:
+                self._json({"ok": False, "message": "unknown action"}, 400); return
+            cmds = {
+                "autopilot_on": ["autopilot", "on"],
+                "autopilot_off": ["autopilot", "off"],
+                "pause": ["pause"],
+                "resume": ["resume"],
+            }
+            rc, out, err = foreman(pf, cmds[act])
+            combined = ((out if isinstance(out, str) else "") + ("\n" if out and err else "") + (err if isinstance(err, str) else "")).strip()[-400:]
+            if not combined and rc != 0:
+                combined = f"exit {rc}"
+            if DASHBOARD_TOKEN:
+                combined = combined.replace(DASHBOARD_TOKEN, "[REDACTED]")
+            self._json({"ok": rc == 0, "message": combined})
         elif path == "/api/doc":
             name = str(body.get("name", ""))
             if not DOC_NAME.fullmatch(name):
@@ -386,8 +511,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
     # ------------------------------------------------------------------------------------------------------- GET: reads
+    def do_HEAD(self):
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        self.send_response(405); self.end_headers()
+
     def do_GET(self):
-        if self.path == "/healthz":
+        if not host_allowed(self.headers.get("Host")):
+            self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        if self.path.split("?")[0] == "/healthz":
             self._json({"ok": True}); return
         if not self._allowed():
             return
@@ -408,6 +540,8 @@ class Handler(BaseHTTPRequestHandler):
             if not f:
                 self.send_response(404); self.end_headers(); return
             self._raw(f[0], f[1], cache="public, max-age=31536000, immutable" if "v" in q else "no-cache"); return
+        if path == "/api/control":
+            self.send_response(405); self.end_headers(); return
         if not path.startswith("/api/"):
             self.send_response(404); self.end_headers(); return
         proj = q.get("project", "default")
@@ -423,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                 items = sorted(L.PANES.values(), key=lambda p: (order.get(p.kind, 9), p.title))
                 panes = [{"id": p.id, "title": p.title, "kind": p.kind, "state": p.state, "lines": list(p.lines)} for p in items]
             self._json({"roster": L.ROSTER.snapshot(), "panes": panes})
-        elif path == "/api/foreman":
+        elif path in ("/api/foreman", "/api/status", "/api/dashboard"):
             e = B.FOREMAN_BY.get(proj) or {"data": None, "at": 0, "error": "unknown project or not loaded yet"}
             self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
         elif path == "/api/projects":
@@ -463,8 +597,9 @@ class Handler(BaseHTTPRequestHandler):
             if not L.RUN_ID.fullmatch(rid):
                 self._json({"error": "bad run id"}, 400); return
             d = f"{B.FORGE_DIR}/runs/{rid}"
-            rc, out, err = B.ssh_run_full(f"cat {d}/meta.json 2>/dev/null; echo; echo '<<AF>>'; "
-                                          f"cat {d}/stream.jsonl 2>/dev/null || zcat {d}/stream.jsonl.gz 2>/dev/null", timeout=60)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cat {d}/meta.json 2>/dev/null; echo; echo '<<AF>>'; "
+                                  f"cat {d}/stream.jsonl 2>/dev/null || zcat {d}/stream.jsonl.gz 2>/dev/null", timeout=60)
             meta_txt, _, stream = out.partition("<<AF>>\n")
             try:
                 meta = json.loads(meta_txt.strip() or "{}")
@@ -474,13 +609,15 @@ class Handler(BaseHTTPRequestHandler):
                                                                         "duration_s", "cost_usd", "dispatched", "finished", "variant")},
                         "lines": L.render_run(stream), "missing": not stream.strip()})
         elif path == "/api/health":
-            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if q.get("full") else " --quick"), timeout=300)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/doctor{pf} --json" + ("" if q.get("full") else " --quick"), timeout=300)
             self._json(as_json(out, err, rc))
         elif path == "/api/egress":
             since = q.get("since", "24h")
             if not re.fullmatch(r"\d{1,3}[hd]", since):
                 since = "24h"
-            rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
+            run_fn = B.local_run_full if (DEMO_MODE or B.DEMO_MODE) else B.ssh_run_full
+            rc, out, err = run_fn(f"cd {B.FORGE_DIR} && bin/egress-report --json --since {since}", timeout=120)
             self._json(as_json(out, err, rc))
         elif path == "/api/disk":
             rc, out, err = foreman(pf, "disk", timeout=120)
@@ -491,6 +628,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(json.loads(out))
             except Exception:
                 self._json({"error": (err or out)[-300:] or "settings need a newer bin/foreman"})
+        elif path == "/api/readiness":
+            rc, out, err = foreman(pf, "readiness", timeout=60)
+            self._json(as_json(out, err, rc))
+        elif path == "/api/readiness/recommend":
+            rc, out, err = foreman(pf, ["readiness-recommend"])
+            self._json(as_json(out, err, rc))
+        elif path in ("/api/readiness/summary", "/api/readiness/status"):
+            self._json(as_json(readiness_summary()))
         elif path.startswith("/api/jobs/"):
             j = B.JOBS.get(path.rsplit("/", 1)[-1])
             self._json(j or {"error": "unknown job"})

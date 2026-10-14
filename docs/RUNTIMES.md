@@ -10,8 +10,85 @@ Each worker is one container running one agent CLI. You can mix them in one team
 | `gemini` | Gemini API key, per token | `bin/worker-add N --runtime gemini` | `generativelanguage.googleapis.com` |
 | `compat` | your own model server (nothing, for a local one) - Codex CLI over the OpenAI Responses API | `bin/worker-add N --runtime compat` | that server only |
 | `aider` | your own model server - Aider over the OpenAI chat-completions API | `bin/worker-add N --runtime aider` | that server only |
+| `opencode` | SST's OpenCode CLI on your configured provider / subscription | `bin/worker-add N --runtime opencode` | configured provider host only |
+| `goose` | Block's Goose CLI agent on your model server | `bin/worker-add N --runtime goose` | configured provider host only |
+| `qwen-code` | an Alibaba DashScope API key | `bin/worker-add N --runtime qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` |
+| `anthropic-compat` | your own model server (nothing, for a local one) - Claude Code CLI over an Anthropic-compatible API | `bin/worker-add N --runtime anthropic-compat` | that server only |
+| `copilot` | a GitHub Copilot subscription | `bin/worker-add N --runtime copilot` | `api.githubcopilot.com`, `api.github.com` |
+| `mistral-vibe` | a Mistral Vibe subscription or API key | `bin/worker-add N --runtime mistral-vibe` | `api.mistral.ai` |
+| `ollama` | unmetered - depends on your own hardware (local OpenAI-compatible server, no API key) | `bin/worker-add N --runtime ollama` | none needed - traffic stays local/LAN (no public egress allowlist entry) |
+| `vllm` | unmetered - depends on your own hardware (local OpenAI-compatible server, no API key) | `bin/worker-add N --runtime vllm` | none needed - traffic stays local/LAN (no public egress allowlist entry) |
+| `lmstudio` | unmetered - depends on your own hardware (local OpenAI-compatible server, no API key) | `bin/worker-add N --runtime lmstudio` | none needed - traffic stays local/LAN (no public egress allowlist entry) |
+| `llamacpp` | unmetered - depends on your own hardware (local OpenAI-compatible server, no API key) | `bin/worker-add N --runtime llamacpp` | none needed - traffic stays local/LAN (no public egress allowlist entry) |
 
 The dashboard does the same: Settings → "+ Add worker" → pick the runtime; for an API runtime it asks for the key once.
+
+- `agy`: **Cost / quota model**: quota (tracked via `agy /usage`, not USD).
+- `claude`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+- `codex`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+- `gemini`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
+
+
+## Checking readiness
+
+`bin/doctor` now prints, for every runtime, one of three states:
+- `ok` ('Ready'): fully configured and ready to use.
+- `missing_setting`: a required config value or secret is not set.
+- `missing_egress`: its host is not yet in the egress allowlist.
+
+The same summary is shown on the dashboard's Settings page, so the owner no longer has to cross-check these docs by hand to see what is configured. Point to this live check as the source of truth for current status.
+
+## Egress host readiness
+
+When a runtime's required egress host is missing from the egress proxy allowlist, `bin/doctor` reports an error during worker inspection (`check_runtime_egress`):
+
+```
+  ✘ [FAIL] <runtime>: missing egress host '<host>'
+      → add <host> to egress/allowlist.txt, or allow it from the dashboard's Egress page
+```
+
+For example, when a `claude` worker is active but `api.anthropic.com` is missing from the egress allowlist, `bin/doctor` prints:
+
+```
+  ✘ [FAIL] claude: missing egress host 'api.anthropic.com'
+      → add api.anthropic.com to egress/allowlist.txt, or allow it from the dashboard's Egress page
+```
+
+### How to fix a missing egress host
+
+1. **Which file to edit**:
+   - `bin/doctor`'s diagnostic message directs the owner to: `add <host> to egress/allowlist.txt, or allow it from the dashboard's Egress page`.
+   - Both `egress/allowlist.txt` (shipped base allowlist) and `egress/allowlist.local.txt` (local additions) are loaded by `egress.allowlist()`: adding the host to either file satisfies `bin/doctor` and permits traffic through Squid.
+   - Per `bin/lib/egress.py`'s `allow_host(host)` (and the dashboard's **System &rarr; Egress** page **Allow** action), the host is appended to `egress/allowlist.local.txt` so the shipped `egress/allowlist.txt` remains untouched.
+   - For manual edits from the shell, you can append the host to `egress/allowlist.local.txt` (per `allow_host()` convention for local additions) or directly to `egress/allowlist.txt` (as quoted in `bin/doctor`'s output).
+2. **Proxy reload**:
+   - `allow_host()` (or the dashboard **Allow** button) reloads the proxy automatically via `reload_proxy()` (`squid -k reconfigure`).
+   - If editing `egress/allowlist.local.txt` or `egress/allowlist.txt` manually from a shell, apply the changes by running `bin/egress-up` or invoking `reload_proxy()`.
+3. **No worker restart is needed**:
+   - The Squid proxy reloads its allowlists in place (`squid -k reconfigure`) without dropping active tunnels. Worker containers do not need to be restarted.
+
+### Required egress hosts by runtime
+
+The required egress hosts for each runtime, derived from `bin/lib/runtimes.py` `hosts(rt, endpoint_url='')`:
+
+| runtime | required egress host(s) | notes |
+|---|---|---|
+| `agy` | none (`[]`) | `hosts(rt, endpoint_url='')` returns `[]`; subscription runtime. |
+| `claude` | `api.anthropic.com` | Anthropic Messages API host in `RUNTIMES['claude']['hosts']`. |
+| `codex` | `api.openai.com` | OpenAI API host in `RUNTIMES['codex']['hosts']`. |
+| `gemini` | `generativelanguage.googleapis.com` | Google Gemini API host in `RUNTIMES['gemini']['hosts']`. |
+| `compat` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `aider` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `opencode` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `goose` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `qwen-code` | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` | Alibaba Cloud DashScope API hosts in `RUNTIMES['qwen-code']['hosts']`. |
+| `anthropic-compat` | derived dynamically from `COMPAT_BASE_URL` (`[]` when unset) | Endpoint runtime; `hosts()` derives the host from `COMPAT_BASE_URL`. |
+| `copilot` | `api.githubcopilot.com`, `api.github.com` | Public API hosts for GitHub Copilot CLI in `egress/allowlist.txt`. |
+| `mistral-vibe` | `api.mistral.ai` | Public API host for Mistral Vibe CLI in `egress/allowlist.txt`. |
+| `ollama` | none needed (traffic stays local/LAN) | Local OpenAI-compatible server; no public egress allowlist entry needed. |
+| `vllm` | none needed (traffic stays local/LAN) | Local OpenAI-compatible server; no public egress allowlist entry needed. |
+| `lmstudio` | none needed (traffic stays local/LAN) | Local OpenAI-compatible server; no public egress allowlist entry needed. |
+| `llamacpp` | none needed (traffic stays local/LAN) | Local OpenAI-compatible server; no public egress allowlist entry needed. |
 
 ## Your own model server: Ollama, vLLM, LM Studio, OpenRouter
 Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's OpenAI-compatible base URL, then add workers
@@ -34,14 +111,100 @@ with the runtime `compat` or `aider`:
 - Models: `WORKER_MODEL_COMPAT` / `WORKER_MODEL_AIDER` (per project) - the name the server knows (`qwen3-coder:30b`,
   `Qwen/Qwen3-Coder-30B-A3B-Instruct`, `anthropic/claude-sonnet-4.5` on OpenRouter). A coding model with tool use and a long
   context works best; small local models do small tasks.
-- Cost: `PRICE_COMPAT` (USD per million tokens, input,cached,output) - `0,0,0` for your own hardware, the provider's prices for
-  OpenRouter. The budgets below apply as for any API runtime.
+- **Cost / quota model**: metered for `compat` and `aider` (a real USD estimate is shown on the Money page, calculated from `PRICE_COMPAT`: `0,0,0` for your own hardware, or the provider's prices for OpenRouter). The budgets below apply as for any API runtime.
 - Network: a public HTTPS server is added to the allow-list; a server on your network or without TLS gets an exception for
   exactly its address and port (see SECURITY.md). A proxy created before this feature needs `bin/egress-up` once - `bin/doctor`
   says so.
 - Nothing else is contacted: Aider would download litellm's price table and tokenizers at run time - the image ships the
   tokenizers and `af-agent` gives Aider the model's metadata from a local file. `tests/test_runtimes.sh` routes every other
   connection to a logging proxy and fails if a CLI tries one.
+
+## Anthropic-compatible endpoint
+An Anthropic-compatible endpoint connects worker containers running Claude Code CLI against your own model server, proxy, or provider implementing the Anthropic Messages API (e.g. LiteLLM, Cloudflare AI Gateway, OpenRouter, AWS Bedrock proxy, or local models).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime anthropic-compat` (or in Settings → "+ Add worker" → Anthropic-compatible endpoint). Set `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`) to the server's Anthropic-compatible base URL.
+- **Endpoint and Network**: The owner pins the endpoint host via Settings > System > Egress exactly like `compat` (or allow the host using `bin/egress-up` / `allow_host`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Credentials**: Needs an API key secret (e.g. `compat.key`), set the same way as other API runtimes: in the dashboard under Settings → Workers, or from a shell with `printf '%s' "$KEY" | bin/secret-set compat.key`. For an unauthenticated local server, an empty key or local configuration is supported.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge).
+
+## OpenCode
+OpenCode (SST's OpenCode CLI) runs inside the worker container using the standard agy worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local server the owner configures (Anthropic, OpenAI, OpenRouter, Ollama, etc.).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime opencode` (or in Settings → "+ Add worker" → OpenCode). Configure the model server or provider endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`). No API key secret is required in Agent-Forge. Its model is configurable from the dashboard's Settings page (key `OPENCODE_MODEL`) and its readiness is shown in the Settings > Onboarding readiness summary.
+- **Egress and Network**: OpenCode is endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must allow the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`, or configure a local endpoint in `egress/local-endpoint.conf`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Doctor check**: Verified by `bin/doctor` (readiness, cost model, and egress checks) and summarized in the dashboard's Settings > Onboarding readiness summary. If `COMPAT_BASE_URL` is unset or invalid, `bin/doctor` reports `missing_setting` (`Runtime 'opencode' is missing required setting(s): COMPAT_BASE_URL.`); if the endpoint host is not allowed by the egress proxy, it reports `missing_egress` (`Runtime 'opencode' is missing egress allowlist for: <host>.`); when the endpoint is configured and allowed, it reports `ok` (`Runtime 'opencode' is ready.`).
+- **Invocation**: `bin/run-supervisor` starts OpenCode non-interactively with `opencode run --format json` (using `OPENCODE_QUIET` flags). The task prompt is passed on stdin rather than in argv, keeping prompts and sensitive data out of `/proc/*/cmdline`. A model can be passed via `--model`, and a rework continues the existing session with `--session <conversation_id>`.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge; `tokens: None`).
+- **Testing**: Tested offline against `tests/fixtures/fake-opencode-server.js` with zero real network calls in `tests/test_runtime_opencode.sh`.
+
+## Goose
+Goose (Block's open-source CLI agent, `goose`) runs inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`). It is provider-agnostic, connecting to whichever AI model provider or local model server the owner configures (Ollama, vLLM, LM Studio, OpenRouter, or other OpenAI-compatible endpoints).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime goose` (or in Settings → "+ Add worker" → Goose). Configure the model server or provider endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`). No API key secret is required in Agent-Forge. Its model is configurable from the dashboard's Settings page (key `GOOSE_MODEL`) and its readiness is shown in the Settings > Onboarding readiness summary.
+- **Egress and Network**: Goose is provider-agnostic and endpoint-based with no fixed host; `hosts()` derives the destination host dynamically from `COMPAT_BASE_URL`. The owner must allow the provider host via Settings > System > Egress before use (or allow the host using `bin/egress-up` / `allow_host`, or configure a local endpoint in `egress/local-endpoint.conf`). The egress proxy restricts outbound network traffic to that configured endpoint host only.
+- **Environment and Config**: Goose configures its target model, provider, and server endpoint through environment variables (such as `GOOSE_PROVIDER`, `GOOSE_MODEL`, and provider base URLs / keys) or via its configuration file (`~/.config/goose/config.yaml`), pointing at the configured endpoint.
+- **Doctor check**: Verified by `bin/doctor` (readiness, cost model, and egress checks) and summarized in the dashboard's Settings > Onboarding readiness summary. If `COMPAT_BASE_URL` is unset or invalid, `bin/doctor` reports `missing_setting` (`Runtime 'goose' is missing required setting(s): COMPAT_BASE_URL.`); if the endpoint host is not allowed by the egress proxy, it reports `missing_egress` (`Runtime 'goose' is missing egress allowlist for: <host>.`); when the endpoint is configured and allowed, it reports `ok` (`Runtime 'goose' is ready.`).
+- **Invocation**: `bin/run-supervisor` starts Goose non-interactively using `goose run --instructions -` (using `GOOSE_QUIET` flags). The task prompt is supplied on stdin (per Goose CLI documentation) rather than in argv, preventing sensitive instructions and task data from leaking in `/proc/*/cmdline`.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge; `tokens: None`).
+- **Testing**: Tested offline against `tests/fixtures/fake-goose-server.js` with zero real network calls in `tests/test_runtime_goose.sh`.
+
+## Qwen Code
+Qwen Code runs Alibaba's Qwen Code CLI (`qwen`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`) to interact with Alibaba Cloud DashScope models.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime qwen-code` (or in Settings → "+ Add worker" → Qwen Code). The worker requires a DashScope API key secret (`qwen.key`), configured via `printf '%s' "$KEY" | bin/secret-set qwen.key` or in Settings → Workers, which is mounted into the container as a read-only secret (readiness also recognizes `DASHSCOPE_API_KEY` or `QWEN_API_KEY` environment variables). Its model is configurable from the dashboard's Settings page (key `QWEN_MODEL`) and its readiness is shown in the Settings > Onboarding readiness summary.
+- **Egress and Network**: Requires public API hosts `dashscope.aliyuncs.com` and `dashscope-intl.aliyuncs.com` in `egress/allowlist.txt` rather than through the dynamic endpoint mechanism. The egress proxy restricts outbound network traffic to these verified DashScope API hosts only.
+- **Doctor check**: Verified by `bin/doctor` (readiness, cost model, and egress checks; verifies `qwen.key` secret and DashScope egress allowlist hosts `dashscope.aliyuncs.com` and `dashscope-intl.aliyuncs.com`) and summarized in the dashboard's Settings > Onboarding readiness summary. If `qwen.key` is missing, `bin/doctor` reports `missing_setting` (`Runtime 'qwen-code' is missing required setting(s): qwen.key.`); if either DashScope host is missing from `egress/allowlist.txt`, it reports `missing_egress` (`Runtime 'qwen-code' is missing egress allowlist for: ...`); when the secret is set and both hosts are allowed, it reports `ok` (`Runtime 'qwen-code' is ready.`).
+- **Invocation**: `bin/run-supervisor` starts the CLI non-interactively using `qwen --output-format stream-json --yolo` (the `QWEN_QUIET` flags) with the prompt supplied on stdin and `-p "Do the task described above."` (`QWEN_TRAILER`) appended. This keeps prompts and sensitive instructions out of `/proc/*/cmdline`. A rework continues the existing conversation with `--resume <conversation_id>`, and an optional model is passed with `-m <model>`.
+- **Cost / quota model**: unknown (Agent-Forge cannot estimate cost; Qwen Code (`qwen-code`) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge).
+- **Testing**: Tested offline against `tests/fixtures/fake-qwen-server.js` with zero real network calls in `tests/test_runtime_qwen.sh`.
+
+## GitHub Copilot
+GitHub Copilot runs GitHub's Copilot CLI (`copilot`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`).
+
+- **Setup**: Add workers with `bin/worker-add N --runtime copilot` (or in Settings → "+ Add worker" → GitHub Copilot). Authentication requires a GitHub account with an active Copilot subscription, authenticated via `gh` or Copilot CLI credentials mounted into the container.
+- **Egress and Network**: Requires public API hosts `api.githubcopilot.com` and `api.github.com` in `egress/allowlist.txt`. The egress proxy restricts outbound network traffic to these verified GitHub Copilot API hosts only.
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies Copilot CLI authentication and required egress hosts `api.githubcopilot.com` and `api.github.com`) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: covered by a GitHub Copilot subscription rather than per-token pricing tracked in Agent-Forge.
+
+## Mistral Vibe
+Mistral Vibe runs Mistral's Vibe CLI (`mistral-vibe`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`) to execute coding tasks against Mistral AI models.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime mistral-vibe` (or in Settings → "+ Add worker" → Mistral Vibe). Authentication requires a Mistral Vibe subscription or Mistral API key, configured via `bin/secret-set` or in Settings → Workers.
+- **Egress and Network**: Requires public API host `api.mistral.ai` in `egress/allowlist.txt`. The egress proxy restricts outbound network traffic to this verified Mistral API host only.
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `mistral.key` secret and `api.mistral.ai` egress allowlist) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: covered by a Mistral Vibe subscription or Mistral API key rather than per-token pricing tracked in Agent-Forge.
+
+## Ollama
+Ollama runs worker coding tasks using the Ollama runtime (`ollama`). It runs against a local OpenAI-compatible server that the owner points Agent-Forge at, requiring no API key.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime ollama` (or in Settings → "+ Add worker" → Ollama). Point Agent-Forge at your local OpenAI-compatible Ollama server by setting `COMPAT_BASE_URL` (in Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:11434/v1` or `http://192.168.1.20:11434/v1`. No API key is required.
+- **Egress and Network**: No public egress allowlist entry is needed because traffic stays local/LAN. The egress proxy dynamically directs traffic to the configured local endpoint host and port.
+- **Doctor check**: `bin/doctor` checks whether the configured local endpoint is reachable (verifying endpoint configuration and attempting a connection to the server) and summarizes status in the doctor output and the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unmetered - depends on your own hardware rather than a subscription or per-token price. All model inference executes locally on your hardware without token fees or external charges.
+
+## vLLM
+vLLM runs worker coding tasks using the vLLM runtime (`vllm`). It runs against a local OpenAI-compatible server that the owner points Agent-Forge at, requiring no API key.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime vllm` (or in Settings → "+ Add worker" → vLLM). Point Agent-Forge at your local OpenAI-compatible vLLM server by setting `COMPAT_BASE_URL` (in Settings → Workers, or `etc/limits.conf`), e.g. `http://gpu-box:8000/v1` or `http://127.0.0.1:8000/v1`. No API key is required.
+- **Egress and Network**: No public egress allowlist entry is needed because traffic stays local/LAN. The egress proxy dynamically directs traffic to the configured local endpoint host and port.
+- **Doctor check**: `bin/doctor` checks whether the configured local endpoint is reachable (verifying endpoint configuration and attempting a connection to the server) and summarizes status in the doctor output and the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unmetered - depends on your own hardware rather than a subscription or per-token price. All model inference executes locally on your hardware without token fees or external charges.
+
+## LM Studio
+LM Studio runs worker coding tasks using the LM Studio runtime (`lmstudio`). It runs against a local OpenAI-compatible server that the owner points Agent-Forge at, requiring no API key.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime lmstudio` (or in Settings → "+ Add worker" → LM Studio). Point Agent-Forge at your local OpenAI-compatible LM Studio server by setting `COMPAT_BASE_URL` (in Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:1234/v1` or `http://192.168.1.30:1234/v1`. No API key is required.
+- **Egress and Network**: No public egress allowlist entry is needed because traffic stays local/LAN. The egress proxy dynamically directs traffic to the configured local endpoint host and port.
+- **Doctor check**: `bin/doctor` checks whether the configured local endpoint is reachable (verifying endpoint configuration and attempting a connection to the server) and summarizes status in the doctor output and the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unmetered - depends on your own hardware rather than a subscription or per-token price. All model inference executes locally on your hardware without token fees or external charges.
+
+## llama.cpp
+llama.cpp runs worker coding tasks using the llama.cpp runtime (`llamacpp`). It runs against a local OpenAI-compatible server that the owner points Agent-Forge at, requiring no API key.
+
+- **Setup**: Add workers with `bin/worker-add N --runtime llamacpp` (or in Settings → "+ Add worker" → llama.cpp). Point Agent-Forge at your local OpenAI-compatible llama.cpp server (`llama-server`) by setting `COMPAT_BASE_URL` (in Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:8080/v1`. No API key is required.
+- **Egress and Network**: No public egress allowlist entry is needed because traffic stays local/LAN. The egress proxy dynamically directs traffic to the configured local endpoint host and port.
+- **Doctor check**: `bin/doctor` checks whether the configured local endpoint is reachable (verifying endpoint configuration and attempting a connection to the server) and summarizes status in the doctor output and the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unmetered - depends on your own hardware rather than a subscription or per-token price. All model inference executes locally on your hardware without token fees or external charges.
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
@@ -92,6 +255,9 @@ no metadata for.
 claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model M --max-budget-usd B [--resume ID]
 codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check <quiet flags> -m M [resume ID] -
 gemini --output-format stream-json --yolo --skip-trust -m M [--resume ID] -p "Do the task described above."
+opencode run --format json [--model M] [--session ID]
+goose run --instructions -
+qwen --output-format stream-json --yolo [-m M] [--resume ID] -p "Do the task described above."
 ```
 
 Skipping the CLIs' own permission prompts and sandboxes is intended: the container is the sandbox (no capabilities, internal

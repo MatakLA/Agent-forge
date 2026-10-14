@@ -1,5 +1,6 @@
-// Overview tab: what needs the owner (approvals, questions, blocked tasks), the first steps of a new install, new goals, the
-// team (with why an idle worker is idle), the goals and the backlog (drag to reorder, click to edit, forecast).
+// Overview tab: what needs the owner (approvals, questions, blocked tasks), autopilot and foreman pause/resume switches,
+// the first steps of a new install, new goals, the team (with why an idle worker is idle), the goals and the backlog (drag
+// to reorder, click to edit, forecast).
 
 // ---- "Needs you": everything that waits for the owner, most urgent first
 function inboxItems() {
@@ -17,12 +18,13 @@ function inboxItems() {
 const FB_OPEN = new Set(), FB_DRAFT = {};          // inline "send back with my words" forms that are open, and what is typed in them
 function fbForm(key, placeholder, sendLabel) {
   if (!FB_OPEN.has(key)) return '';
-  return '<div class="fbform"><textarea data-fbdraft="' + esc(key) + '" placeholder="' + esc(placeholder) + '">' + esc(FB_DRAFT[key] || '') + '</textarea>' +
+  return '<div class="fbform"><textarea data-fbdraft="' + esc(key) + '" placeholder="' + esc(placeholder) + '" aria-label="' + esc(placeholder) + '">' + esc(FB_DRAFT[key] || '') + '</textarea>' +
     '<div class="btnrow"><button class="primary sm" data-fbsend="' + esc(key) + '">' + esc(sendLabel) + '</button><button class="mini" data-fbtoggle="' + esc(key) + '">Cancel</button></div></div>';
 }
 function inboxHtml() {
+  if (!F) return window._ferr ? '<div class="banner bad">Failed to load overview data: ' + esc(window._ferr) + '</div>' : '';
   const items = inboxItems();
-  if (!items.length) return '';
+  if (!items.length) return '<h3>Needs you</h3><div class="empty">Nothing needs your approval right now.</div>';
   const card = (cls, head, body, btns, form) => '<div class="inbox-item ' + cls + '"><div class="ib-head">' + head + '</div>' + (body ? '<div class="ib-body">' + body + '</div>' : '') +
     '<div class="btnrow">' + btns + '</div>' + (form || '') + '</div>';
   const open = (kind, id, label) => '<button class="mini" data-open="' + kind + ':' + esc(id) + '">' + (label || 'Open') + '</button>';
@@ -38,21 +40,21 @@ function inboxHtml() {
       const t = it.task;
       return card('merge', '<span class="badge ok">ready to merge</span> ' + esc(t.title) + ' ' + small(esc(t.id)),
         (t.merge_feedback ? esc(t.merge_feedback) + ' ' : '') + (t.diff ? '<span class="plus">+' + t.diff.added + '</span> <span class="minus">−' + t.diff.removed + '</span>' : ''),
-        '<button class="primary sm" data-ta="approve" data-id="' + esc(t.id) + '">Merge</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">Send back…</button>' + open('task', t.id, 'Diff & details'),
+        '<button class="primary sm" data-ta="approve" data-id="' + esc(t.id) + '">Approve merge</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">Send back…</button>' + open('task', t.id, 'Diff & details'),
         fbForm(it.key, 'What should the worker change?', 'Send back'));
     }
     if (it.kind === 'risky') {
       const t = it.task;
       const sp = String(t.spec || '').replace(/\s+/g, ' ');
       return card('risky', '<span class="badge warn">risky task</span> ' + esc(t.title) + ' ' + roleTag(t.role), esc(sp.slice(0, 220)) + (sp.length > 220 ? '…' : ''),
-        '<button class="primary sm" data-ta="approve" data-id="' + esc(t.id) + '">Start it</button><button class="mini" data-ta="cancel" data-id="' + esc(t.id) + '">Cancel it</button>' + open('task', t.id));
+        '<button class="primary sm" data-ta="approve" data-id="' + esc(t.id) + '">Approve task</button><button class="mini" data-ta="cancel" data-id="' + esc(t.id) + '">Cancel task</button>' + open('task', t.id));
     }
     if (it.kind === 'egress')
       return card('blocked', '<span class="badge bad">stopped</span> A worker tried to reach a host that is not allowed', esc(it.reason),
         '<button class="primary sm" data-goegress>Review the blocked hosts</button>');
     if (it.kind === 'question') {
       return card('question', '<span class="badge">question</span> ' + esc(it.q), '',
-        '<input type="text" class="qin" data-qn="' + it.n + '" placeholder="your answer - the planner follows it from now on"><button class="primary sm" data-qa="' + it.n +
+        '<input type="text" class="qin" data-qn="' + it.n + '" placeholder="your answer - the planner follows it from now on" aria-label="your answer"><button class="primary sm" data-qa="' + it.n +
         '">Answer</button><button class="mini" data-qd="' + it.n + '" title="the question does not matter">Dismiss</button>');
     }
     const t = it.task;
@@ -66,32 +68,39 @@ function inboxHtml() {
 
 // ---- the first steps of a new install (until done or dismissed)
 function onboardingHtml() {
-  const st = (F && F.onboarding) || [];
-  if (!st.length || st.every(s => s.done) || store('af-onb-' + project) === 'off') return '';
+  if (store('af-onb-' + project) === 'off') return '';
+  if (!F) return window._ferr ? '<div class="empty bad">Could not load onboarding: ' + esc(window._ferr) + '</div>' : '';
+  const st = F.onboarding || [];
+  if (!st.length) return '<div class="empty">No onboarding steps.</div>';
+  if (st.every(s => s.done)) {
+    return '<div class="onboard done"><div class="ob-head"><b>Get started</b> ' + small('all done ✓') +
+      '<button class="linkbtn" data-onb-off aria-label="hide onboarding">hide</button></div></div>';
+  }
   const n = st.filter(s => s.done).length;
   return '<div class="onboard"><div class="ob-head"><b>Get started</b> ' + small(n + ' of ' + st.length + ' done') +
-    '<button class="linkbtn" data-onb-off>hide</button></div><div class="ob-bar"><i style="width:' + (100 * n / st.length) + '%"></i></div><ol>' +
+    '<button class="linkbtn" data-onb-off aria-label="hide onboarding">hide</button></div><div class="ob-bar"><i style="width:' + (100 * n / st.length) + '%"></i></div><ol>' +
     st.map(s => '<li class="' + (s.done ? 'done' : '') + '">' + (s.done ? '✓ ' : '') + (s.done ? esc(s.title) : '<button class="linkbtn" data-onb="' + esc(s.key) + '">' + esc(s.title) + '</button>') + '</li>').join('') +
     '</ol></div>';
 }
 
 // ---- the team: the orchestrator and every worker - what it does now, or why it is idle
 function teamHtml() {
-  const R = P.roster || {}, ts = (F && F.tasks) || [], live = (F && F.live) || {};
+  if (!F) return window._ferr ? '<div class="empty bad">Could not load team: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  const R = P.roster || {}, ts = F.tasks || [], live = F.live || {};
   const steps = (live.steps || []).map(s => {
     const [kind, id] = s.key.split(':');
-    const t = ts.find(x => x.id === id), g = F && (F.goals || []).find(x => x.id === id);
+    const t = ts.find(x => x.id === id), g = (F.goals || []).find(x => x.id === id);
     const what = s.phase || (kind === 'goal' ? 'planning' : kind === 'task' ? 'checking' : kind);
-    const obj = t ? '<a data-open="task:' + esc(t.id) + '">' + esc(t.id) + '</a>' : g ? '<a data-open="goal:' + esc(g.id) + '">„' + esc(g.text.slice(0, 60)) + '“</a>' : '';
-    return '<div class="step"><span class="dot think"></span>' + esc(what) + (obj ? ' — ' + obj : '') + ' <span class="muted">(' + ago(s.since) + ')</span></div>';
+    const obj = t ? '<button class="linkbtn" data-open="task:' + esc(t.id) + '">' + esc(t.id) + '</button>' : g ? '<button class="linkbtn" data-open="goal:' + esc(g.id) + '">„' + esc(g.text.slice(0, 60)) + '“</button>' : '';
+    return '<div class="step"><span class="dot think"></span>' + esc(what) + (obj ? ' — ' + obj : '') + (s.since ? ' <span class="muted">(' + ago(s.since) + ')</span>' : '') + '</div>';
   }).join('');
   const orch = '<div class="node orch"><div class="node-title"><span class="dot ' + (steps ? 'think' : '') + '"></span>Orchestrator</div>' +
-    '<div class="node-sub">' + (F && F.claude_until ? 'Claude via Antigravity (substitute)' : 'Claude Code') + ' · plans, reviews, merges</div>' +
+    '<div class="node-sub">' + (F.claude_until ? 'Claude via Antigravity (substitute)' : 'Claude Code') + ' · plans, reviews, merges</div>' +
     (steps || '<div class="node-sub">idle — waiting for the workers</div>') +
     (live.unavailable ? '<div class="step warn">waiting: ' + esc(live.unavailable) + '</div>' : '') + '</div>';
-  const names = new Set([...(F && F.pool) || [], ...Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7))].filter(inPool));
+  const names = new Set([...(F.pool || []), ...Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7))].filter(inPool));
   ts.forEach(t => t.worker && t.status === 'running' && inPool(t.worker) && names.add(t.worker));
-  const rts = (F && F.api && F.api.runtimes) || {};
+  const rts = (F.api && F.api.runtimes) || {};
   const ws = [...names].sort((a, b) => Number(a.split('-')[1]) - Number(b.split('-')[1])).map(w => {
     const e = R['worker:' + w] || {}, t = ts.find(x => x.worker === w && x.status === 'running');
     const q = (e.quota || []);
@@ -106,8 +115,8 @@ function teamHtml() {
     }).filter(Boolean);
     const quota = parts.length ? '<div class="node-quota">' + esc(parts.join(' · ')) + '</div>' : '';
     const idle = (live.idle || {})[w];
-    const body = t ? '<div class="node-task" data-open="task:' + esc(t.id) + '">' + roleTag(t.role) + ' ' + esc(t.title) + '</div><div class="node-sub">' + esc(t.id) +
-        ' · attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + ' · ' + ago(t.dispatched) + (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'
+    const body = t ? '<button class="node-task linkbtn" data-open="task:' + esc(t.id) + '" style="text-align:left;color:var(--text);display:block;width:100%">' + roleTag(t.role) + ' ' + esc(t.title) + '</button><div class="node-sub">' + esc(t.id) +
+        ' · attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4) + (t.dispatched ? ' · ' + ago(t.dispatched) : '') + (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'
       : '<div class="node-sub idle-why">' + esc(tsloc(idle) || ((live.reserved || []).includes(w) ? 'lent to the orchestrator' : 'free')) + '</div>';
     const rt = rts[w];
     return '<div class="node' + (t ? ' busy' : '') + '"><div class="node-title"><span class="dot ' + (t ? 'running' : '') + '"></span>' + esc(w) +
@@ -129,21 +138,26 @@ function goalCard(g, ts) {
     const mark = !c ? '<span class="cm wait" title="not checked yet">○</span>' : c.met ? '<span class="cm ok">✓</span>' : '<span class="cm no">✗</span>';
     return '<div class="critrow">' + mark + '<span>' + esc(a) + (c && c.evidence ? '<span class="muted"> — ' + esc(c.evidence) + '</span>' : '') + '</span></div>';
   }).join('') + '</div>' : '';
+  const metCount = acc.filter((a, i) => {
+    const c = cr[i] || cr.find(x => x.criterion && x.criterion.slice(0, 40) === String(a).slice(0, 40));
+    return c && c.met;
+  }).length;
   const openG = !['done', 'cancelled'].includes(g.status);
   const menu = openG ? '<div class="menuwrap"><button class="iconbtn sm" data-gmenu="' + esc(g.id) + '" aria-label="goal actions">⋯</button>' + (OPEN_MENU.id === g.id ?
     '<div class="menu">' + (g.paused ? '<button data-ga="resume" data-id="' + esc(g.id) + '">Resume</button>' : '<button data-ga="pause" data-id="' + esc(g.id) + '">Pause</button>') +
-    '<button data-ga="prioritize" data-id="' + esc(g.id) + '">Do this first</button><button data-open="goal:' + esc(g.id) + '">Open the goal page</button>' +
+    (g.priority ? '' : '<button data-ga="prioritize" data-id="' + esc(g.id) + '">Do this first</button>') +
+    '<button data-open="goal:' + esc(g.id) + '">Open the goal page</button>' +
     '<button class="danger" data-ga="cancel" data-id="' + esc(g.id) + '">Cancel the goal…</button></div>' : '') + '</div>' : '';
-  return '<div class="goal' + (g.paused ? ' paused' : '') + '"><div class="goal-head"><a class="goal-text" data-open="goal:' + esc(g.id) + '">' + esc(g.text) + '</a>' + menu + '</div>' +
+  return '<div class="goal' + (g.paused ? ' paused' : '') + '"><div class="goal-head"><button class="goal-text linkbtn" data-open="goal:' + esc(g.id) + '" style="text-align:left">' + esc(g.text) + '</button>' + menu + '</div>' +
     '<div class="goal-meta">' + esc(GSTATUS[g.status] || g.status) + (g.paused ? ' · <b class="warn">paused</b>' : '') + (g.priority ? ' · <b>first</b>' : '') +
-    (mine.length ? ' · tasks ' + done + '/' + mine.length : '') + (acc.length ? ' · criteria ' + cr.filter(c => c.met).length + '/' + acc.length : '') +
+    (mine.length ? ' · tasks ' + done + '/' + mine.length : '') + (acc.length ? ' · criteria ' + metCount + '/' + acc.length : '') +
     (g.rounds > 1 ? ' · round ' + g.rounds : '') + (g.source && g.source !== 'owner' ? ' · ' + esc(g.source) : '') + '</div>' +
     (mine.length ? '<div class="bar">' + seg + '</div>' : '') + ((g.summary || g.notes) ? '<div class="goal-sum">' + esc(g.summary || g.notes) + '</div>' : '') + crit +
-    '<div class="chips">' + mine.map(t => '<span class="chip st-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) + '</span>').join('') + '</div></div>';
+    '<div class="chips">' + mine.map(t => '<button class="chip st-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" style="border:0;font:inherit">' + esc(STATUS[t.status] || t.status) + ' · ' + esc(t.id) + '</button>').join('') + '</div></div>';
 }
 let openFin = false;
 function goalsHtml() {
-  if (!F) return '';
+  if (!F) return window._ferr ? '<div class="empty bad">Could not load goals: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
   const ts = F.tasks || [], gs = (F.goals || []).filter(g => g.status !== 'cancelled').slice().reverse();
   if (!gs.length) return '<div class="empty">No goals yet — write the first one above.</div>';
   const open = gs.filter(g => ['new', 'active', 'blocked', 'approval'].includes(g.status)).sort((a, b) => (b.priority || 0) - (a.priority || 0));
@@ -164,15 +178,16 @@ function backlogHead() {
   return s;
 }
 function backlogHtml() {
-  const bl = (F && F.backlog) || [];
-  if (!bl.length) return '<div class="empty">Empty' + (F && F.autopilot ? ' — when a worker is free, the autopilot picks the next goal from the vision.' : '.') + '</div>';
+  if (!F) return window._ferr ? '<div class="empty bad">Could not load backlog: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>';
+  const bl = F.backlog || [];
+  if (!bl.length) return '<div class="empty">Backlog is empty' + (F.autopilot ? ' — when a worker is free, the autopilot picks the next goal from the vision.' : ' — add goals using the form above.') + '</div>';
   return '<div class="bl" id="bl-list">' + bl.map((b, i) => BL_EDIT === i
-    ? '<div class="blrow editing" data-i="' + i + '"><textarea id="bl-edit-text">' + esc(b) + '</textarea><div class="btnrow"><button class="primary sm" data-bledit-save="' + i + '">Save</button>' +
+    ? '<div class="blrow editing" data-i="' + i + '"><textarea id="bl-edit-text" aria-label="Edit backlog item">' + esc(b) + '</textarea><div class="btnrow"><button class="primary sm" data-bledit-save="' + i + '">Save</button>' +
       '<button class="mini" data-bledit-cancel>Cancel</button></div></div>'
     : '<div class="blrow" data-i="' + i + '"><span class="drag" title="drag to reorder" aria-label="drag">⋮⋮</span><span class="blnum">' + (i + 1) + '</span>' +
-      '<span class="bltext" data-bledit="' + i + '" title="click to edit">' + esc(b) + '</span><span class="blbtns">' +
-      (i ? '<button class="iconbtn sm" data-bl="top" data-n="' + (i + 1) + '" title="to the top">⤒</button>' : '') +
-      '<button class="iconbtn sm" data-bl="drop" data-n="' + (i + 1) + '" title="remove">✕</button></span></div>').join('') + '</div>';
+      '<button class="bltext linkbtn" data-bledit="' + i + '" title="click to edit" aria-label="edit: ' + esc(b) + '" style="text-align:left;color:var(--text);font:inherit">' + esc(b) + '</button><span class="blbtns">' +
+      (i ? '<button class="iconbtn sm" data-bl="top" data-n="' + (i + 1) + '" title="to the top" aria-label="move to top">⤒</button>' : '') +
+      '<button class="iconbtn sm" data-bl="drop" data-n="' + (i + 1) + '" title="remove" aria-label="remove">✕</button></span></div>').join('') + '</div>';
 }
 // pointer-based dragging: works with a mouse and on a phone
 let DRAG = null;
@@ -205,10 +220,66 @@ document.addEventListener('pointerup', async () => {
   refreshSoon();
 });
 
+// ---- controls: autopilot and foreman pause/resume switches
+function killswitchReason(ks) {
+  if (!ks) return '';
+  if (typeof ks === 'object') return String(ks.reason || '').trim();
+  if (typeof ks === 'string') return ks.trim();
+  return '';
+}
+
+function controlsHtml(model) {
+  const m = model || F || {};
+  const apOn = Boolean(m.autopilot);
+  const apAction = apOn ? 'autopilot_off' : 'autopilot_on';
+  const apLabel = 'Autopilot: ' + (apOn ? 'on' : 'off');
+  const apTip = apOn
+    ? 'Autopilot on: when a worker would idle and the backlog is empty, the orchestrator proposes new goals from the vision.'
+    : 'Autopilot off: when a worker would idle and the backlog is empty, the orchestrator does not propose new goals from the vision.';
+
+  const isPaused = Boolean(m.paused || m.killswitch);
+  const fmAction = isPaused ? 'resume' : 'pause';
+  const fmLabel = 'Foreman: ' + (isPaused ? 'paused' : 'running');
+
+  const ks = m.killswitch;
+  const ksBlocked = isPaused && Boolean(ks);
+  let fmTip = '';
+  if (ksBlocked) {
+    const ksReason = killswitchReason(ks);
+    fmTip = 'Resume is blocked while the kill switch is engaged' + (ksReason ? ': ' + ksReason : '');
+  } else if (isPaused) {
+    fmTip = 'Paused: no new tasks are dispatched; tasks already running continue to completion.';
+  } else {
+    fmTip = 'Running: tasks are dispatched to workers as they become available.';
+  }
+
+  return '<div class="control-wrap" title="' + esc(apTip) + '">' +
+    '<button id="autopilot-toggle" class="control-toggle mini" data-control="' + esc(apAction) + '" title="' + esc(apTip) + '">' + esc(apLabel) + '</button>' +
+    '<span class="hint">' + esc(apTip) + '</span>' +
+  '</div>' +
+  '<div class="control-wrap" title="' + esc(fmTip) + '">' +
+    '<button id="foreman-pause-toggle" class="control-toggle mini" data-control="' + esc(fmAction) + '" title="' + esc(fmTip) + '"' + (ksBlocked ? ' disabled' : '') + '>' + esc(fmLabel) + '</button>' +
+    '<span class="hint">' + esc(fmTip) + '</span>' +
+  '</div>';
+}
+
+function ensureControlsContainer() {
+  const sec = $('t-overview');
+  if (sec && !$('overview-controls')) {
+    const ctl = document.createElement('div');
+    ctl.id = 'overview-controls';
+    ctl.className = 'overview-controls';
+    sec.insertBefore(ctl, sec.firstChild);
+  }
+}
+ensureControlsContainer();
+
 function renderOverview(force) {
+  ensureControlsContainer();
+  setHTML('overview-controls', controlsHtml(), force);
   if (!busyIn('inbox')) setHTML('inbox', inboxHtml(), force);
   setHTML('onboarding', onboardingHtml(), force);
-  setHTML('team', F ? teamHtml() : '<div class="empty">loading…</div>', force);
+  setHTML('team', F ? teamHtml() : window._ferr ? '<div class="empty bad">Could not load team: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>', force);
   setHTML('goals', goalsHtml(), force);
   setHTML('backlog-h', backlogHead(), force);
   if (!DRAG && !busyIn('backlog')) setHTML('backlog', backlogHtml(), force);
@@ -230,6 +301,21 @@ $('goal-backlog').addEventListener('click', () => addGoal('backlog'));
 $('goal-roadmap').addEventListener('click', () => addGoal('roadmap'));
 $('goal-text').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addGoal('now'); });
 
+// control actions: data-control="autopilot_on|autopilot_off|pause|resume"
+async function controlAction(action) {
+  if (action === 'resume' && F && F.killswitch) return false;
+  const okText = {
+    autopilot_on: 'Autopilot turned on',
+    autopilot_off: 'Autopilot turned off',
+    pause: 'Foreman paused',
+    resume: 'Foreman resumed'
+  }[action];
+  const r = await post('/api/control', {project, action});
+  const ok = done(r, okText);
+  refreshSoon();
+  return ok;
+}
+
 // task / goal actions anywhere on the page: data-ta="approve|cancel|retry" data-id, data-ga="approve|pause|..." data-id
 async function taskAction(id, action, extra) {
   if (action === 'cancel' && !confirm('Cancel task ' + id + '?' + ((F.tasks || []).find(t => t.id === id && t.status === 'running') ? ' Its run is stopped; the work stays on its branch.' : ''))) return false;
@@ -245,6 +331,14 @@ async function goalAction(id, action, text) {
   return ok;
 }
 document.addEventListener('click', async e => {
+  const ctl = e.target.closest('[data-control]');
+  if (ctl) {
+    if (ctl.disabled) return;
+    ctl.disabled = true;
+    await controlAction(ctl.dataset.control);
+    ctl.disabled = false;
+    return;
+  }
   const ta = e.target.closest('[data-ta]'); if (ta) { ta.disabled = true; await taskAction(ta.dataset.id, ta.dataset.ta); ta.disabled = false; return; }
   const ga = e.target.closest('[data-ga]'); if (ga) { ga.disabled = true; await goalAction(ga.dataset.id, ga.dataset.ga); ga.disabled = false; return; }
   const op = e.target.closest('[data-open]');
@@ -291,6 +385,19 @@ document.addEventListener('click', async e => {
     return; }
 });
 document.addEventListener('input', e => { const d = e.target.closest('[data-fbdraft]'); if (d) FB_DRAFT[d.dataset.fbdraft] = d.value; });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (OPEN_MENU.id) { OPEN_MENU.id = null; schedule(true); return; }
+    if (BL_EDIT !== null) { BL_EDIT = null; delete lastHTML['backlog']; schedule(true); return; }
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) {
+    e.preventDefault(); e.target.click(); return;
+  }
+  if (e.target.id === 'bl-edit-text' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    const btn = document.querySelector('[data-bledit-save]');
+    if (btn) btn.click();
+  }
+});
 
 // ---- ask the team (one orchestrator call, answered from the code)
 async function askTeam() {
@@ -304,4 +411,5 @@ async function askTeam() {
   out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(no answer)') + '</div>' + out.innerHTML;
 }
 $('ask-btn').addEventListener('click', askTeam);
+$('ask-q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) askTeam(); });
 projectResets.push(() => { FB_OPEN.clear(); BL_EDIT = null; OPEN_MENU.id = null; });
