@@ -321,6 +321,7 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0, e
         body = {
             "model": model or "local-compat-model",
             "messages": messages,
+            "stream": True,
         }
         if conversation and isinstance(conversation, str) and not conv_data:
             body["conversation_id"] = conversation
@@ -399,28 +400,35 @@ def _parse_openai_compat_dict(e, st, text, prices=None):
                 elif msg.get("function_call"):
                     st["tools"] += 1
                 c = msg.get("content") or ""
+                if isinstance(c, list):
+                    c = "".join(str(part.get("text", "")) for part in c if isinstance(part, dict))
                 if "<<<<<<< SEARCH" in str(c):
-                    st["tools"] += 1
+                    st["tools"] += str(c).count("<<<<<<< SEARCH")
                 if c:
                     text.append(str(c))
     if e.get("content") and not e.get("choices"):
         c = e.get("content")
+        if isinstance(c, list):
+            c = "".join(str(part.get("text", "")) for part in c if isinstance(part, dict))
         if "<<<<<<< SEARCH" in str(c):
-            st["tools"] += 1
+            st["tools"] += str(c).count("<<<<<<< SEARCH")
         text.append(str(c))
 
     if e.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation"):
         st["tools"] += 1
-    elif isinstance(e.get("tool_calls"), list):
+    elif isinstance(e.get("tool_calls"), list) and not e.get("choices"):
         st["tools"] += len(e["tool_calls"])
 
     u = e.get("usage") or e.get("stats") or e.get("tokens")
-    inp, out, cached = 0, 0, 0
     if isinstance(u, dict):
-        tot = u.get("total_tokens") or u.get("total")
+        st["raw_usage"] = u
         inp = u.get("prompt_tokens") or u.get("input_tokens") or u.get("input") or 0
         out = u.get("completion_tokens") or u.get("output_tokens") or u.get("output") or 0
         cached = u.get("cached_tokens") or u.get("cached_prompt_tokens") or 0
+        st["inp_tokens"] = inp
+        st["out_tokens"] = out
+        st["cached_tokens"] = cached
+        tot = u.get("total_tokens") or u.get("total")
         if tot is not None:
             st["tokens"] = max(0, int(tot) - int(cached))
         elif inp or out:
@@ -428,10 +436,28 @@ def _parse_openai_compat_dict(e, st, text, prices=None):
     elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
         st["tokens"] = int(u)
 
+    usage_dict = u if isinstance(u, dict) else st.get("raw_usage")
+
     if "error" in e or e.get("is_error") or e.get("type") == "error":
         err_obj = e.get("error")
         err_msg = (err_obj.get("message") or err_obj.get("error") or str(err_obj)) if isinstance(err_obj, dict) else str(err_obj or e.get("message") or "error")
-        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=u if isinstance(u, dict) else None, cost_usd=None)
+        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+        return
+
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            if choice.get("finish_reason") in ("error", "failed"):
+                err_raw = choice.get("error") or choice.get("finish_reason")
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+                return
+
+    t = e.get("type") or e.get("event") or ""
+    if t in ("turn.failed", "step_failed") or e.get("status") in ("failed", "error", "ERROR", "FAILED"):
+        err_raw = e.get("error") or e.get("message") or t or "error"
+        err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+        return
 
     is_terminal = False
     for choice in (e.get("choices") or []):
@@ -451,13 +477,16 @@ def _parse_openai_compat_dict(e, st, text, prices=None):
             for choice in (e.get("choices") or []):
                 if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
                     resp = str(choice["message"].get("content") or "")
+        inp_t = st.get("inp_tokens", 0)
+        out_t = st.get("out_tokens", 0)
+        cached_t = st.get("cached_tokens", 0)
         p = _prices(prices or "") if prices else None
-        cost = ((inp - cached) * p[0] + cached * p[1] + out * p[2]) if (p and any(p)) else None
+        cost = ((inp_t - cached_t) * p[0] + cached_t * p[1] + out_t * p[2]) if (p and any(p)) else None
         st["result"] = dict(
             status="SUCCESS",
             response=resp[-4000:],
             error="",
-            usage=u if isinstance(u, dict) else None,
+            usage=usage_dict,
             cost_usd=round(cost / 1e6, 6) if cost is not None else None,
         )
 
@@ -1173,24 +1202,26 @@ def scan(rt, lines, prices=None):
         elif rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
             _parse_openai_compat_dict(e, st, text, prices=prices)
     if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
-        if seen_done and not st["result"]:
-            st["result"] = dict(
-                status="SUCCESS",
-                response="".join(text).strip()[-4000:],
-                error="",
-                usage=None,
-                cost_usd=None,
-            )
-        elif st["result"] is None:
+        if not st["result"]:
             joined = "\n".join(raw_lines).strip()
             if joined.startswith("{") and joined.endswith("}"):
                 try:
-                    e = json.loads(joined)
-                    if isinstance(e, dict):
-                        _parse_openai_compat_dict(e, st, text, prices=prices)
+                    full_obj = json.loads(joined)
+                    if isinstance(full_obj, dict):
+                        _parse_openai_compat_dict(full_obj, st, text, prices=prices)
                 except Exception:
                     pass
-    for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
+        if seen_done and (not st["result"] or st["result"]["status"] != "ERROR"):
+            resp = "".join(text).strip()
+            usage_dict = st.get("raw_usage") or (st["result"]["usage"] if st["result"] else None)
+            st["result"] = dict(
+                status="SUCCESS",
+                response=resp[-4000:],
+                error="",
+                usage=usage_dict,
+                cost_usd=None,
+            )
+    for k in ("aider_sent", "aider_recv", "aider_cost", "last_error", "raw_usage", "inp_tokens", "out_tokens", "cached_tokens"):
         st.pop(k, None)
     return st
 
