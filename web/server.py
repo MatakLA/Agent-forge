@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
-from foreman import readiness
+readiness = B.readiness   # may be None when bin/lib is not next to the dashboard; the readiness endpoint then says so
 
 
 DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
