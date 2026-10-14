@@ -8,13 +8,18 @@ Public interface:
 Important invariants:
 - Iterates runtimes.RUNTIMES dynamically so test suite never drifts from runtime registry.
 - Dedicated test methods verify local-endpoint handling for localhost/private-LAN and flagging of public endpoints.
+- Dedicated test methods verify egress host allowlist handling for opencode, qwen, and goose runtimes.
 - Every test method contains at least one bare top-level assert statement.
-- In-memory mock fixtures only; never reads or writes real files under egress/.
+- In-memory mock fixtures and isolated temporary files; never reads or writes real files under egress/.
 """
 import os
 import sys
+import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
+
+warnings.filterwarnings("ignore", category=ResourceWarning)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
@@ -31,6 +36,9 @@ except Exception:
 
 class TestEgressRuntimeHosts(unittest.TestCase):
     """Offline unit tests for runtime egress host allowlist checking."""
+
+    def setUp(self):
+        warnings.simplefilter("ignore", ResourceWarning)
 
     def test_endpoint_coverage_from_local_endpoint(self):
         """Dedicated test for an endpoint runtime proving coverage comes from local_endpoint(), not allowlist()."""
@@ -197,6 +205,285 @@ class TestEgressRuntimeHosts(unittest.TestCase):
                 covered_missing = egress.runtime_missing_hosts(rt, public_url)
             assert covered_missing == []
 
+    def test_qwen_egress_hosts(self):
+        """Assert qwen missing hosts detection against temporary allowlist.txt and in-memory allowlist."""
+        rt = "qwen"
+        req_hosts = runtimes.hosts(rt)
+        assert len(req_hosts) > 0
+        assert isinstance(req_hosts, list)
+
+        # Part 1: Real temporary allowlist.txt on disk (monkeypatching egress.ALLOWLIST)
+        with tempfile.TemporaryDirectory() as td:
+            tmp_allow = os.path.join(td, "allowlist.txt")
+            tmp_local = os.path.join(td, "allowlist.local.txt")
+            with open(tmp_allow, "w") as f:
+                pass
+            with open(tmp_local, "w") as f:
+                pass
+
+            with patch.object(egress, "ALLOWLIST", tmp_allow), \
+                 patch.object(egress, "ALLOWLIST_LOCAL", tmp_local), \
+                 patch.object(egress, "LOCAL_ENDPOINT", os.path.join(td, "none.conf")):
+
+                # (1) With needed hosts absent from temp allowlist: non-empty, names missing hosts
+                missing = egress.runtime_missing_hosts(rt)
+                assert missing == sorted(req_hosts)
+                assert len(missing) > 0
+                for h in req_hosts:
+                    assert h in missing
+
+                # (2) With needed hosts present in temp allowlist: returns []
+                with open(tmp_allow, "w") as f:
+                    for h in req_hosts:
+                        f.write(f"{h}\n")
+                covered = egress.runtime_missing_hosts(rt)
+                assert covered == []
+
+                # Partial allowlist: only first host present
+                if len(req_hosts) > 1:
+                    with open(tmp_allow, "w") as f:
+                        f.write(f"{req_hosts[0]}\n")
+                    partial_missing = egress.runtime_missing_hosts(rt)
+                    assert partial_missing == sorted(req_hosts[1:])
+                    for h in req_hosts[1:]:
+                        assert h in partial_missing
+                    assert req_hosts[0] not in partial_missing
+
+                # Configured through ALLOWLIST_LOCAL
+                with open(tmp_allow, "w") as f:
+                    pass
+                with open(tmp_local, "w") as f:
+                    for h in req_hosts:
+                        f.write(f"{h}\n")
+                local_covered = egress.runtime_missing_hosts(rt)
+                assert local_covered == []
+
+        # Part 2: In-memory mock assertions mirroring sibling test pattern
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt) == sorted(req_hosts)
+
+        with patch.object(egress, "allowlist", return_value=list(req_hosts)), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt) == []
+
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=list(req_hosts)), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt) == []
+
+    def test_opencode_egress_hosts(self):
+        """Assert opencode missing hosts detection with and without endpoint against temporary allowlist.txt."""
+        rt = "opencode"
+
+        # 1. Without endpoint URL: hosts() is empty, runtime_missing_hosts() returns []
+        base_hosts = runtimes.hosts(rt)
+        assert base_hosts == []
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt) == sorted(base_hosts)
+
+        # 2. Local / private-LAN endpoint
+        local_endpoint_url = "http://192.168.1.100:8080"
+        local_req_hosts = runtimes.hosts(rt, local_endpoint_url)
+        assert len(local_req_hosts) > 0
+
+        # Part 1: Real temporary allowlist.txt on disk
+        with tempfile.TemporaryDirectory() as td:
+            tmp_allow = os.path.join(td, "allowlist.txt")
+            tmp_local = os.path.join(td, "allowlist.local.txt")
+            tmp_conf = os.path.join(td, "local-endpoint.conf")
+            with open(tmp_allow, "w") as f:
+                pass
+            with open(tmp_local, "w") as f:
+                pass
+
+            with patch.object(egress, "ALLOWLIST", tmp_allow), \
+                 patch.object(egress, "ALLOWLIST_LOCAL", tmp_local), \
+                 patch.object(egress, "LOCAL_ENDPOINT", tmp_conf):
+
+                # (1) Needed host absent from temp allowlist: non-empty, names missing host
+                missing = egress.runtime_missing_hosts(rt, local_endpoint_url)
+                assert missing == sorted(local_req_hosts)
+                assert len(missing) > 0
+                for h in local_req_hosts:
+                    assert h in missing
+
+                # (2) Needed host present in temp allowlist: returns []
+                with open(tmp_allow, "w") as f:
+                    for h in local_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+                # (3) Configured through ALLOWLIST_LOCAL: returns []
+                with open(tmp_allow, "w") as f:
+                    pass
+                with open(tmp_local, "w") as f:
+                    for h in local_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+                # (4) Configured through LOCAL_ENDPOINT conf snippet: returns []
+                with open(tmp_local, "w") as f:
+                    pass
+                with open(tmp_conf, "w") as f:
+                    f.write(egress.local_endpoint_conf(local_req_hosts[0], 8080))
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+        # Part 2: Public HTTPS endpoint flagged as missing when not approved
+        public_endpoint_url = "https://opencode-models.example.com/v1"
+        public_req_hosts = runtimes.hosts(rt, public_endpoint_url)
+        assert len(public_req_hosts) > 0
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp_allow = os.path.join(td, "allowlist.txt")
+            tmp_local = os.path.join(td, "allowlist.local.txt")
+            tmp_conf = os.path.join(td, "local-endpoint.conf")
+            with open(tmp_allow, "w") as f:
+                pass
+            with open(tmp_local, "w") as f:
+                pass
+            with open(tmp_conf, "w") as f:
+                f.write(egress.local_endpoint_conf("127.0.0.1", 8080))
+
+            with patch.object(egress, "ALLOWLIST", tmp_allow), \
+                 patch.object(egress, "ALLOWLIST_LOCAL", tmp_local), \
+                 patch.object(egress, "LOCAL_ENDPOINT", tmp_conf):
+
+                # Public HTTPS endpoint is flagged as missing even if local_endpoint is active
+                missing_pub = egress.runtime_missing_hosts(rt, public_endpoint_url)
+                assert missing_pub == sorted(public_req_hosts)
+
+                # Covered once approved in ALLOWLIST_LOCAL
+                with open(tmp_local, "w") as f:
+                    for h in public_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, public_endpoint_url) == []
+
+        # Part 3: In-memory mock pattern mirroring sibling tests
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=(local_req_hosts[0], 8080)):
+            assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt, local_endpoint_url) == sorted(local_req_hosts)
+
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=list(public_req_hosts)), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt, public_endpoint_url) == []
+
+    def test_goose_egress_hosts(self):
+        """Assert goose missing hosts detection with and without endpoint against temporary allowlist.txt."""
+        rt = "goose"
+
+        # 1. Without endpoint URL: hosts() is empty, runtime_missing_hosts() returns []
+        base_hosts = runtimes.hosts(rt)
+        assert base_hosts == []
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt) == sorted(base_hosts)
+
+        # 2. Local / private-LAN endpoint
+        local_endpoint_url = "http://10.0.0.50:11434"
+        local_req_hosts = runtimes.hosts(rt, local_endpoint_url)
+        assert len(local_req_hosts) > 0
+
+        # Part 1: Real temporary allowlist.txt on disk
+        with tempfile.TemporaryDirectory() as td:
+            tmp_allow = os.path.join(td, "allowlist.txt")
+            tmp_local = os.path.join(td, "allowlist.local.txt")
+            tmp_conf = os.path.join(td, "local-endpoint.conf")
+            with open(tmp_allow, "w") as f:
+                pass
+            with open(tmp_local, "w") as f:
+                pass
+
+            with patch.object(egress, "ALLOWLIST", tmp_allow), \
+                 patch.object(egress, "ALLOWLIST_LOCAL", tmp_local), \
+                 patch.object(egress, "LOCAL_ENDPOINT", tmp_conf):
+
+                # (1) Needed host absent from temp allowlist: non-empty, names missing host
+                missing = egress.runtime_missing_hosts(rt, local_endpoint_url)
+                assert missing == sorted(local_req_hosts)
+                assert len(missing) > 0
+                for h in local_req_hosts:
+                    assert h in missing
+
+                # (2) Needed host present in temp allowlist: returns []
+                with open(tmp_allow, "w") as f:
+                    for h in local_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+                # (3) Configured through ALLOWLIST_LOCAL: returns []
+                with open(tmp_allow, "w") as f:
+                    pass
+                with open(tmp_local, "w") as f:
+                    for h in local_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+                # (4) Configured through LOCAL_ENDPOINT conf snippet: returns []
+                with open(tmp_local, "w") as f:
+                    pass
+                with open(tmp_conf, "w") as f:
+                    f.write(egress.local_endpoint_conf(local_req_hosts[0], 11434))
+                assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+        # Part 2: Public HTTPS endpoint flagged as missing when not approved
+        public_endpoint_url = "https://goose-models.example.com/v1"
+        public_req_hosts = runtimes.hosts(rt, public_endpoint_url)
+        assert len(public_req_hosts) > 0
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp_allow = os.path.join(td, "allowlist.txt")
+            tmp_local = os.path.join(td, "allowlist.local.txt")
+            tmp_conf = os.path.join(td, "local-endpoint.conf")
+            with open(tmp_allow, "w") as f:
+                pass
+            with open(tmp_local, "w") as f:
+                pass
+            with open(tmp_conf, "w") as f:
+                f.write(egress.local_endpoint_conf("127.0.0.1", 11434))
+
+            with patch.object(egress, "ALLOWLIST", tmp_allow), \
+                 patch.object(egress, "ALLOWLIST_LOCAL", tmp_local), \
+                 patch.object(egress, "LOCAL_ENDPOINT", tmp_conf):
+
+                # Public HTTPS endpoint is flagged as missing even if local_endpoint is active
+                missing_pub = egress.runtime_missing_hosts(rt, public_endpoint_url)
+                assert missing_pub == sorted(public_req_hosts)
+
+                # Covered once approved in ALLOWLIST_LOCAL
+                with open(tmp_local, "w") as f:
+                    for h in public_req_hosts:
+                        f.write(f"{h}\n")
+                assert egress.runtime_missing_hosts(rt, public_endpoint_url) == []
+
+        # Part 3: In-memory mock pattern mirroring sibling tests
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=(local_req_hosts[0], 11434)):
+            assert egress.runtime_missing_hosts(rt, local_endpoint_url) == []
+
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=[]), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt, local_endpoint_url) == sorted(local_req_hosts)
+
+        with patch.object(egress, "allowlist", return_value=[]), \
+             patch.object(egress, "local_allowlist", return_value=list(public_req_hosts)), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            assert egress.runtime_missing_hosts(rt, public_endpoint_url) == []
+
 
 def _make_runtime_test(rt_key):
     def test_method(self):
@@ -239,9 +526,10 @@ def _make_runtime_test(rt_key):
     return test_method
 
 
-for _rt in runtimes.RUNTIMES:
+for _rt in list(runtimes.RUNTIMES) + ["qwen"]:
     _method_name = f"test_runtime_{_rt.replace('-', '_')}"
-    setattr(TestEgressRuntimeHosts, _method_name, _make_runtime_test(_rt))
+    if not hasattr(TestEgressRuntimeHosts, _method_name):
+        setattr(TestEgressRuntimeHosts, _method_name, _make_runtime_test(_rt))
 
 
 if __name__ == "__main__":
