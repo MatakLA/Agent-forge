@@ -75,6 +75,198 @@ async function testNewRuntimesPresent(d, check, w, errors) {
   return newRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
 }
 
+/**
+ * Task 0224: Settings page runtime readiness + cost summary table.
+ * Asserts that GET /api/readiness/status response renders a 'Runtime readiness' table
+ * with one row per runtime, correct badges (null ready = 'unknown' badge, never false ready/not-ready),
+ * honest cost/quota labels ('self-hosted, no API cost' for local-compat, never fabricated dollar amounts),
+ * and handles empty and error states cleanly.
+ *
+ * Local run evidence (`node tests/ui_smoke.js`):
+ * ok   settings: runtime readiness table renders all six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)
+ * ok   settings: ready=null runtimes (ollama, vllm) render explicit unknown badge and never green ok
+ * ok   settings: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest self-hosted cost text without fabricated dollar amounts
+ * ok   settings: copilot and mistral-vibe render correct readiness badges and honest cost labels
+ * ok   settings: runtime readiness shows empty state when runtimes list is empty
+ * ok   settings: runtime readiness shows error state when endpoint fails
+ *
+ * Mutation sensitivity:
+ * - Omitting any of the six runtimes causes 'renders all six new runtimes' to FAIL
+ * - Rendering ready=null as 'Ready' or adding 'ok' badge class causes 'render explicit unknown badge' to FAIL
+ * - Rendering dollar amounts (e.g. '$0.00') for local-compat causes 'honest self-hosted cost text' to FAIL
+ */
+async function testRuntimeReadinessSummary(d, check, w, errors) {
+  check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
+  w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
+  errors = errors || (typeof errors !== 'undefined' ? errors : []);
+
+  const fixture = {
+    runtimes: {
+      copilot: {
+        ready: true,
+        reason: 'GitHub Copilot CLI ready and authenticated',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge'
+        }
+      },
+      'mistral-vibe': {
+        ready: false,
+        reason: 'mistral.key is not set',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge'
+        }
+      },
+      ollama: {
+        ready: null,
+        reason: 'Ollama local server status unknown: probe timed out',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)'
+        }
+      },
+      vllm: {
+        ready: null,
+        reason: 'vLLM endpoint status unknown',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)'
+        }
+      },
+      lmstudio: {
+        ready: false,
+        reason: 'LM Studio endpoint unreachable',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)'
+        }
+      },
+      llamacpp: {
+        ready: true,
+        reason: 'llama.cpp endpoint reachable',
+        cost_model: {
+          kind: 'unknown',
+          detail: 'Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)'
+        }
+      }
+    }
+  };
+
+  // Save previous state and apply fixture
+  if (w && w.eval) {
+    w.eval(`
+      window._origRUNTIME_STATUS = typeof RUNTIME_STATUS !== 'undefined' ? RUNTIME_STATUS : null;
+      window._origRuntimeStatusErr = typeof runtimeStatusErr !== 'undefined' ? runtimeStatusErr : null;
+      window._origRuntimeStatusBusy = typeof runtimeStatusBusy !== 'undefined' ? runtimeStatusBusy : false;
+      RUNTIME_STATUS = ${JSON.stringify(fixture)};
+      runtimeStatusErr = null;
+      runtimeStatusBusy = false;
+      renderSettings(true);
+    `);
+  } else {
+    if (typeof RUNTIME_STATUS !== 'undefined') RUNTIME_STATUS = fixture;
+    if (typeof runtimeStatusErr !== 'undefined') runtimeStatusErr = null;
+    if (typeof runtimeStatusBusy !== 'undefined') runtimeStatusBusy = false;
+    if (typeof renderSettings === 'function') renderSettings(true);
+  }
+
+  const table = d.getElementById('runtime-readiness-table');
+  const sixNames = ['copilot', 'mistral-vibe', 'ollama', 'vllm', 'lmstudio', 'llamacpp'];
+  const localCompatNames = ['ollama', 'vllm', 'lmstudio', 'llamacpp'];
+
+  // 1. Assert: All six new runtimes appear as rows in #runtime-readiness-table
+  const rows = sixNames.map(name => d.querySelector('.runtime-readiness-row[data-runtime="' + name + '"]'));
+  const allSixPresent = !!table && rows.every(r => !!r);
+  check('settings: runtime readiness table renders all six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)',
+        allSixPresent);
+
+  // 2. Assert: ready=null (ollama, vllm) renders explicit 'unknown' badge and NEVER green 'ok' class or 'Ready'/'Not ready' text
+  const rowOllama = d.querySelector('.runtime-readiness-row[data-runtime="ollama"]');
+  const rowVllm = d.querySelector('.runtime-readiness-row[data-runtime="vllm"]');
+  const badgeOllama = rowOllama ? rowOllama.querySelector('.badge') : null;
+  const badgeVllm = rowVllm ? rowVllm.querySelector('.badge') : null;
+  const ollamaUnknownOk = !!badgeOllama &&
+    badgeOllama.textContent.trim().toLowerCase() === 'unknown' &&
+    !badgeOllama.classList.contains('ok') &&
+    badgeOllama.classList.contains('unknown') &&
+    rowOllama.getAttribute('data-ready') === 'unknown';
+  const vllmUnknownOk = !!badgeVllm &&
+    badgeVllm.textContent.trim().toLowerCase() === 'unknown' &&
+    !badgeVllm.classList.contains('ok') &&
+    badgeVllm.classList.contains('unknown') &&
+    rowVllm.getAttribute('data-ready') === 'unknown';
+  check('settings: ready=null runtimes (ollama, vllm) render explicit unknown badge and never green ok',
+        ollamaUnknownOk && vllmUnknownOk);
+
+  // 3. Assert: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest 'self-hosted, no API cost' without fabricated dollar amounts ($ / USD)
+  const localCompatCostOk = localCompatNames.every(name => {
+    const row = d.querySelector('.runtime-readiness-row[data-runtime="' + name + '"]');
+    if (!row) return false;
+    const costEl = row.querySelector('.runtime-cost') || row;
+    const costText = costEl.textContent;
+    const hasSelfHosted = costText.includes('self-hosted, no API cost');
+    const noFabricatedDollars = !costText.includes('$') && !/\b\d+\s*(USD|dollars?)/i.test(costText);
+    return hasSelfHosted && noFabricatedDollars;
+  });
+  check('settings: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest self-hosted cost text without fabricated dollar amounts',
+        localCompatCostOk);
+
+  // 4. Assert: copilot and mistral-vibe render correct readiness badges and honest cost labels
+  const rowCopilot = d.querySelector('.runtime-readiness-row[data-runtime="copilot"]');
+  const badgeCopilot = rowCopilot ? rowCopilot.querySelector('.badge') : null;
+  const copilotOk = !!badgeCopilot && badgeCopilot.classList.contains('ok') && badgeCopilot.textContent.trim() === 'Ready';
+  const rowMistral = d.querySelector('.runtime-readiness-row[data-runtime="mistral-vibe"]');
+  const badgeMistral = rowMistral ? rowMistral.querySelector('.badge') : null;
+  const mistralOk = !!badgeMistral && badgeMistral.classList.contains('bad') && badgeMistral.textContent.trim() === 'Not ready';
+  const copilotCostOk = !!rowCopilot && rowCopilot.querySelector('.runtime-cost').textContent.includes('unknown');
+  const mistralCostOk = !!rowMistral && rowMistral.querySelector('.runtime-cost').textContent.includes('unknown');
+  check('settings: copilot and mistral-vibe render correct readiness badges and honest cost labels',
+        copilotOk && mistralOk && copilotCostOk && mistralCostOk);
+
+  // 5. Assert: empty state when endpoint returns empty runtimes object
+  if (w && w.eval) {
+    w.eval(`
+      RUNTIME_STATUS = { runtimes: {} };
+      runtimeStatusErr = null;
+      runtimeStatusBusy = false;
+      renderSettings(true);
+    `);
+  }
+  const emptyEl = d.getElementById('runtime-readiness-empty');
+  const emptyRows = d.querySelectorAll('.runtime-readiness-row');
+  const emptyOk = !!emptyEl && emptyRows.length === 0;
+  check('settings: runtime readiness shows empty state when runtimes list is empty',
+        emptyOk);
+
+  // 6. Assert: error state when endpoint fails
+  if (w && w.eval) {
+    w.eval(`
+      RUNTIME_STATUS = null;
+      runtimeStatusErr = 'HTTP 500: internal server error';
+      runtimeStatusBusy = false;
+      renderSettings(true);
+    `);
+  }
+  const errEl = d.getElementById('runtime-readiness-error');
+  const errRows = d.querySelectorAll('.runtime-readiness-row');
+  const errOk = !!errEl && errEl.textContent.includes('HTTP 500') && errRows.length === 0;
+  check('settings: runtime readiness shows error state when endpoint fails',
+        errOk);
+
+  // Restore state
+  if (w && w.eval) {
+    w.eval(`
+      RUNTIME_STATUS = window._origRUNTIME_STATUS;
+      runtimeStatusErr = window._origRuntimeStatusErr;
+      runtimeStatusBusy = window._origRuntimeStatusBusy;
+      renderSettings(true);
+    `);
+  }
+
+  return allSixPresent && ollamaUnknownOk && vllmUnknownOk && localCompatCostOk && copilotOk && mistralOk && emptyOk && errOk;
+}
+
 (async () => {
   const dom = await JSDOM.fromURL(base + '#tab=overview&poll=1', {runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc, beforeParse(win) { win.fetch = (u, o) => fetch(new URL(u, base), o); win.EventSource = undefined; }});
   const w = dom.window, d = w.document;
@@ -808,6 +1000,9 @@ async function testNewRuntimesPresent(d, check, w, errors) {
     renderSettings(true);
   `);
 
+  // Settings / Runtime readiness: task 0224 readiness + cost summary table
+  await testRuntimeReadinessSummary(d, check, w, errors);
+
   // Settings / Onboarding: task 0172 onboarding readiness subsection
   const onboardingMock = {
     runtimes: {
@@ -1216,5 +1411,5 @@ async function testNewRuntimesPresent(d, check, w, errors) {
 })().catch(e => { console.log('crash', e); console.log(errors.join('\n')); process.exit(4); });
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { testNewRuntimesPresent };
+  module.exports = { testNewRuntimesPresent, testRuntimeReadinessSummary };
 }
