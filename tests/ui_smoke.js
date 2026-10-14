@@ -15,24 +15,16 @@ setTimeout(() => { console.log('TIMEOUT; errors so far:\n' + errors.join('\n'));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /**
- * Task 0200: Verify that the WORKER_RUNTIME selector exposes the six new runtimes:
- * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp with their respective
- * radio inputs, values, and help text, and verify selection updates without throwing.
- *
- * Local run evidence (`node tests/ui_smoke.js`):
- * ok   settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text
- * ok   settings / workers: selecting each new runtime picker option does not throw and updates visible selection
- *
- * Mutation sensitivity:
- * Removing any one of the six runtimes or removing help text causes the assertion to fail:
- * FAIL settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text
+ * Task 0200/0234: Verify that the WORKER_RUNTIME selector exposes the new runtimes:
+ * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp, opencode, qwen, goose with their respective
+ * selectable radio options, values, and help text/labels, and verify selection updates without throwing.
  */
 async function testNewRuntimesPresent(d, check, w, errors) {
   check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
   w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
   errors = errors || (typeof errors !== 'undefined' ? errors : []);
 
-  const newRtConfigs = [
+  const sixRtConfigs = [
     {id: 'runtime-opt-copilot', val: 'copilot'},
     {id: 'runtime-opt-mistral-vibe', val: 'mistral-vibe'},
     {id: 'runtime-opt-ollama', val: 'ollama'},
@@ -40,19 +32,35 @@ async function testNewRuntimesPresent(d, check, w, errors) {
     {id: 'runtime-opt-lmstudio', val: 'lmstudio'},
     {id: 'runtime-opt-llamacpp', val: 'llamacpp'}
   ];
-  const newRtPresent = newRtConfigs.length === 6 && newRtConfigs.every(cfg => {
+  const goalRtConfigs = [
+    {id: 'runtime-opt-opencode', val: 'opencode'},
+    {id: 'runtime-opt-qwen', val: 'qwen'},
+    {id: 'runtime-opt-goose', val: 'goose'}
+  ];
+  const allRtConfigs = [...sixRtConfigs, ...goalRtConfigs];
+
+  const sixRtPresent = sixRtConfigs.length === 6 && sixRtConfigs.every(cfg => {
     const el = d.getElementById(cfg.id);
     if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
     const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
     const help = label ? label.querySelector('.muted') : null;
     return !!label && !!help && help.textContent.trim().length > 0;
   });
-  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', newRtPresent);
+  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', sixRtPresent);
+
+  const goalRtPresent = goalRtConfigs.length === 3 && goalRtConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
+    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
+    const help = label ? label.querySelector('.muted') : null;
+    return !!label && !!help && help.textContent.trim().length > 0;
+  });
+  check('settings / workers: WORKER_RUNTIME selector exposes opencode, qwen and goose with help text', goalRtPresent);
 
   let rtPickerNoThrow = true;
   let rtPickerUpdatesSelection = true;
   if (w && w.MouseEvent) {
-    for (const cfg of newRtConfigs) {
+    for (const cfg of allRtConfigs) {
       const el = d.getElementById(cfg.id);
       if (!el) {
         rtPickerUpdatesSelection = false;
@@ -72,7 +80,7 @@ async function testNewRuntimesPresent(d, check, w, errors) {
     check('settings / workers: selecting each new runtime picker option does not throw and updates visible selection',
           rtPickerNoThrow && rtPickerUpdatesSelection);
   }
-  return newRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
+  return sixRtPresent && goalRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
 }
 
 /**
