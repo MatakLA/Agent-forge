@@ -10,6 +10,7 @@
   goose   Block's Goose CLI agent on your model server (COMPAT_BASE_URL)
   qwen-code Qwen Code CLI on Alibaba DashScope
   anthropic-compat Anthropic Messages API on your model server (COMPAT_BASE_URL)
+  mistral-vibe Mistral Vibe CLI on Mistral AI API (api.mistral.ai)
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
 a read-only file mount (/run/secrets/api-key) that worker/af-agent puts into the agent's environment only - it never appears in a
@@ -52,6 +53,9 @@ RUNTIMES = {
                       hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"], api=False),
     "anthropic-compat": dict(label="Anthropic Messages API on your model server", image=API_IMAGE,
                              key="compat.key", hosts=[], api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT"),
+    # Mistral Vibe: Mistral AI's coding CLI agent (api.mistral.ai)
+    "mistral-vibe": dict(label="Mistral Vibe (Mistral's Vibe CLI)", image=AGY_IMAGE, key="mistral.key",
+                         hosts=["api.mistral.ai"], api=False),
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -66,6 +70,8 @@ OPENCODE_QUIET = ["--format", "json"]
 GOOSE_QUIET = []
 # Qwen Code: non-interactive stream-json, auto-approve tool execution
 QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
+# Mistral Vibe: non-interactive stream-json output for scan()
+MISTRAL_VIBE_QUIET = ["--output-format", "stream-json"]
 GEMINI_TRAILER = "Do the task described above."
 QWEN_TRAILER = "Do the task described above."
 ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?")
@@ -110,6 +116,7 @@ def cost_model(rt: str) -> dict:
         "qwen-code": "Qwen Code (qwen-code) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge",
         "goose": "Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge",
         "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
+        "mistral-vibe": "Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge",
     }
     if rt in unknown_details:
         return {"kind": "unknown", "detail": unknown_details[rt]}
@@ -215,6 +222,11 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
             body["conversation_id"] = conversation
             body["metadata"] = {"conversation_id": conversation}
         return argv, json.dumps(body)
+    if rt == "mistral-vibe":
+        argv = ["mistral-vibe"] + MISTRAL_VIBE_QUIET
+        argv += (["--model", model] if model else [])
+        argv += (["--resume", conversation] if conversation else [])
+        return argv, prompt
     raise ValueError(f"unknown runtime {rt!r}")
 
 
@@ -536,7 +548,7 @@ def scan(rt, lines, prices=None):
         return st
     if lines is None:
         lines = []
-    st = dict(tokens=None if rt == "opencode" else 0, tools=0, conversation_id=None, result=None)
+    st = dict(tokens=None if rt in ("opencode", "mistral-vibe") else 0, tools=0, conversation_id=None, result=None)
     text = []
     inp_tokens, out_tokens = 0, 0
     for line in lines:
@@ -828,6 +840,77 @@ def scan(rt, lines, prices=None):
                 st["result"] = dict(status="SUCCESS", response=assistant_text, error="",
                                     usage=dict(input_tokens=inp_tokens, output_tokens=out_tokens) if (inp_tokens or out_tokens) else (u if u else None),
                                     cost_usd=round(prev + cost / 1e6, 6) if prices else None)
+        elif rt == "mistral-vibe":
+            t = e.get("type") or e.get("event")
+            sid = e.get("conversation_id") or e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("session")
+            if not sid and isinstance(e.get("part"), dict):
+                sid = e["part"].get("conversation_id") or e["part"].get("session_id") or e["part"].get("sessionId") or e["part"].get("session")
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+            if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_execution")
+                    or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                    or part.get("tool") or e.get("tool")):
+                st["tools"] += 1
+            elif t in ("message", "text", "assistant_message", "assistant.message"):
+                txt = part.get("text") or e.get("text") or e.get("content") or (e.get("message") or {}).get("content") or ""
+                if isinstance(txt, list):
+                    txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
+                if txt:
+                    text.append(str(txt))
+            u = e.get("usage") or e.get("stats") or e.get("tokens") or part.get("tokens") or part.get("usage")
+            inp, out, cached = 0, 0, 0
+            if isinstance(u, dict):
+                inp = u.get("input_tokens") or u.get("input") or u.get("prompt_tokens") or 0
+                out = u.get("output_tokens") or u.get("output") or u.get("completion_tokens") or 0
+                tot = u.get("total_tokens") or u.get("total")
+                cached = u.get("cached_tokens") or u.get("cached") or u.get("cached_input_tokens") or 0
+                if tot is not None:
+                    st["tokens"] = max(0, int(tot) - int(cached))
+                elif inp or out:
+                    st["tokens"] = max(0, int(inp) + int(out) - int(cached))
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = int(u)
+
+            if t in ("step_finish", "step_completed", "turn.completed"):
+                finish_txt = part.get("text") or e.get("text") or ""
+                if finish_txt:
+                    text.append(str(finish_txt))
+                reason = part.get("reason") or e.get("reason") or ""
+                err_raw = part.get("error") or e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or reason in ("error", "failed", "failure"))
+                if reason in ("error", "failed", "failure"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err_msg or reason,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+                elif reason in ("stop", "end", "completed", "complete", "success") or (not reason and not part.get("type") == "tool"):
+                    ok = not has_err
+                    err = "" if ok else (err_msg or "error")
+                    st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+            elif t == "result":
+                ok = e.get("status") in ("success", "SUCCESS") or e.get("subtype") == "success" or not (e.get("error") or e.get("is_error"))
+                err_raw = e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                err = "" if ok else (err_msg or "error")
+                res = str(e.get("response") or e.get("result") or "\n".join(text))[-4000:]
+                p = _prices(prices or "") if prices else None
+                cost = ((inp - cached) * p[0] + cached * p[1] + out * p[2]) if (p and any(p)) else None
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                    response=res,
+                                    error=err,
+                                    usage=u if u else None,
+                                    cost_usd=round(cost / 1e6, 6) if cost is not None else None)
+            elif t in ("error", "turn.failed", "step_failed", "failed"):
+                err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
     for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
         st.pop(k, None)
     return st
