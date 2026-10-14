@@ -60,8 +60,11 @@ else
   echo "SKIP tests/test_quickstart_e2e.sh: node not available"
 fi
 if [ -f tests/test_runtime_anthropic_compat.sh ]; then bash tests/test_runtime_anthropic_compat.sh || exit 1; fi
+# Runtime test suites with node-availability guards: mistral-vibe, copilot, local-compat
 if command -v node >/dev/null 2>&1; then
-  if [ -f tests/test_runtime_mistral_vibe.sh ]; then bash tests/test_runtime_mistral_vibe.sh || exit 1; fi
+  if [ -f tests/test_runtime_mistral_vibe.sh ]; then
+    bash tests/test_runtime_mistral_vibe.sh || exit 1
+  fi
 else
   echo "SKIP tests/test_runtime_mistral_vibe.sh: node not available"
 fi
@@ -69,7 +72,9 @@ if [ -f tests/test_runtime_mistral_vibe.py ]; then
   $PY tests/test_runtime_mistral_vibe.py || exit 1
 fi
 if command -v node >/dev/null 2>&1; then
-  if [ -f tests/test_runtime_copilot.sh ]; then bash tests/test_runtime_copilot.sh || exit 1; fi
+  if [ -f tests/test_runtime_copilot.sh ]; then
+    bash tests/test_runtime_copilot.sh || exit 1
+  fi
 else
   echo "SKIP tests/test_runtime_copilot.sh: node not available"
 fi
@@ -77,7 +82,9 @@ if [ -f tests/test_runtime_copilot.py ]; then
   $PY tests/test_runtime_copilot.py || exit 1
 fi
 if command -v node >/dev/null 2>&1; then
-  if [ -f tests/test_runtime_local_compat.sh ]; then bash tests/test_runtime_local_compat.sh || exit 1; fi
+  if [ -f tests/test_runtime_local_compat.sh ]; then
+    bash tests/test_runtime_local_compat.sh || exit 1
+  fi
 else
   echo "SKIP tests/test_runtime_local_compat.sh: node not available"
 fi
