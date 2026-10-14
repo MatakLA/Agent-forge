@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""CLI bookmark manager storing bookmarks and tags in a JSON file.
+Public interface: bookmarks add <url> [--tag TAG]... and bookmarks list subcommands.
+Invariants:
+- Python 3 standard library only with zero external dependencies.
+- Storage file path defaults to ~/.bookmarks.json or BOOKMARKS_FILE env var.
+- Preserves insertion order and formats list output as <url>\\t<tags>.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+
+def get_storage_path() -> str:
+    override = os.environ.get("BOOKMARKS_FILE")
+    if override:
+        return os.path.expanduser(override)
+    return os.path.expanduser("~/.bookmarks.json")
+
+
+def load_bookmarks(path: str) -> list:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return []
+            data = json.loads(content)
+            if isinstance(data, list):
+                return data
+            return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_bookmarks(path: str, bookmarks: list) -> None:
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(bookmarks, f, indent=2)
+        f.write("\n")
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    path = get_storage_path()
+    bookmarks = load_bookmarks(path)
+    tags = args.tags if args.tags is not None else []
+    bookmarks.append({"url": args.url, "tags": tags})
+    save_bookmarks(path, bookmarks)
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    path = get_storage_path()
+    bookmarks = load_bookmarks(path)
+    for entry in bookmarks:
+        url = entry.get("url", "")
+        tags = entry.get("tags", [])
+        tags_str = ",".join(tags)
+        sys.stdout.write(f"{url}\t{tags_str}\n")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bookmarks",
+        description="Standard-library-only CLI bookmark manager.",
+    )
+    subparsers = parser.add_subparsers(
+        dest="subcommand",
+        required=True,
+        help="Subcommand to run",
+    )
+
+    add_parser = subparsers.add_parser("add", help="Add a bookmark")
+    add_parser.add_argument("url", help="Bookmark URL to save")
+    add_parser.add_argument(
+        "--tag",
+        action="append",
+        dest="tags",
+        default=None,
+        help="Tag to associate with bookmark (repeatable)",
+    )
+    add_parser.set_defaults(func=cmd_add)
+
+    list_parser = subparsers.add_parser("list", help="List all bookmarks")
+    list_parser.set_defaults(func=cmd_list)
+
+    return parser
+
+
+def main(argv: list = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

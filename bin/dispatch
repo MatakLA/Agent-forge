@@ -11,10 +11,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import sbx, egress
 
 
-def _opt(name):
+def _opt(name, regex=None):
     """Optional per-run settings bin/foreman passes in the environment; only plain identifiers are accepted."""
     v = os.environ.get(name, "").strip()
-    return v if v and sbx.SAFE_ARG.fullmatch(v) else ""
+    if not v:
+        return ""
+    pat = regex or sbx.SAFE_ARG
+    if not pat.fullmatch(v):
+        refuse(f"invalid {name} {v!r}")
+    return v
 
 
 def refuse(msg, alert=False):
@@ -25,12 +30,19 @@ def refuse(msg, alert=False):
 
 
 def container_running(w):
-    r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", w], capture_output=True, text=True)
-    return r.stdout.strip() == "true"
+    if not sbx.WORKER_RE.fullmatch(w):
+        return False
+    try:
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", w], capture_output=True, text=True)
+        return r.stdout.strip() == "true"
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
 
 
 def preflight(worker, lim, runner):
     """Must be called with the dispatch lock held. Returns dict with the effective limits."""
+    if not sbx.WORKER_RE.fullmatch(worker):
+        refuse(f"invalid worker name {worker!r}")
     ks = sbx.killswitch_active()
     if ks:
         refuse(f"kill switch is ON since {ks.get('at')} ({ks.get('reason')}); clear with bin/killswitch off")
@@ -84,19 +96,33 @@ def preflight(worker, lim, runner):
 
 def main():
     a = sys.argv[1:]
-    runner = os.environ.get("DISPATCH_RUNNER")
-    if runner and not sbx.TEST_MODE:
-        print("DISPATCH_RUNNER is only allowed with SANDBOX_TEST=1", file=sys.stderr); sys.exit(2)
-    lim = sbx.load_limits()
     if a[:1] == ["--check"] and len(a) == 2:
+        if not sbx.WORKER_RE.fullmatch(a[1]):
+            print(f"invalid worker name: {a[1]!r}", file=sys.stderr); sys.exit(2)
+        runner = os.environ.get("DISPATCH_RUNNER")
+        if runner and not sbx.TEST_MODE:
+            print("DISPATCH_RUNNER is only allowed with SANDBOX_TEST=1", file=sys.stderr); sys.exit(2)
+        lim = sbx.load_limits()
         with sbx.lock():
             info = preflight(a[1], lim, runner)
         print(f"OK: would dispatch to {a[1]}: token cap {info['token_cap']}, timeout {lim['RUN_TIMEOUT_MIN']:g} min, "
               f"runs today {info['runs_today']}/{lim['MAX_RUNS_PER_DAY']}, tokens today {info['tokens_used_today']}/{lim['DAILY_TOKEN_BUDGET']}")
         return
-    if not (2 <= len(a) <= 3) or not re.fullmatch(r"worker-\d+", a[0]) or not os.path.isfile(a[1]):
+    if not (2 <= len(a) <= 3) or not sbx.WORKER_RE.fullmatch(a[0]) or not os.path.isfile(a[1]):
         print(__doc__, file=sys.stderr); sys.exit(2)
     worker, task = a[0], a[1]
+    # Validate environment options early before preflight
+    model = _opt("DISPATCH_MODEL", sbx.MODEL_RE)
+    role = _opt("DISPATCH_ROLE", sbx.ROLE_RE)
+    branch = _opt("DISPATCH_BRANCH", sbx.SAFE_ARG)
+    conversation = _opt("DISPATCH_CONVERSATION", sbx.SAFE_ARG)
+    variant = _opt("DISPATCH_VARIANT", sbx.SAFE_ARG)
+    if sbx.PROJECT and not sbx.PROJECT_RE.fullmatch(sbx.PROJECT):
+        refuse(f"invalid project name {sbx.PROJECT!r}")
+    runner = os.environ.get("DISPATCH_RUNNER")
+    if runner and not sbx.TEST_MODE:
+        print("DISPATCH_RUNNER is only allowed with SANDBOX_TEST=1", file=sys.stderr); sys.exit(2)
+    lim = sbx.load_limits()
     minutes = min(float(a[2]) if len(a) == 3 else lim["RUN_TIMEOUT_MIN"], lim["RUN_TIMEOUT_MAX_MIN"])
     with sbx.lock():
         info = preflight(worker, lim, runner)
@@ -105,10 +131,13 @@ def main():
         prompt = sbx.no_nul(open(task).read().split("\n## Orchestrator review checklist")[0])
         open(run + "/prompt.md", "w").write(prompt if prompt.endswith("\n") else prompt + "\n")
         open(run + "/task", "w").write(os.path.realpath(task) + "\n")
+        effective_model = model or (lim["WORKER_MODEL"] if info["runtime"] == "agy" else "")
+        if effective_model and not sbx.MODEL_RE.fullmatch(effective_model):
+            refuse(f"invalid worker model {effective_model!r}")
         json.dump(dict(run_id=os.path.basename(run), worker=worker, task=os.path.basename(task), test=bool(runner) and not os.environ.get('DISPATCH_RUNNER_COUNTS'), runner=runner,
                        runtime=info["runtime"], budget_usd=float(lim["API_RUN_BUDGET_USD"]) if info["runtime"] != "agy" else 0,
-                       model=_opt("DISPATCH_MODEL") or (lim["WORKER_MODEL"] if info["runtime"] == "agy" else ""), project=sbx.PROJECT, repo=sbx.FORGE_REPO,
-                       branch=_opt("DISPATCH_BRANCH"), conversation=_opt("DISPATCH_CONVERSATION"), variant=_opt("DISPATCH_VARIANT"),
+                       model=effective_model, role=role, project=sbx.PROJECT, repo=sbx.FORGE_REPO,
+                       branch=branch, conversation=conversation, variant=variant,
                        self_check=min(3, int(_opt("DISPATCH_SELF_CHECK") or 0)) if (_opt("DISPATCH_SELF_CHECK") or "0").isdigit() else 0,
                        limits=dict(timeout_min=minutes, token_cap=info["token_cap"], daily_budget=lim["DAILY_TOKEN_BUDGET"],
                                    tokens_used_today_before=info["tokens_used_today"]),
@@ -120,4 +149,5 @@ def main():
     print(f"dispatched {os.path.basename(task)} to {worker} -> {run} (timeout {minutes:g} min, token cap {info['token_cap']})")
 
 
-main()
+if __name__ == "__main__":
+    main()

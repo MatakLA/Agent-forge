@@ -6,6 +6,16 @@
   gemini  Gemini CLI with a Gemini API key              (pay per token)
   compat  Codex CLI on your own model server - any OpenAI Responses API: Ollama, vLLM, LM Studio, OpenRouter (COMPAT_BASE_URL)
   aider   Aider on your own model server - any OpenAI chat-completions API (the same COMPAT_BASE_URL)
+  opencode OpenCode CLI on your configured provider (COMPAT_BASE_URL)
+  goose   Block's Goose CLI agent on your model server (COMPAT_BASE_URL)
+  qwen-code Qwen Code CLI on Alibaba DashScope
+  anthropic-compat Anthropic Messages API on your model server (COMPAT_BASE_URL)
+  mistral-vibe Mistral Vibe CLI on Mistral AI API (api.mistral.ai)
+  copilot GitHub Copilot CLI on GitHub API (api.githubcopilot.com, api.github.com)
+  ollama  Ollama local model server on your endpoint (COMPAT_BASE_URL)
+  vllm    vLLM local model server on your endpoint (COMPAT_BASE_URL)
+  lmstudio LM Studio local model server on your endpoint (COMPAT_BASE_URL)
+  llamacpp llama.cpp local model server on your endpoint (COMPAT_BASE_URL)
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
 a read-only file mount (/run/secrets/api-key) that worker/af-agent puts into the agent's environment only - it never appears in a
@@ -18,7 +28,7 @@ Adding a runtime = one entry in RUNTIMES plus a branch in command() and scan() (
 Agent-Forge (dispatch, supervisor caps, budgets, egress, the dashboard) only uses this interface. docs/RUNTIMES.md has the
 checklist. Event formats were taken from the real CLIs (claude 2.1, codex 0.161, gemini 0.63, aider 0.86) run against a fake API
 server, and are parsed defensively: unknown events are ignored, a missing result means the run failed."""
-import json, re
+import json, os, re
 from urllib.parse import urlsplit
 
 AGY_IMAGE = "sandbox-worker:1.2.11"
@@ -39,6 +49,30 @@ RUNTIMES = {
                    key="compat.key", hosts=[], api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT"),
     "aider": dict(label="Aider on your model server (any OpenAI-compatible chat API)", image=API_IMAGE, key="compat.key", hosts=[],
                   api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT", own_git=False),
+    "opencode": dict(label="OpenCode (SST's OpenCode CLI, configured provider)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True),
+    # Goose: provider-configurable on model server (endpoint runtime, resolves host via uses_endpoint/hosts)
+    "goose": dict(label="Goose (Block's Goose CLI agent on your model server)", image=AGY_IMAGE, key=None, hosts=[],
+                  api=False, endpoint=True),
+    "qwen-code": dict(label="Qwen Code (Alibaba's Qwen Code CLI)", image=AGY_IMAGE, key="qwen.key",
+                      hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"], api=False),
+    "anthropic-compat": dict(label="Anthropic Messages API on your model server", image=API_IMAGE,
+                             key="compat.key", hosts=[], api=True, endpoint=True, optional_key=True, prices="PRICE_COMPAT"),
+    # Mistral Vibe: Mistral AI's coding CLI agent (api.mistral.ai)
+    "mistral-vibe": dict(label="Mistral Vibe (Mistral's Vibe CLI)", image=AGY_IMAGE, key="mistral.key",
+                         hosts=["api.mistral.ai"], api=False),
+    # GitHub Copilot: GitHub Copilot CLI (api.githubcopilot.com, api.github.com)
+    "copilot": dict(label="GitHub Copilot (GitHub Copilot CLI)", image=AGY_IMAGE, key=None,
+                    hosts=["api.githubcopilot.com", "api.github.com"], api=False),
+    # Local model server runtimes (endpoint runtimes, no static allowlist entry)
+    "ollama": dict(label="Ollama (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                   api=False, endpoint=True, optional_key=True, default_port=11434, default_path="/v1/chat/completions"),
+    "vllm": dict(label="vLLM (local OpenAI-compatible model server)", image=AGY_IMAGE, key="compat.key", hosts=[],
+                 api=False, endpoint=True, optional_key=True, default_port=8000, default_path="/v1/chat/completions"),
+    "lmstudio": dict(label="LM Studio (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True, optional_key=True, default_port=1234, default_path="/v1/chat/completions"),
+    "llamacpp": dict(label="llama.cpp (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True, optional_key=True, default_port=8080, default_path="/v1/chat/completions"),
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -47,7 +81,23 @@ CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabl
 # Aider: no update check, no analytics, no release notes, no edits to .gitignore, plain output for the event filter in af-agent
 AIDER_QUIET = ["--yes-always", "--no-pretty", "--no-stream", "--no-fancy-input", "--no-check-update", "--no-show-release-notes",
                "--analytics-disable", "--no-gitignore", "--no-show-model-warnings", "--no-detect-urls"]
+# OpenCode: non-interactive JSON stream for scan(), quiet
+OPENCODE_QUIET = ["--format", "json"]
+# Goose: non-interactive execution via goose run --instructions - (empty: goose run is already headless; -q suppresses scan() tool calls)
+GOOSE_QUIET = []
+# Qwen Code: non-interactive stream-json, auto-approve tool execution
+QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
+# Mistral Vibe: non-interactive stream-json output for scan()
+MISTRAL_VIBE_QUIET = ["--output-format", "stream-json"]
+# GitHub Copilot: non-interactive stream-json output for scan()
+COPILOT_QUIET = ["--output-format", "stream-json"]
+# Ollama, vLLM, LM Studio, llama.cpp: local OpenAI-compatible endpoint runtimes
+OLLAMA_QUIET = []
+VLLM_QUIET = []
+LMSTUDIO_QUIET = []
+LLAMACPP_QUIET = []
 GEMINI_TRAILER = "Do the task described above."
+QWEN_TRAILER = "Do the task described above."
 ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?")
 
 
@@ -69,6 +119,8 @@ def endpoint_target(url):
 
 def hosts(rt, endpoint_url=""):
     """The hosts this runtime's workers must reach (endpoint runtimes: the model server's host)."""
+    if rt == "qwen" and "qwen" not in RUNTIMES and "qwen-code" in RUNTIMES:
+        rt = "qwen-code"
     r = RUNTIMES[rt]
     if r.get("endpoint"):
         t = endpoint_target(endpoint_url)
@@ -76,9 +128,39 @@ def hosts(rt, endpoint_url=""):
     return list(r["hosts"])
 
 
-def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
+def cost_model(rt: str) -> dict:
+    """Return the cost/quota model classification for a runtime.
+
+    Returns a dict with exactly two keys:
+    - 'kind': 'metered' (API with token cost), 'quota' (CLI with subscription quota), or 'unknown' (self-hosted/unmetered or external)
+    - 'detail': short human-readable explanation
+    """
+    if rt not in RUNTIMES:
+        raise ValueError(f"unknown runtime {rt!r}")
+    # Tier classification: 'metered' (token billing), 'quota' (subscription), or 'unknown' (self-hosted / unmetered / external)
+    unknown_details = {
+        "opencode": "OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge",
+        "qwen-code": "Qwen Code (qwen-code) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge",
+        "goose": "Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge",
+        "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
+        "mistral-vibe": "Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge",
+        "copilot": "GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge",
+        "ollama": "Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "vllm": "Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "lmstudio": "Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "llamacpp": "Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+    }
+    if rt in unknown_details:
+        return {"kind": "unknown", "detail": unknown_details[rt]}
+    if is_api(rt):
+        return {"kind": "metered", "detail": "billed per token, see Money page"}
+    return {"kind": "quota", "detail": "tracked via agy /usage, not USD"}
+
+
+def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0, endpoint_url=None, **kwargs):
     """(argv inside the worker container, stdin text). API runtimes get the prompt on stdin (no 128 KiB argv limit). The model
-    server URL of compat / aider comes in the environment (AF_ENDPOINT, set by bin/run-supervisor), not in argv."""
+    server URL of compat / aider comes in the environment (AF_ENDPOINT, set by bin/run-supervisor); local-compat runtimes (ollama,
+    vllm, lmstudio, llamacpp) embed the endpoint URL directly into curl's argv."""
     rt = rt or "agy"
     if rt == "agy":
         argv = ["agy-run", "-p", prompt, "--model", model, "--dangerously-skip-permissions", "--output-format", "stream-json",
@@ -104,7 +186,153 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv = ["af-agent", "aider"] + AIDER_QUIET + (["--model", "openai/" + model] if model else [])
         argv += ["--restore-chat-history"] if conversation else []
         return argv, prompt
+    if rt == "opencode":
+        argv = ["opencode", "run"] + OPENCODE_QUIET
+        argv += (["--model", model] if model else [])
+        argv += (["--session", conversation] if conversation else [])
+        return argv, prompt
+    if rt == "goose":
+        # Block's Goose CLI agent (https://github.com/block/goose).
+        # `goose run --instructions -` reads instructions non-interactively from stdin per Goose's CLI.
+        # Goose configures its model and provider via ~/.config/goose/config.yaml or environment
+        # variables (GOOSE_PROVIDER, GOOSE_MODEL), so model is not passed on the command line.
+        argv = ["goose", "run"] + GOOSE_QUIET + ["--instructions", "-"]
+        return argv, prompt
+    if rt == "qwen-code":
+        argv = ["qwen"] + QWEN_QUIET
+        argv += (["-m", model] if model else [])
+        argv += (["--resume", conversation] if conversation else [])
+        argv += ["-p", QWEN_TRAILER]
+        return argv, prompt
+    if rt == "anthropic-compat":
+        argv = ["af-agent", "anthropic-compat", "exec"]
+        system_text = ""
+        messages = []
+        conv_data = None
+        if conversation:
+            if isinstance(conversation, (list, dict)):
+                conv_data = conversation
+            elif isinstance(conversation, str):
+                conv_str = conversation.strip()
+                if conv_str.startswith("[") or conv_str.startswith("{"):
+                    try:
+                        conv_data = json.loads(conv_str)
+                    except Exception:
+                        conv_data = None
+        if isinstance(conv_data, list):
+            for item in conv_data:
+                if isinstance(item, dict):
+                    role = item.get("role")
+                    content = item.get("content", "")
+                    if role == "system":
+                        system_text = content
+                    elif role in ("user", "assistant"):
+                        messages.append({"role": role, "content": content})
+        elif isinstance(conv_data, dict):
+            if "system" in conv_data:
+                system_text = conv_data["system"]
+            raw_msgs = conv_data.get("messages") or []
+            if isinstance(raw_msgs, list):
+                for item in raw_msgs:
+                    if isinstance(item, dict):
+                        role = item.get("role")
+                        content = item.get("content", "")
+                        if role == "system":
+                            system_text = content
+                        elif role in ("user", "assistant"):
+                            messages.append({"role": role, "content": content})
+        if prompt:
+            if not messages or messages[-1].get("content") != prompt or messages[-1].get("role") != "user":
+                messages.append({"role": "user", "content": prompt})
+        elif not messages:
+            messages.append({"role": "user", "content": ""})
+        body = {
+            "model": model or "claude-3-5-sonnet-20241022",
+            "system": system_text,
+            "messages": messages,
+        }
+        if conversation and isinstance(conversation, str) and not conv_data:
+            body["conversation_id"] = conversation
+            body["metadata"] = {"conversation_id": conversation}
+        return argv, json.dumps(body)
+    if rt == "mistral-vibe":
+        argv = ["mistral-vibe"] + MISTRAL_VIBE_QUIET
+        argv += (["--model", model] if model else [])
+        argv += (["--resume", conversation] if conversation else [])
+        return argv, prompt
+    if rt == "copilot":
+        argv = ["copilot"] + COPILOT_QUIET
+        argv += (["--model", model] if model else [])
+        argv += (["--resume", conversation] if conversation else [])
+        return argv, prompt
+    if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+        ep = endpoint_url or kwargs.get("endpoint") or os.environ.get("AF_ENDPOINT") or os.environ.get("COMPAT_BASE_URL") or ""
+        ep = str(ep).strip()
+        default_port = RUNTIMES[rt].get("default_port", 8000)
+        default_path = RUNTIMES[rt].get("default_path", "/v1/chat/completions")
+        if not ep:
+            target_url = f"http://127.0.0.1:{default_port}{default_path}"
+        elif "/chat/completions" in ep:
+            target_url = ep
+        elif ep.endswith("/v1") or ep.endswith("/v1/"):
+            target_url = ep.rstrip("/") + "/chat/completions"
+        else:
+            target_url = ep.rstrip("/") + default_path
+
+        quiet = {
+            "ollama": OLLAMA_QUIET,
+            "vllm": VLLM_QUIET,
+            "lmstudio": LMSTUDIO_QUIET,
+            "llamacpp": LLAMACPP_QUIET,
+        }.get(rt, [])
+        argv = ["curl", "-s", "-X", "POST", target_url] + quiet + ["-H", "Content-Type: application/json", "-d", "@-"]
+
+        messages = []
+        conv_data = None
+        if conversation:
+            if isinstance(conversation, (list, dict)):
+                conv_data = conversation
+            elif isinstance(conversation, str):
+                conv_str = conversation.strip()
+                if conv_str.startswith("[") or conv_str.startswith("{"):
+                    try:
+                        conv_data = json.loads(conv_str)
+                    except Exception:
+                        conv_data = None
+        if isinstance(conv_data, list):
+            for item in conv_data:
+                if isinstance(item, dict):
+                    role = item.get("role") or "user"
+                    content = item.get("content", "")
+                    messages.append({"role": role, "content": content})
+        elif isinstance(conv_data, dict):
+            if "system" in conv_data:
+                messages.append({"role": "system", "content": conv_data["system"]})
+            raw_msgs = conv_data.get("messages") or []
+            if isinstance(raw_msgs, list):
+                for item in raw_msgs:
+                    if isinstance(item, dict):
+                        role = item.get("role") or "user"
+                        content = item.get("content", "")
+                        messages.append({"role": role, "content": content})
+        if prompt:
+            if not messages or messages[-1].get("content") != prompt or messages[-1].get("role") != "user":
+                messages.append({"role": "user", "content": prompt})
+        elif not messages:
+            messages.append({"role": "user", "content": ""})
+
+        body = {
+            "model": model or "local-compat-model",
+            "messages": messages,
+            "stream": True,
+        }
+        if conversation and isinstance(conversation, str) and not conv_data:
+            body["conversation_id"] = conversation
+
+        return argv, json.dumps(body)
     raise ValueError(f"unknown runtime {rt!r}")
+
+
 
 
 def _prices(spec):
@@ -116,6 +344,156 @@ def _prices(spec):
         return (0.0, 0.0, 0.0)
 
 
+class ResultStr(str):
+    """Result string representation for Goose CLI output. Supports both string operations
+    and dict-like .get() / item access for supervisor inspection and test assertions."""
+
+    def get(self, key, default=None):
+        if self.startswith("{"):
+            try:
+                e = json.loads(self)
+                if isinstance(e, dict):
+                    if key in e:
+                        return e[key]
+                    if key == "status":
+                        s = e.get("status") or e.get("state")
+                        if s in ("success", "SUCCESS"):
+                            return "SUCCESS"
+                        if s in ("error", "ERROR", "failed", "FAILED") or e.get("error") or e.get("is_error"):
+                            return "ERROR"
+                        return "SUCCESS"
+                    if key == "response":
+                        return str(e.get("response") or e.get("text") or e.get("content") or self)
+            except Exception:
+                pass
+        if key == "status":
+            low = self.lower()
+            if low.startswith("error") or " error:" in low or " failed:" in low or low.startswith("failed"):
+                return "ERROR"
+            return "SUCCESS"
+        if key == "response":
+            return str(self)
+        if key == "error":
+            low = self.lower()
+            return str(self) if (low.startswith("error") or " error:" in low or " failed:" in low or low.startswith("failed")) else ""
+        return default
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            val = self.get(item)
+            if val is not None or item in ("usage", "cost_usd"):
+                return val
+            raise KeyError(item)
+        return super().__getitem__(item)
+
+
+def _parse_openai_compat_dict(e, st, text, prices=None):
+    cid = (e.get("id") or e.get("conversation_id") or e.get("session_id")
+           or e.get("sessionId") or e.get("thread_id"))
+    if cid and not st["conversation_id"]:
+        st["conversation_id"] = str(cid)
+
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            msg = choice.get("message") or choice.get("delta") or {}
+            if isinstance(msg, dict):
+                tcs = msg.get("tool_calls")
+                if isinstance(tcs, list):
+                    st["tools"] += len(tcs)
+                elif msg.get("function_call"):
+                    st["tools"] += 1
+                c = msg.get("content") or ""
+                if isinstance(c, list):
+                    c = "".join(str(part.get("text", "")) for part in c if isinstance(part, dict))
+                if "<<<<<<< SEARCH" in str(c):
+                    st["tools"] += str(c).count("<<<<<<< SEARCH")
+                if c:
+                    text.append(str(c))
+    if e.get("content") and not e.get("choices"):
+        c = e.get("content")
+        if isinstance(c, list):
+            c = "".join(str(part.get("text", "")) for part in c if isinstance(part, dict))
+        if "<<<<<<< SEARCH" in str(c):
+            st["tools"] += str(c).count("<<<<<<< SEARCH")
+        text.append(str(c))
+
+    if e.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation"):
+        st["tools"] += 1
+    elif isinstance(e.get("tool_calls"), list) and not e.get("choices"):
+        st["tools"] += len(e["tool_calls"])
+
+    u = e.get("usage") or e.get("stats") or e.get("tokens")
+    if isinstance(u, dict):
+        st["raw_usage"] = u
+        inp = u.get("prompt_tokens") or u.get("input_tokens") or u.get("input") or 0
+        out = u.get("completion_tokens") or u.get("output_tokens") or u.get("output") or 0
+        cached = u.get("cached_tokens") or u.get("cached_prompt_tokens") or 0
+        st["inp_tokens"] = inp
+        st["out_tokens"] = out
+        st["cached_tokens"] = cached
+        tot = u.get("total_tokens") or u.get("total")
+        if tot is not None:
+            st["tokens"] = max(0, int(tot) - int(cached))
+        elif inp or out:
+            st["tokens"] = max(0, int(inp) + int(out) - int(cached))
+    elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+        st["tokens"] = int(u)
+
+    usage_dict = u if isinstance(u, dict) else st.get("raw_usage")
+
+    if "error" in e or e.get("is_error") or e.get("type") == "error":
+        err_obj = e.get("error")
+        err_msg = (err_obj.get("message") or err_obj.get("error") or str(err_obj)) if isinstance(err_obj, dict) else str(err_obj or e.get("message") or "error")
+        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+        return
+
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            if choice.get("finish_reason") in ("error", "failed"):
+                err_raw = choice.get("error") or choice.get("finish_reason")
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+                return
+
+    t = e.get("type") or e.get("event") or ""
+    if t in ("turn.failed", "step_failed") or e.get("status") in ("failed", "error", "ERROR", "FAILED"):
+        err_raw = e.get("error") or e.get("message") or t or "error"
+        err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=usage_dict, cost_usd=None)
+        return
+
+    is_terminal = False
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            if choice.get("finish_reason"):
+                is_terminal = True
+            elif isinstance(choice.get("message"), dict) and "content" in choice["message"]:
+                is_terminal = True
+    if e.get("object") == "chat.completion":
+        is_terminal = True
+    if e.get("status") in ("success", "SUCCESS", "completed"):
+        is_terminal = True
+
+    if is_terminal and not (st["result"] and st["result"]["status"] == "ERROR"):
+        resp = "".join(text).strip()
+        if not resp and not text:
+            for choice in (e.get("choices") or []):
+                if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
+                    resp = str(choice["message"].get("content") or "")
+        inp_t = st.get("inp_tokens", 0)
+        out_t = st.get("out_tokens", 0)
+        cached_t = st.get("cached_tokens", 0)
+        p = _prices(prices or "") if prices else None
+        cost = ((inp_t - cached_t) * p[0] + cached_t * p[1] + out_t * p[2]) if (p and any(p)) else None
+        st["result"] = dict(
+            status="SUCCESS",
+            response=resp[-4000:],
+            error="",
+            usage=usage_dict,
+            cost_usd=round(cost / 1e6, 6) if cost is not None else None,
+        )
+
+
 def scan(rt, lines, prices=None):
     """Read a run's event stream. Returns dict(tokens, tools, conversation_id, result) where result is None (no final event
     yet / never) or dict(status SUCCESS|ERROR, response, error, usage, cost_usd). `tokens` counts what the model processed
@@ -123,15 +501,289 @@ def scan(rt, lines, prices=None):
     rt = rt or "agy"
     if rt == "compat":
         rt = "codex"                           # the same CLI and event stream
-    st = dict(tokens=0, tools=0, conversation_id=None, result=None)
+    if rt == "goose":
+        # Block's Goose CLI output and SSE event stream parser.
+        # Goose runs against model endpoints and can stream SSE events (event: / data:)
+        # as emitted by fake-goose-server.js, or standard plain-text / JSON-lines CLI output.
+        # Tokens are accumulated if reported in usage/stats (else None for unknown).
+        # Tools are counted from tool calls/invocations across all stream formats.
+        # Result becomes a ResultStr only on a genuine terminal event (or last non-empty line for non-SSE).
+        # Malformed/partial SSE frames are skipped safely without raising.
+        if lines is None:
+            lines = []
+        st = dict(tokens=None, tools=0, conversation_id=None, result=None)
+        seen_sse = False
+        text = []
+        current_event = None
+        current_data = []
+        terminal_reached = False
+        terminal_error = None
+        last_non_empty = None
+
+        def dispatch_sse(ev, d_str):
+            nonlocal terminal_reached, terminal_error
+            if not d_str:
+                if ev in ("stop", "message_stop", "done"):
+                    terminal_reached = True
+                elif ev in ("error", "turn.failed", "step_failed"):
+                    terminal_reached = True
+                    if not terminal_error:
+                        terminal_error = "error"
+                return
+            if d_str.strip() == "[DONE]":
+                terminal_reached = True
+                return
+            try:
+                e = json.loads(d_str)
+            except Exception:
+                return
+            if not isinstance(e, dict):
+                return
+
+            sid = (e.get("conversation_id") or e.get("session_id")
+                   or e.get("sessionId") or e.get("thread_id"))
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+
+            # Tool usage counting
+            cb = e.get("content_block") or {}
+            it = e.get("item") or {}
+            t = e.get("type") or e.get("event") or ev
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+
+            if isinstance(cb, dict) and cb.get("type") in ("tool_use", "tool_call"):
+                st["tools"] += 1
+            elif ((ev == "response.output_item.added" or t == "response.output_item.added")
+                  and isinstance(it, dict) and it.get("type") in ("function_call", "tool_call", "tool_use", "custom_tool_call")):
+                st["tools"] += 1
+            else:
+                counted_choices = False
+                for choice in (e.get("choices") or []):
+                    if isinstance(choice, dict):
+                        delta = choice.get("delta") or choice.get("message") or {}
+                        if isinstance(delta, dict):
+                            tcs = delta.get("tool_calls") or []
+                            if tcs:
+                                st["tools"] += len(tcs)
+                                counted_choices = True
+                            elif delta.get("function_call"):
+                                st["tools"] += 1
+                                counted_choices = True
+                if not counted_choices:
+                    if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
+                            or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                            or e.get("tool")):
+                        st["tools"] += 1
+
+            # Token accumulation
+            u = (e.get("usage") or e.get("stats") or e.get("tokens")
+                 or (e.get("message") if isinstance(e.get("message"), dict) else {}).get("usage")
+                 or (e.get("response") if isinstance(e.get("response"), dict) else {}).get("usage")
+                 or (e.get("part") if isinstance(e.get("part"), dict) else {}).get("usage"))
+            if isinstance(u, dict):
+                inp = u.get("input_tokens") or u.get("prompt_tokens") or u.get("input") or 0
+                out = u.get("output_tokens") or u.get("completion_tokens") or u.get("output") or 0
+                tot = u.get("total_tokens") or u.get("total")
+                if tot is not None:
+                    st["tokens"] = (st["tokens"] or 0) + max(0, int(tot))
+                elif inp or out:
+                    st["tokens"] = (st["tokens"] or 0) + max(0, int(inp) + int(out))
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = (st["tokens"] or 0) + int(u)
+
+            # Text accumulation
+            delta = e.get("delta") if isinstance(e.get("delta"), dict) else {}
+            txt = delta.get("text_delta") or delta.get("text") or ""
+            if txt:
+                text.append(str(txt))
+            if isinstance(cb, dict) and cb.get("text"):
+                text.append(str(cb["text"]))
+            if isinstance(it, dict) and it.get("type") == "message" and (ev in ("response.output_item.added", "response.output_item.done") or t in ("response.output_item.added", "response.output_item.done")):
+                for c in (it.get("content") or []):
+                    if isinstance(c, dict) and c.get("text"):
+                        text.append(str(c["text"]))
+            for choice in (e.get("choices") or []):
+                if isinstance(choice, dict):
+                    cdelta = choice.get("delta") or choice.get("message") or {}
+                    if isinstance(cdelta, dict) and cdelta.get("content"):
+                        text.append(str(cdelta["content"]))
+            ptxt = (part.get("text") if isinstance(part, dict) else "") or e.get("text") or ""
+            if ptxt and t not in ("tool_use", "tool_call"):
+                text.append(str(ptxt))
+
+            # Terminal event checking
+            err_raw = None
+            if ev in ("error", "turn.failed", "step_failed", "failed"):
+                err_raw = e.get("error") or e.get("message") or ev
+            elif t in ("error", "turn.failed", "step_failed"):
+                err_raw = e.get("error") or e.get("message") or t
+            elif e.get("error") or e.get("is_error"):
+                err_raw = e.get("error") or "error"
+            elif isinstance(part, dict) and (part.get("error") or part.get("reason") in ("error", "failed", "failure")):
+                err_raw = part.get("error") or part.get("reason")
+            elif isinstance(e.get("response"), dict) and e["response"].get("status") in ("failed", "error", "cancelled"):
+                err_raw = e["response"].get("error") or e["response"].get("status")
+            elif e.get("status") in ("failed", "error", "FAILED", "ERROR"):
+                err_raw = e.get("error") or e.get("message") or e.get("status")
+            else:
+                for choice in (e.get("choices") or []):
+                    if isinstance(choice, dict) and choice.get("finish_reason") in ("error", "failed"):
+                        err_raw = choice.get("error") or choice.get("finish_reason")
+
+            if err_raw:
+                terminal_reached = True
+                err_msg = (err_raw.get("message") or err_raw.get("error") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                terminal_error = err_msg or "error"
+            else:
+                if ev in ("stop", "message_stop", "response.completed", "step_finish", "result", "done"):
+                    terminal_reached = True
+                elif t in ("stop", "message_stop", "response.completed", "step_finish", "result"):
+                    terminal_reached = True
+                elif isinstance(e.get("response"), dict) and e["response"].get("status") == "completed":
+                    terminal_reached = True
+                elif isinstance(delta, dict) and delta.get("stop_reason") in ("end_turn", "stop_sequence", "max_tokens", "stop"):
+                    terminal_reached = True
+                elif e.get("finish_reason") in ("stop", "end_turn", "completed", "length"):
+                    terminal_reached = True
+                elif e.get("stop_reason") in ("stop", "end_turn", "completed", "length"):
+                    terminal_reached = True
+                else:
+                    for choice in (e.get("choices") or []):
+                        if isinstance(choice, dict) and choice.get("finish_reason") in ("stop", "end_turn", "completed", "length"):
+                            terminal_reached = True
+
+        def flush_data_if_valid():
+            nonlocal current_event, current_data
+            if current_data:
+                joined = "\n".join(current_data)
+                try:
+                    json.loads(joined)
+                    dispatch_sse(current_event, joined)
+                    current_event = None
+                    current_data = []
+                except Exception:
+                    pass
+
+        for item in lines:
+            if isinstance(item, bytes):
+                try:
+                    item = item.decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+            elif not isinstance(item, str):
+                continue
+            sublines = item.splitlines() if ("\n" in item or "\r" in item) else [item]
+            for line in sublines:
+                line_str = line.strip()
+                if not line_str:
+                    if current_data or current_event:
+                        dispatch_sse(current_event, "\n".join(current_data))
+                        current_event = None
+                        current_data = []
+                    continue
+
+                last_non_empty = line_str
+
+                if line_str.startswith("event:"):
+                    seen_sse = True
+                    if current_data or current_event:
+                        dispatch_sse(current_event, "\n".join(current_data))
+                        current_data = []
+                    current_event = line_str[6:].strip()
+                    continue
+
+                if line_str.startswith("data:"):
+                    seen_sse = True
+                    d_content = line_str[5:].strip()
+                    flush_data_if_valid()
+                    current_data.append(d_content)
+                    continue
+
+                if line_str.startswith(":"):
+                    seen_sse = True
+                    continue
+
+                if current_data or current_event:
+                    dispatch_sse(current_event, "\n".join(current_data))
+                    current_event = None
+                    current_data = []
+
+                parsed = None
+                if line_str.startswith("{"):
+                    try:
+                        parsed = json.loads(line_str)
+                    except ValueError:
+                        pass
+                if isinstance(parsed, dict):
+                    t = parsed.get("type") or parsed.get("event")
+                    part = parsed.get("part") if isinstance(parsed.get("part"), dict) else {}
+                    low_raw = line_str.lower()
+                    if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_request")
+                            or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                            or parsed.get("tool")
+                            or "tool_call" in low_raw
+                            or "tool call" in low_raw
+                            or "tool_use" in low_raw
+                            or "tool use" in low_raw):
+                        st["tools"] += 1
+                else:
+                    low = line_str.lower()
+                    if ("tool_call" in low or "tool call" in low
+                            or "tool_use" in low or "tool use" in low
+                            or "tool invocation" in low or "tool_invocation" in low
+                            or "tool request" in low or "tool_request" in low
+                            or low.startswith("tool:") or " tool:" in low
+                            or "running tool" in low or "invoking tool" in low or "calling tool" in low
+                            or "[tool]" in low):
+                        st["tools"] += 1
+
+        if current_data or current_event:
+            dispatch_sse(current_event, "\n".join(current_data))
+            current_data = []
+
+        if seen_sse:
+            if terminal_reached:
+                if terminal_error:
+                    err_prefix = terminal_error if terminal_error.lower().startswith("error") else f"Error: {terminal_error}"
+                    resp = "".join(text).strip()
+                    err_str = err_prefix if not resp else f"{err_prefix}\n{resp}"
+                    st["result"] = ResultStr(err_str)
+                else:
+                    resp = "".join(text).strip() if text else "Task completed successfully."
+                    st["result"] = ResultStr(resp)
+            else:
+                st["result"] = None
+        else:
+            st["result"] = ResultStr(last_non_empty) if last_non_empty is not None else None
+        return st
+    if lines is None:
+        lines = []
+    st = dict(tokens=None if rt in ("opencode", "mistral-vibe", "copilot", "ollama", "vllm", "lmstudio", "llamacpp") else 0, tools=0, conversation_id=None, result=None)
     text = []
+    inp_tokens, out_tokens = 0, 0
+    raw_lines = []
+    seen_done = False
     for line in lines:
+        if isinstance(line, bytes):
+            try:
+                line = line.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+        elif not isinstance(line, str):
+            continue
+        raw_lines.append(line)
         line = line.strip()
+        if line.startswith("data:"):
+            data_content = line[5:].strip()
+            if data_content == "[DONE]":
+                seen_done = True
+                continue
+            line = data_content
         if not line.startswith("{"):
             continue
         try:
             e = json.loads(line)
-        except ValueError:
+        except Exception:
             continue
         if not isinstance(e, dict):
             continue
@@ -232,7 +884,347 @@ def scan(rt, lines, prices=None):
                                     error="" if ok else str(e.get("error") or f"aider exited with {e.get('exit_code')}"),
                                     usage=dict(sent=st.get("aider_sent", 0), received=st.get("aider_recv", 0)),
                                     cost_usd=round(cost, 6) if cost is not None else None)
-    for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
+        elif rt == "opencode":
+            t = e.get("type") or e.get("event")
+            sid = e.get("sessionID") or e.get("session_id") or e.get("sessionId") or e.get("session") or e.get("conversation_id")
+            if not sid and isinstance(e.get("part"), dict):
+                sid = e["part"].get("sessionID") or e["part"].get("session_id") or e["part"].get("sessionId") or e["part"].get("session")
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+            if t in ("tool_use", "tool_call", "tool", "tool_invocation") or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation") or part.get("tool"):
+                st["tools"] += 1
+            elif t == "text":
+                txt = part.get("text") or e.get("text") or e.get("content") or ""
+                if txt:
+                    text.append(str(txt))
+            elif t in ("message", "message.part.delta", "message.part.updated", "assistant.message"):
+                txt = part.get("text") or e.get("text") or e.get("content") or (e.get("message") or {}).get("content") or ""
+                if isinstance(txt, list):
+                    txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
+                if txt:
+                    text.append(str(txt))
+            u = part.get("tokens") or e.get("tokens") or part.get("usage") or e.get("usage")
+            if isinstance(u, dict):
+                if any(k in u for k in ("input", "output", "input_tokens", "output_tokens", "total_tokens", "total", "prompt_tokens", "completion_tokens")):
+                    inp = u.get("input") or u.get("input_tokens") or u.get("prompt_tokens") or 0
+                    out = u.get("output") or u.get("output_tokens") or u.get("completion_tokens") or 0
+                    tot = u.get("total_tokens") or u.get("total") or (inp + out)
+                    st["tokens"] = (st["tokens"] or 0) + max(0, tot)
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = (st["tokens"] or 0) + int(u)
+
+            if t == "step_finish":
+                finish_txt = part.get("text") or e.get("text") or ""
+                if finish_txt:
+                    text.append(str(finish_txt))
+                reason = part.get("reason") or e.get("reason") or ""
+                err_raw = part.get("error") or e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or reason in ("error", "failed", "failure"))
+                if reason in ("error", "failed", "failure"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err_msg or reason,
+                                        usage=u,
+                                        cost_usd=None)
+                elif reason in ("stop", "end", "completed", "complete", "success") or (not reason and not part.get("type") == "tool"):
+                    ok = not has_err
+                    err = "" if ok else (err_msg or "error")
+                    st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err,
+                                        usage=u,
+                                        cost_usd=None)
+            elif t == "result":
+                ok = e.get("status") in ("success", "SUCCESS") or e.get("subtype") == "success" or not (e.get("error") or e.get("is_error"))
+                err_raw = e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                err = "" if ok else (err_msg or "error")
+                res = str(e.get("response") or e.get("result") or "\n".join(text))[-4000:]
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                    response=res,
+                                    error=err,
+                                    usage=e.get("usage") or e.get("tokens") or u,
+                                    cost_usd=None)
+            elif t in ("error", "turn.failed", "step_failed"):
+                err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
+        elif rt == "qwen-code":
+            t = e.get("type") or e.get("event")
+            sid = e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("conversation_id")
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            if t in ("tool_use", "tool_call", "tool"):
+                st["tools"] += 1
+            elif t == "message" and (e.get("role") == "assistant" or not e.get("role")):
+                text.append(str(e.get("content") or e.get("text") or ""))
+            elif t == "text":
+                text.append(str(e.get("text") or e.get("content") or ""))
+            elif t == "error":
+                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("message") or e.get("error") or e)[:500]
+                st["last_error"] = err
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=err, usage=None, cost_usd=None)
+            elif t == "result":
+                s = e.get("stats") or e.get("usage") or {}
+                tot = s.get("total_tokens") or ((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0))
+                cached = s.get("cached") or s.get("cached_tokens") or s.get("cached_input_tokens") or 0
+                st["tokens"] = max(0, (tot or 0) - cached)
+                ok = (e.get("status") in ("success", "SUCCESS") or not e.get("status")) and not (e.get("error") or e.get("is_error"))
+                p = _prices(prices or "")
+                cost = ((s.get("input_tokens") or 0) - cached) * p[0] + cached * p[1] + (s.get("output_tokens") or 0) * p[2]
+                res = "".join(text)[-4000:] if text else str(e.get("response") or e.get("result") or "")[-4000:]
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR", response=res,
+                                     error="" if ok else str(e.get("error") or st.get("last_error") or e.get("status") or "error"),
+                                     usage=s if s else None, cost_usd=round(cost / 1e6, 6) if prices else None)
+            elif t == "turn.failed":
+                err = (e.get("error") or {}).get("message", "") if isinstance(e.get("error"), dict) else str(e.get("error"))
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=err, usage=None, cost_usd=None)
+        elif rt == "anthropic-compat":
+            t = e.get("type") or ""
+            msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+            cid = e.get("id") or msg.get("id") or e.get("conversation_id") or e.get("session_id") or e.get("sessionId")
+            if not cid and isinstance(e.get("metadata"), dict):
+                cid = e["metadata"].get("conversation_id") or e["metadata"].get("session_id")
+            if cid and not st["conversation_id"]:
+                st["conversation_id"] = str(cid)
+
+            u = e.get("usage") if isinstance(e.get("usage"), dict) else (msg.get("usage") if isinstance(msg.get("usage"), dict) else {})
+            if u:
+                if "input_tokens" in u:
+                    inp_tokens = int(u.get("input_tokens") or 0)
+                if "output_tokens" in u:
+                    out_tokens = int(u.get("output_tokens") or 0)
+                tot = u.get("total_tokens")
+                if tot is not None:
+                    st["tokens"] = int(tot)
+                else:
+                    st["tokens"] = inp_tokens + out_tokens
+
+            if t in ("tool_use", "tool_call"):
+                st["tools"] += 1
+            if t == "content_block_start":
+                cb = e.get("content_block") if isinstance(e.get("content_block"), dict) else {}
+                if cb.get("type") in ("tool_use", "tool_call"):
+                    st["tools"] += 1
+                elif cb.get("type") == "text" and cb.get("text"):
+                    text.append(str(cb.get("text")))
+
+            raw_content = e.get("content") or msg.get("content")
+            if isinstance(raw_content, list):
+                for block in raw_content:
+                    if isinstance(block, dict):
+                        if block.get("type") in ("tool_use", "tool_call"):
+                            st["tools"] += 1
+                        elif block.get("type") == "text" and block.get("text"):
+                            text.append(str(block.get("text")))
+            elif isinstance(raw_content, str):
+                text.append(raw_content)
+
+            if t == "content_block_delta":
+                delta = e.get("delta") if isinstance(e.get("delta"), dict) else {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    text.append(str(delta.get("text")))
+                elif "text" in delta and delta.get("text"):
+                    text.append(str(delta.get("text")))
+            elif t == "text":
+                txt = e.get("text") or (e.get("part") if isinstance(e.get("part"), dict) else {}).get("text")
+                if txt:
+                    text.append(str(txt))
+
+            if t == "error" or e.get("error") or e.get("is_error"):
+                err_obj = e.get("error")
+                err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj or "error")
+                st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=u if u else None, cost_usd=None)
+
+            is_final = False
+            if t == "message_delta":
+                delta = e.get("delta") if isinstance(e.get("delta"), dict) else {}
+                if delta.get("stop_reason") or "stop_reason" in e:
+                    is_final = True
+            elif t == "message_stop":
+                is_final = True
+            elif (t == "message" or e.get("role") == "assistant") and (e.get("stop_reason") is not None or "content" in e):
+                is_final = True
+
+            if is_final and not (st["result"] and st["result"]["status"] == "ERROR"):
+                assistant_text = "".join(text)[-4000:]
+                p = _prices(prices or "")
+                cached = (u.get("cache_read_input_tokens") or u.get("cached_tokens") or u.get("cached_input_tokens") or 0) if isinstance(u, dict) else 0
+                cost = max(0, inp_tokens - cached) * p[0] + cached * p[1] + out_tokens * p[2]
+                prev = (st["result"] or {}).get("cost_usd") or 0
+                st["result"] = dict(status="SUCCESS", response=assistant_text, error="",
+                                    usage=dict(input_tokens=inp_tokens, output_tokens=out_tokens) if (inp_tokens or out_tokens) else (u if u else None),
+                                    cost_usd=round(prev + cost / 1e6, 6) if prices else None)
+        elif rt == "mistral-vibe":
+            t = e.get("type") or e.get("event")
+            sid = e.get("conversation_id") or e.get("session_id") or e.get("sessionId") or e.get("thread_id") or e.get("session")
+            if not sid and isinstance(e.get("part"), dict):
+                sid = e["part"].get("conversation_id") or e["part"].get("session_id") or e["part"].get("sessionId") or e["part"].get("session")
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+            if (t in ("tool_use", "tool_call", "tool", "tool_invocation", "tool_execution")
+                    or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                    or part.get("tool") or e.get("tool")):
+                st["tools"] += 1
+            elif t in ("message", "text", "assistant_message", "assistant.message"):
+                txt = part.get("text") or e.get("text") or e.get("content") or (e.get("message") or {}).get("content") or ""
+                if isinstance(txt, list):
+                    txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
+                if txt:
+                    text.append(str(txt))
+            u = e.get("usage") or e.get("stats") or e.get("tokens") or part.get("tokens") or part.get("usage")
+            inp, out, cached = 0, 0, 0
+            if isinstance(u, dict):
+                inp = u.get("input_tokens") or u.get("input") or u.get("prompt_tokens") or 0
+                out = u.get("output_tokens") or u.get("output") or u.get("completion_tokens") or 0
+                tot = u.get("total_tokens") or u.get("total")
+                cached = u.get("cached_tokens") or u.get("cached") or u.get("cached_input_tokens") or 0
+                if tot is not None:
+                    st["tokens"] = max(0, int(tot) - int(cached))
+                elif inp or out:
+                    st["tokens"] = max(0, int(inp) + int(out) - int(cached))
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = int(u)
+
+            if t in ("step_finish", "step_completed", "turn.completed"):
+                finish_txt = part.get("text") or e.get("text") or ""
+                if finish_txt:
+                    text.append(str(finish_txt))
+                reason = part.get("reason") or e.get("reason") or ""
+                err_raw = part.get("error") or e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or reason in ("error", "failed", "failure"))
+                if reason in ("error", "failed", "failure"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err_msg or reason,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+                elif reason in ("stop", "end", "completed", "complete", "success") or (not reason and not part.get("type") == "tool"):
+                    ok = not has_err
+                    err = "" if ok else (err_msg or "error")
+                    st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+            elif t == "result":
+                ok = e.get("status") in ("success", "SUCCESS") or e.get("subtype") == "success" or not (e.get("error") or e.get("is_error"))
+                err_raw = e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                err = "" if ok else (err_msg or "error")
+                res = str(e.get("response") or e.get("result") or "\n".join(text))[-4000:]
+                p = _prices(prices or "") if prices else None
+                cost = ((inp - cached) * p[0] + cached * p[1] + out * p[2]) if (p and any(p)) else None
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                    response=res,
+                                    error=err,
+                                    usage=u if u else None,
+                                    cost_usd=round(cost / 1e6, 6) if cost is not None else None)
+            elif t in ("error", "turn.failed", "step_failed", "failed"):
+                err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
+        elif rt == "copilot":
+            t = e.get("type") or e.get("event")
+            sid = (e.get("sessionID") or e.get("sessionId") or e.get("session_id")
+                   or e.get("conversation_id") or e.get("session") or e.get("thread_id"))
+            if not sid and isinstance(e.get("part"), dict):
+                sid = (e["part"].get("sessionID") or e["part"].get("sessionId")
+                       or e["part"].get("session_id") or e["part"].get("conversation_id")
+                       or e["part"].get("session") or e["part"].get("thread_id"))
+            if sid and not st["conversation_id"]:
+                st["conversation_id"] = str(sid)
+            part = e.get("part") if isinstance(e.get("part"), dict) else {}
+            if (t in ("tool", "tool_use", "tool_call", "tool_invocation", "tool_execution")
+                    or part.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation")
+                    or part.get("tool") or e.get("tool")):
+                st["tools"] += 1
+            elif t in ("message", "text", "assistant_message", "assistant.message", "message.part.delta", "message.part.updated"):
+                txt = part.get("text") or e.get("text") or e.get("content") or (e.get("message") or {}).get("content") or ""
+                if isinstance(txt, list):
+                    txt = "".join(str(c.get("text", "")) for c in txt if isinstance(c, dict))
+                if txt:
+                    text.append(str(txt))
+            u = e.get("usage") or e.get("stats") or e.get("tokens") or part.get("tokens") or part.get("usage")
+            if isinstance(u, dict):
+                inp = u.get("input_tokens") or u.get("input") or u.get("prompt_tokens") or 0
+                out = u.get("output_tokens") or u.get("output") or u.get("completion_tokens") or 0
+                tot = u.get("total_tokens") or u.get("total")
+                cached = u.get("cached_tokens") or u.get("cached") or u.get("cached_input_tokens") or 0
+                if tot is not None:
+                    st["tokens"] = max(0, int(tot) - int(cached))
+                elif inp or out:
+                    st["tokens"] = max(0, int(inp) + int(out) - int(cached))
+            elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+                st["tokens"] = int(u)
+
+            if t in ("step_finish", "step_completed", "turn.completed"):
+                finish_txt = part.get("text") or e.get("text") or ""
+                if finish_txt:
+                    text.append(str(finish_txt))
+                reason = part.get("reason") or e.get("reason") or ""
+                err_raw = part.get("error") or e.get("error") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or reason in ("error", "failed", "failure"))
+                if reason in ("error", "failed", "failure"):
+                    st["result"] = dict(status="ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err_msg or reason,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+                elif reason in ("stop", "end", "completed", "complete", "success") or (not reason and not part.get("type") == "tool"):
+                    ok = not has_err
+                    err = "" if ok else (err_msg or "error")
+                    st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                        response="\n".join(text)[-4000:],
+                                        error=err,
+                                        usage=u if u else None,
+                                        cost_usd=None)
+            elif t == "result":
+                status_raw = str(e.get("status") or (part.get("status") if isinstance(part, dict) else "")).lower()
+                reason = str(part.get("reason") or e.get("reason") or "").lower() if isinstance(part, dict) else str(e.get("reason") or "").lower()
+                err_raw = e.get("error") or (part.get("error") if isinstance(part, dict) else "") or ""
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                has_err = bool(err_raw or e.get("is_error") or status_raw in ("error", "failed", "failure") or reason in ("error", "failed", "failure"))
+                ok = not has_err and (status_raw in ("success", "ok") or reason in ("stop", "end", "completed", "complete", "success") or not status_raw)
+                err = "" if ok else (err_msg or reason or status_raw or "error")
+                res = str(e.get("response") or e.get("result") or (part.get("text") if isinstance(part, dict) else "") or "\n".join(text))[-4000:]
+                st["result"] = dict(status="SUCCESS" if ok else "ERROR",
+                                    response=res,
+                                    error=err,
+                                    usage=u if u else (e.get("usage") or e.get("tokens")),
+                                    cost_usd=None)
+            elif t in ("error", "turn.failed", "step_failed", "failed"):
+                err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
+                err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
+                st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
+        elif rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            _parse_openai_compat_dict(e, st, text, prices=prices)
+    if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+        if not st["result"]:
+            joined = "\n".join(raw_lines).strip()
+            if joined.startswith("{") and joined.endswith("}"):
+                try:
+                    full_obj = json.loads(joined)
+                    if isinstance(full_obj, dict):
+                        _parse_openai_compat_dict(full_obj, st, text, prices=prices)
+                except Exception:
+                    pass
+        if seen_done and (not st["result"] or st["result"]["status"] != "ERROR"):
+            resp = "".join(text).strip()
+            usage_dict = st.get("raw_usage") or (st["result"]["usage"] if st["result"] else None)
+            st["result"] = dict(
+                status="SUCCESS",
+                response=resp[-4000:],
+                error="",
+                usage=usage_dict,
+                cost_usd=None,
+            )
+    for k in ("aider_sent", "aider_recv", "aider_cost", "last_error", "raw_usage", "inp_tokens", "out_tokens", "cached_tokens"):
         st.pop(k, None)
     return st
 

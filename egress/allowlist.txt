@@ -20,6 +20,17 @@ lh3.googleusercontent.com
 pypi.org
 files.pythonhosted.org
 
+# --- Qwen Code CLI (bin/lib/runtimes.py hosts('qwen')) ---
+dashscope.aliyuncs.com
+dashscope-intl.aliyuncs.com
+
+# --- Mistral Vibe CLI (bin/lib/runtimes.py hosts('mistral-vibe')) ---
+api.mistral.ai
+
+# --- GitHub Copilot CLI (bin/lib/runtimes.py hosts('copilot')) ---
+api.githubcopilot.com
+api.github.com
+
 # Deliberately NOT allowed although agy contacts it: play.googleapis.com (telemetry / crash logs; agy works without it) -
 # listed in etc/egress-baseline.txt so its denials do not raise alarms.
 # The internal forge (Forgejo) is on the internal docker network and reached directly, not through this proxy.

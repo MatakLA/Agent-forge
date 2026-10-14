@@ -1,0 +1,64 @@
+# Agent-Forge issue template: Bug Fix (GitHub Issue Form)
+#
+# Grounding in bin/issues-intake:
+# - Label matching: bin/issues-intake polls upstream issues with label 'agent-forge' (default: --label agent-forge).
+#   The 'agent-forge' label is read and required by bin/issues-intake.
+#   The 'bug' label is a human-only hint for maintainer triage; bin/issues-intake does not inspect or filter on it.
+# - Goal generation: bin/issues-intake does not parse or extract individual body section names.
+#   It strips HTML tags (<[^>]+>), concatenates "{clean_title}\n\n{clean_body}", truncates the total string
+#   to 4000 characters, and passes it directly to `bin/foreman goal -` via stdin.
+#   All body sections below are flagged as human-only hints to guide reporters in providing structured,
+#   reproducible bug reports for Foreman's AI planner.
+
+name: "Bug fix"
+description: "File a bug fix goal for Agent-Forge to investigate and resolve"
+title: "[Bug]: "
+labels:
+  # Read by bin/issues-intake (default issue filter label):
+  - "agent-forge"
+  # Human-only hint (triage label ignored by bin/issues-intake):
+  - "bug"
+body:
+  - type: textarea
+    id: observed-behaviour
+    attributes:
+      label: "Observed behaviour"
+      description: "Human-only hint (bin/issues-intake does not read this section name; it forwards the full body into the goal text): What happened? Describe the unexpected behaviour, traceback, or failure."
+      placeholder: "e.g., Running bin/status fails with KeyError: 'workers'..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: "Steps to reproduce"
+      description: "Human-only hint (bin/issues-intake does not read this section name): List exact numbered steps to reproduce the issue."
+      placeholder: |
+        1. Run `...`
+        2. Execute `...`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behaviour
+    attributes:
+      label: "Expected behaviour"
+      description: "Human-only hint (bin/issues-intake does not read this section name): What should have happened instead?"
+      placeholder: "e.g., The command should exit 0 and print current worker status."
+    validations:
+      required: true
+  - type: textarea
+    id: affected-area
+    attributes:
+      label: "Affected area"
+      description: "Human-only hint (bin/issues-intake does not read this section name): File paths, commands, or components affected (if known)."
+      placeholder: "e.g., bin/foreman, bin/lib/foreman/pool.py"
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: "Additional context"
+      description: "Human-only hint (bin/issues-intake does not read this section name): Relevant logs, stack traces, or environment details. Note: bin/issues-intake strips HTML tags and truncates total goal text (title + body) to 4000 characters."
+      placeholder: "Paste relevant error logs or command output here..."
+    validations:
+      required: false

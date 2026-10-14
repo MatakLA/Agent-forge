@@ -40,3 +40,19 @@ Dependent tasks start only after the merge, so they always build on the merged c
   *api* and *write_repository*.
 
 The token is stored in the secrets directory (0600) and given to git through environment variables, never on a command line.
+
+## GitHub / GitLab issue intake
+`bin/issues-intake` polls GitHub or GitLab for open issues labelled `agent-forge` (configurable via `--label`) and queues each as a foreman goal exactly once.
+
+Seen issue IDs are persisted in `runs/[projects/<name>/]foreman/issues-intake.json` so issues are never re-queued.
+
+### Running as a cron job
+Run periodically from cron on the Agent-Forge host:
+```cron
+*/5 * * * * bin/issues-intake
+```
+
+### Options
+- `--label LABEL`: Issue label to filter on (default: `agent-forge`).
+- `--dry-run`: Prints what it would queue without contacting foreman or modifying the seen state.
+- `--project NAME`: Respects multi-project setups by writing seen state to `runs/projects/<name>/foreman/issues-intake.json` and queueing goals via `bin/foreman --project NAME goal -`.

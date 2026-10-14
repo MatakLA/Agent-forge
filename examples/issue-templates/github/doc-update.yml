@@ -1,0 +1,53 @@
+# Agent-Forge issue template: Documentation Update (GitHub Issue Form)
+#
+# Grounding in bin/issues-intake:
+# - Label matching: bin/issues-intake polls upstream issues with label 'agent-forge' (default: --label agent-forge).
+#   The 'agent-forge' label is read and required by bin/issues-intake.
+#   The 'documentation' label is a human-only hint for maintainer triage; bin/issues-intake does not inspect or filter on it.
+# - Goal generation: bin/issues-intake does not parse or extract individual body section names.
+#   It strips HTML tags (<[^>]+>), concatenates "{clean_title}\n\n{clean_body}", truncates the total string
+#   to 4000 characters, and passes it directly to `bin/foreman goal -` via stdin.
+#   All body sections below are flagged as human-only hints to guide reporters in providing structured,
+#   accurate documentation updates for Foreman's AI planner.
+
+name: "Documentation update"
+description: "File a documentation update goal for Agent-Forge to update or clarify docs"
+title: "[Doc]: "
+labels:
+  # Read by bin/issues-intake (default issue filter label):
+  - "agent-forge"
+  # Human-only hint (triage label ignored by bin/issues-intake):
+  - "documentation"
+body:
+  - type: textarea
+    id: affected-doc
+    attributes:
+      label: "Affected documentation page"
+      description: "Human-only hint (bin/issues-intake does not read this section name; it forwards the full body into the goal text): Which doc/page is wrong, missing, or confusing? Specify a file path or URL within this repo (e.g., docs/SETUP.md, README.md)."
+      placeholder: "e.g., docs/SETUP.md, README.md, docs/RUNTIMES.md"
+    validations:
+      required: true
+  - type: textarea
+    id: current-content
+    attributes:
+      label: "What it currently says"
+      description: "Human-only hint (bin/issues-intake does not read this section name): What does the documentation currently say (if anything)? Quote or describe the existing text. Leave blank if requesting new documentation."
+      placeholder: "Quote the current text or describe what is currently written (leave blank if documenting a new feature or missing page)..."
+    validations:
+      required: false
+  - type: textarea
+    id: suggested-update
+    attributes:
+      label: "What it should say instead"
+      description: "Human-only hint (bin/issues-intake does not read this section name): What should the documentation say instead? Provide the corrected explanation, updated code sample, or proposed text."
+      placeholder: "Describe the desired update or provide the replacement text/examples..."
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: "Additional context"
+      description: "Human-only hint (bin/issues-intake does not read this section name): Any additional context, related PRs, target audience notes, or constraints. Note: bin/issues-intake strips HTML tags (<[^>]+>) and truncates total goal text (title + body) to 4000 characters."
+      placeholder: "Any additional notes or references. Keep total title + body under 4000 characters and avoid HTML tags."
+    validations:
+      required: false

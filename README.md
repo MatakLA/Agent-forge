@@ -20,6 +20,8 @@ until it is right. Then the next goal starts, from your backlog or from your pro
 > it at repositories where an AI merging code is acceptable to you, and read [SECURITY.md](SECURITY.md) first. It was extracted
 > from a setup that ran a 4-worker team for two weeks (~400 worker runs, ~190 merged pull requests) - expect rough edges.
 
+**Try the demo:** To evaluate the dashboard in minutes without setting up a VM or API keys, run `bash scripts/demo.sh` to start a read-only Docker demo on http://localhost:8171 with synthetic team activity (see [docs/DEMO.md](docs/DEMO.md)).
+
 ## Why it is different
 
 Most parallel-agent tools run agents on your machine in git worktrees and leave the review and the merging to you. Agent-Forge
@@ -53,6 +55,8 @@ About 20 minutes: Docker, the egress proxy, an internal Forgejo, the worker imag
 1. **Where does the code live?** Internal only, or your GitHub / GitLab repository (a token for that repository only).
 2. **Add workers** - see below.
 3. **Enter a goal** - or let the autopilot build the demo project in [`examples/demo`](examples/demo).
+
+To try a realistic goal on an existing repository, see [`examples/sample-project/README.md`](examples/sample-project/README.md).
 
 `bin/doctor` checks the whole install and tells you how to fix what is wrong. All steps by hand: [docs/SETUP.md](docs/SETUP.md).
 
@@ -138,12 +142,16 @@ Everything is in the dashboard; the same from a shell:
 bin/foreman goal "Add a CSV export to the expenses module, with tests"
 bin/foreman project "Build the app described in docs/vision.md"   # → a roadmap of goals in the backlog
 bin/foreman status | backlog | questions
+bin/foreman pause | resume                                        # stop / resume taking new steps (running runs finish)
+bin/foreman autopilot on|off                                      # toggle automatic goal proposals from vision
 echo "Use PostgreSQL" | bin/foreman answer 1                      # becomes a binding decision for later plans
 bin/foreman goal <goal-id> approve | pause | prioritize | cancel   # APPROVE=plan,risky,merge makes the team wait for you
 echo "Use the existing parser" | bin/foreman task <task-id> feedback -   # send its work back with your words
 bin/killswitch on [--hard] [--all]                                # stop this project (or every project) now
 bin/doctor
 ```
+
+On the Overview tab, switches toggle **autopilot** (`bin/foreman autopilot on|off`) and **pause/resume** the foreman (`bin/foreman pause` / `resume`), each with a tooltip explaining its effect. Pausing stops new dispatches while letting running runs finish (same semantics as the CLI); resume is blocked while the kill switch is engaged (the UI explains why).
 
 One install runs **several projects** side by side, each with its own orchestrator, repository and worker pool (dashboard →
 project picker → "+ New project", or `bin/foreman init-project`).
@@ -152,6 +160,8 @@ project picker → "+ New project", or `bin/foreman init-project`).
 
 [SETUP](docs/SETUP.md) · [RUNTIMES](docs/RUNTIMES.md) (API keys, costs) · [UPSTREAM](docs/UPSTREAM.md) (GitHub / GitLab) ·
 [PROVIDERS](docs/PROVIDERS.md) (orchestrator) · [ROLES](docs/ROLES.md) · [EFFICIENCY](docs/EFFICIENCY.md) ·
+[Picking an AI](docs/CHOOSING-AN-AI.md) · [Demo mode](docs/DEMO.md) ·
+[Issue templates](docs/ISSUE-TEMPLATES.md) ·
 [ARCHITECTURE](ARCHITECTURE.md) · [SECURITY](SECURITY.md) · [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md)
 
 `make check` runs the tests that need nothing (no Docker, no model calls); `make test` adds the integration tests of the

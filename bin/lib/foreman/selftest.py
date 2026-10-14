@@ -126,6 +126,25 @@ def _selftest():
         check("settings_apply writes project keys in place (comments kept) and limits to etc/limits.conf",
               not ok_ and "# keep me" in fc and "CLAUDE_MODEL=opus" in fc and "CLAUDE_MODEL=sonnet" not in fc and "WORKERS=worker-1,worker-3" in fc
               and "MAX_PARALLEL=8" in lc and "MAX_PARALLEL=4" not in lc and "MAX_PARALLEL" not in fc)
+        new_bad = {
+            "DAILY_TOKEN_BUDGET": "99", "MAX_RUNS_PER_DAY": "0", "RUN_TIMEOUT_MAX_MIN": "2",
+            "QUOTA_MODEL_FILTER": "evil; rm -rf /", "POLL_SEC": "0", "OPENAI_API_BASE": "ftp://bad.example",
+            "DIFF_MAX": "10", "MAX_GOAL_ROUNDS": "0", "LESSONS_MAX": "0", "LOOP_SEC": "0",
+            "LOCAL_TZ": "bad; tz", "SHARED_FILES": "bad; file", "VISION_FILE": "/etc/passwd", "PROJECT_DIR": "/root"
+        }
+        errs_new = settings_apply(new_bad)
+        check("settings_apply rejects malformed/out-of-range values for all newly added keys",
+              set(errs_new) == set(new_bad))
+        new_good = {
+            "DAILY_TOKEN_BUDGET": "5000000", "MAX_RUNS_PER_DAY": "100", "RUN_TIMEOUT_MAX_MIN": "60",
+            "QUOTA_MODEL_FILTER": "Claude", "POLL_SEC": "5", "OPENAI_API_BASE": "https://api.openai.com/v1",
+            "DIFF_MAX": "50000", "MAX_GOAL_ROUNDS": "5", "LESSONS_MAX": "50", "LOOP_SEC": "15",
+            "LOCAL_TZ": "Europe/Prague", "SHARED_FILES": "reg.jsonl,notes.md", "VISION_FILE": "docs/vision.md", "PROJECT_DIR": "web"
+        }
+        errs_good = settings_apply(new_good)
+        fc2, lc2 = open(os.path.join(st_dir, "etc", "foreman.conf")).read(), open(os.path.join(st_dir, "etc", "limits.conf")).read()
+        check("settings_apply accepts valid values for all newly added keys and writes them",
+              not errs_good and "DIFF_MAX=50000" in fc2 and "DAILY_TOKEN_BUDGET=5000000" in lc2)
     finally:
         ctx.ROOT, ctx.FD = old_root, old_fd
         shutil.rmtree(st_dir, ignore_errors=True)
@@ -554,4 +573,110 @@ def test_owner_and_insights(check):
           and doc_path("role:tester", write=True).startswith(ctx.CFG_DIR))
 
 
-GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights]
+def test_orphan_recovery(check):
+    """Orphan loop detection: 5 consecutive no-progress orphan recoveries block the task, progress resets streak, and startup grace exempts."""
+    import shutil, tempfile
+    from . import loop, store
+    from .loop import recover_orphan
+
+    old_fd, old_runs, old_root, old_limits = ctx.FD, sbx.RUNS, ctx.ROOT, sbx.LIMITS_FILE
+    old_grace = loop.STARTUP_GRACE_DONE
+    d = tempfile.mkdtemp(prefix="forge-selftest-orphan-")
+    try:
+        ctx.ROOT = d
+        ctx.FD = os.path.join(d, "fd")
+        sbx.RUNS = os.path.join(d, "runs")
+        sbx.LIMITS_FILE = os.path.join(d, "etc", "limits.conf")
+        os.makedirs(os.path.join(d, "etc"), exist_ok=True)
+        open(sbx.LIMITS_FILE, "w").write("MAX_PARALLEL=4\n")
+        os.makedirs(os.path.join(ctx.FD, "tasks"), exist_ok=True)
+        os.makedirs(os.path.join(ctx.FD, "goals"), exist_ok=True)
+        os.makedirs(sbx.RUNS, exist_ok=True)
+        store.save_goal(dict(id="G1", status="active", text="dummy goal"))
+
+        # (a) 5 consecutive no-progress orphan recoveries after startup grace block the task with reason and log tail
+        loop.STARTUP_GRACE_DONE = True
+        r1 = os.path.join(sbx.RUNS, "20261012T000001Z-w1")
+        os.makedirs(r1, exist_ok=True)
+        with open(os.path.join(r1, "supervisor.log"), "w") as f:
+            f.write("crash line 1\ncrash line 2: fatal error\n")
+        json.dump(dict(task="0121-a", worker="w1"), open(os.path.join(r1, "meta.json"), "w"))
+
+        t1 = dict(id="0121-a", goal="G1", status="running", role="dev", files=["a.py"], history=[], orphan_streak=0)
+        store.save_task(t1)
+        for _ in range(5):
+            t1["status"] = "running"
+            t1["run"] = r1
+            t1["worker"] = "w1"
+            recover_orphan(t1)
+
+        saved1 = store.jload(os.path.join(ctx.FD, "tasks", "0121-a.json"))
+        check("orphan recovery: 5 consecutive no-progress recoveries block task with reason and log tail",
+              saved1.get("status") == "blocked"
+              and saved1.get("orphan_streak") == 5
+              and str(saved1.get("blocked_why", "")).startswith("orphan limit reached: ")
+              and "crash line 2: fatal error" in str(saved1.get("blocked_why", ""))
+              and "crash line 2: fatal error" in str(saved1.get("orphan_log_tail", "")))
+
+        # (b) a progress event (long-duration run or a real supervisor result) resets orphan_streak to 0
+        r2 = os.path.join(sbx.RUNS, "20261012T000002Z-w1")
+        os.makedirs(r2, exist_ok=True)
+        json.dump(dict(task="0121-b1", worker="w1", duration_s=150), open(os.path.join(r2, "meta.json"), "w"))
+        t2 = dict(id="0121-b1", goal="G1", status="running", role="dev", files=["b1.py"], history=[],
+                  orphan_streak=4, orphan_log_tail="previous crash log", run=r2, worker="w1")
+        store.save_task(t2)
+        recover_orphan(t2)
+        saved2 = store.jload(os.path.join(ctx.FD, "tasks", "0121-b1.json"))
+
+        r3 = os.path.join(sbx.RUNS, "20261012T000003Z-w1")
+        os.makedirs(r3, exist_ok=True)
+        with open(os.path.join(r3, "finished"), "w") as f:
+            f.write(sbx.now() + "\n")
+        json.dump(dict(task="0121-b2", worker="w1", reason="ok", tokens=500), open(os.path.join(r3, "meta.json"), "w"))
+        t3 = dict(id="0121-b2", goal="G1", status="running", role="dev", files=["b2.py"], history=[],
+                  orphan_streak=3, orphan_log_tail="crash log", run=r3, worker="w1")
+        store.save_task(t3)
+        loop.advance()
+        saved3 = store.jload(os.path.join(ctx.FD, "tasks", "0121-b2.json"))
+
+        check("orphan recovery: progress event (long-duration run) resets orphan_streak to 0",
+              saved2.get("status") == "pending"
+              and saved2.get("orphan_streak") == 0
+              and saved2.get("orphan_log_tail") == ""
+              and saved3.get("status") == "gate"
+              and saved3.get("orphan_streak") == 0
+              and saved3.get("orphan_log_tail") == "")
+
+        # (c) orphans found in the first scan pass after process start (STARTUP_GRACE_DONE still False) do not increment orphan_streak
+        loop.STARTUP_GRACE_DONE = False
+        r4 = os.path.join(sbx.RUNS, "20261012T000004Z-w1")
+        os.makedirs(r4, exist_ok=True)
+        json.dump(dict(task="0121-c", worker="w1"), open(os.path.join(r4, "meta.json"), "w"))
+        t4 = dict(id="0121-c", goal="G1", status="running", role="dev", files=["c.py"], history=[],
+                  orphan_streak=2, orphan_log_tail="tail from earlier", run=r4, worker="w1")
+        store.save_task(t4)
+        loop.advance()
+        saved4 = store.jload(os.path.join(ctx.FD, "tasks", "0121-c.json"))
+
+        # Subsequent orphan recovery after startup grace (STARTUP_GRACE_DONE transitioned to True) increments streak
+        r5 = os.path.join(sbx.RUNS, "20261012T000005Z-w1")
+        os.makedirs(r5, exist_ok=True)
+        json.dump(dict(task="0121-c", worker="w1"), open(os.path.join(r5, "meta.json"), "w"))
+        t5 = dict(saved4, status="running", run=r5, worker="w1")
+        store.save_task(t5)
+        loop.recover_orphan(t5)
+        saved5 = store.jload(os.path.join(ctx.FD, "tasks", "0121-c.json"))
+
+        check("orphan recovery: first scan pass with STARTUP_GRACE_DONE False does not increment orphan_streak",
+              saved4.get("status") == "pending"
+              and saved4.get("orphan_streak") == 2
+              and loop.STARTUP_GRACE_DONE is True
+              and saved5.get("status") == "pending"
+              and saved5.get("orphan_streak") == 3)
+    finally:
+        loop.STARTUP_GRACE_DONE = old_grace
+        ctx.ROOT, ctx.FD, sbx.RUNS, sbx.LIMITS_FILE = old_root, old_fd, old_runs, old_limits
+        shutil.rmtree(d, ignore_errors=True)
+
+
+GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights, test_orphan_recovery]

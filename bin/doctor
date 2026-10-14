@@ -6,18 +6,15 @@ Checks an Agent-Forge install end to end and says how to fix what is wrong. Read
 fixes it can run safely). Exit code: 0 all good, 1 warnings only, 2 something is broken."""
 import json, os, re, shutil, subprocess, sys, time, urllib.request
 
-a = sys.argv[1:]
-if "--project" in a:
-    i = a.index("--project")
-    os.environ["FORGE_PROJECT"] = a[i + 1] if i + 1 < len(a) else ""
-    del a[i:i + 2]
-if a and a[0] in ("-h", "--help"):
-    print(__doc__); sys.exit(0)
-QUICK = "--quick" in a
-JSON = "--json" in a
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import sbx  # noqa: E402
+import runtimes  # noqa: E402
+import providers  # noqa: E402
+import egress  # noqa: E402
+from foreman import readiness  # noqa: E402
 
+QUICK = False
+JSON = False
 BAD, WARN, CHECKS, SECTION = [], [], [], [""]
 
 
@@ -36,8 +33,10 @@ def ok(msg):
     say(f"  ✔ {msg}")
 
 
-def warn(msg, fix="", fix_id=""):
-    WARN.append(msg); CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
+def warn(msg, fix="", fix_id="", optional=False):
+    if not optional:
+        WARN.append(msg)
+    CHECKS.append(dict(section=SECTION[0], level="warn", message=msg, fix=fix, fix_id=fix_id))
     say(f"  ! {msg}" + (f"\n      → {fix}" if fix else ""))
 
 
@@ -59,202 +58,733 @@ def version(text):
     return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
 
 
-say(f"Agent-Forge doctor - {sbx.ROOT}" + (f" (project {sbx.PROJECT})" if sbx.PROJECT else ""))
-vf = os.path.join(sbx.ROOT, "VERSION")
-VERSION = open(vf).read().strip() if os.path.exists(vf) else "unknown"
-say(f"version {VERSION}")
-
-section("Tools")
-if sys.version_info >= (3, 10):
-    ok(f"python {sys.version.split()[0]}")
-else:
-    bad(f"python {sys.version.split()[0]} is too old", "Python 3.10 or newer")
-rc, out, _ = sh("git", "--version")
-if rc != 0:
-    bad("git is missing", "sudo apt install git")
-elif version(out) < (2, 31):
-    bad(f"{out.strip()} is too old (tokens are passed through GIT_CONFIG_* variables)", "git 2.31 or newer")
-else:
-    ok(out.strip())
-rc, out, err = sh("docker", "version", "--format", "{{.Server.Version}}")
-if rc != 0:
-    bad("docker does not answer: " + (err.strip().splitlines() or ["?"])[-1][:160],
-        "install Docker (scripts/vm-baseline-ubuntu.sh) and add your user to the docker group, then log in again")
-else:
-    ok(f"docker {out.strip()}")
-rc, out, _ = sh("docker", "compose", "version", "--short")
-ok(f"docker compose {out.strip()}") if rc == 0 else bad("docker compose plugin missing", "sudo apt install docker-compose-plugin")
-rc, out, _ = sh("claude", "--version")
-if rc == 0:
-    ok(f"Claude Code {out.strip()} (orchestrator provider claude-cli)")
-else:
-    warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
-         "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
-
-section("Configuration")
-try:
-    lim = sbx.load_limits()
-    ok(f"etc/limits.conf: {lim['MAX_PARALLEL']} parallel runs, token cap {lim['RUN_TOKEN_CAP']:,}, timeout {lim['RUN_TIMEOUT_MIN']:g} min")
-except SystemExit as e:
-    lim = None
-    bad(str(e), "cp etc/limits.example.conf etc/limits.conf")
-fc = os.path.join(sbx.ROOT, "etc", "foreman.conf")
-ok("etc/foreman.conf") if os.path.exists(fc) else warn("etc/foreman.conf missing - defaults are used", "cp etc/foreman.example.conf etc/foreman.conf")
-if sbx.PROJECT and not os.path.exists(os.path.join(sbx.ROOT, "projects", sbx.PROJECT, "project.conf")):
-    bad(f"projects/{sbx.PROJECT}/project.conf missing", f"bin/foreman init-project {sbx.PROJECT} --repo org/repo")
-conf = sbx.project_conf()
-vision = os.path.join(sbx.ROOT, "projects", sbx.PROJECT, conf.get("VISION_FILE", "vision.md")) if sbx.PROJECT else \
-    os.path.join(sbx.ROOT, conf.get("VISION_FILE", "docs/vision.md"))
-ok(f"vision file {os.path.relpath(vision, sbx.ROOT)}") if os.path.exists(vision) else \
-    warn("no vision file - the autopilot has nothing to plan from", f"write {os.path.relpath(vision, sbx.ROOT)} (docs/vision.example.md)")
-if conf.get("NOTIFY_URL") == "outbox":
-    ok("notifications go to runs/notify-outbox.jsonl (a relay outside this machine delivers them)")
-elif conf.get("NOTIFY_URL"):
-    shown = re.sub(r"(//[^/]+/).*", "\\1…", conf["NOTIFY_URL"])          # never print a webhook's secret path
-    ok(f"notifications to {shown} ({conf.get('NOTIFY_FORMAT', 'ntfy')})")
-else:
-    warn("no NOTIFY_URL - you are not told when a goal is done or a task is blocked", "set NOTIFY_URL (ntfy / Slack / Discord) in etc/foreman.conf",
-         "settings:NOTIFY_URL")
-
-section("Secrets")
-S = sbx.SECRETS
-if not os.path.isdir(S):
-    bad(f"{S} does not exist", "scripts/forge-bootstrap creates it")
-else:
-    mode = os.stat(S).st_mode & 0o777
-    ok(f"{S} (mode {mode:o})") if mode == 0o700 else bad(f"{S} has mode {mode:o}", f"chmod 700 {S}")
-    for n in ("monitor.token", "orchestrator.token"):
-        p = os.path.join(S, n)
-        if not os.path.exists(p):
-            bad(f"{n} missing", "scripts/forge-bootstrap")
-        elif os.stat(p).st_mode & 0o077:
-            bad(f"{n} is readable by others", f"chmod 600 {p}")
-        else:
-            ok(n)
-
-section("Forgejo")
-try:
-    urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=5).read()
-    ok(f"{sbx.FORGE_URL} answers")
-    tok = sbx.read(os.path.join(S, "monitor.token"))
-    req = urllib.request.Request(f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}", headers={"Authorization": "token " + tok})
-    try:
-        repo = json.loads(urllib.request.urlopen(req, timeout=10).read())
-        ok(f"repository {sbx.FORGE_REPO} (default branch {repo.get('default_branch')})")
-    except Exception as e:
-        bad(f"repository {sbx.FORGE_REPO} not readable with the monitor token: {e}", f"FORGE_REPO={sbx.FORGE_REPO} scripts/forge-bootstrap")
-except Exception as e:
-    bad(f"Forgejo at {sbx.FORGE_URL} does not answer ({e})", "scripts/forge-bootstrap (starts it); docker ps | grep forgejo")
-
-section("Sandbox")
-rc, _, _ = sh("docker", "network", "inspect", "workers_internal")
-ok("network workers_internal") if rc == 0 else bad("network workers_internal missing", "bin/egress-up", "egress-up")
-try:
-    import egress
-    h = egress.proxy_health()
-    ok("egress proxy enforcing") if h.get("ok") else bad("egress proxy: " + "; ".join(h["problems"]), "bin/egress-up", "egress-up")
-except Exception as e:
-    bad(f"egress check failed: {e}")
-img = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
-rc, _, _ = sh("docker", "image", "inspect", img)
-ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: docker compose -f worker/docker-compose.yml build)")
-ks = sbx.killswitch_active()
-warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)", "continue") \
-    if ks else ok("kill switch off")
-
-section("Workers")
-rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
-ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)), key=lambda x: int(x[0].split("-")[1]))
-pool = sbx.project_pool()
-if pool:
-    ws = [w for w in ws if w[0] in pool]
-if not ws:
-    bad("no worker containers" + (f" of this project's pool ({', '.join(sorted(pool))})" if pool else ""), "bin/worker-add 1, then log it in")
-running = 0
-for name, state in ws:
-    if state != "running":
-        warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}", f"worker-up:{name.split('-')[1]}"); continue
-    running += 1
-    rt = sbx.worker_runtime(name)
-    if rt != "agy":
-        import runtimes
-        key = runtimes.RUNTIMES[rt]["key"]
-        if runtimes.uses_endpoint(rt):
-            url = str((lim or {}).get("COMPAT_BASE_URL") or "")
-            server = re.sub(r"(//[^/]+).*", r"\1", url)          # scheme://host:port, never a path
-            if runtimes.endpoint_target(url):
-                ok(f"{name} runs {rt} on the model server {server}")
-            else:
-                bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
-                    "settings:COMPAT_BASE_URL")
-            continue
-        if not sbx.read(os.path.join(S, key)):
-            bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
-                f"key:{key}")
-        else:
-            ok(f"{name} runs {rt} with an API key")
-        continue
-    if QUICK:
-        ok(f"{name} running"); continue
-    try:
-        rows = sbx.read_quota(name)
-    except Exception:
-        rows = []
-    if not rows:
-        bad(f"{name}: agy /usage unreadable - not logged in?", f"log it in: dashboard → Settings → log in, or docker exec -it {name} agy-run",
-            f"login:{name}")
+def check_orchestrator_providers(conf=None):
+    section("Orchestrator Providers")
+    start_idx = len(CHECKS)
+    if conf is None:
+        conf = sbx.project_conf()
+        plan_raw = os.environ.get("PLAN_PROVIDERS", conf.get("PLAN_PROVIDERS", ""))
+        review_raw = os.environ.get("REVIEW_PROVIDERS", conf.get("REVIEW_PROVIDERS", ""))
+        openai_base = os.environ.get("OPENAI_API_BASE", conf.get("OPENAI_API_BASE", "https://api.openai.com/v1"))
+        openai_model = os.environ.get("OPENAI_MODEL", conf.get("OPENAI_MODEL", ""))
+        gemini_model = os.environ.get("GEMINI_MODEL", conf.get("GEMINI_MODEL", ""))
     else:
-        verdict = sbx.quota_verdict(rows, lim) if lim else (True, "")
-        fam = [r for r in rows if (lim or {}).get("QUOTA_MODEL_FILTER", "Gemini").lower() in r["model"].lower()]
-        ok(f"{name} logged in; " + ", ".join(f"{r['label']} {r['pct']:.0f}%" for r in fam[:2])) if verdict[0] else \
-            warn(f"{name}: {verdict[1]}")
-if lim:
-    spent = sbx.api_spent_today()
-    if spent:
-        (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
-    import runtimes
-    for rt, r in runtimes.RUNTIMES.items():
-        if r["api"] and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
-            if r.get("endpoint"):
+        plan_raw = conf.get("PLAN_PROVIDERS", os.environ.get("PLAN_PROVIDERS", ""))
+        review_raw = conf.get("REVIEW_PROVIDERS", os.environ.get("REVIEW_PROVIDERS", ""))
+        openai_base = conf.get("OPENAI_API_BASE", os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"))
+        openai_model = conf.get("OPENAI_MODEL", os.environ.get("OPENAI_MODEL", ""))
+        gemini_model = conf.get("GEMINI_MODEL", os.environ.get("GEMINI_MODEL", ""))
+
+    active_providers = set()
+    for raw in (plan_raw, review_raw):
+        for p in str(raw).split(","):
+            p = p.strip()
+            if p:
+                active_providers.add(p.lower())
+
+    if "openai-api" not in active_providers and "gemini-api" not in active_providers:
+        ok("[OK] external orchestrator providers: none configured (subscription / default providers)")
+        new_checks = CHECKS[start_idx:]
+        return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                    warn=[c for c in new_checks if c["level"] == "warn"],
+                    bad=[c for c in new_checks if c["level"] == "bad"])
+
+    if "openai-api" in active_providers:
+        base_url = str(openai_base or "").strip() or "https://api.openai.com/v1"
+        target = None
+        if runtimes.ENDPOINT_RE.fullmatch(base_url):
+            try:
+                target = runtimes.endpoint_target(base_url)
+            except Exception:
+                target = None
+
+        has_base_err = False
+        if not target or not target[1]:
+            has_base_err = True
+            bad(f"[FAIL] openai-api: invalid OPENAI_API_BASE '{base_url}'",
+                "set OPENAI_API_BASE to a valid http(s) URL in etc/foreman.conf (e.g. https://api.openai.com/v1) or Settings",
+                "settings:OPENAI_API_BASE")
+        else:
+            scheme, host, port = target
+            in_egress = False
+            try:
+                allow = set(egress.allowlist())
+                lep = egress.local_endpoint()
+                if host in allow:
+                    in_egress = True
+                elif lep is not None and (lep[0] == host or lep == (host, port)):
+                    in_egress = True
+            except Exception:
+                in_egress = False
+
+            if not in_egress:
+                warn(f"[WARN] openai-api: base URL host '{host}' is not in egress allowlist or local endpoint config",
+                     f"add '{host}' to egress/allowlist.local.txt and run bin/egress-up (or configure local endpoint in Settings)",
+                     "egress-allow")
+
+        model = str(openai_model or "").strip()
+        has_model_err = False
+        if not model:
+            has_model_err = True
+            bad("[FAIL] openai-api: OPENAI_MODEL is not set",
+                "set OPENAI_MODEL in etc/foreman.conf (e.g. OPENAI_MODEL=gpt-4o) or Settings → Models",
+                "settings:OPENAI_MODEL")
+
+        has_key = bool(
+            providers.get_secret("openai_api_key")
+            or providers.get_secret("OPENAI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY", "").strip()
+            or sbx.read(os.path.join(sbx.SECRETS, "openai_api_key"))
+            or sbx.read(os.path.join(sbx.SECRETS, "OPENAI_API_KEY"))
+            or sbx.read(os.path.join(sbx.SECRETS, "openai.key"))
+        )
+        has_key_err = False
+        if not has_key:
+            has_key_err = True
+            bad("[FAIL] openai-api: secret 'openai_api_key' missing",
+                "printf '%s' \"$KEY\" | bin/secret-set openai.key (or bin/secret-set openai_api_key <value> or export OPENAI_API_KEY=<value>)",
+                "key:openai_api_key")
+
+        if not has_base_err and not has_model_err and not has_key_err:
+            ok(f"[OK] openai-api: model '{model}' (base URL: {base_url})")
+
+    if "gemini-api" in active_providers:
+        g_model = str(gemini_model or "").strip()
+        has_g_model_err = False
+        if not g_model:
+            has_g_model_err = True
+            bad("[FAIL] gemini-api: GEMINI_MODEL is not set",
+                "set GEMINI_MODEL in etc/foreman.conf (e.g. GEMINI_MODEL=gemini-1.5-pro) or Settings → Models",
+                "settings:GEMINI_MODEL")
+
+        has_g_key = bool(
+            providers.get_secret("gemini_api_key")
+            or providers.get_secret("GEMINI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY", "").strip()
+            or sbx.read(os.path.join(sbx.SECRETS, "gemini_api_key"))
+            or sbx.read(os.path.join(sbx.SECRETS, "GEMINI_API_KEY"))
+            or sbx.read(os.path.join(sbx.SECRETS, "gemini.key"))
+        )
+        has_g_key_err = False
+        if not has_g_key:
+            has_g_key_err = True
+            bad("[FAIL] gemini-api: secret 'gemini_api_key' missing",
+                "printf '%s' \"$KEY\" | bin/secret-set gemini.key (or bin/secret-set gemini_api_key <value> or export GEMINI_API_KEY=<value>)",
+                "key:gemini_api_key")
+
+        if not has_g_model_err and not has_g_key_err:
+            ok(f"[OK] gemini-api: model '{g_model}'")
+
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+LOCAL_COMPAT_RUNTIMES = ("ollama", "vllm", "lmstudio", "llamacpp")
+
+
+def is_local_endpoint_target(target):
+    """Return True if target tuple (scheme, host, port) represents a local/private host."""
+    if not target or len(target) < 3:
+        return False
+    scheme, host, port = target
+    h = str(host or "").strip().lower()
+    if h in ("127.0.0.1", "localhost", "0.0.0.0", "::1", "ip6-localhost", "ip6-loopback"):
+        return True
+    if h.endswith((".local", ".internal", ".lan", ".home", ".arpa")):
+        return True
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(h.strip("[]"))
+        if ip.is_private or ip.is_loopback:
+            return True
+    except ValueError:
+        pass
+    try:
+        if hasattr(egress, "is_private_host") and egress.is_private_host(h):
+            return True
+        lep = egress.local_endpoint()
+        if lep is not None and (lep[0] == h or lep == (h, port)):
+            return True
+        rule = egress.endpoint_rule(f"{scheme}://{host}:{port}", resolve=False)
+        if rule and rule[0] == "local":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def check_local_compat_runtime(rt, endpoint_url=None, timeout=2.0):
+    """Check reachability and readiness for a local OpenAI-compatible runtime.
+
+    (a) reports 'not configured' when the project has no endpoint URL set for that runtime.
+    (b) attempts to reach the configured local endpoint (reusing runtimes.endpoint_target())
+        and reports 'unreachable' with the connection error when it cannot connect within timeout.
+    (c) reports 'ready' when it connects.
+    Never makes a real network call to a public host.
+    """
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    if not SECTION[0]:
+        SECTION[0] = "Readiness"
+
+    if endpoint_url is None:
+        try:
+            if hasattr(readiness, "_get_compat_base_url"):
+                endpoint_url = readiness._get_compat_base_url()
+        except (Exception, SystemExit):
+            endpoint_url = ""
+        if not endpoint_url:
+            endpoint_url = os.environ.get("COMPAT_BASE_URL", "").strip()
+        if not endpoint_url:
+            try:
+                lim = sbx.load_limits()
+                endpoint_url = str((lim or {}).get("COMPAT_BASE_URL", "")).strip()
+            except (Exception, SystemExit):
+                pass
+        if not endpoint_url:
+            try:
+                conf = sbx.project_conf()
+                endpoint_url = str((conf or {}).get("COMPAT_BASE_URL", "")).strip()
+            except (Exception, SystemExit):
+                pass
+
+    endpoint_url = str(endpoint_url or "").strip()
+    target = None
+    if endpoint_url and runtimes.uses_endpoint(rt):
+        try:
+            target = runtimes.endpoint_target(endpoint_url)
+        except Exception:
+            target = None
+
+    if not endpoint_url or not target:
+        msg = f"[WARN] {rt}: Runtime '{rt}' is not configured (missing COMPAT_BASE_URL)"
+        warn(msg, fix="set COMPAT_BASE_URL in etc/limits.conf or Settings", fix_id="settings:COMPAT_BASE_URL", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="not_configured", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, fix="set COMPAT_BASE_URL in etc/limits.conf or Settings")
+
+    scheme, host, port = target
+    if not is_local_endpoint_target(target):
+        msg = f"[WARN] {rt}: endpoint host '{host}' is not a local endpoint"
+        warn(msg, fix="configure a local endpoint for local-compat runtimes", fix_id="settings:COMPAT_BASE_URL", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="unreachable", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, error="not a local endpoint")
+
+    import socket
+    connected = False
+    conn_err = ""
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            connected = True
+    except Exception as e:
+        connected = False
+        conn_err = str(e) or type(e).__name__
+
+    if not connected:
+        msg = f"[WARN] {rt}: endpoint {endpoint_url} is unreachable ({conn_err})"
+        fix_str = f"start {rt} server on {host}:{port} or check COMPAT_BASE_URL"
+        warn(msg, fix=fix_str, fix_id=f"start:{rt}", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="unreachable", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, error=conn_err, fix=fix_str)
+
+    msg = f"[OK] {rt}: Runtime '{rt}' is ready ({endpoint_url})"
+    ok(msg)
+    if not orig_sec:
+        SECTION[0] = ""
+    new_checks = CHECKS[start_idx:]
+    return dict(status="ready", state="ok", message=msg, checks=new_checks,
+                endpoint_url=endpoint_url)
+
+
+def check_local_compat_runtimes(endpoint_url=None, rts=None, timeout=2.0):
+    """Check readiness of all local OpenAI-compatible runtimes."""
+    start_idx = len(CHECKS)
+    target_rts = rts or LOCAL_COMPAT_RUNTIMES
+    results = {}
+    for rt in target_rts:
+        results[rt] = check_local_compat_runtime(rt, endpoint_url=endpoint_url, timeout=timeout)
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"],
+                results=results)
+
+
+def check_readiness(status=None):
+    """Check readiness for all worker runtimes and orchestrator providers.
+
+    Queries bin/lib/foreman/readiness.all_status() (or status override).
+    Emits one line per runtime and per provider with OK/WARN marker and detail.
+    Missing settings or egress entries on optional runtimes are reported as
+    warnings (optional=True) so doctor exits 0 unless a hard error occurs.
+    """
+    section("Readiness")
+    start_idx = len(CHECKS)
+    if status is None:
+        try:
+            st = readiness.all_status()
+        except Exception as e:
+            warn(f"[WARN] readiness: could not determine readiness ({e})", optional=True)
+            st = {"runtimes": {}, "providers": {}}
+    else:
+        st = status
+
+    for name, info in (st.get("runtimes") or {}).items():
+        if status is None and name in LOCAL_COMPAT_RUNTIMES:
+            check_local_compat_runtime(name)
+        else:
+            state = info.get("state", "ok") if isinstance(info, dict) else "ok"
+            detail = info.get("detail", "") if isinstance(info, dict) else str(info)
+            if state in ("ok", "ready"):
+                ok(f"[OK] {name}: {detail}")
+            else:
+                warn(f"[WARN] {name}: {detail}", optional=True)
+
+    for name, info in (st.get("providers") or {}).items():
+        state = info.get("state", "ok") if isinstance(info, dict) else "ok"
+        detail = info.get("detail", "") if isinstance(info, dict) else str(info)
+        if state == "ok":
+            ok(f"[OK] {name}: {detail}")
+        else:
+            warn(f"[WARN] {name}: {detail}", optional=True)
+
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_cost_models(rts=None):
+    """Check cost model for every runtime relevant to this install.
+
+    Queries bin/lib/foreman/readiness.runtime_items() (or rts override).
+    Emits one line per runtime with its cost model kind and detail from cost_model(rt).
+    Informational only (level='ok'), so 'unknown' cost models never fail doctor.
+    """
+    section("Cost Models")
+    start_idx = len(CHECKS)
+    if rts is None:
+        if hasattr(readiness, "runtime_items"):
+            rts = readiness.runtime_items()
+        elif hasattr(readiness, "readiness_items"):
+            rts = readiness.readiness_items()
+        else:
+            rts = list(runtimes.RUNTIMES.keys())
+    elif isinstance(rts, dict):
+        rts = list(rts.keys())
+
+    for rt in rts:
+        try:
+            cm = runtimes.cost_model(rt)
+        except Exception as e:
+            cm = dict(kind="unknown", detail=str(e))
+        kind = cm.get("kind", "unknown")
+        detail = cm.get("detail", "")
+        ok(f"[OK] {rt}: cost model {kind} - {detail}")
+
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def _get_provider_api_base(provider, conf=None):
+    prefix = provider[:-4].replace("-", "_").upper() if provider.endswith("-api") else provider.replace("-", "_").upper()
+    key = f"{prefix}_API_BASE"
+    val = (conf.get(key) if conf else None) or os.environ.get(key, "")
+    if not val and provider == "openai-api":
+        val = (conf.get("OPENAI_API_BASE") if conf else None) or os.environ.get("OPENAI_API_BASE", "")
+    return str(val or "").strip()
+
+
+def check_provider_egress(conf=None):
+    """Check required egress hosts for orchestrator providers in the project's configured PROVIDERS setting."""
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    SECTION[0] = "Orchestrator Providers"
+    if conf is None:
+        conf = sbx.project_conf()
+    raw = conf.get("PROVIDERS") if (conf and "PROVIDERS" in conf) else None
+    if raw is None:
+        raw = os.environ.get("PROVIDERS", None)
+    if raw is None and conf:
+        raw = conf.get("PLAN_PROVIDERS") or conf.get("REVIEW_PROVIDERS")
+    if raw is None:
+        raw = os.environ.get("PLAN_PROVIDERS") or os.environ.get("REVIEW_PROVIDERS", "")
+
+    seen = set()
+    for p in str(raw or "").split(","):
+        provider = p.strip().lower()
+        if not provider or provider in seen:
+            continue
+        seen.add(provider)
+        api_base = _get_provider_api_base(provider, conf)
+        for h in providers.missing_hosts(provider, api_base):
+            bad(f"[FAIL] {provider}: missing egress host '{h}'",
+                f"add {h} to egress/allowlist.txt, or allow it from the dashboard's Egress page",
+                "egress-allow")
+
+    new_checks = CHECKS[start_idx:]
+    if orig_sec:
+        SECTION[0] = orig_sec
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_runtime_egress(ws=None, lim=None, conf=None):
+    """Check required egress hosts for runtimes used by this project's worker pool."""
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    SECTION[0] = "Workers"
+    if conf is None:
+        conf = sbx.project_conf()
+    if lim is None:
+        try:
+            lim = sbx.load_limits()
+        except (Exception, SystemExit):
+            lim = {}
+    if ws is None:
+        rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
+        ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)),
+                    key=lambda x: int(x[0].split("-")[1]))
+        pool = sbx.project_pool()
+        if pool:
+            ws = [w for w in ws if w[0] in pool]
+
+    known_runtimes = dict(runtimes.RUNTIMES)
+    used_runtimes = set()
+    for w in ws:
+        w_name = w[0] if isinstance(w, (list, tuple)) else str(w)
+        try:
+            used_runtimes.add(sbx.worker_runtime(w_name))
+        except Exception:
+            pass
+
+    if not used_runtimes:
+        pool = sbx.project_pool()
+        if pool:
+            for w_name in pool:
+                try:
+                    used_runtimes.add(sbx.worker_runtime(w_name))
+                except Exception:
+                    pass
+
+    if not used_runtimes and conf.get("WORKERS"):
+        for w_name in str(conf["WORKERS"]).split(","):
+            w_name = w_name.strip()
+            if w_name:
+                try:
+                    used_runtimes.add(sbx.worker_runtime(w_name))
+                except Exception:
+                    pass
+
+    checked_runtimes = set()
+    for rt in list(known_runtimes.keys()) + list(used_runtimes):
+        if rt in checked_runtimes:
+            continue
+        checked_runtimes.add(rt)
+        if rt in used_runtimes:
+            endpoint_url = str((lim or {}).get("COMPAT_BASE_URL") or conf.get("COMPAT_BASE_URL", "")).strip() if runtimes.uses_endpoint(rt) else ""
+            missing = egress.runtime_missing_hosts(rt, endpoint_url)
+            for h in missing:
+                bad(f"[FAIL] {rt}: missing egress host '{h}'",
+                    f"add {h} to egress/allowlist.txt, or allow it from the dashboard's Egress page",
+                    "egress-allow")
+
+    new_checks = CHECKS[start_idx:]
+    if orig_sec:
+        SECTION[0] = orig_sec
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def check_egress_hosts(conf=None, ws=None, lim=None):
+    """Check required egress hosts for used runtimes and configured providers."""
+    start_idx = len(CHECKS)
+    check_runtime_egress(ws=ws, lim=lim, conf=conf)
+    check_provider_egress(conf=conf)
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"])
+
+
+def main():
+    global QUICK, JSON
+    a = sys.argv[1:]
+    if "--project" in a:
+        i = a.index("--project")
+        os.environ["FORGE_PROJECT"] = a[i + 1] if i + 1 < len(a) else ""
+        del a[i:i + 2]
+    if a and a[0] in ("-h", "--help"):
+        print(__doc__); sys.exit(0)
+    QUICK = "--quick" in a
+    JSON = "--json" in a
+
+    say(f"Agent-Forge doctor - {sbx.ROOT}" + (f" (project {sbx.PROJECT})" if sbx.PROJECT else ""))
+    vf = os.path.join(sbx.ROOT, "VERSION")
+    VERSION = open(vf).read().strip() if os.path.exists(vf) else "unknown"
+    say(f"version {VERSION}")
+
+    section("Tools")
+    if sys.version_info >= (3, 10):
+        ok(f"python {sys.version.split()[0]}")
+    else:
+        bad(f"python {sys.version.split()[0]} is too old", "Python 3.10 or newer")
+    rc, out, _ = sh("git", "--version")
+    if rc != 0:
+        bad("git is missing", "sudo apt install git")
+    elif version(out) < (2, 31):
+        bad(f"{out.strip()} is too old (tokens are passed through GIT_CONFIG_* variables)", "git 2.31 or newer")
+    else:
+        ok(out.strip())
+    rc, out, err = sh("docker", "version", "--format", "{{.Server.Version}}")
+    if rc != 0:
+        bad("docker does not answer: " + (err.strip().splitlines() or ["?"])[-1][:160],
+            "install Docker (scripts/vm-baseline-ubuntu.sh) and add your user to the docker group, then log in again")
+    else:
+        ok(f"docker {out.strip()}")
+    rc, out, _ = sh("docker", "compose", "version", "--short")
+    ok(f"docker compose {out.strip()}") if rc == 0 else bad("docker compose plugin missing", "sudo apt install docker-compose-plugin")
+    rc, out, _ = sh("claude", "--version")
+    if rc == 0:
+        ok(f"Claude Code {out.strip()} (orchestrator provider claude-cli)")
+    else:
+        warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
+             "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
+    rc, out, _ = sh("goose", "--version")
+    if rc == 0:
+        ok(f"Goose {out.strip()}")
+    else:
+        warn("Goose CLI not found on PATH", "install Goose (https://github.com/block/goose)")
+
+    section("Configuration")
+    try:
+        lim = sbx.load_limits()
+        ok(f"etc/limits.conf: {lim['MAX_PARALLEL']} parallel runs, token cap {lim['RUN_TOKEN_CAP']:,}, timeout {lim['RUN_TIMEOUT_MIN']:g} min")
+    except SystemExit as e:
+        lim = None
+        bad(str(e), "cp etc/limits.example.conf etc/limits.conf")
+    fc = os.path.join(sbx.ROOT, "etc", "foreman.conf")
+    ok("etc/foreman.conf") if os.path.exists(fc) else warn("etc/foreman.conf missing - defaults are used", "cp etc/foreman.example.conf etc/foreman.conf")
+    if sbx.PROJECT and not os.path.exists(os.path.join(sbx.ROOT, "projects", sbx.PROJECT, "project.conf")):
+        bad(f"projects/{sbx.PROJECT}/project.conf missing", f"bin/foreman init-project {sbx.PROJECT} --repo org/repo")
+    conf = sbx.project_conf()
+    vision = os.path.join(sbx.ROOT, "projects", sbx.PROJECT, conf.get("VISION_FILE", "vision.md")) if sbx.PROJECT else \
+        os.path.join(sbx.ROOT, conf.get("VISION_FILE", "docs/vision.md"))
+    ok(f"vision file {os.path.relpath(vision, sbx.ROOT)}") if os.path.exists(vision) else \
+        warn("no vision file - the autopilot has nothing to plan from", f"write {os.path.relpath(vision, sbx.ROOT)} (docs/vision.example.md)")
+    if conf.get("NOTIFY_URL") == "outbox":
+        ok("notifications go to runs/notify-outbox.jsonl (a relay outside this machine delivers them)")
+    elif conf.get("NOTIFY_URL"):
+        shown = re.sub(r"(//[^/]+/).*", "\\1…", conf["NOTIFY_URL"])          # never print a webhook's secret path
+        ok(f"notifications to {shown} ({conf.get('NOTIFY_FORMAT', 'ntfy')})")
+    else:
+        warn("no NOTIFY_URL - you are not told when a goal is done or a task is blocked", "set NOTIFY_URL (ntfy / Slack / Discord) in etc/foreman.conf",
+             "settings:NOTIFY_URL")
+
+    section("Secrets")
+    S = sbx.SECRETS
+    if not os.path.isdir(S):
+        bad(f"{S} does not exist", "scripts/forge-bootstrap creates it")
+    else:
+        mode = os.stat(S).st_mode & 0o777
+        ok(f"{S} (mode {mode:o})") if mode == 0o700 else bad(f"{S} has mode {mode:o}", f"chmod 700 {S}")
+        for n in ("monitor.token", "orchestrator.token"):
+            p = os.path.join(S, n)
+            if not os.path.exists(p):
+                bad(f"{n} missing", "scripts/forge-bootstrap")
+            elif os.stat(p).st_mode & 0o077:
+                bad(f"{n} is readable by others", f"chmod 600 {p}")
+            else:
+                ok(n)
+
+    check_orchestrator_providers(conf)
+    check_provider_egress(conf)
+
+    section("Forgejo")
+    try:
+        urllib.request.urlopen(sbx.FORGE_URL + "/api/healthz", timeout=5).read()
+        ok(f"{sbx.FORGE_URL} answers")
+        tok = sbx.read(os.path.join(S, "monitor.token"))
+        req = urllib.request.Request(f"{sbx.FORGE_URL}/api/v1/repos/{sbx.FORGE_REPO}", headers={"Authorization": "token " + tok})
+        try:
+            repo = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            ok(f"repository {sbx.FORGE_REPO} (default branch {repo.get('default_branch')})")
+        except Exception as e:
+            bad(f"repository {sbx.FORGE_REPO} not readable with the monitor token: {e}", f"FORGE_REPO={sbx.FORGE_REPO} scripts/forge-bootstrap")
+    except Exception as e:
+        bad(f"Forgejo at {sbx.FORGE_URL} does not answer ({e})", "scripts/forge-bootstrap (starts it); docker ps | grep forgejo")
+
+    section("Sandbox")
+    rc, _, _ = sh("docker", "network", "inspect", "workers_internal")
+    ok("network workers_internal") if rc == 0 else bad("network workers_internal missing", "bin/egress-up", "egress-up")
+    try:
+        import egress
+        h = egress.proxy_health()
+        ok("egress proxy enforcing") if h.get("ok") else bad("egress proxy: " + "; ".join(h["problems"]), "bin/egress-up", "egress-up")
+    except Exception as e:
+        bad(f"egress check failed: {e}")
+    img = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
+    rc, _, _ = sh("docker", "image", "inspect", img)
+    ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: docker compose -f worker/docker-compose.yml build)")
+    ks = sbx.killswitch_active()
+    warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)", "continue") \
+        if ks else ok("kill switch off")
+
+    section("Workers")
+    rc, out, _ = sh("docker", "ps", "-a", "--format", "{{.Names}} {{.State}}")
+    ws = sorted((l.split() for l in out.splitlines() if re.fullmatch(r"worker-\d+ \w+", l)), key=lambda x: int(x[0].split("-")[1]))
+    pool = sbx.project_pool()
+    if pool:
+        ws = [w for w in ws if w[0] in pool]
+    if not ws:
+        bad("no worker containers" + (f" of this project's pool ({', '.join(sorted(pool))})" if pool else ""), "bin/worker-add 1, then log it in")
+    running = 0
+    for name, state in ws:
+        if state != "running":
+            warn(f"{name} is {state}", f"bin/worker-up {name.split('-')[1]}", f"worker-up:{name.split('-')[1]}"); continue
+        running += 1
+        rt = sbx.worker_runtime(name)
+        if rt != "agy":
+            import runtimes
+            r_info = runtimes.RUNTIMES.get(rt, {})
+            if rt == "anthropic-compat":
+                url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+                lep = None
+                try:
+                    import egress
+                    lep = egress.local_endpoint()
+                except Exception:
+                    pass
+                has_endpoint = (hasattr(runtimes, "endpoint_target") and runtimes.endpoint_target(url)) or (lep is not None)
+                server = re.sub(r"(//[^/]+).*", r"\1", url) if url else ""
+                if has_endpoint:
+                    ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
+                else:
+                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                        "settings:COMPAT_BASE_URL")
+                key = r_info.get("key") or "compat.key"
+                if not sbx.read(os.path.join(S, key)):
+                    bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                        f"key:{key}")
+                else:
+                    ok(f"{name} runs {rt} with an API key")
+                continue
+            is_endpoint = (rt in ("opencode", "goose")) or bool(r_info.get("endpoint")) or (hasattr(runtimes, "uses_endpoint") and runtimes.uses_endpoint(rt))
+            if is_endpoint:
+                url = str((lim or {}).get("COMPAT_BASE_URL") or "")
+                server = re.sub(r"(//[^/]+).*", r"\1", url) if url else ""
+                lep = None
+                try:
+                    import egress
+                    lep = egress.local_endpoint()
+                except Exception:
+                    pass
+                has_endpoint = (hasattr(runtimes, "endpoint_target") and runtimes.endpoint_target(url)) or (lep is not None)
+                if has_endpoint:
+                    ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
+                else:
+                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                        "settings:COMPAT_BASE_URL")
+                continue
+            if rt == "qwen-code":
+                key = r_info.get("key") or "qwen.key"
+                if not sbx.read(os.path.join(S, key)):
+                    bad(f"{name} ({rt}): API key {key} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                        f"key:{key}")
+                else:
+                    ok(f"{name} runs {rt} with an API key")
+                continue
+            if rt == "copilot":
+                ok(f"{name} runs {rt} (GitHub Copilot CLI)")
+                continue
+            key = r_info.get("key")
+            if not key or not sbx.read(os.path.join(S, key)):
+                bad(f"{name} ({rt}): API key {key or 'missing'} missing", f"printf '%s' \"$KEY\" | bin/secret-set {key}; bin/worker-up {name.split('-')[1]}",
+                    f"key:{key}")
+            else:
+                ok(f"{name} runs {rt} with an API key")
+            continue
+        if QUICK:
+            ok(f"{name} running"); continue
+        try:
+            rows = sbx.read_quota(name)
+        except Exception:
+            rows = []
+        if not rows:
+            bad(f"{name}: agy /usage unreadable - not logged in?", f"log it in: dashboard → Settings → log in, or docker exec -it {name} agy-run",
+                f"login:{name}")
+        else:
+            verdict = sbx.quota_verdict(rows, lim) if lim else (True, "")
+            fam = [r for r in rows if (lim or {}).get("QUOTA_MODEL_FILTER", "Gemini").lower() in r["model"].lower()]
+            ok(f"{name} logged in; " + ", ".join(f"{r['label']} {r['pct']:.0f}%" for r in fam[:2])) if verdict[0] else \
+                warn(f"{name}: {verdict[1]}")
+    if lim:
+        spent = sbx.api_spent_today()
+        if spent:
+            (warn if spent >= float(lim["API_DAILY_BUDGET_USD"]) else ok)(f"API spend today ${spent:.2f} of ${float(lim['API_DAILY_BUDGET_USD']):.2f}")
+        import runtimes
+        known_runtimes = dict(runtimes.RUNTIMES)
+        if "opencode" not in known_runtimes:
+            known_runtimes["opencode"] = dict(api=True, endpoint=True, hosts=[])
+        if "qwen-code" not in known_runtimes:
+            known_runtimes["qwen-code"] = dict(api=False, hosts=["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"])
+        if "goose" not in known_runtimes:
+            known_runtimes["goose"] = dict(api=False, endpoint=True, hosts=[])
+        if "anthropic-compat" not in known_runtimes:
+            known_runtimes["anthropic-compat"] = dict(api=True, endpoint=True, hosts=[])
+        for rt, r in known_runtimes.items():
+            if (r.get("endpoint") or rt in ("opencode", "goose")) and any(sbx.worker_runtime(w[0]) == rt for w in ws) and "egress" in sys.modules:
                 rule = egress.endpoint_rule(str(lim.get("COMPAT_BASE_URL") or ""))
-                if rule and rule[0] == "local" and egress.local_endpoint() != (rule[1], rule[2]):
-                    bad(f"egress does not allow the model server {rule[1]}:{rule[2]} for the {rt} workers",
-                        "save COMPAT_BASE_URL again in Settings (or bin/worker-add N --runtime " + rt + "), then bin/egress-up once")
-                elif rule and rule[0] == "allowlist" and rule[1] not in egress.allowlist():
-                    bad(f"egress allow-list lacks {rule[1]} for the {rt} workers", "save COMPAT_BASE_URL again in Settings")
                 rc, _, _ = sh("docker", "exec", "egress-proxy", "grep", "-q", "local-endpoint.conf", "/etc/squid/squid.enforce.conf")
                 if rule and rule[0] == "local" and rc != 0:
                     bad("the egress proxy predates the model-server setting", "bin/egress-up (recreates it; running runs are stopped)", "egress-up")
-                continue
-            allowed = set(egress.allowlist())
-            missing = [h for h in r["hosts"] if h not in allowed]
-            if missing:
-                bad(f"egress allow-list lacks {', '.join(missing)} for the {rt} workers", "bin/worker-add re-adds it, or add it to egress/allowlist.local.txt and bin/egress-up")
-if lim and running > lim["MAX_PARALLEL"]:
-    warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
+    check_runtime_egress(ws=ws, lim=lim, conf=conf)
+    if lim and running > lim["MAX_PARALLEL"]:
+        warn(f"{running} workers but MAX_PARALLEL={lim['MAX_PARALLEL']} - some will always wait", "raise MAX_PARALLEL in etc/limits.conf")
 
-section("Foreman")
-fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
-try:
-    live = json.load(open(os.path.join(fd, "live.json")))
-    age = time.time() - live.get("at", 0)
-    ok(f"loop alive ({age:.0f} s ago)") if age < 120 else bad(f"loop last seen {age / 60:.0f} min ago",
-                                                            "sudo systemctl status agent-forge-foreman" + (f"-{sbx.PROJECT}" if sbx.PROJECT else ""),
-                                                            "restart-foreman")
-except FileNotFoundError:
-    bad("the foreman has never run for this project", "sudo scripts/install-services" + (f" --project {sbx.PROJECT}" if sbx.PROJECT else ""),
-        "restart-foreman")
-except Exception as e:
-    warn(f"live.json unreadable: {e}")
-if os.path.exists(os.path.join(fd, "PAUSED")):
-    warn("the foreman is paused", "bin/foreman resume", "resume")
-du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
-ok(f"{du.free / 2**30:.0f} GB free") if du.free > 5 * 2**30 else warn(f"only {du.free / 2**30:.1f} GB free", "old runs are compressed by maintenance; free space")
+    check_readiness()
+    check_cost_models()
 
-if JSON:
-    print(json.dumps(dict(version=VERSION, project=sbx.PROJECT or "default", checks=CHECKS, bad=len(BAD), warn=len(WARN), at=time.time())))
-    sys.exit(2 if BAD else 1 if WARN else 0)
-say()
-if BAD:
-    print(f"✘ {len(BAD)} problem(s), {len(WARN)} warning(s)"); sys.exit(2)
-print(f"✔ all good" + (f" ({len(WARN)} warning(s))" if WARN else "")); sys.exit(1 if WARN else 0)
+    section("Foreman")
+    fd = os.path.join(sbx.RUNS, "projects", sbx.PROJECT, "foreman") if sbx.PROJECT else os.path.join(sbx.RUNS, "foreman")
+    try:
+        live = json.load(open(os.path.join(fd, "live.json")))
+        age = time.time() - live.get("at", 0)
+        ok(f"loop alive ({age:.0f} s ago)") if age < 120 else bad(f"loop last seen {age / 60:.0f} min ago",
+                                                                "sudo systemctl status agent-forge-foreman" + (f"-{sbx.PROJECT}" if sbx.PROJECT else ""),
+                                                                "restart-foreman")
+    except FileNotFoundError:
+        bad("the foreman has never run for this project", "sudo scripts/install-services" + (f" --project {sbx.PROJECT}" if sbx.PROJECT else ""),
+            "restart-foreman")
+    except Exception as e:
+        warn(f"live.json unreadable: {e}")
+    if os.path.exists(os.path.join(fd, "PAUSED")):
+        warn("the foreman is paused", "bin/foreman resume", "resume")
+    du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
+    ok(f"{du.free / 2**30:.0f} GB free") if du.free > 5 * 2**30 else warn(f"only {du.free / 2**30:.1f} GB free", "old runs are compressed by maintenance; free space")
+
+    if JSON:
+        print(json.dumps(dict(version=VERSION, project=sbx.PROJECT or "default", checks=CHECKS, bad=len(BAD), warn=len(WARN), at=time.time())))
+        sys.exit(2 if BAD else 1 if WARN else 0)
+    say()
+    if BAD:
+        print(f"✘ {len(BAD)} problem(s), {len(WARN)} warning(s)"); sys.exit(2)
+    print(f"✔ all good" + (f" ({len(WARN)} warning(s))" if WARN else "")); sys.exit(1 if WARN else 0)
+
+
+if __name__ == "__main__":
+    main()
