@@ -6,7 +6,9 @@ Public interface:
 - Run via unittest: python3 -m unittest tests/test_doctor_readiness.py
 
 Important invariants:
-- bin/doctor prints exactly one line per runtime (10 entries) and per provider (6 entries).
+- bin/doctor prints exactly one line per runtime (16 entries) and per provider (6 entries).
+- All six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) are covered by doctor readiness checks.
+- Local-compat runtimes without configured endpoints report not-ready/not-configured ([WARN]), never falsely ready ([OK]).
 - Output format matches doctor conventions with [OK] and [WARN] markers.
 - Secrets are NEVER printed in stdout, stderr, or check dictionaries.
 - bin/doctor exits 0 when every readiness item is merely missing_setting/missing_egress.
@@ -15,6 +17,7 @@ Important invariants:
 import importlib.machinery
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -324,6 +327,183 @@ class TestDoctorReadiness(unittest.TestCase):
         self.assertNotIn("add agy-claude to egress/allowlist.txt", proc.stdout)
         assert "missing egress host" not in proc.stdout
 
+    def test_doctor_readiness_all_six_runtimes_present(self):
+        """Acceptance criterion: Assert all six new runtime keys are present in doctor readiness output.
+
+        Fails if any key of copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp is silently dropped.
+        """
+        six_keys = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
+
+        # 1. Assert all six keys are present in readiness.all_status()["runtimes"]
+        st = readiness.all_status()
+        self.assertIn("runtimes", st)
+        rt_status = st["runtimes"]
+        for rt in six_keys:
+            self.assertIn(rt, rt_status, f"Runtime '{rt}' was dropped from readiness.all_status()['runtimes']")
+            info = rt_status[rt]
+            self.assertIn("state", info)
+            self.assertIn("detail", info)
+
+        # 2. Assert all six keys produce an explicit result entry in doctor.check_readiness()
+        doctor.CHECKS.clear()
+        res = doctor.check_readiness()
+        checks = res["checks"]
+        for rt in six_keys:
+            matching = [c for c in checks if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+            self.assertEqual(len(matching), 1, f"Runtime '{rt}' missing from doctor readiness output")
+            msg = matching[0]["message"]
+            self.assertTrue(msg.startswith("[OK] ") or msg.startswith("[WARN] "), f"Invalid marker for {rt}: {msg}")
+
+        # 3. Prove assertion fails if any key is silently dropped
+        for rt in six_keys:
+            tampered_status = {
+                "runtimes": {k: v for k, v in rt_status.items() if k != rt},
+                "providers": dict(st.get("providers", {})),
+            }
+            tampered_res = doctor.check_readiness(tampered_status)
+            tampered_checks = tampered_res["checks"]
+            matching = [c for c in tampered_checks if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+            self.assertEqual(len(matching), 0, f"Dropped runtime '{rt}' unexpectedly found in tampered checks")
+
+            # Verify that our verification logic would catch this dropped key
+            with self.assertRaises(AssertionError):
+                if not any(f" {rt}: " in c["message"] and c["section"] == "Readiness" for c in tampered_checks):
+                    raise AssertionError(f"Runtime '{rt}' silently dropped from doctor readiness output")
+
+        assert all(rt in rt_status for rt in six_keys)
+        assert all(any(f" {rt}: " in c["message"] and c["section"] == "Readiness" for c in checks) for rt in six_keys)
+
+    def test_local_compat_runtimes_unconfigured_reported_not_ready(self):
+        """Acceptance criterion: A local-compat runtime with no endpoint configured reports not-ready/not-configured.
+
+        Never falsely reported as ready when COMPAT_BASE_URL is absent or unconfigured.
+        """
+        local_compat = ("ollama", "vllm", "lmstudio", "llamacpp")
+
+        # 1. With no endpoint configured
+        with patch.object(readiness, "_get_compat_base_url", return_value=""), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            for rt in local_compat:
+                st = readiness.status_of("runtime", rt)
+                self.assertNotEqual(st["state"], "ok", f"Runtime '{rt}' must not report state 'ok' when unconfigured")
+                self.assertEqual(st["state"], "missing_setting")
+                self.assertIn("COMPAT_BASE_URL", st["missing_settings"])
+                self.assertIn("COMPAT_BASE_URL", st["detail"])
+
+            doctor.CHECKS.clear()
+            res = doctor.check_readiness()
+            for rt in local_compat:
+                matching = [c for c in res["checks"] if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+                self.assertEqual(len(matching), 1)
+                chk = matching[0]
+                self.assertEqual(chk["level"], "warn", f"Runtime '{rt}' must be level 'warn' when unconfigured")
+                self.assertTrue(chk["message"].startswith(f"[WARN] {rt}: "))
+                self.assertIn("COMPAT_BASE_URL", chk["message"])
+
+        # 2. With invalid endpoint URL
+        with patch.object(readiness, "_get_compat_base_url", return_value="invalid://bad url"), \
+             patch.object(egress, "local_endpoint", return_value=None):
+            for rt in local_compat:
+                st = readiness.status_of("runtime", rt)
+                self.assertNotEqual(st["state"], "ok")
+                self.assertEqual(st["state"], "missing_setting")
+                self.assertIn("COMPAT_BASE_URL", st["missing_settings"])
+
+        # 3. Positive verification: when endpoint is valid and host is allowed, state is ok
+        with patch.object(readiness, "_get_compat_base_url", return_value="http://127.0.0.1:11434/v1"), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"127.0.0.1"}), \
+             patch.object(readiness, "_local_endpoint_host", return_value="127.0.0.1"), \
+             patch.object(readiness, "_has_secret", return_value=True):
+            for rt in local_compat:
+                st = readiness.status_of("runtime", rt)
+                self.assertEqual(st["state"], "ok")
+                self.assertEqual(st["missing_settings"], [])
+                self.assertEqual(st["missing_egress"], [])
+
+        assert all(readiness.status_of("runtime", rt)["state"] != "ok" for rt in local_compat)
+
+    def test_copilot_and_mistral_vibe_readiness_states(self):
+        """Invariant: copilot and mistral-vibe readiness checks evaluate settings and egress honestly."""
+        # mistral-vibe requires mistral.key and api.mistral.ai allowlist
+        with patch.object(readiness, "_has_secret", return_value=False), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"api.mistral.ai"}):
+            st = readiness.status_of("runtime", "mistral-vibe")
+            self.assertEqual(st["state"], "missing_setting")
+            self.assertIn("mistral.key", st["missing_settings"])
+
+        with patch.object(readiness, "_has_secret", return_value=True), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value={"api.mistral.ai"}):
+            st = readiness.status_of("runtime", "mistral-vibe")
+            self.assertEqual(st["state"], "ok")
+            self.assertEqual(st["missing_settings"], [])
+            self.assertEqual(st["missing_egress"], [])
+
+        with patch.object(readiness, "_has_secret", return_value=True), \
+             patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
+             patch.object(readiness, "_local_endpoint_host", return_value=""):
+            st = readiness.status_of("runtime", "mistral-vibe")
+            self.assertEqual(st["state"], "missing_egress")
+            self.assertIn("api.mistral.ai", st["missing_egress"])
+
+        # copilot requires no API key, requires api.githubcopilot.com and api.github.com
+        with patch.object(readiness, "_allowed_egress_hosts", return_value={"api.githubcopilot.com", "api.github.com"}):
+            st = readiness.status_of("runtime", "copilot")
+            self.assertEqual(st["state"], "ok")
+            self.assertEqual(st["missing_settings"], [])
+            self.assertEqual(st["missing_egress"], [])
+
+        with patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
+             patch.object(readiness, "_local_endpoint_host", return_value=""):
+            st = readiness.status_of("runtime", "copilot")
+            self.assertEqual(st["state"], "missing_egress")
+            self.assertIn("api.githubcopilot.com", st["missing_egress"])
+            self.assertIn("api.github.com", st["missing_egress"])
+
+        assert readiness.status_of("runtime", "mistral-vibe") is not None
+        assert readiness.status_of("runtime", "copilot") is not None
+
+    def test_doctor_subprocess_emits_six_runtimes_in_text_and_json(self):
+        """Acceptance criterion: Running bin/doctor produces a result entry for each of the six runtime keys."""
+        six_keys = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
+
+        # 1. Text mode
+        proc = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("== Readiness", proc.stdout)
+        self.assertIn("== Cost Models", proc.stdout)
+        for rt in six_keys:
+            self.assertTrue(
+                (f"[OK] {rt}: " in proc.stdout) or (f"[WARN] {rt}: " in proc.stdout),
+                f"Runtime '{rt}' not found in doctor --quick output"
+            )
+
+        # 2. JSON mode
+        proc_json = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertNotIn("Traceback", proc_json.stderr)
+        data = json.loads(proc_json.stdout)
+        self.assertIn("checks", data)
+        readiness_checks = [c for c in data["checks"] if c.get("section") == "Readiness"]
+        cost_checks = [c for c in data["checks"] if c.get("section") == "Cost Models"]
+        for rt in six_keys:
+            r_matching = [c for c in readiness_checks if f" {rt}: " in c["message"]]
+            self.assertEqual(len(r_matching), 1, f"Runtime '{rt}' missing in doctor JSON readiness checks")
+            c_matching = [c for c in cost_checks if f" {rt}: " in c["message"]]
+            self.assertEqual(len(c_matching), 1, f"Runtime '{rt}' missing in doctor JSON cost model checks")
+
+        assert all(f" {rt}: " in proc.stdout for rt in six_keys)
+        assert all(any(f" {rt}: " in c["message"] for c in readiness_checks) for rt in six_keys)
+
 
 if __name__ == "__main__":
     unittest.main()
+
