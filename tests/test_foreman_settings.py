@@ -147,7 +147,7 @@ class TestForemanSettings(unittest.TestCase):
         assert "CLAUDE_MODEL=opus" in foreman_content and "MAX_PARALLEL=8" in limits_content
 
     def test_settings_help_text_restart_accuracy(self):
-        """Every EDITABLE key must have HELP text in settings.js stating it applies live, and restart keys must state so."""
+        """Every EDITABLE key must have a label and a plain-language HELP text in settings.js, and the keys that need a restart must say so."""
         import re
         js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
         js = open(js_path).read()
@@ -160,19 +160,51 @@ class TestForemanSettings(unittest.TestCase):
         self.assertIsNotNone(label_match)
         label_map = dict(re.findall(r"([A-Z0-9_]+):\s*\x27((?:[^\x27\\]|\\.)*)\x27", label_match.group(1)))
 
+        # not plain rows: the API keys are write-only secrets (their own key rows), the repository is chosen in the setup dialog
+        no_help = {"FORGE_KIND", "UPSTREAM_REPO", "UPSTREAM_URL"}
+        no_label = {"OPENAI_API_KEY", "GEMINI_API_KEY"}
         for k in EDITABLE:
-            self.assertIn(k, help_map, f"missing HELP for {k}")
-            self.assertIn("applies live", help_map[k].lower(), f"{k} does not state applies live")
-            self.assertIn(k, label_map, f"missing LABEL for {k}")
-            self.assertTrue(len(label_map[k]) > 0, f"empty label for {k}")
+            if k not in no_help:
+                self.assertIn(k, help_map, f"missing HELP for {k}")
+                self.assertTrue(len(help_map[k].strip()) >= 20, f"{k} has no real description")
+                self.assertNotIn("applies live", help_map[k].lower(), f"{k}: most settings are read per tick or per run, 'applies live' is not a promise to make")
+            if k not in no_label:
+                self.assertIn(k, label_map, f"missing LABEL for {k}")
+                self.assertTrue(len(label_map[k]) > 0, f"empty label for {k}")
 
         self.assertIn("restart", help_map["FORGE_URL"].lower())
         self.assertIn("restart", help_map["FORGE_REPO"].lower())
         self.assertIn("ORPHAN_LIMIT", help_map)
         self.assertIn("ORPHAN_WARN", help_map)
-        self.assertIn("before the task is blocked", help_map["ORPHAN_LIMIT"])
-        self.assertIn("before a warning", help_map["ORPHAN_WARN"])
-        assert len(help_map) >= len(EDITABLE) and "before the task is blocked" in help_map["ORPHAN_LIMIT"] and "before a warning" in help_map["ORPHAN_WARN"]
+        self.assertIn("blocked", help_map["ORPHAN_LIMIT"])
+        self.assertIn("warning", help_map["ORPHAN_WARN"])
+        self.assertGreaterEqual(len(help_map), len(EDITABLE))
+
+    def test_every_plain_setting_is_on_exactly_one_settings_page(self):
+        """Invariant: each editable setting that has a row lives on exactly one of the eight Settings pages (none lost, none twice)."""
+        import re
+        js = open(os.path.join(ROOT, "web", "static", "js", "settings.js")).read()
+        block = re.search(r"const PAGEKEYS = \{(.*?)\};\nconst KEYPAGE", js, re.DOTALL).group(1)
+        pages = {name: re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", body) for name, body in
+                 re.findall(r"^  (\w+): ((?:'[^']*'(?:\s*\+\s*)?\s*)+)", block, re.MULTILINE)}
+        self.assertEqual(sorted(pages), sorted(["workers", "runtimes", "models", "project", "money", "limits", "advanced"]))
+        seen = [k for ks in pages.values() for k in ks]
+        self.assertEqual(len(seen), len(set(seen)), "a setting is on two pages: " + str(sorted(k for k in set(seen) if seen.count(k) > 1)))
+        not_rows = {"WORKER_RUNTIME", "OPENAI_API_KEY", "GEMINI_API_KEY", "FORGE_KIND", "UPSTREAM_REPO", "UPSTREAM_URL"}
+        missing = sorted(k for k in EDITABLE if k not in seen and k not in not_rows)
+        self.assertEqual(missing, [], "editable settings with no page: " + str(missing))
+
+    def test_settings_get_payload_has_ranges_secrets_and_creatable(self):
+        """settings_get tells the page the allowed range of every number, which secrets exist and which runtimes can get a worker."""
+        res = settings_get()
+        self.assertIn("ranges", res)
+        self.assertTrue(res["ranges"], "no numeric ranges")
+        for k, (lo, hi) in res["ranges"].items():
+            self.assertLessEqual(lo, hi, k)
+        self.assertIn("notify.token", res["secrets"])
+        self.assertEqual({k for k, r in res["runtimes"].items() if r["creatable"]}, {"agy", "claude", "codex", "gemini", "compat", "aider"})
+        for k in ("opencode", "goose", "qwen-code"):
+            self.assertFalse(res["runtimes"][k]["creatable"], k)
 
     def test_orphan_settings_help_text(self):
         """help_map contains non-empty, correctly-phrased help text for ORPHAN_LIMIT and ORPHAN_WARN."""
@@ -188,11 +220,10 @@ class TestForemanSettings(unittest.TestCase):
         self.assertIn("ORPHAN_WARN", help_map)
         self.assertTrue(len(help_map["ORPHAN_LIMIT"]) > 0)
         self.assertTrue(len(help_map["ORPHAN_WARN"]) > 0)
-        self.assertIn("before the task is blocked", help_map["ORPHAN_LIMIT"])
-        self.assertIn("before a warning", help_map["ORPHAN_WARN"])
-        self.assertTrue("consecutive" in help_map["ORPHAN_LIMIT"].lower() and "orphan" in help_map["ORPHAN_LIMIT"].lower())
-        self.assertTrue("consecutive" in help_map["ORPHAN_WARN"].lower() and "orphan" in help_map["ORPHAN_WARN"].lower())
-        assert "before the task is blocked" in help_map["ORPHAN_LIMIT"] and "before a warning" in help_map["ORPHAN_WARN"]
+        self.assertIn("blocked", help_map["ORPHAN_LIMIT"])
+        self.assertIn("warning", help_map["ORPHAN_WARN"])
+        for k in ("ORPHAN_LIMIT", "ORPHAN_WARN"):
+            self.assertIn("crashed runs in a row", help_map[k], f"{k} must say what is counted")
 
     def test_orphan_settings_get_defaults_and_scopes(self):
         """settings_get exposes ORPHAN_LIMIT and ORPHAN_WARN with default values 5 and 3 in project scope."""

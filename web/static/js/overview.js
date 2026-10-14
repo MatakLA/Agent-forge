@@ -379,7 +379,7 @@ document.addEventListener('click', async e => {
   const ob = e.target.closest('[data-onb]');
   if (ob) { const k = ob.dataset.onb;
     if (k === 'forge') { if (!S) await loadSettings(true); openSetup(); }
-    else if (k === 'workers') { SUB.settings = 'team'; setTab('settings'); }
+    else if (k === 'workers') { SUB.settings = 'workers'; setTab('settings'); }
     else if (k === 'notify') { SUB.settings = 'project'; setTab('settings'); }
     else if (k === 'goal') { setTab('overview'); $('goal-text').focus(); }
     return; }

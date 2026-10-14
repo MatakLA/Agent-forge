@@ -68,8 +68,15 @@ if readiness is not None:
 
 if VM_IP:
     VM_USER, VM_KEY, VM_KNOWN_HOSTS = os.environ["VM_USER"], os.environ["VM_KEY"], os.environ["VM_KNOWN_HOSTS"]
+    # one multiplexed connection: after the first call every ssh reuses it (no key exchange, ~20 ms instead of ~300 ms)
+    _CM_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"af-ssh-{os.getuid()}")
+    try:
+        os.makedirs(_CM_DIR, mode=0o700, exist_ok=True)
+    except OSError:
+        _CM_DIR = "/tmp"
     SSH_BASE = [
         "ssh", "-i", VM_KEY,
+        "-o", "ControlMaster=auto", "-o", f"ControlPath={_CM_DIR}/%C", "-o", "ControlPersist=300",
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
         "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + VM_KNOWN_HOSTS,
         "-o", "LogLevel=ERROR", f"{VM_USER}@{VM_IP}",
@@ -176,6 +183,25 @@ def add_worker_job(job, runtime="agy"):
         job["worker"] = f"worker-{n}"
         job["log"] += f"creating worker-{n}...\n"
         rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-add {n}" + (f" --runtime {shlex.quote(runtime)}" if runtime != "agy" else "") + " 2>&1", timeout=1800)
+        job["log"] += ANSI.sub("", o + e)[-4000:]
+        job["state"] = "done" if rc == 0 else "failed"
+    except Exception as ex:
+        job["log"] += f"\nerror: {ex}"; job["state"] = "failed"
+
+
+def remove_worker_job(job, worker):
+    """bin/worker-remove: container, home volume, Forgejo bot user, secrets. It refuses on its own while a run is in progress
+    or when the worker is the only one of some project; its message is what the owner reads."""
+    if DEMO_MODE:
+        job["state"] = "failed"
+        job["log"] = "Demo mode: read-only, no real workers"
+        return {"error": "Demo mode: read-only, no real workers"}
+    try:
+        if not isinstance(worker, str) or not WORKER_RE.fullmatch(worker):
+            raise ValueError(f"bad worker: {worker!r}")
+        job["worker"] = worker
+        job["log"] += f"removing {worker}...\n"
+        rc, o, e = ssh_run_full(f"cd {FORGE_DIR} && bin/worker-remove {int(worker.split('-')[1])} 2>&1", timeout=300)
         job["log"] += ANSI.sub("", o + e)[-4000:]
         job["state"] = "done" if rc == 0 else "failed"
     except Exception as ex:

@@ -230,16 +230,18 @@ def settings_get():
     allw = sorted((x.split() + ["agy"])[:3] for x in out.splitlines() if re.match(r"worker-\d+ \w+", x))
     allw.sort(key=lambda x: int(x[0].split("-")[1]))
     keys = {n: os.path.exists(os.path.join(sbx.SECRETS, n)) and os.path.getsize(os.path.join(sbx.SECRETS, n)) > 0
-            for n in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "qwen.key", "github.token", "gitlab.token")}
+            for n in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token", "notify.token")}
     for sk in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
         if sk in vals and vals[sk]:
             vals[sk] = mask_secret(vals[sk])
     return dict(project=ctx.PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
+                ranges={k: list(rule) for k, (rule, _) in EDITABLE.items() if isinstance(rule, tuple)},
                 file_only=dict(FILE_ONLY),
                 limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
                 workers=[dict(name=n, state=st, runtime=rt if (rt in runtimes.RUNTIMES or rt in VALID_RUNTIMES) else "agy") for n, st, rt in allw],
                 runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"], endpoint=bool(v.get("endpoint")),
-                                  optional_key=bool(v.get("optional_key"))) for k, v in runtimes.RUNTIMES.items()},
+                                  optional_key=bool(v.get("optional_key")), creatable=k in runtimes.CREATABLE)
+                          for k, v in runtimes.RUNTIMES.items()},
                 secrets=keys, api_spent_today=sbx.api_spent_today(), api_spent_month=sbx.api_spent(period="month"))
 
 

@@ -1,9 +1,9 @@
 // UI smoke test (tests/test_ui.sh runs it): the real page on the demo state, in jsdom, in polling mode - every tab and
-// sub-view renders, overview controls (autopilot and foreman pause switches) match fixture state and are keyboard reachable,
-// readiness summary on Settings checks runtimes and providers, file-only settings render with reasons, onboarding subsection
-// displays human-readable runtime/provider readiness, runtime recommendations widget (top pick vs no ready runtime), and choosing
-// AI guide, each kind of sheet opens (task, goal, run replay, search, document), the graph finds the critical path, and no script
-// error happens on the way. Exit code 0 = all ok.
+// sub-view renders, the overview controls (autopilot and foreman pause switches) match the fixture state, each kind of sheet
+// opens (task, goal, run replay, search, document), the graph finds the critical path, and the Settings pages work: eight
+// pages with their own content, one Save bar (unsaved edits survive a redraw, a refused value is marked at its field),
+// Remove / Add worker / New role, keys typed into a password field, and keyboard reachability. No script error may happen on
+// the way. Exit code 0 = all ok.
 const {JSDOM, VirtualConsole} = require('jsdom');
 const base = process.env.AF_URL || 'http://127.0.0.1:8171/';
 let failed = 0;
@@ -14,256 +14,8 @@ vc.on('error', e => errors.push('console.error: ' + e));
 setTimeout(() => { console.log('TIMEOUT; errors so far:\n' + errors.join('\n')); process.exit(3); }, 150000);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/**
- * Task 0200/0234: Verify that the WORKER_RUNTIME selector exposes the new runtimes:
- * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp, opencode, qwen, goose with their respective
- * selectable radio options, values, and help text/labels, and verify selection updates without throwing.
- */
-async function testNewRuntimesPresent(d, check, w, errors) {
-  check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
-  w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
-  errors = errors || (typeof errors !== 'undefined' ? errors : []);
-
-  const sixRtConfigs = [
-    {id: 'runtime-opt-copilot', val: 'copilot'},
-    {id: 'runtime-opt-mistral-vibe', val: 'mistral-vibe'},
-    {id: 'runtime-opt-ollama', val: 'ollama'},
-    {id: 'runtime-opt-vllm', val: 'vllm'},
-    {id: 'runtime-opt-lmstudio', val: 'lmstudio'},
-    {id: 'runtime-opt-llamacpp', val: 'llamacpp'}
-  ];
-  const goalRtConfigs = [
-    {id: 'runtime-opt-opencode', val: 'opencode'},
-    {id: 'runtime-opt-qwen', val: 'qwen'},
-    {id: 'runtime-opt-goose', val: 'goose'}
-  ];
-  const allRtConfigs = [...sixRtConfigs, ...goalRtConfigs];
-
-  const sixRtPresent = sixRtConfigs.length === 6 && sixRtConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
-    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
-    const help = label ? label.querySelector('.muted') : null;
-    return !!label && !!help && help.textContent.trim().length > 0;
-  });
-  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', sixRtPresent);
-
-  const goalRtPresent = goalRtConfigs.length === 3 && goalRtConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
-    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
-    const help = label ? label.querySelector('.muted') : null;
-    return !!label && !!help && help.textContent.trim().length > 0;
-  });
-  check('settings / workers: WORKER_RUNTIME selector exposes opencode, qwen and goose with help text', goalRtPresent);
-
-  let rtPickerNoThrow = true;
-  let rtPickerUpdatesSelection = true;
-  if (w && w.MouseEvent) {
-    for (const cfg of allRtConfigs) {
-      const el = d.getElementById(cfg.id);
-      if (!el) {
-        rtPickerUpdatesSelection = false;
-        continue;
-      }
-      try {
-        el.dispatchEvent(new w.MouseEvent('click', {bubbles: true}));
-      } catch (err) {
-        rtPickerNoThrow = false;
-        errors.push('Selecting ' + cfg.id + ' threw: ' + (err.message || err));
-      }
-      const checked = d.querySelector('input[name="addw-rt"]:checked');
-      if (!checked || checked.value !== cfg.val || !el.checked) {
-        rtPickerUpdatesSelection = false;
-      }
-    }
-    check('settings / workers: selecting each new runtime picker option does not throw and updates visible selection',
-          rtPickerNoThrow && rtPickerUpdatesSelection);
-  }
-  return sixRtPresent && goalRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
-}
-
-/**
- * Task 0224: Settings page runtime readiness + cost summary table.
- * Asserts that GET /api/readiness/status response renders a 'Runtime readiness' table
- * with one row per runtime, correct badges (null ready = 'unknown' badge, never false ready/not-ready),
- * honest cost/quota labels ('self-hosted, no API cost' for local-compat, never fabricated dollar amounts),
- * and handles empty and error states cleanly.
- */
-async function testRuntimeReadinessSummary(d, check, w, errors) {
-  check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
-  w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
-  errors = errors || (typeof errors !== 'undefined' ? errors : []);
-
-  const fixture = {
-    runtimes: {
-      copilot: {
-        ready: true,
-        reason: 'GitHub Copilot CLI ready and authenticated',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge'
-        }
-      },
-      'mistral-vibe': {
-        ready: false,
-        reason: 'mistral.key is not set',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge'
-        }
-      },
-      ollama: {
-        ready: null,
-        reason: 'Ollama local server status unknown: probe timed out',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)'
-        }
-      },
-      vllm: {
-        ready: null,
-        reason: 'vLLM endpoint status unknown',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)'
-        }
-      },
-      lmstudio: {
-        ready: false,
-        reason: 'LM Studio endpoint unreachable',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)'
-        }
-      },
-      llamacpp: {
-        ready: true,
-        reason: 'llama.cpp endpoint reachable',
-        cost_model: {
-          kind: 'unknown',
-          detail: 'Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)'
-        }
-      }
-    }
-  };
-
-  // Save previous state and apply fixture
-  if (w && w.eval) {
-    w.eval(`
-      window._origRUNTIME_STATUS = typeof RUNTIME_STATUS !== 'undefined' ? RUNTIME_STATUS : null;
-      window._origRuntimeStatusErr = typeof runtimeStatusErr !== 'undefined' ? runtimeStatusErr : null;
-      window._origRuntimeStatusBusy = typeof runtimeStatusBusy !== 'undefined' ? runtimeStatusBusy : false;
-      RUNTIME_STATUS = ${JSON.stringify(fixture)};
-      runtimeStatusErr = null;
-      runtimeStatusBusy = false;
-      renderSettings(true);
-    `);
-  } else {
-    if (typeof RUNTIME_STATUS !== 'undefined') RUNTIME_STATUS = fixture;
-    if (typeof runtimeStatusErr !== 'undefined') runtimeStatusErr = null;
-    if (typeof runtimeStatusBusy !== 'undefined') runtimeStatusBusy = false;
-    if (typeof renderSettings === 'function') renderSettings(true);
-  }
-
-  const table = d.getElementById('runtime-readiness-table');
-  const sixNames = ['copilot', 'mistral-vibe', 'ollama', 'vllm', 'lmstudio', 'llamacpp'];
-  const localCompatNames = ['ollama', 'vllm', 'lmstudio', 'llamacpp'];
-
-  // 1. Assert: All six new runtimes appear as rows in #runtime-readiness-table
-  const rows = sixNames.map(name => d.querySelector('.runtime-readiness-row[data-runtime="' + name + '"]'));
-  const allSixPresent = !!table && rows.every(r => !!r);
-  check('settings: runtime readiness table renders all six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)',
-        allSixPresent);
-
-  // 2. Assert: ready=null (ollama, vllm) renders explicit 'unknown' badge and NEVER green 'ok' class or 'Ready'/'Not ready' text
-  const rowOllama = d.querySelector('.runtime-readiness-row[data-runtime="ollama"]');
-  const rowVllm = d.querySelector('.runtime-readiness-row[data-runtime="vllm"]');
-  const badgeOllama = rowOllama ? rowOllama.querySelector('.badge') : null;
-  const badgeVllm = rowVllm ? rowVllm.querySelector('.badge') : null;
-  const ollamaUnknownOk = !!badgeOllama &&
-    badgeOllama.textContent.trim().toLowerCase() === 'unknown' &&
-    !badgeOllama.classList.contains('ok') &&
-    badgeOllama.classList.contains('unknown') &&
-    rowOllama.getAttribute('data-ready') === 'unknown';
-  const vllmUnknownOk = !!badgeVllm &&
-    badgeVllm.textContent.trim().toLowerCase() === 'unknown' &&
-    !badgeVllm.classList.contains('ok') &&
-    badgeVllm.classList.contains('unknown') &&
-    rowVllm.getAttribute('data-ready') === 'unknown';
-  check('settings: ready=null runtimes (ollama, vllm) render explicit unknown badge and never green ok',
-        ollamaUnknownOk && vllmUnknownOk);
-
-  // 3. Assert: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest 'self-hosted, no API cost' without fabricated dollar amounts ($ / USD)
-  const localCompatCostOk = localCompatNames.every(name => {
-    const row = d.querySelector('.runtime-readiness-row[data-runtime="' + name + '"]');
-    if (!row) return false;
-    const costEl = row.querySelector('.runtime-cost') || row;
-    const costText = costEl.textContent;
-    const hasSelfHosted = costText.includes('self-hosted, no API cost');
-    const noFabricatedDollars = !costText.includes('$') && !/\b\d+\s*(USD|dollars?)/i.test(costText);
-    return hasSelfHosted && noFabricatedDollars;
-  });
-  check('settings: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest self-hosted cost text without fabricated dollar amounts',
-        localCompatCostOk);
-
-  // 4. Assert: copilot and mistral-vibe render correct readiness badges and honest cost labels
-  const rowCopilot = d.querySelector('.runtime-readiness-row[data-runtime="copilot"]');
-  const badgeCopilot = rowCopilot ? rowCopilot.querySelector('.badge') : null;
-  const copilotOk = !!badgeCopilot && badgeCopilot.classList.contains('ok') && badgeCopilot.textContent.trim() === 'Ready';
-  const rowMistral = d.querySelector('.runtime-readiness-row[data-runtime="mistral-vibe"]');
-  const badgeMistral = rowMistral ? rowMistral.querySelector('.badge') : null;
-  const mistralOk = !!badgeMistral && badgeMistral.classList.contains('bad') && badgeMistral.textContent.trim() === 'Not ready';
-  const copilotCostOk = !!rowCopilot && rowCopilot.querySelector('.runtime-cost').textContent.includes('unknown');
-  const mistralCostOk = !!rowMistral && rowMistral.querySelector('.runtime-cost').textContent.includes('unknown');
-  check('settings: copilot and mistral-vibe render correct readiness badges and honest cost labels',
-        copilotOk && mistralOk && copilotCostOk && mistralCostOk);
-
-  // 5. Assert: empty state when endpoint returns empty runtimes object
-  if (w && w.eval) {
-    w.eval(`
-      RUNTIME_STATUS = { runtimes: {} };
-      runtimeStatusErr = null;
-      runtimeStatusBusy = false;
-      renderSettings(true);
-    `);
-  }
-  const emptyEl = d.getElementById('runtime-readiness-empty');
-  const emptyRows = d.querySelectorAll('.runtime-readiness-row');
-  const emptyOk = !!emptyEl && emptyRows.length === 0;
-  check('settings: runtime readiness shows empty state when runtimes list is empty',
-        emptyOk);
-
-  // 6. Assert: error state when endpoint fails
-  if (w && w.eval) {
-    w.eval(`
-      RUNTIME_STATUS = null;
-      runtimeStatusErr = 'HTTP 500: internal server error';
-      runtimeStatusBusy = false;
-      renderSettings(true);
-    `);
-  }
-  const errEl = d.getElementById('runtime-readiness-error');
-  const errRows = d.querySelectorAll('.runtime-readiness-row');
-  const errOk = !!errEl && errEl.textContent.includes('HTTP 500') && errRows.length === 0;
-  check('settings: runtime readiness shows error state when endpoint fails',
-        errOk);
-
-  // Restore state
-  if (w && w.eval) {
-    w.eval(`
-      RUNTIME_STATUS = window._origRUNTIME_STATUS;
-      runtimeStatusErr = window._origRuntimeStatusErr;
-      runtimeStatusBusy = window._origRuntimeStatusBusy;
-      renderSettings(true);
-    `);
-  }
-
-  return allSixPresent && ollamaUnknownOk && vllmUnknownOk && localCompatCostOk && copilotOk && mistralOk && emptyOk && errOk;
-}
-
 (async () => {
-  const dom = await JSDOM.fromURL(base + '#tab=overview&poll=1', {runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc, beforeParse(win) { win.fetch = (u, o) => fetch(new URL(u, base), o); win.EventSource = undefined; }});
+  const dom = await JSDOM.fromURL(base + '#tab=overview&poll=1', {runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc, beforeParse(win) { win.fetch = (u, o) => fetch(new URL(u, base), o); win.EventSource = undefined; win.HTMLCanvasElement.prototype.getContext = () => null; }});
   const w = dom.window, d = w.document;
   w.addEventListener('error', e => errors.push('window.error: ' + e.message + ' ' + (e.filename || '') + ':' + e.lineno));
   await sleep(6000);
@@ -336,8 +88,8 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
           !!fmToggle && fmToggle.disabled === false && (fmToggle.title === wantWorkingTip || fmToggle.getAttribute('title') === wantWorkingTip));
   }
   w.eval(`
-    window._origOverviewState = {g: F.goals, bl: F.backlog, onb: F.onboarding, ts: F.tasks};
-    F.goals = []; F.backlog = []; F.onboarding = []; F.tasks = [];
+    window._origOverviewState = {g: F.goals, bl: F.backlog, onb: F.onboarding, ts: F.tasks, oq: F.owner_questions, ks: F.killswitch};
+    F.goals = []; F.backlog = []; F.onboarding = []; F.tasks = []; F.owner_questions = []; F.killswitch = null;
     renderOverview(true);
   `);
   check('overview: explicit empty states render when arrays are empty',
@@ -359,6 +111,7 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
     F = window._origF; window._ferr = window._origFerr;
     F.goals = window._origOverviewState.g; F.backlog = window._origOverviewState.bl;
     F.onboarding = window._origOverviewState.onb; F.tasks = window._origOverviewState.ts;
+    F.owner_questions = window._origOverviewState.oq; F.killswitch = window._origOverviewState.ks;
     renderOverview(true);
   `);
   // Verify control switches when kill switch is engaged dynamically
@@ -535,7 +288,7 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
   w.eval(`
     TD.id = '0123-warn';
     TD.data = {task: {id: '0123-warn', goal: 'G1', title: 'Task with orphan warn', role: 'developer', status: 'pending', orphan_warning: true, orphan_streak: 3, orphan_limit: 5}};
-    SHEET.kind = 'task';
+    SHEET.kind = 'task'; SHEET.id = '0123-warn';
     renderTaskSheet();
   `);
   const sheetWarnBadge = d.querySelector('#sheet .sub .badge.warn');
@@ -545,6 +298,7 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
   w.eval(`
     TD.id = '0123-clean';
     TD.data = {task: {id: '0123-clean', goal: 'G1', title: 'Clean task', role: 'developer', status: 'pending', orphan_warning: false, orphan_streak: 1, orphan_limit: 5}};
+    SHEET.id = '0123-clean';
     renderTaskSheet();
   `);
   const sheetCleanBadge = d.querySelector('#sheet .sub .badge.warn');
@@ -552,7 +306,7 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
 
   w.eval(`
     F.tasks = window._origTasks0123;
-    SHEET.kind = null;
+    SHEET.kind = null; SHEET.id = null;
     renderTasks(true);
   `);
   // the egress view with a blocked host, an alarm and the kill switch it tripped (the demo has no proxy log)
@@ -578,833 +332,150 @@ async function testRuntimeReadinessSummary(d, check, w, errors) {
     !!fixBtn && fixBtn.tagName === 'BUTTON' && !!fixBtn.getAttribute('aria-label'));
   check('system: collapsible checks panel exists with summary',
     !!d.getElementById('all-checks') && !!d.querySelector('#all-checks summary'));
-  w.eval(`SYS.health = null; SYS.err.health = null; SYS.healthBusy = false; renderSystem(true);`);
-  check('system: health view shows explicit empty state when not yet run',
-    txt('system').includes('Health check not yet run'));
+  // drawing the page starts the load itself, so "nothing yet" shows as "Checking the install…" (never a blank pane)
+  w.eval(`SYS.health = null; SYS.err.health = null; SYS.healthBusy = true; renderSystem(true);`);
+  check('system: health view shows an explicit state (not a blank pane) while there is no answer yet',
+    /Checking the install|Health check not yet run/.test(txt('system')));
+  w.eval(`SYS.health = null; SYS.err.health = 'boom'; SYS.healthBusy = true; renderSystem(true);`);
+  check('system: health view says so when the check failed', txt('system').includes('Health check failed: boom'));
+  w.eval(`SYS.err.health = null; SYS.healthBusy = false;`);
   check('no page error shown', !txt('jserr'));
   click('nav button[data-t="settings"]'); await sleep(800);
+  // ---- Settings: eight pages, each with its own content; one Save bar; Remove / add worker / add role; goto
+  {
+    const S_ = w.eval('S'), pages = w.eval('SPAGES'), PK = w.eval('PAGEKEYS');
+    const sgo = async pg => { w.eval("setSub('settings','" + pg + "')"); await sleep(700); };
+    const stxt = () => (d.getElementById('settings') || {}).textContent || '';
+    const calls = [], realFetch = w.fetch;
+    const stub = (re, answer) => { w.fetch = (u, o) => { if (re.test(String(u)) && o && o.method === 'POST') { calls.push({url: String(u), body: o.body ? JSON.parse(o.body) : null}); return Promise.resolve({json: async () => answer(calls[calls.length - 1])}); } return realFetch(u, o); }; };
+    const unstub = () => { w.fetch = realFetch; calls.length = 0; };
+    const fire = (el, type) => el.dispatchEvent(new w.Event(type, {bubbles: true}));
+    const marks = {workers: 'Kill switch', runtimes: 'API keys', models: 'Who plans and reviews', project: 'Notifications', money: 'Budgets', knowledge: 'Roles', limits: 'Limits', advanced: 'Rhythm and task size'};
+    check('settings: the default page is Workers and there are eight pages', w.eval('SPAGES.length') === 8 && pages[0] === 'workers' && d.querySelectorAll('#settings-seg button').length === 8);
+    w.eval("S.values.FORGE_KIND = 'github'; S.values.UPSTREAM_REPO = 'me/app'");
+    for (const pg of pages) {
+      await sgo(pg);
+      const t = stxt();
+      check('settings / ' + pg + ': shows its own content, no leftover readiness cards', t.includes(marks[pg]) && !/Runtime readiness|Onboarding|Provider readiness/.test(t));
+      const missing = (PK[pg] || '').split(' ').filter(Boolean).filter(k => !d.getElementById('set-' + k));
+      check('settings / ' + pg + ': every setting of the page has a control (missing: ' + missing.join(' ') + ')', !missing.length);
+      const raw = [...d.querySelectorAll('#settings .setrow > label')].map(l => l.firstChild && l.firstChild.textContent.trim()).filter(x => /^[A-Z][A-Z0-9_]{3,}$/.test(x));
+      check('settings / ' + pg + ': no setting is labelled with its raw key name (' + raw.join(' ') + ')', !raw.length);
+    }
+    const noHelp = Object.values(PK).join(' ').split(' ').filter(k => !w.eval('HELP')[k] || !w.eval('LABEL')[k]);
+    check('settings: every setting has a label and a description (' + noHelp.join(' ') + ')', !noHelp.length);
+    check('settings: no description claims "applies live" (it is not true of most of them)', !Object.values(w.eval('HELP')).some(h => /applies live/i.test(h)));
 
-  // Settings / Workers: task 0128 runtime model fields for OpenCode, Qwen Code, Goose
-  click('#settings-seg button[data-v="team"]'); await sleep(800);
-  const rtModelFieldConfigs = [
-    {id: 'field-opencode-model', key: 'OPENCODE_MODEL', runtime: 'opencode'},
-    {id: 'field-qwen-model', key: 'QWEN_MODEL', runtime: 'qwen-code'},
-    {id: 'field-goose-model', key: 'GOOSE_MODEL', runtime: 'goose'}
-  ];
-  const rtModelFieldsOk = rtModelFieldConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    return !!el && el.tagName === 'INPUT';
-  });
-  check('settings / workers: field-opencode-model, field-qwen-model and field-goose-model are present', rtModelFieldsOk);
+    // workers: Remove, add picker only offers what can really be created
+    await sgo('workers');
+    const nW = (S_.workers || []).length;
+    check('settings / workers: every worker has a Remove button', nW > 0 && d.querySelectorAll('[data-wremove]').length === nW);
+    const creatable = Object.keys(S_.runtimes).filter(k => S_.runtimes[k].creatable).sort();
+    d.getElementById('add-worker').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(500);
+    const offered = [...d.querySelectorAll('input[name="addw-rt"]')].map(i => i.value).sort();
+    check('settings / workers: the picker offers exactly the runtimes the server can create (' + offered.join(',') + ')', offered.length > 0 && JSON.stringify(offered) === JSON.stringify(creatable));
+    d.getElementById('addw-cancel').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(400);
+    const victim = d.querySelector('[data-wremove]').dataset.wremove;
+    stub(/\/api\/workers/, () => ({id: 'j1', state: 'done', worker: victim}));
+    w.confirm = () => false; d.querySelector('[data-wremove]').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(400);
+    check('settings / workers: Remove asks first and does nothing when declined', !calls.length);
+    w.confirm = () => true; d.querySelector('[data-wremove]').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(1500);
+    check('settings / workers: Remove posts the removal of that worker', calls.length === 1 && calls[0].body.action === 'remove' && calls[0].body.worker === victim);
+    unstub();
 
-  const rtModelHelpOk = rtModelFieldConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    const help = d.querySelector('[for="' + cfg.id + '"] .help') || (el && el.closest('.setrow') && el.closest('.setrow').querySelector('.help'));
-    return !!help && help.textContent.trim().length > 0;
-  });
-  check('settings / workers: runtime model fields each have a non-empty help text element', rtModelHelpOk);
+    // knowledge: a new role can be added; an existing name is refused
+    await sgo('knowledge'); await sleep(900);
+    check('settings / knowledge: there is a button to add a role', !!d.getElementById('new-role'));
+    d.getElementById('new-role').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(400);
+    const nm = d.getElementById('nr-name'), ms = d.getElementById('nr-mission');
+    nm.value = 'tester'; ms.value = 'x'; d.getElementById('nr-create').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(300);
+    check('settings / knowledge: a role that exists is refused with a message', /already exists/.test(txt('nr-err')));
+    stub(/\/api\/doc$/, () => ({ok: true}));
+    nm.value = 'Data Admin'; ms.value = 'keep the schema safe'; d.getElementById('nr-create').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(900);
+    check('settings / knowledge: the new role is saved as role:data-admin with its mission', calls.some(c => c.body && c.body.name === 'role:data-admin' && /\*\*Mission:\*\* keep the schema safe/.test(c.body.text)));
+    unstub(); w.eval('closeSheet()');
 
-  const rtModelKeyboardOk = rtModelFieldConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    return !!el && el.tabIndex !== -1 && el.getAttribute('tabindex') !== '-1';
-  });
-  check('settings / workers: runtime model fields are reachable by keyboard in tab order', rtModelKeyboardOk);
-  check('settings / workers: field-opencode-model, field-qwen-model and field-goose-model present, with help text, and reachable by keyboard',
-        rtModelFieldsOk && rtModelHelpOk && rtModelKeyboardOk);
+    // the Save bar: edits from several pages are collected, survive a redraw and a page change, can be discarded or saved
+    await sgo('project');
+    const bar = d.getElementById('savebar'), tz = d.getElementById('set-LOCAL_TZ'), orig = tz.value;
+    check('settings: the Save bar is hidden while nothing is edited', bar.hidden);
+    tz.value = 'Europe/Berlin'; fire(tz, 'input');
+    check('settings: editing shows the Save bar with the count', !bar.hidden && /1 unsaved change/.test(txt('save-count')));
+    w.eval('schedule(true)'); await sleep(500);
+    check('settings: an unsaved edit survives a redraw', d.getElementById('set-LOCAL_TZ').value === 'Europe/Berlin' && !bar.hidden);
+    await sgo('money'); const mo = d.getElementById('set-API_DAILY_BUDGET_USD'); mo.value = '7'; fire(mo, 'input');
+    check('settings: edits on two pages count together and name the pages', /2 unsaved changes/.test(txt('save-count')) && /Project/.test(txt('save-count')) && /Money/.test(txt('save-count')));
+    await sgo('project');
+    check('settings: an unsaved edit survives a change of page', d.getElementById('set-LOCAL_TZ').value === 'Europe/Berlin');
+    d.getElementById('discard-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(600);
+    check('settings: Discard puts the saved values back and hides the bar', d.getElementById('set-LOCAL_TZ').value === orig && d.getElementById('savebar').hidden);
+    const tz2 = d.getElementById('set-LOCAL_TZ'); tz2.value = 'Mars/Base'; fire(tz2, 'input');
+    stub(/\/api\/settings/, () => ({ok: false, errors: {LOCAL_TZ: 'unknown time zone'}}));
+    d.getElementById('save-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(800);
+    check('settings: a refused value is marked at its field, the edit is kept and the bar says why',
+          /unknown time zone/.test(txt('err-LOCAL_TZ')) && d.getElementById('set-LOCAL_TZ').value === 'Mars/Base' && !d.getElementById('savebar').hidden && /Not saved/.test(txt('save-msg')));
+    check('settings: only what was changed is sent', calls.length === 1 && JSON.stringify(Object.keys(calls[0].body.changes)) === '["LOCAL_TZ"]');
+    unstub(); stub(/\/api\/settings/, () => ({ok: true}));
+    d.getElementById('save-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(1500);
+    check('settings: after a successful save the bar closes', d.getElementById('savebar').hidden || /Saved/.test(txt('save-msg')));
+    unstub();
 
-  const rtModelReadinessOk = rtModelFieldConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    const badge = el ? (el.parentElement.querySelector('.badge') || (el.closest('.setrow') && el.closest('.setrow').querySelector('.badge'))) : null;
-    return !!badge && badge.style.display !== 'none' && badge.textContent.trim().length > 0;
-  });
-  check('settings / workers: runtime model fields each have a visible readiness indicator element without further interaction', rtModelReadinessOk);
+    // going to one setting (the "Fix it" buttons of System use this)
+    w.eval("settingsGoto('settings:ORPHAN_LIMIT')"); await sleep(1200);
+    check('settings: goto a setting opens its page and shows the row', w.eval('SUB.settings') === 'advanced' && !!d.getElementById('row-ORPHAN_LIMIT'));
+    w.eval("settingsGoto('key:openai_api_key')"); await sleep(1200);
+    check('settings: goto a key opens the Runtimes page at that key', w.eval('SUB.settings') === 'runtimes' && !!d.getElementById('secret-openai.key'));
 
-  // Settings / Workers: add-worker runtime picker options for OpenCode, Qwen Code, Goose
-  const addwForm = d.getElementById('addw-form');
-  if (addwForm && addwForm.style.display === 'none') {
-    click('#add-worker');
-    await sleep(400);
+    // keys: the value is typed into a field that exists only while it is open and is never put into the page
+    await sgo('runtimes');
+    d.querySelector('[data-keyopen="gemini.key"]').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(400);
+    const kv = d.getElementById('key-val'); kv.value = 'sk-test-123'; fire(kv, 'input');
+    check('settings / runtimes: a key is typed into a password field', kv.type === 'password');
+    stub(/\/api\/secret/, () => ({ok: true})); d.querySelector('[data-keysave]').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(1200);
+    check('settings / runtimes: saving a key posts it once and clears the field', calls.length === 1 && calls[0].body.name === 'gemini.key' && calls[0].body.value === 'sk-test-123' && !d.getElementById('key-val') && !d.getElementById('settings').innerHTML.includes('sk-test-123'));
+    unstub();
+
+    // failures and empty states are said out loud, never a blank pane
+    w.eval(`window._S0 = S; window._ferr0 = window._ferr; S = null; window._ferr = 'network timeout'; renderSettings(true);`);
+    check('settings: when the settings cannot be loaded it says so and offers Try again',
+          /Could not load settings: network timeout/.test(stxt()) && !!d.querySelector('#settings [data-retry]'));
+    w.eval(`S = window._S0; window._ferr = window._ferr0; renderSettings(true);`);
+    await sgo('knowledge');
+    w.eval(`window._L0 = DOCS.list; DOCS.at = Date.now() + 600000; DOCS.list = []; renderSettings(true);`);
+    check('settings / knowledge: no documents and no roles are said out loud', /No documents yet/.test(stxt()) && /No roles yet/.test(stxt()));
+    w.eval(`DOCS.list = {error: 'boom'}; renderSettings(true);`);
+    check('settings / knowledge: a failed document list says why and offers Try again',
+          /Could not load the documents: boom/.test(stxt()) && !!d.querySelector('#settings [data-docsreload]'));
+    w.eval(`DOCS.list = window._L0; DOCS.at = Date.now(); renderSettings(true);`);
+
+    // runtimes: a local model is honest about its cost (no invented dollar amount)
+    await sgo('runtimes');
+    w.eval(`window._RS0 = RT.status; window._RD0 = RT.data; RT.data = {runtimes: {}, providers: {}}; RT.status = {runtimes: {ollama: {ready: null, reason: '', cost_model: {kind: 'self-hosted', detail: 'self-hosted'}}}}; renderSettings(true);`);
+    const orow = d.querySelector('#settings [data-runtime="ollama"]');
+    check('settings / runtimes: a local runtime says "your own hardware, no API cost" and shows no dollar amount',
+          !!orow && /your own hardware, no API cost/.test(orow.textContent) && !/\$/.test(orow.textContent));
+    check('settings / runtimes: a runtime whose readiness is unknown is never shown as ready',
+          !!orow && !!orow.querySelector('.badge[data-state="unknown"]') && !orow.querySelector('.badge.ok'));
+    w.eval(`RT.status = window._RS0; RT.data = window._RD0; renderSettings(true);`);
+
+    // keyboard: every control on every page is a real button, input, select or textarea, or a link/row that can take focus
+    const bad = [];
+    for (const pg of pages) {
+      await sgo(pg);
+      d.querySelectorAll('#settings [onclick], #settings [data-open], #settings [data-doc], #settings [data-wremove], #settings [data-keyopen], #settings [data-addw-for], #settings [data-gosetting]').forEach(el => {
+        const native = /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName), focusable = el.getAttribute('tabindex') === '0' && el.getAttribute('role') === 'button';
+        if (!native && !focusable) bad.push(pg + ':' + el.tagName.toLowerCase() + (el.id ? '#' + el.id : ''));
+      });
+      d.querySelectorAll('#settings input:not([type=hidden]), #settings select, #settings textarea').forEach(el => {
+        if (!(el.getAttribute('aria-label') || d.querySelector('label[for="' + el.id + '"]') || el.closest('label') || el.closest('.setrow'))) bad.push(pg + ':unlabelled ' + (el.id || el.name || el.type));
+      });
+      if (d.querySelector('#settings [tabindex="-1"]')) bad.push(pg + ':tabindex=-1');
+    }
+    check('settings: every control is reachable by keyboard and has a label (' + bad.slice(0, 6).join(', ') + ')', !bad.length);
+    await sgo('workers');
   }
-  const rtPickerConfigs = [
-    {id: 'runtime-opt-opencode', val: 'opencode'},
-    {id: 'runtime-opt-qwen-code', val: 'qwen-code'},
-    {id: 'runtime-opt-goose', val: 'goose'}
-  ];
-  const rtPickerPresent = rtPickerConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    return !!el && el.tagName === 'INPUT' && el.type === 'radio';
-  });
-  check('settings / workers: add-worker runtime picker exposes selectable elements with ids runtime-opt-opencode, runtime-opt-qwen-code and runtime-opt-goose', rtPickerPresent);
-
-  // Settings / Workers: task 0200 selectable runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)
-  await testNewRuntimesPresent(d, check, w, errors);
-
-  let rtPickerNoThrow = true;
-  let rtPickerUpdatesSelection = true;
-  for (const cfg of rtPickerConfigs) {
-    const el = d.getElementById(cfg.id);
-    if (!el) {
-      rtPickerUpdatesSelection = false;
-      continue;
-    }
-    try {
-      el.dispatchEvent(new w.MouseEvent('click', {bubbles: true}));
-    } catch (err) {
-      rtPickerNoThrow = false;
-      errors.push('Selecting ' + cfg.id + ' threw: ' + (err.message || err));
-    }
-    const checked = d.querySelector('input[name="addw-rt"]:checked');
-    if (!checked || checked.value !== cfg.val || !el.checked) {
-      rtPickerUpdatesSelection = false;
-    }
-  }
-  check('settings / workers: selecting each runtime picker option does not throw and updates visible selection',
-        rtPickerNoThrow && rtPickerUpdatesSelection);
-
-  if (d.getElementById('addw-cancel')) {
-    click('#addw-cancel');
-    await sleep(200);
-  }
-
-  // Settings / Project: task 0024 fields
-  click('#settings-seg button[data-v="project"]'); await sleep(800);
-  const projKeys0024 = ['DIFF_MAX', 'MAX_GOAL_ROUNDS', 'LESSONS_MAX', 'LOOP_SEC', 'LOCAL_TZ', 'SHARED_FILES', 'VISION_FILE', 'PROJECT_DIR'];
-  const projOk = projKeys0024.every(k => {
-    const el = d.getElementById('set-' + k);
-    const help = d.querySelector('[for="set-' + k + '"] .help');
-    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
-  });
-  check('settings / project: task 0024 fields present as inputs with help stating live reload', projOk);
-
-  // Settings / Project: task 0119 orphan settings fields
-  const orphanKeys = ['ORPHAN_LIMIT', 'ORPHAN_WARN'];
-  const orphanFieldsOk = orphanKeys.every(k => {
-    const el = d.getElementById('set-' + k);
-    const help = d.querySelector('[for="set-' + k + '"] .help');
-    return !!el && el.tagName === 'INPUT' && el.type === 'number' &&
-      !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
-  });
-  const orphanHelpWarn = (d.querySelector('[for="set-ORPHAN_WARN"] .help') || {}).textContent || '';
-  const orphanHelpLimit = (d.querySelector('[for="set-ORPHAN_LIMIT"] .help') || {}).textContent || '';
-  const orphanHelpOk = orphanHelpWarn.includes('before a warning is raised') &&
-                       orphanHelpLimit.includes('before the task is blocked');
-  const orphanInputs = orphanKeys.map(k => d.getElementById('set-' + k)).filter(Boolean);
-  const orphanKeyboardOk = orphanInputs.length === 2 && orphanInputs.every(el =>
-    el.tabIndex >= 0 || ['INPUT', 'SELECT', 'BUTTON', 'TEXTAREA'].includes(el.tagName)
-  );
-  const elLimit = d.getElementById('set-ORPHAN_LIMIT');
-  const elWarn = d.getElementById('set-ORPHAN_WARN');
-  const orphanDefaultsOk = elLimit && elLimit.value === '5' && elWarn && elWarn.value === '3';
-  check('settings / project: ORPHAN_LIMIT and ORPHAN_WARN present as number inputs with help text, defaults, and reachable by keyboard',
-        orphanFieldsOk && orphanHelpOk && orphanKeyboardOk && orphanDefaultsOk);
-
-  // Settings / Project: changing ORPHAN_LIMIT or ORPHAN_WARN posts to generic settings endpoint
-  let postedBody = null;
-  const origFetch = w.fetch;
-  w.fetch = async (url, opts) => {
-    if (String(url).includes('/api/settings') && opts && opts.method === 'POST') {
-      try { postedBody = JSON.parse(opts.body); } catch (e) {}
-      return { json: async () => ({ ok: true }) };
-    }
-    return origFetch(url, opts);
-  };
-  if (elLimit) elLimit.value = '7';
-  await w.saveSettings();
-  const limitSaved = postedBody && postedBody.changes && postedBody.changes.ORPHAN_LIMIT === '7';
-
-  postedBody = null;
-  if (elWarn) elWarn.value = '4';
-  await w.saveSettings();
-  const warnSaved = postedBody && postedBody.changes && postedBody.changes.ORPHAN_WARN === '4';
-  w.fetch = origFetch;
-  check('settings / project: changing ORPHAN_LIMIT and ORPHAN_WARN posts to generic settings endpoint',
-        limitSaved && warnSaved);
-
-  // Settings / Limits: task 0024 fields
-  click('#settings-seg button[data-v="limits"]'); await sleep(800);
-  const limitsKeys0024 = ['DAILY_TOKEN_BUDGET', 'MAX_RUNS_PER_DAY', 'RUN_TIMEOUT_MAX_MIN', 'QUOTA_MODEL_FILTER', 'POLL_SEC'];
-  const limitsOk = limitsKeys0024.every(k => {
-    const el = d.getElementById('set-' + k);
-    const help = d.querySelector('[for="set-' + k + '"] .help');
-    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
-  });
-  check('settings / limits: task 0024 fields present as inputs with help stating live reload', limitsOk);
-
-  // Settings / Models: task 0024 fields
-  click('#settings-seg button[data-v="models"]'); await sleep(800);
-  const oaiBase = d.getElementById('set-OPENAI_API_BASE');
-  const oaiHelp = d.querySelector('[for="set-OPENAI_API_BASE"] .help');
-  check('settings / models: OPENAI_API_BASE present as input with help stating live reload',
-        !!oaiBase && !!oaiHelp && oaiHelp.textContent.trim().length > 0 && oaiHelp.textContent.toLowerCase().includes('applies live'));
-
-  // Settings / Models: task 0078 provider fields and file-only note
-  const oaiRow = d.querySelector('.prov-row[data-p="openai-api"]');
-  const geminiRow = d.querySelector('.prov-row[data-p="gemini-api"]');
-  const oaiInputs = !!oaiRow && !!oaiRow.querySelector('#set-OPENAI_API_BASE') && !!oaiRow.querySelector('#set-OPENAI_MODEL');
-  const geminiInputs = !!geminiRow && !!geminiRow.querySelector('#set-GEMINI_API_BASE') && !!geminiRow.querySelector('#set-GEMINI_MODEL');
-  const oaiNote = !!oaiRow && oaiRow.textContent.toLowerCase().includes('file-only') && oaiRow.textContent.includes('bin/secret-set');
-  const geminiNote = !!geminiRow && geminiRow.textContent.toLowerCase().includes('file-only') && geminiRow.textContent.includes('bin/secret-set');
-  const oaiHelpText = !!oaiRow && !!oaiRow.querySelector('[for="set-OPENAI_API_BASE"] .help') && !!oaiRow.querySelector('[for="set-OPENAI_MODEL"] .help');
-  const geminiHelpText = !!geminiRow && !!geminiRow.querySelector('[for="set-GEMINI_API_BASE"] .help') && !!geminiRow.querySelector('[for="set-GEMINI_MODEL"] .help');
-  check('settings / models: openai-api and gemini-api rows render with editable base/model inputs, help text, and file-only API-key note',
-        oaiInputs && geminiInputs && oaiNote && geminiNote && oaiHelpText && geminiHelpText);
-
-  // Settings / Models: ensure provider setting inputs have unique DOM ids (no duplicates across lists)
-  const oaiBaseCount = d.querySelectorAll('#set-OPENAI_API_BASE').length;
-  const oaiModelCount = d.querySelectorAll('#set-OPENAI_MODEL').length;
-  const geminiBaseCount = d.querySelectorAll('#set-GEMINI_API_BASE').length;
-  const geminiModelCount = d.querySelectorAll('#set-GEMINI_MODEL').length;
-  check('settings / models: provider inputs have unique DOM ids (no duplicates)',
-        oaiBaseCount === 1 && oaiModelCount === 1 && geminiBaseCount === 1 && geminiModelCount === 1);
-
-  // Settings / Models: validation errors display inline next to provider fields
-  w.eval(`
-    document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());
-    const errs = {OPENAI_MODEL: 'invalid model name', OPENAI_API_BASE: 'invalid URL'};
-    for (const [k, msg] of Object.entries(errs)) {
-      const el = $('set-' + k);
-      if (el) {
-        const det = el.closest('details');
-        if (det) det.open = true;
-        el.insertAdjacentHTML('afterend', '<div class="seterr live">' + esc(msg) + '</div>');
-      }
-    }
-  `);
-  const oaiModelErr = d.querySelector('#set-OPENAI_MODEL + .seterr.live');
-  const oaiBaseErr = d.querySelector('#set-OPENAI_API_BASE + .seterr.live');
-  check('settings / models: validation errors display inline next to provider fields',
-        !!oaiModelErr && oaiModelErr.textContent.includes('invalid model name') &&
-        !!oaiBaseErr && oaiBaseErr.textContent.includes('invalid URL'));
-  w.eval("document.querySelectorAll('#settings .seterr.live').forEach(x => x.remove());");
-
-  // Settings / Money: task 0024 PROJECT_* budget fields
-  click('#settings-seg button[data-v="money"]'); await sleep(800);
-  const moneyKeys0024 = ['PROJECT_DAILY_BUDGET_USD', 'PROJECT_MONTHLY_BUDGET_USD'];
-  const moneyOk = moneyKeys0024.every(k => {
-    const el = d.getElementById('set-' + k);
-    const help = d.querySelector('[for="set-' + k + '"] .help');
-    return !!el && !!help && help.textContent.trim().length > 0 && help.textContent.toLowerCase().includes('applies live');
-  });
-  check('settings / money: PROJECT_* budget fields present as inputs with help stating live reload', moneyOk);
-
-  // Settings: restart text accuracy
-  const restartHelpOk = w.eval("HELP.FORGE_URL.includes('restart') && HELP.FORGE_REPO.includes('restart')");
-  check('settings: keys requiring service restart state so explicitly in help', restartHelpOk);
-
-  // Settings / Knowledge: doc rows keyboard reachable
-  click('#settings-seg button[data-v="knowledge"]'); await sleep(800);
-  const docRows = [...d.querySelectorAll('.docrow')];
-  check('settings / knowledge: document rows are keyboard reachable',
-        docRows.length > 0 && docRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
-
-  // Settings: all interactive controls keyboard reachable
-  const setActs = [...d.querySelectorAll('#t-settings input, #t-settings select, #t-settings button, #t-settings textarea, #t-settings [role="button"]')];
-  check('settings: all interactive controls reachable by keyboard',
-        setActs.length > 0 && setActs.every(el => el.tabIndex >= 0 || ['INPUT', 'SELECT', 'BUTTON', 'TEXTAREA'].includes(el.tagName)));
-
-  // Settings: empty states for workers and docs
-  w.eval(`
-    window._origS = S;
-    window._origDOCS = DOCS.list;
-    DOCS.list = [];
-    renderSettings(true);
-  `);
-  check('settings / knowledge: explicit empty message when documents list is empty',
-        txt('settings').includes('No documents yet') || txt('settings').includes('No roles defined yet'));
-
-  w.eval(`
-    S = Object.assign({}, window._origS, {workers: []});
-    SUB.settings = 'team';
-    renderSettings(true);
-  `);
-  check('settings / workers: explicit empty message when worker pool is empty',
-        txt('settings').includes('No workers configured yet'));
-
-  // Settings: error state on fetch failure
-  w.eval(`
-    S = null;
-    window._origFerr = window._ferr;
-    window._ferr = 'network timeout';
-    renderSettings(true);
-  `);
-  check('settings: explicit error message when fetch failed and S is null',
-        txt('settings').includes('Could not load settings') || txt('settings').includes('network timeout'));
-
-  // Restore settings state
-  w.eval(`
-    S = window._origS;
-    DOCS.list = window._origDOCS;
-    window._ferr = window._origFerr;
-    SUB.settings = 'project';
-    renderSettings(true);
-  `);
-
-  // Settings / File-only: task 0164 file-only settings subsection
-  const fileOnlyFixture = {
-    FORGE_URL: 'Install-time internal git forge URL; set in etc/forge.conf and requires restart.',
-    FORGE_REPO: 'Install-time default repository; set in etc/forge.conf and requires restart.'
-  };
-  w.eval(`
-    window._origSFileOnly = S;
-    S = Object.assign({}, S, {
-      file_only: ` + JSON.stringify(fileOnlyFixture) + `
-    });
-    renderSettings(true);
-  `);
-  const fileOnlyEntries = Object.entries(fileOnlyFixture);
-  const fileOnlyElementsOk = fileOnlyEntries.length > 0 && fileOnlyEntries.every(([k, reason]) => {
-    const el = d.querySelector('.setting-file-only[data-key="' + k + '"]');
-    return !!el && el.textContent.includes(reason);
-  });
-  const fileOnlyCountOk = d.querySelectorAll('.setting-file-only').length === fileOnlyEntries.length;
-  check('settings: file-only subsection renders .setting-file-only[data-key="<KEY>"] with reason text for each entry',
-        fileOnlyElementsOk && fileOnlyCountOk);
-
-  // Settings / File-only: absence when file_only is empty
-  w.eval(`
-    S = Object.assign({}, S, {file_only: {}});
-    renderSettings(true);
-  `);
-  const fileOnlyEmptyOk = d.querySelectorAll('.setting-file-only').length === 0;
-  check('settings: no .setting-file-only elements present when file_only is empty',
-        fileOnlyEmptyOk);
-
-  // Settings / File-only: absence when file_only is absent
-  w.eval(`
-    S = Object.assign({}, S);
-    delete S.file_only;
-    renderSettings(true);
-  `);
-  const fileOnlyAbsentOk = d.querySelectorAll('.setting-file-only').length === 0;
-  check('settings: no .setting-file-only elements present when file_only is absent',
-        fileOnlyAbsentOk);
-
-  // Restore settings state
-  w.eval(`
-    S = window._origSFileOnly;
-    renderSettings(true);
-  `);
-
-  // Settings / Readiness: Runtimes & providers summary
-  w.eval(`
-    window._origREADINESS = READINESS;
-    window._origReadinessErr = readinessErr;
-    window._origReadinessBusy = readinessBusy;
-    READINESS = {
-      runtimes: {
-        claude: {state: 'ok', detail: 'Claude Code CLI installed and configured'},
-        codex: {state: 'missing_setting', detail: 'OPENAI_API_KEY is not set'}
-      },
-      providers: {
-        'claude-cli': {state: 'ok', detail: 'Claude subscription ready'},
-        'gemini-api': {state: 'missing_egress', detail: 'generativelanguage.googleapis.com missing from egress allowlist'}
-      }
-    };
-    readinessErr = null;
-    readinessBusy = false;
-    readinessAt = Date.now();
-    renderSettings(true);
-  `);
-  const readRows = [...d.querySelectorAll('.readiness-row')];
-  const readNames = readRows.map(r => r.dataset.name);
-  const expectedNames = ['claude', 'codex', 'claude-cli', 'gemini-api'];
-  check('settings: readiness summary renders a row for every runtime/provider in mocked response',
-        readRows.length === 4 && expectedNames.every(n => readNames.includes(n)));
-
-  const readyBadges = [...d.querySelectorAll('.readiness-row .badge.ok')].filter(b => b.textContent.includes('Ready'));
-  const missingBadges = [...d.querySelectorAll('.readiness-row .badge.warn')].filter(b =>
-    b.textContent.includes('Missing setting') || b.textContent.includes('Missing egress')
-  );
-  check('settings: readiness summary renders visible Ready badge and Missing setting/egress badge text in DOM',
-        readyBadges.length > 0 && missingBadges.length > 0);
-
-  const rowClaude = d.querySelector('.readiness-row[data-name="claude"]');
-  const rowCodex = d.querySelector('.readiness-row[data-name="codex"]');
-  const rowGemini = d.querySelector('.readiness-row[data-name="gemini-api"]');
-  const claudeBadge = rowClaude ? rowClaude.querySelector('.badge') : null;
-  const codexBadge = rowCodex ? rowCodex.querySelector('.badge') : null;
-  const geminiBadge = rowGemini ? rowGemini.querySelector('.badge') : null;
-  check('settings: missing_setting and missing_egress visually distinguished from ok by class and text',
-        !!claudeBadge && claudeBadge.classList.contains('ok') && claudeBadge.textContent.trim() === 'Ready' &&
-        !!codexBadge && codexBadge.classList.contains('warn') && codexBadge.textContent.trim() === 'Missing setting' &&
-        !!geminiBadge && geminiBadge.classList.contains('warn') && geminiBadge.textContent.trim() === 'Missing egress');
-
-  // Settings / Readiness: OpenCode, Qwen Code, and Goose summary rows and badges
-  w.eval(`
-    READINESS = {
-      runtimes: {
-        opencode: {state: 'ok', detail: 'OpenCode CLI ready'},
-        'qwen-code': {state: 'missing_setting', detail: 'qwen.key is not set'},
-        goose: {state: 'missing_egress', detail: 'generativelanguage.googleapis.com missing from egress allowlist'}
-      },
-      providers: {}
-    };
-    renderSettings(true);
-  `);
-  const rtSummaryRows = [...d.querySelectorAll('.readiness-row')];
-  const rtSummaryNames = rtSummaryRows.map(r => r.dataset.name);
-  const expectedRtSummary = ['opencode', 'qwen-code', 'goose'];
-  const rtSummaryOk = rtSummaryRows.length === 3 && expectedRtSummary.every(n => rtSummaryNames.includes(n));
-  const rowOpencode = d.querySelector('.readiness-row[data-name="opencode"]');
-  const rowQwen = d.querySelector('.readiness-row[data-name="qwen-code"]');
-  const rowGoose = d.querySelector('.readiness-row[data-name="goose"]');
-  const badgeOpencode = rowOpencode ? rowOpencode.querySelector('.badge') : null;
-  const badgeQwen = rowQwen ? rowQwen.querySelector('.badge') : null;
-  const badgeGoose = rowGoose ? rowGoose.querySelector('.badge') : null;
-  const rtSummaryBadgesOk = !!badgeOpencode && badgeOpencode.classList.contains('ok') && badgeOpencode.textContent.trim() === 'Ready' &&
-                            !!badgeQwen && badgeQwen.classList.contains('warn') && badgeQwen.textContent.trim() === 'Missing setting' &&
-                            !!badgeGoose && badgeGoose.classList.contains('warn') && badgeGoose.textContent.trim() === 'Missing egress';
-  check('settings: readiness summary renders opencode, qwen-code, and goose rows with correct status badges',
-        rtSummaryOk && rtSummaryBadgesOk);
-
-  // Loading state
-  w.eval(`
-    READINESS = null;
-    readinessErr = null;
-    readinessBusy = true;
-    renderSettings(true);
-  `);
-  check('settings: loading placeholder shown before readiness fetch resolves',
-        txt('settings').includes('loading…'));
-
-  // Empty state when endpoint returns {}
-  w.eval(`
-    READINESS = {};
-    readinessErr = null;
-    readinessBusy = false;
-    renderSettings(true);
-  `);
-  check('settings: readiness summary shows explicit message when endpoint returns empty',
-        txt('settings').includes('Readiness check unavailable') && !d.querySelector('.readiness-row'));
-
-  // Error state when endpoint fails
-  w.eval(`
-    READINESS = null;
-    readinessErr = 'HTTP 500';
-    readinessBusy = false;
-    renderSettings(true);
-  `);
-  check('settings: readiness summary shows explicit message when endpoint fails',
-        txt('settings').includes('Readiness check unavailable') || txt('settings').includes('HTTP 500'));
-
-  // Restore readiness state
-  w.eval(`
-    READINESS = window._origREADINESS;
-    readinessErr = window._origReadinessErr;
-    readinessBusy = window._origReadinessBusy;
-    renderSettings(true);
-  `);
-
-  // Settings / Runtime readiness: task 0224 readiness + cost summary table
-  await testRuntimeReadinessSummary(d, check, w, errors);
-
-  // Settings / Onboarding: task 0172 onboarding readiness subsection
-  const onboardingMock = {
-    runtimes: {
-      agy: {
-        state: 'ok',
-        detail: "Runtime 'agy' is ready.",
-        missing_settings: [],
-        missing_egress: []
-      },
-      claude: {
-        state: 'missing_setting',
-        detail: "Runtime 'claude' is missing setting(s): anthropic.key, and egress allowlist for: api.anthropic.com.",
-        missing_settings: ['anthropic.key'],
-        missing_egress: ['api.anthropic.com']
-      },
-      codex: {
-        state: 'missing_setting',
-        detail: "Runtime 'codex' is missing setting(s): openai.key, and egress allowlist for: api.openai.com.",
-        missing_settings: ['openai.key'],
-        missing_egress: ['api.openai.com']
-      },
-      gemini: {
-        state: 'missing_setting',
-        detail: "Runtime 'gemini' is missing setting(s): gemini.key, and egress allowlist for: generativelanguage.googleapis.com.",
-        missing_settings: ['gemini.key'],
-        missing_egress: ['generativelanguage.googleapis.com']
-      },
-      compat: {
-        state: 'missing_setting',
-        detail: "Runtime 'compat' is missing required setting(s): COMPAT_BASE_URL.",
-        missing_settings: ['COMPAT_BASE_URL'],
-        missing_egress: []
-      },
-      aider: {
-        state: 'missing_setting',
-        detail: "Runtime 'aider' is missing required setting(s): COMPAT_BASE_URL.",
-        missing_settings: ['COMPAT_BASE_URL'],
-        missing_egress: []
-      },
-      opencode: {
-        state: 'missing_setting',
-        detail: "Runtime 'opencode' is missing required setting(s): COMPAT_BASE_URL.",
-        missing_settings: ['COMPAT_BASE_URL'],
-        missing_egress: []
-      },
-      goose: {
-        state: 'missing_setting',
-        detail: "Runtime 'goose' is missing required setting(s): COMPAT_BASE_URL.",
-        missing_settings: ['COMPAT_BASE_URL'],
-        missing_egress: []
-      },
-      'qwen-code': {
-        state: 'missing_setting',
-        detail: "Runtime 'qwen-code' is missing required setting(s): qwen.key.",
-        missing_settings: ['qwen.key'],
-        missing_egress: []
-      },
-      'anthropic-compat': {
-        state: 'missing_setting',
-        detail: "Runtime 'anthropic-compat' is missing required setting(s): COMPAT_BASE_URL.",
-        missing_settings: ['COMPAT_BASE_URL'],
-        missing_egress: []
-      }
-    },
-    providers: {
-      'claude-cli': {
-        state: 'ok',
-        detail: "Provider 'claude-cli' is ready.",
-        missing_settings: [],
-        missing_egress: []
-      },
-      'agy-claude': {
-        state: 'ok',
-        detail: "Provider 'agy-claude' is ready.",
-        missing_settings: [],
-        missing_egress: []
-      },
-      'agy-gemini': {
-        state: 'ok',
-        detail: "Provider 'agy-gemini' is ready.",
-        missing_settings: [],
-        missing_egress: []
-      },
-      'anthropic-api': {
-        state: 'missing_setting',
-        detail: "Provider 'anthropic-api' is missing required setting(s): ANTHROPIC_MODEL, ANTHROPIC_API_KEY.",
-        missing_settings: ['ANTHROPIC_MODEL', 'ANTHROPIC_API_KEY'],
-        missing_egress: []
-      },
-      'openai-api': {
-        state: 'missing_setting',
-        detail: "Provider 'openai-api' is missing setting(s): OPENAI_MODEL, OPENAI_API_KEY, and egress allowlist for: api.openai.com.",
-        missing_settings: ['OPENAI_MODEL', 'OPENAI_API_KEY'],
-        missing_egress: ['api.openai.com']
-      },
-      'gemini-api': {
-        state: 'missing_egress',
-        detail: "Provider 'gemini-api' is missing egress allowlist for: generativelanguage.googleapis.com.",
-        missing_settings: [],
-        missing_egress: ['generativelanguage.googleapis.com']
-      }
-    }
-  };
-
-  w.eval(`
-    window._origONBOARDING = (typeof ONBOARDING !== 'undefined') ? ONBOARDING : null;
-    window._origONBOARDING_RECOMMEND = (typeof ONBOARDING_RECOMMEND !== 'undefined') ? ONBOARDING_RECOMMEND : null;
-    window._origOnboardingErr = (typeof onboardingErr !== 'undefined') ? onboardingErr : null;
-    window._origOnboardingBusy = (typeof onboardingBusy !== 'undefined') ? onboardingBusy : false;
-    window._origOnboardingAt = (typeof onboardingAt !== 'undefined') ? onboardingAt : 0;
-  `);
-
-  const recommendPickFixture = {
-    top: {
-      name: 'claude-cli',
-      cost_tier: 'subscription',
-      reason: "Runtime 'claude-cli' is ready."
-    },
-    ranked: [
-      {
-        name: 'claude-cli',
-        ready: true,
-        cost_tier: 'subscription',
-        note: "Runtime 'claude-cli' is ready."
-      },
-      {
-        name: 'codex',
-        ready: false,
-        cost_tier: 'unknown',
-        note: "Runtime 'codex' is missing setting(s): openai.key."
-      }
-    ],
-    message: ''
-  };
-
-  const recommendNoneFixture = {
-    top: null,
-    ranked: [
-      {
-        name: 'claude-cli',
-        ready: false,
-        cost_tier: 'subscription',
-        note: "Runtime 'claude-cli' is missing subscription."
-      },
-      {
-        name: 'codex',
-        ready: false,
-        cost_tier: 'unknown',
-        note: "Runtime 'codex' is missing setting(s): openai.key."
-      }
-    ],
-    message: 'No runtime passed its readiness check yet.'
-  };
-
-  let currentRecommendMock = recommendPickFixture;
-  const origFetchOnboarding = w.fetch;
-  let onboardingFetchFail = false;
-  w.fetch = async (url, opts) => {
-    const u = String(url);
-    if (u.includes('/api/readiness/recommend')) {
-      if (onboardingFetchFail) {
-        return {
-          ok: false,
-          status: 500,
-          json: async () => ({ error: 'HTTP 500' }),
-          text: async () => 'HTTP 500'
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => currentRecommendMock,
-        text: async () => JSON.stringify(currentRecommendMock)
-      };
-    }
-    if (u.includes('/api/readiness')) {
-      if (onboardingFetchFail) {
-        return {
-          ok: false,
-          status: 500,
-          json: async () => ({ error: 'HTTP 500' }),
-          text: async () => 'HTTP 500'
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => onboardingMock,
-        text: async () => JSON.stringify(onboardingMock)
-      };
-    }
-    return origFetchOnboarding(url, opts);
-  };
-
-  // Navigate to Settings > Onboarding subsection via existing Settings sub-nav
-  click('nav button[data-t="settings"]'); await sleep(400);
-  w.eval(`
-    if (typeof ensureSettingsNav === 'function') ensureSettingsNav();
-  `);
-  click('#settings-seg button[data-v="onboarding"]');
-  await sleep(1000);
-
-  if (w.eval('typeof ONBOARDING !== "undefined" && ONBOARDING === null && typeof loadOnboarding === "function"')) {
-    await w.eval('loadOnboarding(true)');
-    await sleep(400);
-  }
-
-  // 1. Assert: opening subsection renders one row per mocked runtime and provider entry in #onboarding-readiness-table
-  const onbTable = d.getElementById('onboarding-readiness-table');
-  const onbRows = [...d.querySelectorAll('#onboarding-readiness-table tbody tr[data-kind][data-name]')];
-  const mockRtNames = Object.keys(onboardingMock.runtimes);
-  const mockProvNames = Object.keys(onboardingMock.providers);
-  const totalMockEntries = mockRtNames.length + mockProvNames.length;
-  const rtRowsOk = mockRtNames.every(n => d.querySelector('#onboarding-readiness-table tbody tr[data-kind="runtime"][data-name="' + n + '"]'));
-  const provRowsOk = mockProvNames.every(n => d.querySelector('#onboarding-readiness-table tbody tr[data-kind="provider"][data-name="' + n + '"]'));
-  const onbRowsCountOk = onbRows.length === totalMockEntries && rtRowsOk && provRowsOk;
-  check('settings / onboarding: opening subsection renders one row per mocked runtime and provider entry in #onboarding-readiness-table',
-        !!onbTable && onbRowsCountOk);
-
-  // 2. Assert: rendered status text for at least one 'missing'/'untested' case is a human-readable label, not raw status string from mock
-  const rawStatusCodes = ['ok', 'missing_setting', 'missing_egress', 'untested'];
-  const allOnbBadges = [...d.querySelectorAll('#onboarding-readiness-table tbody tr .badge')];
-  const allBadgesNonEmpty = allOnbBadges.length > 0 && allOnbBadges.every(b => b.textContent.trim().length > 0);
-  const noRawStatusCodes = allBadgesNonEmpty && allOnbBadges.every(b => {
-    const t = b.textContent.trim();
-    return !rawStatusCodes.includes(t.toLowerCase()) && !t.includes('_');
-  });
-  const claudeRow = d.querySelector('#onboarding-readiness-table tr[data-kind="runtime"][data-name="claude"]');
-  const claudeBadge = claudeRow ? claudeRow.querySelector('.badge') : null;
-  const claudeStatusText = claudeBadge ? claudeBadge.textContent.trim() : '';
-  const claudeNotRaw = claudeStatusText.length > 0 &&
-    claudeStatusText !== 'missing_setting' &&
-    !claudeStatusText.includes('_') &&
-    /^[A-Z]/.test(claudeStatusText);
-  const geminiProvRow = d.querySelector('#onboarding-readiness-table tr[data-kind="provider"][data-name="gemini-api"]');
-  const geminiProvBadge = geminiProvRow ? geminiProvRow.querySelector('.badge') : null;
-  const geminiProvStatusText = geminiProvBadge ? geminiProvBadge.textContent.trim() : '';
-  const geminiNotRaw = geminiProvStatusText.length > 0 &&
-    geminiProvStatusText !== 'missing_egress' &&
-    !geminiProvStatusText.includes('_') &&
-    /^[A-Z]/.test(geminiProvStatusText);
-  const statusLabelsHumanReadable = noRawStatusCodes && claudeNotRaw && geminiNotRaw;
-  check('settings / onboarding: rendered status text for missing cases is human-readable label, not raw status code',
-        statusLabelsHumanReadable);
-
-  // 3. Assert: the text 'CHOOSING-AN-AI.md' is present somewhere in the subsection
-  const choosingAiPresent = txt('settings').includes('CHOOSING-AN-AI.md');
-  check('settings / onboarding: CHOOSING-AN-AI.md text is present in the subsection',
-        choosingAiPresent);
-
-  // 4. Assert: a Tab key sequence (or focus-walking helper) can reach table/rows, proving keyboard reachability
-  const onbNavBtn = d.querySelector('#settings-seg button[data-v="onboarding"]');
-  const onbTableReached = !!onbNavBtn && !!onbTable && onbRows.length > 0 &&
-                          walkFocus(onbNavBtn, [onbTable, ...onbRows]) &&
-                          d.activeElement === onbRows[onbRows.length - 1];
-  check('settings / onboarding: Tab key sequence reaches table/rows proving keyboard reachability',
-        onbTableReached);
-
-  // Task 0185: Onboarding recommendation widget (Fixture 1: has top pick)
-  const recWidget = d.getElementById('onboarding-recommend');
-  check('settings / onboarding: #onboarding-recommend container element is rendered',
-        !!recWidget);
-
-  // Assert .recommend-top is present, .recommend-none is absent (mutually exclusive)
-  const recTop = d.querySelector('#onboarding-recommend .recommend-top');
-  const recNone = d.querySelector('#onboarding-recommend .recommend-none');
-  const topPickExclusivityOk = !!recTop && !recNone;
-  check('settings / onboarding (top pick): .recommend-top is present and .recommend-none is absent',
-        topPickExclusivityOk);
-
-  // Assert top runtime name, tier, and reason appear in visible text and structured attributes
-  const recTopTxt = recTop ? recTop.textContent : '';
-  const topNameInText = recTopTxt.includes(recommendPickFixture.top.name);
-  const topTierInText = recTopTxt.includes(recommendPickFixture.top.cost_tier);
-  const topReasonInText = recTopTxt.includes(recommendPickFixture.top.reason);
-  const topNameEl = recTop ? recTop.querySelector('[data-runtime-name]') : null;
-  const topTierEl = recTop ? recTop.querySelector('[data-cost-tier]') : null;
-  const topReasonEl = recTop ? recTop.querySelector('[data-reason]') : null;
-  const topStructureOk = !!topNameEl && topNameEl.textContent === recommendPickFixture.top.name &&
-                         !!topTierEl && topTierEl.textContent === recommendPickFixture.top.cost_tier &&
-                         !!topReasonEl && topReasonEl.textContent === recommendPickFixture.top.reason;
-  check('settings / onboarding (top pick): top runtime name, tier, and reason appear in visible text and structured attributes',
-        topNameInText && topTierInText && topReasonInText && topStructureOk);
-
-  // Assert ranked entries count and each data-ready attribute matches fixture ready value in order
-  const pickRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
-  const pickRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
-  const pickRankedCountOk = pickRankedLis.length === recommendPickFixture.ranked.length && pickRankedLis.length > 0;
-  const pickRankedAllHaveReadyAttr = pickRankedReadyLis.length === pickRankedLis.length;
-  const pickRankedDataReadyOk = pickRankedCountOk && pickRankedAllHaveReadyAttr && recommendPickFixture.ranked.every(r => {
-    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
-    return !!li && li.getAttribute('data-ready') === String(r.ready);
-  });
-  const pickRankedOrderOk = pickRankedCountOk &&
-    pickRankedLis[0].getAttribute('data-runtime') === recommendPickFixture.ranked[0].name &&
-    pickRankedLis[0].getAttribute('data-ready') === String(recommendPickFixture.ranked[0].ready) &&
-    pickRankedLis[1].getAttribute('data-runtime') === recommendPickFixture.ranked[1].name &&
-    pickRankedLis[1].getAttribute('data-ready') === String(recommendPickFixture.ranked[1].ready);
-  check('settings / onboarding (top pick): ranked entries data-ready attribute matches fixture ready value for each runtime in order',
-        pickRankedDataReadyOk && pickRankedOrderOk);
-
-  // Assert recommendation widget and ranked items are reachable by keyboard/screen order consistent with Onboarding subsection
-  const recFocusTargets = [recWidget, recTop, ...pickRankedLis].filter(Boolean);
-  const recFocusStart = (onbRows && onbRows.length > 0 && d.activeElement === onbRows[onbRows.length - 1])
-    ? onbRows[onbRows.length - 1]
-    : (onbTable || onbNavBtn);
-  const recFocusOk = !!recWidget && pickRankedLis.length > 0 &&
-                     walkFocus(recFocusStart, recFocusTargets) &&
-                     d.activeElement === pickRankedLis[pickRankedLis.length - 1];
-  check('settings / onboarding (top pick): recommendation widget and ranked entries are reachable in keyboard/screen order via focus walking',
-        recFocusOk);
-
-  // Task 0185: Onboarding recommendation widget (Fixture 2: no runtime ready, top is null)
-  currentRecommendMock = recommendNoneFixture;
-  w.eval(`
-    if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
-    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = null;
-    if (typeof onboardingErr !== 'undefined') onboardingErr = null;
-    if (typeof onboardingBusy !== 'undefined') onboardingBusy = false;
-    if (typeof onboardingAt !== 'undefined') onboardingAt = 0;
-  `);
-  if (w.eval('typeof loadOnboarding === "function"')) {
-    await w.eval('loadOnboarding(true)');
-    await sleep(400);
-  }
-
-  // Assert .recommend-none is present, .recommend-top is absent (mutually exclusive)
-  const noneRecTop = d.querySelector('#onboarding-recommend .recommend-top');
-  const noneRecNone = d.querySelector('#onboarding-recommend .recommend-none');
-  const noneExclusivityOk = !noneRecTop && !!noneRecNone;
-  check('settings / onboarding (no ready runtime): .recommend-none is present and .recommend-top is absent',
-        noneExclusivityOk);
-
-  // Assert .recommend-none shows the server's message text verbatim
-  const noneMsgOk = !!noneRecNone && noneRecNone.textContent.trim() === recommendNoneFixture.message;
-  check('settings / onboarding (no ready runtime): .recommend-none displays the server message text verbatim',
-        noneMsgOk);
-
-  // Assert every .recommend-ranked li has data-ready="false" and matches fixture ready values in order
-  const noneRankedLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li')];
-  const noneRankedReadyLis = [...d.querySelectorAll('#onboarding-recommend .recommend-ranked li[data-ready]')];
-  const noneRankedCountOk = noneRankedLis.length === recommendNoneFixture.ranked.length && noneRankedLis.length > 0;
-  const noneRankedAllHaveReadyAttr = noneRankedReadyLis.length === noneRankedLis.length;
-  const noneRankedAllFalse = noneRankedCountOk && noneRankedAllHaveReadyAttr && noneRankedLis.every(li => li.getAttribute('data-ready') === 'false');
-  const noneRankedMatchesFixture = noneRankedCountOk && recommendNoneFixture.ranked.every(r => {
-    const li = d.querySelector('#onboarding-recommend .recommend-ranked li[data-runtime="' + r.name + '"]');
-    return !!li && li.getAttribute('data-ready') === String(r.ready);
-  });
-  check('settings / onboarding (no ready runtime): every ranked entry has data-ready="false" matching fixture ready value in order',
-        noneRankedAllFalse && noneRankedMatchesFixture);
-
-  // Task 0184: Onboarding recommendation widget (Fixture 3: top is an object with falsy-but-valid fields)
-  w.eval(`
-    ONBOARDING_RECOMMEND = {
-      top: {name: 'claude-cli', cost_tier: '', reason: ''},
-      ranked: [{name: 'claude-cli', ready: true, cost_tier: '', note: ''}],
-      message: 'should be ignored'
-    };
-    renderSettings(true);
-  `);
-  const falsyRecTop = d.querySelector('#onboarding-recommend .recommend-top');
-  const falsyRecNone = d.querySelector('#onboarding-recommend .recommend-none');
-  const falsyTopNameEl = falsyRecTop ? falsyRecTop.querySelector('[data-runtime-name]') : null;
-  const falsyFieldsOk = !!falsyRecTop && !falsyRecNone && !!falsyTopNameEl && falsyTopNameEl.textContent === 'claude-cli';
-  check('settings / onboarding (falsy fields): .recommend-top renders correctly when data.top has falsy-but-valid fields',
-        falsyFieldsOk);
-
-  // 5. Assert: mocked fetch failure for /api/readiness produces visible error state (toast text or error row), not blank subsection
-  onboardingFetchFail = true;
-  w.eval(`
-    if (typeof ONBOARDING !== 'undefined') ONBOARDING = null;
-    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = null;
-    if (typeof onboardingErr !== 'undefined') onboardingErr = null;
-    if (typeof onboardingBusy !== 'undefined') onboardingBusy = false;
-    if (typeof onboardingAt !== 'undefined') onboardingAt = 0;
-  `);
-  click('#settings-seg button[data-v="onboarding"]');
-  await sleep(1000);
-  if (w.eval('typeof ONBOARDING !== "undefined" && ONBOARDING === null && typeof loadOnboarding === "function"')) {
-    try { await w.eval('loadOnboarding(true)'); } catch (e) {}
-    await sleep(400);
-  }
-  const onbErrorRow = d.querySelector('#onboarding-readiness-table tr.error-row');
-  const onbToastHasError = txt('toasts').includes('Could not load readiness');
-  const onbVisibleError = txt('settings').includes('Could not load readiness') || (onbErrorRow && onbErrorRow.textContent.includes('Could not load readiness'));
-  const onbSubsectionNotBlank = txt('settings').trim().length > 30;
-  const onbErrorStateOk = (!!onbErrorRow || onbToastHasError || onbVisibleError) && onbSubsectionNotBlank;
-  check('settings / onboarding: mocked fetch failure produces visible error state (toast or error row), not a blank subsection',
-        onbErrorStateOk);
-
-  // Restore onboarding state and fetch
-  w.fetch = origFetchOnboarding;
-  w.eval(`
-    if (typeof ONBOARDING !== 'undefined') ONBOARDING = window._origONBOARDING;
-    if (typeof ONBOARDING_RECOMMEND !== 'undefined') ONBOARDING_RECOMMEND = window._origONBOARDING_RECOMMEND;
-    if (typeof onboardingErr !== 'undefined') onboardingErr = window._origOnboardingErr;
-    if (typeof onboardingBusy !== 'undefined') onboardingBusy = window._origOnboardingBusy;
-    if (typeof onboardingAt !== 'undefined') onboardingAt = window._origOnboardingAt;
-    SUB.settings = 'team';
-    renderSettings(true);
-  `);
 
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);
 })().catch(e => { console.log('crash', e); console.log(errors.join('\n')); process.exit(4); });
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { testNewRuntimesPresent, testRuntimeReadinessSummary };
-}

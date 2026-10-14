@@ -80,30 +80,30 @@ class TestGooseBackendRegistry(unittest.TestCase):
 
 
 class TestGooseSettingsUI(unittest.TestCase):
-    """Verifies that web/static/js/settings.js offers 'goose' in the worker-add form."""
+    """Verifies that web/static/js/settings.js offers only the runtimes a worker can really be created for (the server's `creatable` flag)."""
 
     def setUp(self):
         js_path = os.path.join(ROOT, "web", "static", "js", "settings.js")
         with open(js_path, "r", encoding="utf-8") as f:
             self.settings_js = f.read()
 
-    def test_settings_js_contains_goose_option(self):
-        """Invariant: settings.js mentions 'goose' slug with 'Goose' label."""
-        self.assertIn("goose", self.settings_js)
-        assert "goose" in self.settings_js
-        self.assertIn("Goose", self.settings_js)
-        assert "Goose" in self.settings_js
+    def test_goose_is_not_offered_as_a_worker_yet(self):
+        """Invariant: no worker image ships the CLI of 'goose', so runtimes.CREATABLE excludes it and the add-worker picker does not list it."""
+        import runtimes
+        self.assertIn("goose", runtimes.RUNTIMES)
+        self.assertNotIn("goose", runtimes.CREATABLE)
+        self.assertNotRegex(self.settings_js, r"""value=["']goose["']""")
 
-    def test_settings_js_add_worker_form_and_addwrt_support_goose(self):
-        """Invariant: addWorkerForm and addwRt explicitly handle 'goose' as an endpoint runtime."""
-        # addWorkerForm provides fallback for goose
-        self.assertTrue(re.search(r"R\.goose\s*=", self.settings_js) or "goose" in self.settings_js)
-        assert re.search(r"R\.goose\s*=", self.settings_js) or "goose" in self.settings_js
+    def test_picker_is_built_from_the_server_flag(self):
+        """Invariant: the picker lists exactly the runtimes with creatable=true in the settings payload (no hard-coded list to drift)."""
+        self.assertIn("creatable", self.settings_js)
+        self.assertNotRegex(self.settings_js, r"rt\s*===\s*['\"]goose['\"]")
 
-        # addwRt handles endpoint visibility for goose
-        self.assertTrue(re.search(r"rt\s*===\s*['\"]goose['\"]", self.settings_js))
-        assert re.search(r"rt\s*===\s*['\"]goose['\"]", self.settings_js)
-
-
+    def test_model_setting_lives_on_advanced_page(self):
+        """Invariant: the model of a registered-but-not-creatable runtime is still editable, on the Advanced page."""
+        self.assertIn("GOOSE_MODEL", self.settings_js)
+        body = self.settings_js[self.settings_js.index("function pageAdvanced"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("GOOSE_MODEL", body)
 if __name__ == "__main__":
     unittest.main()

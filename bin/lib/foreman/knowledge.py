@@ -149,9 +149,11 @@ def doc_path(name, write=False):
 def doc_list():
     out = [dict(name=k, title=k.replace("-", " ").capitalize(), about=v, exists=os.path.exists(doc_path(k) or "")) for k, v in DOCS.items()]
     own = os.path.join(ctx.CFG_DIR, "roles")
-    for slug, (title, _) in _roles().items():
-        out.append(dict(name="role:" + slug, title=title, about="role playbook", exists=True,
-                        customized=os.path.exists(os.path.join(own, slug + ".md"))))
+    for slug, (title, txt) in _roles().items():
+        mission = next((l.split(":", 1)[-1].strip(" *") for l in txt.splitlines() if l.lower().startswith("**mission")), "")
+        out.append(dict(name="role:" + slug, title=title, about=mission or "role playbook", exists=True,
+                        customized=os.path.exists(os.path.join(own, slug + ".md")),
+                        standard=os.path.exists(os.path.join(ctx.ROOT, "roles", slug + ".md"))))
     return out
 
 
@@ -187,7 +189,8 @@ def doc_set(name, text):
 
 
 def doc_reset(name):
-    """A role back to the install's playbook (this project's own version is deleted)."""
+    """A role back to the install's playbook (this project's own version is deleted); a role that only this project has is
+    deleted altogether."""
     if not isinstance(name, str) or not name.startswith("role:") or not ROLE_SLUG.fullmatch(name[5:]):
         return "only a role can be reset"
     p = doc_path(name, write=True)
@@ -195,5 +198,6 @@ def doc_reset(name):
         return "only a role can be reset"
     if os.path.exists(p):
         os.remove(p)
-        event(f"{name} reset to the install's playbook")
+        gone = not os.path.exists(os.path.join(ctx.ROOT, "roles", name[5:] + ".md"))
+        event(f"{name} deleted" if gone else f"{name} reset to the install's playbook")
     return ""

@@ -674,7 +674,7 @@ def main():
                 if has_endpoint:
                     ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
                 else:
-                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → Runtimes)",
                         "settings:COMPAT_BASE_URL")
                 key = r_info.get("key") or "compat.key"
                 if not sbx.read(os.path.join(S, key)):
@@ -697,7 +697,7 @@ def main():
                 if has_endpoint:
                     ok(f"{name} runs {rt} on the model server {server or (f'{lep[0]}:{lep[1]}' if lep else '')}")
                 else:
-                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → API workers)",
+                    bad(f"{name} ({rt}): no model server is set", "set COMPAT_BASE_URL in etc/limits.conf (or Settings → Runtimes)",
                         "settings:COMPAT_BASE_URL")
                 continue
             if rt == "qwen-code":

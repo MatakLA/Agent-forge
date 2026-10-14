@@ -1,6 +1,6 @@
 """LLM-free maintenance while the team is idle: the suite on main 3x (red main, flaky tests), modules without a
 docstring, old transcripts compressed."""
-import json, os, time
+import json, os, re, time
 
 import sbx
 
@@ -50,6 +50,26 @@ def maybe_maintenance():
         return
     PHASE["main"] = "maintenance: tests on main 3x, code map (no AI)"
     submit("maint:main", step_maintenance)
+
+
+_EGRESS_CHECKED = [0.0]
+
+
+def maybe_rotate_egress():
+    """Rotate the egress proxy's logs (only once access.log is over 5 MB), checked at most hourly and also while paused: an unrotated
+    log grew to 160+ MB and made every egress report - and the dashboard's Egress tab - take half a minute."""
+    if "egress:rotate" in INFLIGHT or time.time() - _EGRESS_CHECKED[0] < 3600:
+        return
+    _EGRESS_CHECKED[0] = time.time()
+    submit("egress:rotate", step_rotate_egress)
+
+
+def step_rotate_egress():
+    import egress
+    msg = egress.rotate()
+    if not msg.startswith("no rotation needed"):
+        event("egress: " + msg)
+    return lambda: None
 
 
 def compress_old_runs(days):
@@ -129,6 +149,48 @@ def _maintenance_findings(runs, nodoc, sha):
 
 
 # ---------------------------------------------------------------- disk: what takes the space, and one-click cleanups
+_UNITS = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}
+
+
+def _bytes(txt):
+    """'1.2GB' / '824kB' / '0B' (Docker's decimal units) -> bytes; 0 for anything unreadable."""
+    m = re.match(r"^\s*([\d.]+)\s*([a-zA-Z]*)", txt or "")
+    try:
+        return int(float(m.group(1)) * _UNITS.get(m.group(2).lower() or "b", 1)) if m else 0
+    except ValueError:
+        return 0
+
+
+def _human(n):
+    for u in ("B", "kB", "MB", "GB", "TB"):
+        if n < 1000 or u == "TB":
+            return f"{n:.0f}{u}" if u == "B" else f"{n:.1f}{u}"
+        n /= 1000
+
+
+def docker_summary():
+    """Docker's space use as rows {Type, TotalCount, Size, Reclaimable}. `docker system df` measures every container's writable layer
+    and every volume, which takes minutes on a big disk, so this uses the fast listings: images and build cache are sized (images
+    are summed, shared layers counted once per image, hence '~'), containers and volumes are only counted."""
+    rows = []
+    rc, out, _ = sh(["docker", "image", "ls", "-a", "--format", "{{.Size}}|{{.Repository}}"], timeout=20)
+    if rc == 0:
+        imgs = [l.split("|", 1) for l in out.splitlines() if l]
+        rows.append(dict(Type="Images", TotalCount=str(len(imgs)), Size="~" + _human(sum(_bytes(a) for a, _ in imgs)),
+                         Reclaimable=_human(sum(_bytes(a) for a, r in imgs if r == "<none>"))))
+    rc, out, _ = sh(["docker", "builder", "du"], timeout=30)
+    if rc == 0:
+        m = {k: v.strip() for k, v in (l.split(":", 1) for l in out.splitlines() if re.match(r"^(Reclaimable|Total):", l))}
+        n = len([l for l in out.splitlines() if re.match(r"^[a-z0-9]{20,}\s", l)])
+        if m:
+            rows.append(dict(Type="Build cache", TotalCount=str(n), Size=m.get("Total", "?"), Reclaimable=m.get("Reclaimable", "?")))
+    for typ, cmd in (("Containers", ["docker", "ps", "-aq"]), ("Local volumes", ["docker", "volume", "ls", "-q"])):
+        rc, out, _ = sh(cmd, timeout=20)
+        if rc == 0:
+            rows.append(dict(Type=typ, TotalCount=str(len(out.split())), Size="-", Reclaimable="-"))
+    return rows
+
+
 def disk_usage():
     """runs/ by kind (transcripts, compressed transcripts, the rest) and by project, how many old transcripts could be compressed,
     Docker's own accounting (images, containers, volumes, build cache) and the free space - for the dashboard's System view."""
@@ -151,13 +213,7 @@ def disk_usage():
             by_project[proj] = by_project.get(proj, 0) + n
             if f == "stream.jsonl" and os.path.exists(os.path.join(d, "finished")) and os.path.getmtime(p) < cutoff:
                 tot["old_uncompressed"] += 1; tot["old_bytes"] += n
-    rc, out, _ = sh(["docker", "system", "df", "--format", "{{json .}}"], timeout=60)
-    docker = []
-    for l in out.splitlines() if rc == 0 else []:
-        try:
-            docker.append(json.loads(l))
-        except ValueError:
-            pass
+    docker = docker_summary()
     du = shutil.disk_usage(sbx.RUNS if os.path.isdir(sbx.RUNS) else sbx.ROOT)
     return dict(runs=tot, by_project=by_project, keep_days=keep, docker=docker, free=du.free, total=du.total)
 

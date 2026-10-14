@@ -1,0 +1,59 @@
+#!/bin/bash
+# Usage: bin/worker-remove N      -- take worker-N out of service for good (the opposite of bin/worker-add).
+# Refuses while the worker has a run in progress, or when it is the only worker some project is limited to (that project would
+# silently start using every worker - give it another one first). Otherwise: leaves every project's pool, the container and
+# its HOME volume go away (Antigravity login, clone), the Forgejo bot user (and with it the team membership) is deleted,
+# and so are its token / password / keyring files and its etc/workers.conf line. Pull requests it opened stay in Forgejo.
+# Run history under runs/ is kept. Idempotent: a worker that is already half-removed is finished.
+set -euo pipefail
+N="${1:?usage: worker-remove N}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
+U="worker-$N"; ROOT="$(cd "$(dirname "$0")/.." && pwd)"; S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
+
+# 1. safety: no run in progress, not the sole member of any project's pool
+python3 - "$ROOT" "$U" <<'PY'
+import os, re, sys
+root, u = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(root, "bin", "lib"))
+import sbx
+busy = [d for d in sbx.run_dirs() if d.rstrip("/").endswith("-" + u) and sbx.is_running(d)]
+if busy:
+    sys.exit(f"{u} is working on a run right now ({os.path.basename(busy[0])}) - wait for it to finish or stop it first")
+confs = [("default", os.path.join(root, "etc", "foreman.conf"))]
+pd = os.path.join(root, "projects")
+if os.path.isdir(pd):
+    confs += [(p, os.path.join(pd, p, "project.conf")) for p in sorted(os.listdir(pd))]
+for name, path in confs:
+    pool = [w.strip() for w in sbx._kv(path).get("WORKERS", "").split(",") if w.strip()]
+    if pool == [u]:
+        sys.exit(f"{u} is the only worker of project {name} - give that project another worker first (Settings → Workers)")
+for name, path in confs:
+    if not os.path.exists(path):
+        continue
+    lines, changed = open(path).read().splitlines(), False
+    for i, l in enumerate(lines):
+        if re.match(r"\s*WORKERS\s*=", l):
+            pool = [w.strip() for w in l.split("=", 1)[1].strip().strip('"').split(",") if w.strip()]
+            if u in pool:
+                lines[i] = "WORKERS=" + ",".join(w for w in pool if w != u); changed = True
+    if changed:
+        open(path + ".tmp", "w").write("\n".join(lines) + "\n"); os.replace(path + ".tmp", path)
+        print(f"{u} left the pool of project {name}")
+PY
+
+# 2. the container and its home
+docker rm -f "$U" >/dev/null 2>&1 && echo "container $U removed" || echo "no container $U"
+docker volume rm -f "worker_$U-home" >/dev/null 2>&1 && echo "volume worker_$U-home removed" || true
+
+# 3. the Forgejo bot user (team memberships go with it); keep the secrets if that fails, so the removal can be repeated
+if docker exec forgejo forgejo admin user list 2>/dev/null | awk 'NR>1{print $2}' | grep -qx "$U"; then
+  docker exec forgejo forgejo admin user delete --username "$U" >/dev/null && echo "forgejo user $U deleted" \
+    || { echo "could not delete the forgejo user $U - the container is gone, run this again once Forgejo answers" >&2; exit 1; }
+fi
+
+# 4. local traces
+rm -f "$S/$U.token" "$S/$U.password" "$S/$U-keyring"
+if [ -f "$ROOT/etc/workers.conf" ]; then
+  grep -v "^$U=" "$ROOT/etc/workers.conf" > "$ROOT/etc/workers.conf.tmp" || true
+  mv "$ROOT/etc/workers.conf.tmp" "$ROOT/etc/workers.conf"
+fi
+echo "$U removed"
