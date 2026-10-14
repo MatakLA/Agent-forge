@@ -119,6 +119,8 @@ def endpoint_target(url):
 
 def hosts(rt, endpoint_url=""):
     """The hosts this runtime's workers must reach (endpoint runtimes: the model server's host)."""
+    if rt == "qwen" and "qwen" not in RUNTIMES and "qwen-code" in RUNTIMES:
+        rt = "qwen-code"
     r = RUNTIMES[rt]
     if r.get("endpoint"):
         t = endpoint_target(endpoint_url)
