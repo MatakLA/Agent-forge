@@ -26,7 +26,7 @@ from .pool import workers
 
 PROVIDERS_ALL = ("claude-cli", "agy-claude", "agy-gemini", "anthropic-api", "openai-api", "gemini-api")
 VALID_RUNTIMES = frozenset({
-    "agy", "claude", "codex", "gemini", "compat", "aider", "opencode", "goose", "qwen-code", "anthropic-compat",
+    "agy", "claude", "codex", "gemini", "compat", "aider", "opencode", "goose", "qwen", "qwen-code", "anthropic-compat",
     "copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp"
 } | set(runtimes.RUNTIMES.keys()))
 
@@ -109,6 +109,10 @@ HELP = {
     "vllm": "Local vLLM server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
     "lmstudio": "Local LM Studio server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
     "llamacpp": "Local llama.cpp server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
+    "opencode": "OpenCode CLI runtime (configured provider, point at its model server endpoint URL). Egress host check happens at save time. Applies live.",
+    "qwen": "Qwen Code CLI runtime (Alibaba DashScope API key in qwen.key). Egress host check happens at save time. Applies live.",
+    "qwen-code": "Qwen Code CLI runtime (Alibaba DashScope API key in qwen.key). Egress host check happens at save time. Applies live.",
+    "goose": "Goose CLI agent runtime (Block's CLI agent, point at its model server endpoint URL). Egress host check happens at save time. Applies live.",
 }
 
 FILE_ONLY = {
