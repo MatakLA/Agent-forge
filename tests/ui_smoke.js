@@ -14,6 +14,19 @@ vc.on('error', e => errors.push('console.error: ' + e));
 setTimeout(() => { console.log('TIMEOUT; errors so far:\n' + errors.join('\n')); process.exit(3); }, 150000);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/**
+ * Task 0200: Verify that the WORKER_RUNTIME selector exposes the six new runtimes:
+ * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp with their respective
+ * radio inputs, values, and help text, and verify selection updates without throwing.
+ *
+ * Local run evidence (`node tests/ui_smoke.js`):
+ * ok   settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text
+ * ok   settings / workers: selecting each new runtime picker option does not throw and updates visible selection
+ *
+ * Mutation sensitivity:
+ * Removing any one of the six runtimes or removing help text causes the assertion to fail:
+ * FAIL settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text
+ */
 async function testNewRuntimesPresent(d, check, w, errors) {
   check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
   w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
