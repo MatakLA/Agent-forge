@@ -3,6 +3,12 @@
 # Public interface: bash tests/test_runtime_mistral_vibe.sh (runs with no real network call, exits 0 on success).
 # Invariants: drives command() and scan()/scan_file(), verifies {tokens, tools, conversation_id, result}
 # shape, verifies exact token and cost calculations, and asserts command() never puts prompts or secrets in argv.
+# Grounded from bin/lib/runtimes.py (Task 0204):
+# - RUNTIMES["mistral-vibe"]: key="mistral.key", hosts=["api.mistral.ai"], api=False
+# - MISTRAL_VIBE_QUIET: ["--output-format", "stream-json"]
+# - cost_model("mistral-vibe"): kind="unknown", detail="Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge"
+# - command("mistral-vibe", ...): argv=["mistral-vibe", "--output-format", "stream-json", ...], stdin=prompt
+# - scan("mistral-vibe", ...): initial tokens=None, parses session, tool_use, message, step_finish, result, error, turn.failed.
 
 set -euo pipefail
 
