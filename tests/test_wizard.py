@@ -7,9 +7,11 @@ Public interface:
 - Run via pytest: python3 -m pytest -q tests/test_wizard.py
 
 Important invariants:
-- wizard.py is stdlib only, offline-safe, and does not modify readiness.py.
-- NEXT_STEPS and next_steps(name) cover every runtime and provider without raising KeyError.
-- generate_report() reuses readiness.recommend() ranking logic.
+- wizard.py is plain functions and stdlib only, no classes, and does not modify readiness.py.
+- NEXT_STEPS is a plain dict covering exact literal keys from runtime_items() + provider_items().
+- next_steps(name) falls back for unknown keys without raising KeyError.
+- No real runtime or provider key falls through to the generic fallback.
+- generate_report() reuses readiness.recommend() ranking logic without monkeypatching module internals.
 - Scenario 1: only Claude Code (claude-cli) ready -> top recommendation is claude-cli.
 - Scenario 2: only local-compat runtime (e.g. ollama/vllm) ready -> top recommendation is that runtime, not claude-cli.
 - Scenario 3: nothing configured/ready at all -> explicitly states nothing is ready, prints concrete next steps.
@@ -31,43 +33,42 @@ from foreman import readiness, wizard
 class TestWizardOfflineRecommendations(unittest.TestCase):
     """Test suite for bin/lib/foreman/wizard.py offline recommendation engine."""
 
-    def test_next_steps_covers_all_runtimes_and_providers(self):
-        """Invariant: next_steps() returns a non-empty string for every runtime and provider key."""
+    def test_next_steps_exact_closed_list_and_no_fallback(self):
+        """Invariant: Every key in runtime_items() and provider_items() has an explicit NEXT_STEPS entry and never falls through to the generic fallback."""
         real_runtimes = readiness.runtime_items()
         real_providers = readiness.provider_items()
+        all_real_keys = set(real_runtimes + real_providers)
 
-        # Loop over real runtime items
-        for rt in real_runtimes:
-            step = wizard.next_steps(rt)
+        # Assert NEXT_STEPS is a plain dictionary (no custom class)
+        self.assertIs(type(wizard.NEXT_STEPS), dict)
+        assert type(wizard.NEXT_STEPS) is dict
+
+        # Assert exact closed list match: every real key present, no guessed/fabricated alias keys
+        self.assertEqual(set(wizard.NEXT_STEPS.keys()), all_real_keys)
+        assert set(wizard.NEXT_STEPS.keys()) == all_real_keys
+
+        # Assert no real key falls through to the generic fallback
+        for k in all_real_keys:
+            step = wizard.next_steps(k)
             self.assertIsInstance(step, str)
-            self.assertGreater(len(step.strip()), 0, f"next_steps({rt!r}) must be non-empty")
+            self.assertGreater(len(step.strip()), 0, f"next_steps({k!r}) must be non-empty")
+            self.assertFalse(
+                step.startswith("see docs/RUNTIMES.md and docs/PROVIDERS.md"),
+                f"Real key {k!r} unexpectedly fell through to generic fallback: {step!r}"
+            )
             assert isinstance(step, str) and len(step.strip()) > 0
+            assert not step.startswith("see docs/RUNTIMES.md and docs/PROVIDERS.md")
 
-        # Loop over real provider items
-        for pr in real_providers:
-            step = wizard.next_steps(pr)
-            self.assertIsInstance(step, str)
-            self.assertGreater(len(step.strip()), 0, f"next_steps({pr!r}) must be non-empty")
-            assert isinstance(step, str) and len(step.strip()) > 0
-
-    def test_next_steps_fallback_and_no_key_error(self):
+    def test_next_steps_fallback_for_unknown_keys(self):
         """Invariant: Unknown keys fall back to generic message and never raise KeyError."""
         unknown_key = "some-unknown-runtime-or-provider-999"
 
         # Lookup via function
         msg = wizard.next_steps(unknown_key)
         self.assertIsInstance(msg, str)
-        self.assertIn(f"see docs/RUNTIMES.md and docs/PROVIDERS.md for {unknown_key}", msg)
-        assert f"see docs/RUNTIMES.md and docs/PROVIDERS.md for {unknown_key}" in msg
-
-        # Lookup via dict dunder getitem - must not raise KeyError
-        dict_val = wizard.NEXT_STEPS[unknown_key]
-        self.assertEqual(dict_val, msg)
-        assert dict_val == msg
-
-        # Dict get method fallback
-        self.assertEqual(wizard.NEXT_STEPS.get(unknown_key), msg)
-        assert wizard.NEXT_STEPS.get(unknown_key) == msg
+        expected_fallback = f"see docs/RUNTIMES.md and docs/PROVIDERS.md for {unknown_key}"
+        self.assertEqual(msg, expected_fallback)
+        assert msg == expected_fallback
 
     def test_generate_report_scenario_1_claude_cli_only(self):
         """Scenario 1: Only Claude Code (claude-cli) ready/installed, everything else not configured.
