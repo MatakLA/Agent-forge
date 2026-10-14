@@ -181,6 +181,145 @@ def check_orchestrator_providers(conf=None):
                 bad=[c for c in new_checks if c["level"] == "bad"])
 
 
+LOCAL_COMPAT_RUNTIMES = ("ollama", "vllm", "lmstudio", "llamacpp")
+
+
+def is_local_endpoint_target(target):
+    """Return True if target tuple (scheme, host, port) represents a local/private host."""
+    if not target or len(target) < 3:
+        return False
+    scheme, host, port = target
+    h = str(host or "").strip().lower()
+    if h in ("127.0.0.1", "localhost", "0.0.0.0", "::1", "ip6-localhost", "ip6-loopback"):
+        return True
+    if h.endswith((".local", ".internal", ".lan", ".home", ".arpa")):
+        return True
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(h.strip("[]"))
+        if ip.is_private or ip.is_loopback:
+            return True
+    except ValueError:
+        pass
+    try:
+        if hasattr(egress, "is_private_host") and egress.is_private_host(h):
+            return True
+        lep = egress.local_endpoint()
+        if lep is not None and (lep[0] == h or lep == (h, port)):
+            return True
+        rule = egress.endpoint_rule(f"{scheme}://{host}:{port}", resolve=False)
+        if rule and rule[0] == "local":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def check_local_compat_runtime(rt, endpoint_url=None, timeout=2.0):
+    """Check reachability and readiness for a local OpenAI-compatible runtime.
+
+    (a) reports 'not configured' when the project has no endpoint URL set for that runtime.
+    (b) attempts to reach the configured local endpoint (reusing runtimes.endpoint_target())
+        and reports 'unreachable' with the connection error when it cannot connect within timeout.
+    (c) reports 'ready' when it connects.
+    Never makes a real network call to a public host.
+    """
+    start_idx = len(CHECKS)
+    orig_sec = SECTION[0]
+    if not SECTION[0]:
+        SECTION[0] = "Readiness"
+
+    if endpoint_url is None:
+        try:
+            if hasattr(readiness, "_get_compat_base_url"):
+                endpoint_url = readiness._get_compat_base_url()
+        except (Exception, SystemExit):
+            endpoint_url = ""
+        if not endpoint_url:
+            endpoint_url = os.environ.get("COMPAT_BASE_URL", "").strip()
+        if not endpoint_url:
+            try:
+                lim = sbx.load_limits()
+                endpoint_url = str((lim or {}).get("COMPAT_BASE_URL", "")).strip()
+            except (Exception, SystemExit):
+                pass
+        if not endpoint_url:
+            try:
+                conf = sbx.project_conf()
+                endpoint_url = str((conf or {}).get("COMPAT_BASE_URL", "")).strip()
+            except (Exception, SystemExit):
+                pass
+
+    endpoint_url = str(endpoint_url or "").strip()
+    target = None
+    if endpoint_url and runtimes.uses_endpoint(rt):
+        try:
+            target = runtimes.endpoint_target(endpoint_url)
+        except Exception:
+            target = None
+
+    if not endpoint_url or not target:
+        msg = f"[WARN] {rt}: Runtime '{rt}' is not configured (missing COMPAT_BASE_URL)"
+        warn(msg, fix="set COMPAT_BASE_URL in etc/limits.conf or Settings", fix_id="settings:COMPAT_BASE_URL", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="not_configured", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, fix="set COMPAT_BASE_URL in etc/limits.conf or Settings")
+
+    scheme, host, port = target
+    if not is_local_endpoint_target(target):
+        msg = f"[WARN] {rt}: endpoint host '{host}' is not a local endpoint"
+        warn(msg, fix="configure a local endpoint for local-compat runtimes", fix_id="settings:COMPAT_BASE_URL", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="unreachable", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, error="not a local endpoint")
+
+    import socket
+    connected = False
+    conn_err = ""
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            connected = True
+    except Exception as e:
+        connected = False
+        conn_err = str(e) or type(e).__name__
+
+    if not connected:
+        msg = f"[WARN] {rt}: endpoint {endpoint_url} is unreachable ({conn_err})"
+        fix_str = f"start {rt} server on {host}:{port} or check COMPAT_BASE_URL"
+        warn(msg, fix=fix_str, fix_id=f"start:{rt}", optional=True)
+        if not orig_sec:
+            SECTION[0] = ""
+        new_checks = CHECKS[start_idx:]
+        return dict(status="unreachable", state="warn", message=msg, checks=new_checks,
+                    endpoint_url=endpoint_url, error=conn_err, fix=fix_str)
+
+    msg = f"[OK] {rt}: Runtime '{rt}' is ready ({endpoint_url})"
+    ok(msg)
+    if not orig_sec:
+        SECTION[0] = ""
+    new_checks = CHECKS[start_idx:]
+    return dict(status="ready", state="ok", message=msg, checks=new_checks,
+                endpoint_url=endpoint_url)
+
+
+def check_local_compat_runtimes(endpoint_url=None, rts=None, timeout=2.0):
+    """Check readiness of all local OpenAI-compatible runtimes."""
+    start_idx = len(CHECKS)
+    target_rts = rts or LOCAL_COMPAT_RUNTIMES
+    results = {}
+    for rt in target_rts:
+        results[rt] = check_local_compat_runtime(rt, endpoint_url=endpoint_url, timeout=timeout)
+    new_checks = CHECKS[start_idx:]
+    return dict(checks=new_checks, ok=[c for c in new_checks if c["level"] == "ok"],
+                warn=[c for c in new_checks if c["level"] == "warn"],
+                bad=[c for c in new_checks if c["level"] == "bad"],
+                results=results)
+
+
 def check_readiness(status=None):
     """Check readiness for all worker runtimes and orchestrator providers.
 
@@ -201,12 +340,15 @@ def check_readiness(status=None):
         st = status
 
     for name, info in (st.get("runtimes") or {}).items():
-        state = info.get("state", "ok") if isinstance(info, dict) else "ok"
-        detail = info.get("detail", "") if isinstance(info, dict) else str(info)
-        if state == "ok":
-            ok(f"[OK] {name}: {detail}")
+        if status is None and name in LOCAL_COMPAT_RUNTIMES:
+            check_local_compat_runtime(name)
         else:
-            warn(f"[WARN] {name}: {detail}", optional=True)
+            state = info.get("state", "ok") if isinstance(info, dict) else "ok"
+            detail = info.get("detail", "") if isinstance(info, dict) else str(info)
+            if state in ("ok", "ready"):
+                ok(f"[OK] {name}: {detail}")
+            else:
+                warn(f"[WARN] {name}: {detail}", optional=True)
 
     for name, info in (st.get("providers") or {}).items():
         state = info.get("state", "ok") if isinstance(info, dict) else "ok"
