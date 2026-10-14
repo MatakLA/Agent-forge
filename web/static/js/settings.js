@@ -346,28 +346,26 @@ function runtimeCostLabel(cm) {
   if (!cm || typeof cm !== 'object') {
     return 'unknown';
   }
-  const price = cm.price != null && cm.price !== '' ? String(cm.price).trim() : null;
-  const tier = String(cm.tier || cm.cost_tier || cm.kind || '').trim();
-  const tierLower = tier.toLowerCase();
-  const detail = String(cm.detail || cm.reason || cm.description || '').trim();
+  const kind = String(cm.kind || '').trim().toLowerCase();
+  const detail = String(cm.detail || '').trim();
   const detailLower = detail.toLowerCase();
 
-  // If cost_model specifies an honest non-zero price
-  if (price && price !== '0' && price !== '0.0' && price !== '$0') {
-    return price;
-  }
-
-  // If cost_model indicates self-hosted
-  if (detailLower.includes('self-hosted') || tierLower === 'self-hosted' || (cm.type && String(cm.type).toLowerCase().includes('self-hosted'))) {
+  // Self-hosted local runtimes (ollama, vllm, lmstudio, llamacpp)
+  if (detailLower.includes('self-hosted')) {
     return 'self-hosted, no API cost';
   }
 
-  // If tier is known and not 'unknown'
-  if (tier && tierLower !== 'unknown') {
-    return tier;
+  // Quota runtimes (e.g. agy tracked via agy /usage, not USD)
+  if (kind === 'quota') {
+    return 'quota';
   }
 
-  // If cost_model has no price/tier, row must say 'unknown' or 'self-hosted, no API cost'
+  // Metered runtimes (e.g. per-token API runtimes)
+  if (kind === 'metered') {
+    return 'metered';
+  }
+
+  // Unknown runtimes without self-hosted classification (e.g. copilot, mistral-vibe)
   return 'unknown';
 }
 
