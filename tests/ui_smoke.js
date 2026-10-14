@@ -18,17 +18,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  * Task 0200/0234: Verify that the WORKER_RUNTIME selector and dropdown expose the new runtimes:
  * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp, opencode, qwen, goose with their respective
  * selectable options, values, and help text/labels, and verify selection updates without throwing.
- *
- * Local run evidence (`node tests/ui_smoke.js`):
- * ok   settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text
- * ok   settings / workers: WORKER_RUNTIME selector exposes opencode, qwen and goose with help text
- * ok   settings / workers: WORKER_RUNTIME dropdown contains options for opencode, qwen and goose with non-empty labels
- * ok   settings / workers: selecting each new runtime picker option does not throw and updates visible selection
- *
- * Mutation sensitivity:
- * Removing any one of the runtimes or removing labels/help text causes the assertion to fail:
- * FAIL settings / workers: WORKER_RUNTIME selector exposes opencode, qwen and goose with help text
- * FAIL settings / workers: WORKER_RUNTIME dropdown contains options for opencode, qwen and goose with non-empty labels
  */
 async function testNewRuntimesPresent(d, check, w, errors) {
   check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
