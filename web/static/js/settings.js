@@ -37,7 +37,9 @@ let READINESS = null, readinessBusy = false, readinessErr = null, readinessAt = 
 const READINESS_RTNAME = {
   agy: 'Antigravity', claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI',
   compat: 'Codex · own server', aider: 'Aider · own server', opencode: 'OpenCode',
-  goose: 'Goose', 'qwen-code': 'Qwen Code', 'anthropic-compat': 'Anthropic-compatible endpoint'
+  goose: 'Goose', 'qwen-code': 'Qwen Code', 'anthropic-compat': 'Anthropic-compatible endpoint',
+  copilot: 'GitHub Copilot', 'mistral-vibe': 'Mistral Vibe', ollama: 'Ollama',
+  vllm: 'vLLM', lmstudio: 'LM Studio', llamacpp: 'llama.cpp'
 };
 const READINESS_PROVLABEL = {
   'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity',
@@ -347,6 +349,18 @@ function addWorkerForm() {
   if (typeof RTDESC !== 'undefined' && !RTDESC.opencode) RTDESC.opencode = 'your model server through OpenCode';
   if (typeof RTNAME !== 'undefined' && !RTNAME.goose) RTNAME.goose = 'Goose';
   if (typeof RTDESC !== 'undefined' && !RTDESC.goose) RTDESC.goose = 'your model server through Goose';
+  if (typeof RTNAME !== 'undefined' && !RTNAME.copilot) RTNAME.copilot = 'GitHub Copilot';
+  if (typeof RTDESC !== 'undefined' && !RTDESC.copilot) RTDESC.copilot = 'GitHub Copilot CLI - subscription, needs `gh`/Copilot CLI auth';
+  if (typeof RTNAME !== 'undefined' && !RTNAME['mistral-vibe']) RTNAME['mistral-vibe'] = 'Mistral Vibe';
+  if (typeof RTDESC !== 'undefined' && !RTDESC['mistral-vibe']) RTDESC['mistral-vibe'] = 'Mistral Vibe CLI - subscription or API key';
+  if (typeof RTNAME !== 'undefined' && !RTNAME.ollama) RTNAME.ollama = 'Ollama';
+  if (typeof RTDESC !== 'undefined' && !RTDESC.ollama) RTDESC.ollama = 'Local Ollama server - no API key, point at its OpenAI-compatible endpoint URL';
+  if (typeof RTNAME !== 'undefined' && !RTNAME.vllm) RTNAME.vllm = 'vLLM';
+  if (typeof RTDESC !== 'undefined' && !RTDESC.vllm) RTDESC.vllm = 'Local vLLM server - point at its OpenAI-compatible endpoint URL';
+  if (typeof RTNAME !== 'undefined' && !RTNAME.lmstudio) RTNAME.lmstudio = 'LM Studio';
+  if (typeof RTDESC !== 'undefined' && !RTDESC.lmstudio) RTDESC.lmstudio = 'Local LM Studio server - point at its OpenAI-compatible endpoint URL';
+  if (typeof RTNAME !== 'undefined' && !RTNAME.llamacpp) RTNAME.llamacpp = 'llama.cpp';
+  if (typeof RTDESC !== 'undefined' && !RTDESC.llamacpp) RTDESC.llamacpp = 'Local llama.cpp server - point at its OpenAI-compatible endpoint URL';
   const baseR = (S && S.runtimes) || {};
   const R = {};
   for (const [k, v] of Object.entries(baseR)) {
@@ -359,9 +373,15 @@ function addWorkerForm() {
   if (!R['qwen-code']) R['qwen-code'] = {label: 'Qwen Code CLI', key: 'qwen.key'};
   if (!R.opencode) R.opencode = {label: 'OpenCode on your model server', endpoint: true};
   if (!R.goose) R.goose = {label: 'Goose on your model server', endpoint: true};
+  if (!R.copilot) R.copilot = {label: 'GitHub Copilot CLI - subscription, needs `gh`/Copilot CLI auth'};
+  if (!R['mistral-vibe']) R['mistral-vibe'] = {label: 'Mistral Vibe CLI - subscription or API key'};
+  if (!R.ollama) R.ollama = {label: 'Local Ollama server - no API key, point at its OpenAI-compatible endpoint URL', endpoint: true, optional_key: true};
+  if (!R.vllm) R.vllm = {label: 'Local vLLM server - point at its OpenAI-compatible endpoint URL', endpoint: true, optional_key: true};
+  if (!R.lmstudio) R.lmstudio = {label: 'Local LM Studio server - point at its OpenAI-compatible endpoint URL', endpoint: true, optional_key: true};
+  if (!R.llamacpp) R.llamacpp = {label: 'Local llama.cpp server - point at its OpenAI-compatible endpoint URL', endpoint: true, optional_key: true};
   const sec = (S && S.secrets) || {};
   const rtEntries = Object.entries(R);
-  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block" for="runtime-opt-' + esc(k) + '"><input type="radio" name="addw-rt" id="runtime-opt-' + esc(k) + '" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'anthropic-compat' ? 'Anthropic-compatible endpoint' : k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k === 'qwen-code' ? 'Qwen Code' : k)) +
+  const rtHtml = rtEntries.length ? rtEntries.map(([k, r], i) => '<label class="chk block" for="runtime-opt-' + esc(k) + '"><input type="radio" name="addw-rt" id="runtime-opt-' + esc(k) + '" value="' + esc(k) + '"' + (i ? '' : ' checked') + '> <b>' + esc((typeof RTNAME !== 'undefined' && RTNAME[k]) || (k === 'anthropic-compat' ? 'Anthropic-compatible endpoint' : k === 'opencode' ? 'OpenCode' : k === 'goose' ? 'Goose' : k === 'qwen-code' ? 'Qwen Code' : k === 'copilot' ? 'GitHub Copilot' : k === 'mistral-vibe' ? 'Mistral Vibe' : k === 'ollama' ? 'Ollama' : k === 'vllm' ? 'vLLM' : k === 'lmstudio' ? 'LM Studio' : k === 'llamacpp' ? 'llama.cpp' : k)) +
       '</b> <span class="muted">— ' + esc((typeof RTDESC !== 'undefined' && RTDESC[k]) || r.label) + '</span></label>').join('')
     : '<div class="empty">No runtimes available.</div>';
   return '<div id="addw-form" style="display:none" class="addw"><div class="muted small">What will the new worker run on?</div>' +
@@ -784,14 +804,14 @@ document.addEventListener('click', async e => {
 
 // ---- add a worker: an Antigravity account (signed in from the browser), an API key, or your model server
 function addwRt() {
-  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', R = (S && S.runtimes) || {}, r = R[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' ? {endpoint: true} : rt === 'qwen-code' ? {} : {});
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', R = (S && S.runtimes) || {}, r = R[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' || rt === 'ollama' || rt === 'vllm' || rt === 'lmstudio' || rt === 'llamacpp' ? {endpoint: true} : rt === 'qwen-code' ? {} : {});
   $('addw-url').style.display = r.endpoint ? '' : 'none';
   $('addw-key').style.display = r.key && !(S.secrets || {})[r.key] ? '' : 'none';
   $('addw-keyin').placeholder = r.optional_key ? 'API key, only if your server wants one (OpenRouter does, Ollama does not)' : 'API key (stored on the server only)';
 }
 document.addEventListener('change', e => { if (e.target.name === 'addw-rt') addwRt(); if (e.target.name === 'su-kind') suRefresh(); });
 async function addWorkerGo() {
-  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' ? {endpoint: true} : rt === 'qwen-code' ? {key: 'qwen.key'} : {});
+  const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || 'agy', st = $('addw-status'), r = (S.runtimes || {})[rt] || (rt === 'opencode' || rt === 'goose' || rt === 'anthropic-compat' || rt === 'ollama' || rt === 'vllm' || rt === 'lmstudio' || rt === 'llamacpp' ? {endpoint: true} : rt === 'qwen-code' ? {key: 'qwen.key'} : {});
   if (r.endpoint) {
     const url = $('addw-urlin').value.trim(), model = $('addw-model').value.trim(), changes = {};
     if (!url) { $('addw-urlin').focus(); return; }
