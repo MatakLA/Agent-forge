@@ -159,42 +159,48 @@ GitHub Copilot runs GitHub's Copilot CLI (`copilot`) inside the worker container
 
 - **Setup**: Add workers with `bin/worker-add N --runtime copilot` (or in Settings → "+ Add worker" → GitHub Copilot). Authentication requires a GitHub account with an active Copilot subscription, authenticated via `gh` or Copilot CLI credentials mounted into the container.
 - **Egress and Network**: Requires public API hosts `api.githubcopilot.com` and `api.github.com` in `egress/allowlist.txt`. The egress proxy restricts outbound network traffic to these verified GitHub Copilot API hosts only.
-- **Cost / quota model**: subscription-quota (uses your GitHub Copilot subscription quota, with no per-token charges; real USD cost is unknown/not applicable in Agent-Forge).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies Copilot CLI authentication and required egress hosts `api.githubcopilot.com` and `api.github.com`) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unknown (GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge).
 
 ## Mistral Vibe
 Mistral Vibe runs Mistral's Vibe CLI (`mistral-vibe`) inside the worker container using the standard worker image (`sandbox-worker:1.2.11`, `AGY_IMAGE`) to execute coding tasks against Mistral AI models.
 
 - **Setup**: Add workers with `bin/worker-add N --runtime mistral-vibe` (or in Settings → "+ Add worker" → Mistral Vibe). Authentication requires a Mistral Vibe subscription or Mistral API key, configured via `bin/secret-set` or in Settings → Workers.
 - **Egress and Network**: Requires public API host `api.mistral.ai` in `egress/allowlist.txt`. The egress proxy restricts outbound network traffic to this verified Mistral API host only.
-- **Cost / quota model**: subscription-quota (uses your Mistral Vibe subscription or API key quota; real USD cost is unknown/not applicable in Agent-Forge).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `mistral.key` secret and `api.mistral.ai` egress allowlist) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: unknown (Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge).
 
 ## Ollama
 Ollama runs worker coding tasks using the Ollama runtime (`ollama`) against a local or self-hosted Ollama server serving open-weights LLMs over its OpenAI-compatible endpoint.
 
 - **Setup**: Add workers with `bin/worker-add N --runtime ollama` (or in Settings → "+ Add worker" → Ollama). Configure the model server endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:11434/v1` or `http://192.168.1.20:11434/v1`. No API key is required.
 - **Endpoint and Network**: none - reached via the local-endpoint mechanism, no static allowlist entry. The egress proxy dynamically mediates access to the configured endpoint host and port.
-- **Cost / quota model**: self-hosted / no per-token cost (runs on your own hardware; real USD cost is unknown/not applicable, no per-token charges).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `COMPAT_BASE_URL` endpoint configuration and local endpoint reachability) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: self-hosted, no API cost / unknown (Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)).
 
 ## vLLM
 vLLM runs worker coding tasks using the vLLM runtime (`vllm`) against a local or self-hosted vLLM high-throughput model server implementing an OpenAI-compatible API.
 
 - **Setup**: Add workers with `bin/worker-add N --runtime vllm` (or in Settings → "+ Add worker" → vLLM). Configure the model server endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`), e.g. `http://gpu-box:8000/v1`. An optional API key secret (`compat.key`) can be configured if the server enforces authentication.
 - **Endpoint and Network**: none - reached via the local-endpoint mechanism, no static allowlist entry. The egress proxy dynamically mediates access to the configured endpoint host and port.
-- **Cost / quota model**: self-hosted / no per-token cost (runs on your own hardware; real USD cost is unknown/not applicable, no per-token charges).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `COMPAT_BASE_URL` endpoint configuration, local endpoint reachability, and optional `compat.key`) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: self-hosted, no API cost / unknown (Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)).
 
 ## LM Studio
 LM Studio runs worker coding tasks using the LM Studio runtime (`lmstudio`) against an LM Studio desktop application serving local models over its OpenAI-compatible API.
 
 - **Setup**: Add workers with `bin/worker-add N --runtime lmstudio` (or in Settings → "+ Add worker" → LM Studio). Configure the model server endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:1234/v1` or `http://192.168.1.30:1234/v1`. No API key is required for local setups.
 - **Endpoint and Network**: none - reached via the local-endpoint mechanism, no static allowlist entry. The egress proxy dynamically mediates access to the configured endpoint host and port.
-- **Cost / quota model**: self-hosted / no per-token cost (runs on your own hardware; real USD cost is unknown/not applicable, no per-token charges).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `COMPAT_BASE_URL` endpoint configuration and local endpoint reachability) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: self-hosted, no API cost / unknown (Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)).
 
 ## llama.cpp
 llama.cpp runs worker coding tasks using the llama.cpp runtime (`llamacpp`) against a local `llama-server` instance serving quantized GGUF models over an OpenAI-compatible API.
 
 - **Setup**: Add workers with `bin/worker-add N --runtime llamacpp` (or in Settings → "+ Add worker" → llama.cpp). Configure the model server endpoint in `COMPAT_BASE_URL` (Settings → Workers, or `etc/limits.conf`), e.g. `http://127.0.0.1:8080/v1`. No API key is required for local setups.
 - **Endpoint and Network**: none - reached via the local-endpoint mechanism, no static allowlist entry. The egress proxy dynamically mediates access to the configured endpoint host and port.
-- **Cost / quota model**: self-hosted / no per-token cost (runs on your own hardware; real USD cost is unknown/not applicable, no per-token charges).
+- **Doctor check**: Verified by `bin/doctor` (readiness and cost model checks; verifies `COMPAT_BASE_URL` endpoint configuration and local endpoint reachability) and summarized in the dashboard's Settings > Onboarding readiness summary.
+- **Cost / quota model**: self-hosted, no API cost / unknown (Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)).
 
 ## Keys
 API keys are stored in the secrets directory (`~/.config/sandbox/secrets/anthropic.key`, `openai.key`, `gemini.key`; directory
