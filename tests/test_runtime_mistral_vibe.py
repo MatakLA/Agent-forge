@@ -12,6 +12,14 @@ Important invariants:
 - command('mistral-vibe', ...) passes prompt on stdin, never in argv, with quiet flags and optional --model/--resume.
 - scan('mistral-vibe', ...) parses stream-json events from fake-mistral-vibe-server.js without crashing.
 - Skips malformed/garbage lines without raising, preserving terminal result status, zero network calls and no real keys.
+
+Grounded from bin/lib/runtimes.py (Task 0204):
+- RUNTIMES entry (lines 57-58): key="mistral.key", hosts=["api.mistral.ai"], api=False
+- MISTRAL_VIBE_QUIET (lines 73-74): ["--output-format", "stream-json"]
+- cost_model() (lines 119-122): kind="unknown", detail="Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge"
+- command() (lines 225-229): argv=["mistral-vibe"] + MISTRAL_VIBE_QUIET + [--model] + [--resume], stdin=prompt
+- scan() (lines 551, 843-913): initial tokens=None, session from conversation_id/session_id/sessionId/thread_id/session,
+  tool counts, text extraction, usage tokens, step_finish/result/error terminal states.
 """
 import json
 import os
