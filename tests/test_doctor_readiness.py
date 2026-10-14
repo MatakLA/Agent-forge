@@ -966,11 +966,15 @@ class TestDoctorReadiness(unittest.TestCase):
 
     def test_status_of_invalid_runtime_or_kind_raises(self):
         """Invariant: status_of rejects unknown runtime slugs and invalid kinds with ValueError."""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx_rt:
             readiness.status_of("runtime", "nonexistent-runtime-xyz")
-        with self.assertRaises(ValueError):
+        self.assertIn("unknown runtime", str(ctx_rt.exception))
+        assert "unknown runtime" in str(ctx_rt.exception)
+
+        with self.assertRaises(ValueError) as ctx_kind:
             readiness.status_of("invalid-kind", "opencode")
-        assert True
+        self.assertIn("unknown kind", str(ctx_kind.exception))
+        assert "unknown kind" in str(ctx_kind.exception)
 
 
 if __name__ == "__main__":
