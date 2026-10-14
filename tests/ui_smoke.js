@@ -81,19 +81,6 @@ async function testNewRuntimesPresent(d, check, w, errors) {
  * with one row per runtime, correct badges (null ready = 'unknown' badge, never false ready/not-ready),
  * honest cost/quota labels ('self-hosted, no API cost' for local-compat, never fabricated dollar amounts),
  * and handles empty and error states cleanly.
- *
- * Local run evidence (`node tests/ui_smoke.js`):
- * ok   settings: runtime readiness table renders all six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)
- * ok   settings: ready=null runtimes (ollama, vllm) render explicit unknown badge and never green ok
- * ok   settings: local-compat runtimes (ollama, vllm, lmstudio, llamacpp) render honest self-hosted cost text without fabricated dollar amounts
- * ok   settings: copilot and mistral-vibe render correct readiness badges and honest cost labels
- * ok   settings: runtime readiness shows empty state when runtimes list is empty
- * ok   settings: runtime readiness shows error state when endpoint fails
- *
- * Mutation sensitivity:
- * - Omitting any of the six runtimes causes 'renders all six new runtimes' to FAIL
- * - Rendering ready=null as 'Ready' or adding 'ok' badge class causes 'render explicit unknown badge' to FAIL
- * - Rendering dollar amounts (e.g. '$0.00') for local-compat causes 'honest self-hosted cost text' to FAIL
  */
 async function testRuntimeReadinessSummary(d, check, w, errors) {
   check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
