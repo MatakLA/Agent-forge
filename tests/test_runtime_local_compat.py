@@ -182,6 +182,16 @@ fi
         self.assertEqual(entry["default_path"], "/v1/chat/completions")
         self.assertFalse(is_api("ollama"))
         self.assertTrue(uses_endpoint("ollama"))
+        assert "ollama" in RUNTIMES
+        assert entry["image"] == runtimes.AGY_IMAGE
+        assert entry["key"] is None
+        assert entry["hosts"] == []
+        assert entry["api"] is False
+        assert entry["endpoint"] is True
+        assert entry["default_port"] == 11434
+        assert entry["default_path"] == "/v1/chat/completions"
+        assert is_api("ollama") is False
+        assert uses_endpoint("ollama") is True
 
     def test_ollama_hosts_resolution(self):
         """hosts('ollama', ...) returns only endpoint host, never a static public host."""
@@ -190,6 +200,11 @@ fi
         self.assertEqual(hosts("ollama", "http://127.0.0.1:11434/v1"), ["127.0.0.1"])
         self.assertEqual(hosts("ollama", "http://localhost:11434/v1/chat/completions"), ["localhost"])
         self.assertNotIn("api.openai.com", hosts("ollama", "http://127.0.0.1:11434/v1"))
+        assert hosts("ollama", "") == []
+        assert hosts("ollama") == []
+        assert hosts("ollama", "http://127.0.0.1:11434/v1") == ["127.0.0.1"]
+        assert hosts("ollama", "http://localhost:11434/v1/chat/completions") == ["localhost"]
+        assert "api.openai.com" not in hosts("ollama", "http://127.0.0.1:11434/v1")
 
     def test_ollama_cost_model(self):
         """cost_model('ollama') states self-hosted/unknown with zero fabricated USD."""
@@ -200,6 +215,11 @@ fi
         self.assertIn("no per-token charges", cm["detail"])
         self.assertNotIn("$", cm["detail"])
         self.assertNotRegex(cm["detail"], r"\$\d+\.?\d*")
+        assert cm["kind"] == "unknown"
+        assert "Self-hosted" in cm["detail"]
+        assert "ollama" in cm["detail"].lower()
+        assert "no per-token charges" in cm["detail"]
+        assert "$" not in cm["detail"]
 
     def test_ollama_command_argv_and_stdin(self):
         """command('ollama', ...) builds curl POST argv with prompt on stdin."""
@@ -215,6 +235,12 @@ fi
         body = json.loads(stdin)
         self.assertEqual(body["model"], "llama3.2")
         self.assertEqual(body["messages"][-1]["content"], "Fix memory leak in buffer")
+        assert argv[0] == "curl"
+        assert argv[1:4] == ["-s", "-X", "POST"]
+        assert argv[4] == "http://127.0.0.1:11434/v1/chat/completions"
+        assert "Fix memory leak in buffer" not in argv
+        assert body["model"] == "llama3.2"
+        assert body["messages"][-1]["content"] == "Fix memory leak in buffer"
 
     def test_ollama_scan_success(self):
         """scan('ollama', ...) parses standard OpenAI completion JSON into SUCCESS."""
@@ -230,6 +256,11 @@ fi
         self.assertEqual(res["tokens"], 120)
         self.assertEqual(res["conversation_id"], "chatcmpl-ollama-001")
         self.assertIsNone(res["result"]["cost_usd"])
+        assert res["result"]["status"] == "SUCCESS"
+        assert res["result"]["response"] == "Ollama response"
+        assert res["tokens"] == 120
+        assert res["conversation_id"] == "chatcmpl-ollama-001"
+        assert res["result"]["cost_usd"] is None
 
     # -------------------------------------------------------------------------
     # Dedicated per-runtime test methods for vllm
@@ -248,6 +279,15 @@ fi
         self.assertEqual(entry["default_path"], "/v1/chat/completions")
         self.assertFalse(is_api("vllm"))
         self.assertTrue(uses_endpoint("vllm"))
+        assert "vllm" in RUNTIMES
+        assert entry["image"] == runtimes.AGY_IMAGE
+        assert entry["key"] == "compat.key"
+        assert entry["hosts"] == []
+        assert entry["api"] is False
+        assert entry["endpoint"] is True
+        assert entry["default_port"] == 8000
+        assert is_api("vllm") is False
+        assert uses_endpoint("vllm") is True
 
     def test_vllm_hosts_resolution(self):
         """hosts('vllm', ...) returns only endpoint host, never a static public host."""
@@ -256,6 +296,11 @@ fi
         self.assertEqual(hosts("vllm", "http://127.0.0.1:8000/v1"), ["127.0.0.1"])
         self.assertEqual(hosts("vllm", "https://vllm.corp.local:8443/v1"), ["vllm.corp.local"])
         self.assertNotIn("api.mistral.ai", hosts("vllm", "http://127.0.0.1:8000/v1"))
+        assert hosts("vllm", "") == []
+        assert hosts("vllm") == []
+        assert hosts("vllm", "http://127.0.0.1:8000/v1") == ["127.0.0.1"]
+        assert hosts("vllm", "https://vllm.corp.local:8443/v1") == ["vllm.corp.local"]
+        assert "api.mistral.ai" not in hosts("vllm", "http://127.0.0.1:8000/v1")
 
     def test_vllm_cost_model(self):
         """cost_model('vllm') states self-hosted/unknown with zero fabricated USD."""
@@ -266,6 +311,11 @@ fi
         self.assertIn("no per-token charges", cm["detail"])
         self.assertNotIn("$", cm["detail"])
         self.assertNotRegex(cm["detail"], r"\$\d+\.?\d*")
+        assert cm["kind"] == "unknown"
+        assert "Self-hosted" in cm["detail"]
+        assert "vllm" in cm["detail"].lower()
+        assert "no per-token charges" in cm["detail"]
+        assert "$" not in cm["detail"]
 
     def test_vllm_command_argv_and_stdin(self):
         """command('vllm', ...) builds curl POST argv with prompt on stdin."""
@@ -277,6 +327,12 @@ fi
         body = json.loads(stdin)
         self.assertEqual(body["model"], "meta-llama/Llama-3-70b-Instruct")
         self.assertEqual(body["messages"][-1]["content"], "Deploy model cluster")
+        assert argv[0] == "curl"
+        assert argv[1:4] == ["-s", "-X", "POST"]
+        assert argv[4] == "http://127.0.0.1:8000/v1/chat/completions"
+        assert "Deploy model cluster" not in argv
+        assert body["model"] == "meta-llama/Llama-3-70b-Instruct"
+        assert body["messages"][-1]["content"] == "Deploy model cluster"
 
     def test_vllm_scan_success(self):
         """scan('vllm', ...) parses standard OpenAI completion JSON into SUCCESS."""
@@ -292,6 +348,11 @@ fi
         self.assertEqual(res["tokens"], 650)
         self.assertEqual(res["conversation_id"], "chatcmpl-vllm-001")
         self.assertIsNone(res["result"]["cost_usd"])
+        assert res["result"]["status"] == "SUCCESS"
+        assert res["result"]["response"] == "vLLM output text"
+        assert res["tokens"] == 650
+        assert res["conversation_id"] == "chatcmpl-vllm-001"
+        assert res["result"]["cost_usd"] is None
 
     # -------------------------------------------------------------------------
     # Dedicated per-runtime test methods for lmstudio
@@ -310,6 +371,15 @@ fi
         self.assertEqual(entry["default_path"], "/v1/chat/completions")
         self.assertFalse(is_api("lmstudio"))
         self.assertTrue(uses_endpoint("lmstudio"))
+        assert "lmstudio" in RUNTIMES
+        assert entry["image"] == runtimes.AGY_IMAGE
+        assert entry["key"] is None
+        assert entry["hosts"] == []
+        assert entry["api"] is False
+        assert entry["endpoint"] is True
+        assert entry["default_port"] == 1234
+        assert is_api("lmstudio") is False
+        assert uses_endpoint("lmstudio") is True
 
     def test_lmstudio_hosts_resolution(self):
         """hosts('lmstudio', ...) returns only endpoint host, never a static public host."""
@@ -318,6 +388,11 @@ fi
         self.assertEqual(hosts("lmstudio", "http://127.0.0.1:1234/v1"), ["127.0.0.1"])
         self.assertEqual(hosts("lmstudio", "http://192.168.1.100:1234"), ["192.168.1.100"])
         self.assertNotIn("api.github.com", hosts("lmstudio", "http://127.0.0.1:1234/v1"))
+        assert hosts("lmstudio", "") == []
+        assert hosts("lmstudio") == []
+        assert hosts("lmstudio", "http://127.0.0.1:1234/v1") == ["127.0.0.1"]
+        assert hosts("lmstudio", "http://192.168.1.100:1234") == ["192.168.1.100"]
+        assert "api.github.com" not in hosts("lmstudio", "http://127.0.0.1:1234/v1")
 
     def test_lmstudio_cost_model(self):
         """cost_model('lmstudio') states self-hosted/unknown with zero fabricated USD."""
@@ -328,6 +403,11 @@ fi
         self.assertIn("no per-token charges", cm["detail"])
         self.assertNotIn("$", cm["detail"])
         self.assertNotRegex(cm["detail"], r"\$\d+\.?\d*")
+        assert cm["kind"] == "unknown"
+        assert "Self-hosted" in cm["detail"]
+        assert "lm studio" in cm["detail"].lower()
+        assert "no per-token charges" in cm["detail"]
+        assert "$" not in cm["detail"]
 
     def test_lmstudio_command_argv_and_stdin(self):
         """command('lmstudio', ...) builds curl POST argv with prompt on stdin."""
@@ -339,6 +419,12 @@ fi
         body = json.loads(stdin)
         self.assertEqual(body["model"], "lmstudio-community/mistral-7b")
         self.assertEqual(body["messages"][-1]["content"], "Refactor UI components")
+        assert argv[0] == "curl"
+        assert argv[1:4] == ["-s", "-X", "POST"]
+        assert argv[4] == "http://127.0.0.1:1234/v1/chat/completions"
+        assert "Refactor UI components" not in argv
+        assert body["model"] == "lmstudio-community/mistral-7b"
+        assert body["messages"][-1]["content"] == "Refactor UI components"
 
     def test_lmstudio_scan_success(self):
         """scan('lmstudio', ...) parses standard OpenAI completion JSON into SUCCESS."""
@@ -354,6 +440,11 @@ fi
         self.assertEqual(res["tokens"], 280)
         self.assertEqual(res["conversation_id"], "chatcmpl-lmstudio-001")
         self.assertIsNone(res["result"]["cost_usd"])
+        assert res["result"]["status"] == "SUCCESS"
+        assert res["result"]["response"] == "LM Studio generated code"
+        assert res["tokens"] == 280
+        assert res["conversation_id"] == "chatcmpl-lmstudio-001"
+        assert res["result"]["cost_usd"] is None
 
     # -------------------------------------------------------------------------
     # Dedicated per-runtime test methods for llamacpp
@@ -372,6 +463,15 @@ fi
         self.assertEqual(entry["default_path"], "/v1/chat/completions")
         self.assertFalse(is_api("llamacpp"))
         self.assertTrue(uses_endpoint("llamacpp"))
+        assert "llamacpp" in RUNTIMES
+        assert entry["image"] == runtimes.AGY_IMAGE
+        assert entry["key"] is None
+        assert entry["hosts"] == []
+        assert entry["api"] is False
+        assert entry["endpoint"] is True
+        assert entry["default_port"] == 8080
+        assert is_api("llamacpp") is False
+        assert uses_endpoint("llamacpp") is True
 
     def test_llamacpp_hosts_resolution(self):
         """hosts('llamacpp', ...) returns only endpoint host, never a static public host."""
@@ -380,6 +480,11 @@ fi
         self.assertEqual(hosts("llamacpp", "http://127.0.0.1:8080/v1"), ["127.0.0.1"])
         self.assertEqual(hosts("llamacpp", "http://server.home.arpa:8080"), ["server.home.arpa"])
         self.assertNotIn("api.anthropic.com", hosts("llamacpp", "http://127.0.0.1:8080/v1"))
+        assert hosts("llamacpp", "") == []
+        assert hosts("llamacpp") == []
+        assert hosts("llamacpp", "http://127.0.0.1:8080/v1") == ["127.0.0.1"]
+        assert hosts("llamacpp", "http://server.home.arpa:8080") == ["server.home.arpa"]
+        assert "api.anthropic.com" not in hosts("llamacpp", "http://127.0.0.1:8080/v1")
 
     def test_llamacpp_cost_model(self):
         """cost_model('llamacpp') states self-hosted/unknown with zero fabricated USD."""
@@ -390,6 +495,11 @@ fi
         self.assertIn("no per-token charges", cm["detail"])
         self.assertNotIn("$", cm["detail"])
         self.assertNotRegex(cm["detail"], r"\$\d+\.?\d*")
+        assert cm["kind"] == "unknown"
+        assert "Self-hosted" in cm["detail"]
+        assert "llama.cpp" in cm["detail"].lower()
+        assert "no per-token charges" in cm["detail"]
+        assert "$" not in cm["detail"]
 
     def test_llamacpp_command_argv_and_stdin(self):
         """command('llamacpp', ...) builds curl POST argv with prompt on stdin."""
@@ -401,6 +511,12 @@ fi
         body = json.loads(stdin)
         self.assertEqual(body["model"], "ggml-model-q4_0.gguf")
         self.assertEqual(body["messages"][-1]["content"], "Write unit test suite")
+        assert argv[0] == "curl"
+        assert argv[1:4] == ["-s", "-X", "POST"]
+        assert argv[4] == "http://127.0.0.1:8080/v1/chat/completions"
+        assert "Write unit test suite" not in argv
+        assert body["model"] == "ggml-model-q4_0.gguf"
+        assert body["messages"][-1]["content"] == "Write unit test suite"
 
     def test_llamacpp_scan_success(self):
         """scan('llamacpp', ...) parses standard OpenAI completion JSON into SUCCESS."""
@@ -416,6 +532,11 @@ fi
         self.assertEqual(res["tokens"], 500)
         self.assertEqual(res["conversation_id"], "chatcmpl-llamacpp-001")
         self.assertIsNone(res["result"]["cost_usd"])
+        assert res["result"]["status"] == "SUCCESS"
+        assert res["result"]["response"] == "llama.cpp response text"
+        assert res["tokens"] == 500
+        assert res["conversation_id"] == "chatcmpl-llamacpp-001"
+        assert res["result"]["cost_usd"] is None
 
     # -------------------------------------------------------------------------
     # Cross-cutting tests covering all four local-compat runtimes
@@ -430,19 +551,28 @@ fi
             self.assertEqual(hosts(rt), [], f"{rt} hosts() should be []")
             self.assertEqual(hosts(rt, "invalid://"), [], f"{rt} hosts('invalid://') should be []")
             self.assertEqual(hosts(rt, "ftp://myhost:21"), [], f"{rt} hosts('ftp://') should be []")
+            assert hosts(rt, "") == []
+            assert hosts(rt, None) == []
+            assert hosts(rt) == []
+            assert hosts(rt, "invalid://") == []
+            assert hosts(rt, "ftp://myhost:21") == []
 
             # Valid model endpoints resolve only the specific target host
             h_local = hosts(rt, "http://127.0.0.1:9000/v1")
             self.assertEqual(h_local, ["127.0.0.1"], f"{rt} failed to resolve 127.0.0.1")
+            assert h_local == ["127.0.0.1"]
             h_domain = hosts(rt, "https://Custom-Host.Internal:8443/chat")
             self.assertEqual(h_domain, ["custom-host.internal"], f"{rt} failed to lowercase host")
+            assert h_domain == ["custom-host.internal"]
 
             # Static hosts list in RUNTIMES is empty
             self.assertEqual(RUNTIMES[rt]["hosts"], [], f"{rt} RUNTIMES entry must have empty static hosts")
+            assert RUNTIMES[rt]["hosts"] == []
 
             # Never intersects with known public AI endpoints
             for h in hosts(rt, "http://127.0.0.1:8000"):
                 self.assertNotIn(h, public_hosts)
+                assert h not in public_hosts
 
     def test_all_local_compat_cost_model_honest_unknown_no_fabricated_usd(self):
         """cost_model(rt) states unknown/self-hosted with no fabricated USD or token charges."""
@@ -456,6 +586,10 @@ fi
             self.assertNotIn("$", cm["detail"], f"{rt} cost_model detail contains '$'")
             self.assertNotRegex(cm["detail"], r"\$\d+\.?\d*", f"{rt} detail fabricated a USD price")
             self.assertNotRegex(cm["detail"], r"\b0\.00\b", f"{rt} detail fabricated a zero USD price")
+            assert cm["kind"] == "unknown"
+            assert "Self-hosted" in cm["detail"]
+            assert "no per-token charges" in cm["detail"]
+            assert "$" not in cm["detail"]
 
     def test_all_local_compat_command_endpoint_url_and_env_normalization(self):
         """command(rt, ...) normalizes endpoint URLs with various paths and env fallbacks."""
@@ -469,33 +603,40 @@ fi
             try:
                 argv, _ = command(rt, "task", "model")
                 self.assertEqual(argv[4], default_url)
+                assert argv[4] == default_url
 
                 # 2. Explicit endpoint_url with /chat/completions preserved
                 argv2, _ = command(rt, "task", "model", endpoint_url="http://10.0.0.5:9999/v1/chat/completions")
                 self.assertEqual(argv2[4], "http://10.0.0.5:9999/v1/chat/completions")
+                assert argv2[4] == "http://10.0.0.5:9999/v1/chat/completions"
 
                 # 3. Endpoint ending with /v1
                 argv3, _ = command(rt, "task", "model", endpoint_url="http://10.0.0.5:9999/v1")
                 self.assertEqual(argv3[4], "http://10.0.0.5:9999/v1/chat/completions")
+                assert argv3[4] == "http://10.0.0.5:9999/v1/chat/completions"
 
                 # 4. Endpoint ending with /v1/
                 argv4, _ = command(rt, "task", "model", endpoint_url="http://10.0.0.5:9999/v1/")
                 self.assertEqual(argv4[4], "http://10.0.0.5:9999/v1/chat/completions")
+                assert argv4[4] == "http://10.0.0.5:9999/v1/chat/completions"
 
                 # 5. Base URL without /v1
                 argv5, _ = command(rt, "task", "model", endpoint_url="http://10.0.0.5:9999")
                 self.assertEqual(argv5[4], f"http://10.0.0.5:9999{RUNTIMES[rt]['default_path']}")
+                assert argv5[4] == f"http://10.0.0.5:9999{RUNTIMES[rt]['default_path']}"
 
                 # 6. Fallback to AF_ENDPOINT
                 os.environ["AF_ENDPOINT"] = "http://af-host:7777/v1"
                 argv6, _ = command(rt, "task", "model")
                 self.assertEqual(argv6[4], "http://af-host:7777/v1/chat/completions")
+                assert argv6[4] == "http://af-host:7777/v1/chat/completions"
 
                 # 7. Fallback to COMPAT_BASE_URL
                 os.environ.pop("AF_ENDPOINT", None)
                 os.environ["COMPAT_BASE_URL"] = "http://compat-host:6666/v1"
                 argv7, _ = command(rt, "task", "model")
                 self.assertEqual(argv7[4], "http://compat-host:6666/v1/chat/completions")
+                assert argv7[4] == "http://compat-host:6666/v1/chat/completions"
             finally:
                 if old_ep is not None:
                     os.environ["AF_ENDPOINT"] = old_ep
@@ -517,16 +658,24 @@ fi
             self.assertNotIn("Refactor prompt with unicode", argv_str)
             self.assertNotIn("🚀", argv_str)
             self.assertNotIn("修复漏洞", argv_str)
+            assert "Refactor prompt with unicode" not in argv_str
+            assert "🚀" not in argv_str
+            assert "修复漏洞" not in argv_str
 
             # Never puts secret keys or tokens in argv
             self.assertNotIn("compat.key", argv_str)
             self.assertNotIn("sk-", argv_str)
             self.assertNotIn("ghp_", argv_str)
             self.assertNotIn("bearer", argv_str.lower())
+            assert "compat.key" not in argv_str
+            assert "sk-" not in argv_str
+            assert "ghp_" not in argv_str
+            assert "bearer" not in argv_str.lower()
 
             # Payload correctly serializes unicode without corruption
             body = json.loads(stdin)
             self.assertEqual(body["messages"][-1]["content"], long_unicode_prompt)
+            assert body["messages"][-1]["content"] == long_unicode_prompt
 
     def test_all_local_compat_command_conversation_structures(self):
         """command(rt, ...) handles string, list, and dict conversation history structures."""
@@ -536,6 +685,8 @@ fi
             body1 = json.loads(stdin1)
             self.assertEqual(body1["conversation_id"], "ses_thread_987")
             self.assertEqual(body1["messages"], [{"role": "user", "content": "follow-up question"}])
+            assert body1["conversation_id"] == "ses_thread_987"
+            assert body1["messages"] == [{"role": "user", "content": "follow-up question"}]
 
             # 2. List of messages as Python list
             history_list = [
@@ -548,12 +699,16 @@ fi
             self.assertEqual(len(body2["messages"]), 4)
             self.assertEqual(body2["messages"][0]["role"], "system")
             self.assertEqual(body2["messages"][-1]["content"], "Next step")
+            assert len(body2["messages"]) == 4
+            assert body2["messages"][0]["role"] == "system"
+            assert body2["messages"][-1]["content"] == "Next step"
 
             # 3. List of messages as JSON string
             history_json = json.dumps(history_list)
             _, stdin3 = command(rt, "Next step", "m1", conversation=history_json)
             body3 = json.loads(stdin3)
             self.assertEqual(len(body3["messages"]), 4)
+            assert len(body3["messages"]) == 4
 
             # 4. Dict with system and messages
             history_dict = {
@@ -565,11 +720,15 @@ fi
             self.assertEqual(body4["messages"][0], {"role": "system", "content": "System instructions here"})
             self.assertEqual(body4["messages"][1], {"role": "user", "content": "First input"})
             self.assertEqual(body4["messages"][2], {"role": "user", "content": "Second input"})
+            assert body4["messages"][0] == {"role": "system", "content": "System instructions here"}
+            assert body4["messages"][1] == {"role": "user", "content": "First input"}
+            assert body4["messages"][2] == {"role": "user", "content": "Second input"}
 
             # 5. Empty prompt handled safely
             _, stdin5 = command(rt, "", "m1")
             body5 = json.loads(stdin5)
             self.assertEqual(body5["messages"], [{"role": "user", "content": ""}])
+            assert body5["messages"] == [{"role": "user", "content": ""}]
 
     def test_all_local_compat_scan_single_and_multiline_json_completion(self):
         """scan(rt, ...) parses single-line and pretty-printed multiline JSON completions."""
@@ -591,6 +750,11 @@ fi
             self.assertEqual(res1["tokens"], 60)
             self.assertEqual(res1["conversation_id"], "cmpl-single-01")
             self.assertIsNone(res1["result"]["cost_usd"])
+            assert res1["result"]["status"] == "SUCCESS"
+            assert res1["result"]["response"] == "Done: file updated."
+            assert res1["tokens"] == 60
+            assert res1["conversation_id"] == "cmpl-single-01"
+            assert res1["result"]["cost_usd"] is None
 
             # Multiline pretty-printed JSON
             multiline = """{
@@ -616,6 +780,10 @@ fi
             self.assertEqual(res2["result"]["response"], "Done: all tests pass.")
             self.assertEqual(res2["tokens"], 250)
             self.assertEqual(res2["conversation_id"], "cmpl-multi-02")
+            assert res2["result"]["status"] == "SUCCESS"
+            assert res2["result"]["response"] == "Done: all tests pass."
+            assert res2["tokens"] == 250
+            assert res2["conversation_id"] == "cmpl-multi-02"
 
     def test_all_local_compat_scan_streaming_sse_chunks(self):
         """scan(rt, ...) parses SSE chunk streams terminated by [DONE] into SUCCESS."""
@@ -635,6 +803,11 @@ fi
             self.assertEqual(res["tokens"], 250)
             self.assertEqual(res["conversation_id"], "cmpl-stream-001")
             self.assertIsNone(res["result"]["cost_usd"])
+            assert res["result"]["status"] == "SUCCESS"
+            assert res["result"]["response"] == "Writing code..."
+            assert res["tokens"] == 250
+            assert res["conversation_id"] == "cmpl-stream-001"
+            assert res["result"]["cost_usd"] is None
 
     def test_all_local_compat_scan_tool_usage_counting(self):
         """scan(rt, ...) counts tool calls from tool_calls lists, function_call, and SEARCH diffs."""
@@ -666,6 +839,8 @@ fi
             # Expect: 2 (tool_calls) + 1 (function_call) + 1 (SEARCH) + 1 (type: tool_use) + 1 (tool_calls) = 6 tools
             self.assertEqual(res["tools"], 6, f"{rt} expected 6 tools, got {res['tools']}")
             self.assertEqual(res["result"]["status"], "SUCCESS")
+            assert res["tools"] == 6
+            assert res["result"]["status"] == "SUCCESS"
 
     def test_all_local_compat_scan_token_calculation_and_caching(self):
         """scan(rt, ...) calculates tokens subtracting cached tokens, with bounds and fallbacks."""
@@ -673,22 +848,27 @@ fi
             # 1. Total tokens with cached tokens
             ev1 = [json.dumps({"object": "chat.completion", "usage": {"total_tokens": 1500, "cached_tokens": 300}, "choices": [{"finish_reason": "stop"}]})]
             self.assertEqual(scan(rt, ev1)["tokens"], 1200)
+            assert scan(rt, ev1)["tokens"] == 1200
 
             # 2. Cached tokens > total tokens clamped to 0
             ev2 = [json.dumps({"object": "chat.completion", "usage": {"total_tokens": 100, "cached_tokens": 150}, "choices": [{"finish_reason": "stop"}]})]
             self.assertEqual(scan(rt, ev2)["tokens"], 0)
+            assert scan(rt, ev2)["tokens"] == 0
 
             # 3. Missing total_tokens falls back to prompt + completion - cached
             ev3 = [json.dumps({"object": "chat.completion", "usage": {"prompt_tokens": 800, "completion_tokens": 200, "cached_prompt_tokens": 100}, "choices": [{"finish_reason": "stop"}]})]
             self.assertEqual(scan(rt, ev3)["tokens"], 900)
+            assert scan(rt, ev3)["tokens"] == 900
 
             # 4. Usage as raw integer
             ev4 = [json.dumps({"object": "chat.completion", "usage": 450, "choices": [{"finish_reason": "stop"}]})]
             self.assertEqual(scan(rt, ev4)["tokens"], 450)
+            assert scan(rt, ev4)["tokens"] == 450
 
             # 5. Missing usage leaves tokens as None
             ev5 = [json.dumps({"object": "chat.completion", "choices": [{"finish_reason": "stop"}]})]
             self.assertIsNone(scan(rt, ev5)["tokens"])
+            assert scan(rt, ev5)["tokens"] is None
 
     def test_all_local_compat_scan_error_handling(self):
         """scan(rt, ...) parses OpenAI API error payloads into ERROR result status."""
@@ -704,6 +884,9 @@ fi
             self.assertIsNotNone(res["result"])
             self.assertEqual(res["result"]["status"], "ERROR")
             self.assertIn("Model 'mistral:latest' not found", res["result"]["error"])
+            assert res["result"] is not None
+            assert res["result"]["status"] == "ERROR"
+            assert "Model 'mistral:latest' not found" in res["result"]["error"]
 
     def test_all_local_compat_scan_malformed_lines_and_empty_stream(self):
         """scan(rt, ...) ignores malformed JSON, curl progress, and empty streams safely."""
@@ -726,16 +909,24 @@ fi
             self.assertEqual(res1["tools"], 0)
             self.assertIsNone(res1["conversation_id"])
             self.assertIsNone(res1["result"])
+            assert res1["tokens"] is None
+            assert res1["tools"] == 0
+            assert res1["conversation_id"] is None
+            assert res1["result"] is None
 
             # 2. Empty stream
             res2 = scan(rt, [])
             self.assertIsNone(res2["tokens"])
             self.assertIsNone(res2["result"])
+            assert res2["tokens"] is None
+            assert res2["result"] is None
 
             # 3. None stream
             res3 = scan(rt, None)
             self.assertIsNone(res3["tokens"])
             self.assertIsNone(res3["result"])
+            assert res3["tokens"] is None
+            assert res3["result"] is None
 
     def test_all_local_compat_scan_response_truncation_and_unicode(self):
         """scan(rt, ...) preserves unicode characters and truncates responses to the last 4000 characters."""
@@ -750,6 +941,9 @@ fi
             resp = res["result"]["response"]
             self.assertEqual(len(resp), 4000)
             self.assertTrue(resp.endswith(" 🚀 成功完成任务"))
+            assert res["result"]["status"] == "SUCCESS"
+            assert len(resp) == 4000
+            assert resp.endswith(" 🚀 成功完成任务")
 
     def test_all_local_compat_scan_cost_usd_pricing(self):
         """scan(rt, ...) keeps cost_usd None by default and computes formula when prices string is passed."""
@@ -762,11 +956,13 @@ fi
             # Without prices -> None
             res_no_price = scan(rt, [event])
             self.assertIsNone(res_no_price["result"]["cost_usd"])
+            assert res_no_price["result"]["cost_usd"] is None
 
             # With prices="3.0,0.5,15.0" (input $3/M, cache $0.5/M, output $15/M)
             # cost = (1000 - 200)*3.0 + 200*0.5 + 500*15.0 = 2400 + 100 + 7500 = 10000 micro-USD = $0.010000
             res_priced = scan(rt, [event], prices="3.0,0.5,15.0")
             self.assertEqual(res_priced["result"]["cost_usd"], 0.01)
+            assert res_priced["result"]["cost_usd"] == 0.01
 
     def test_all_local_compat_scan_file_helper(self):
         """scan_file(rt, path) parses files from disk and returns default state for missing files."""
@@ -784,11 +980,17 @@ fi
                 self.assertEqual(res["tokens"], 42)
                 self.assertEqual(res["result"]["status"], "SUCCESS")
                 self.assertEqual(res["result"]["response"], f"Result for {rt}")
+                assert res["conversation_id"] == f"cmpl-file-{rt}"
+                assert res["tokens"] == 42
+                assert res["result"]["status"] == "SUCCESS"
+                assert res["result"]["response"] == f"Result for {rt}"
 
             # Missing file returns graceful default
             missing = scan_file(rt, "/path/does/not/exist.json")
             self.assertIsNone(missing["tokens"])
             self.assertIsNone(missing["result"])
+            assert missing["tokens"] is None
+            assert missing["result"] is None
 
     # -------------------------------------------------------------------------
     # Live fixture tests against fake-local-compat-server.js (requires node)
@@ -805,6 +1007,7 @@ fi
             argv, stdin = command(rt, prompt, "local-test-model", endpoint_url=endpoint)
             proc = subprocess.run(argv, input=stdin, text=True, capture_output=True)
             self.assertEqual(proc.returncode, 0, f"curl failed for {rt}: {proc.stderr}")
+            assert proc.returncode == 0
 
             res = scan(rt, proc.stdout.splitlines())
             self.assertIsNotNone(res["result"], f"{rt} result should not be None")
@@ -813,6 +1016,12 @@ fi
             self.assertEqual(res["tokens"], 1240)
             self.assertEqual(res["conversation_id"], "chatcmpl-fake-local-001")
             self.assertIsNone(res["result"]["cost_usd"])
+            assert res["result"] is not None
+            assert res["result"]["status"] == "SUCCESS"
+            assert res["result"]["response"] == "Task completed successfully."
+            assert res["tokens"] == 1240
+            assert res["conversation_id"] == "chatcmpl-fake-local-001"
+            assert res["result"]["cost_usd"] is None
 
     @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-local-compat-server.js")
     def test_live_fixture_error_round_trip(self):
@@ -828,6 +1037,9 @@ fi
             self.assertIsNotNone(res["result"])
             self.assertEqual(res["result"]["status"], "ERROR")
             self.assertIn("simulated local compat server error", res["result"]["error"])
+            assert res["result"] is not None
+            assert res["result"]["status"] == "ERROR"
+            assert "simulated local compat server error" in res["result"]["error"]
 
     @unittest.skipUnless(NODE_AVAILABLE, "node not available to run fake-local-compat-server.js")
     def test_live_fixture_stream_round_trip(self):
@@ -846,6 +1058,9 @@ fi
             self.assertEqual(res["result"]["status"], "SUCCESS")
             self.assertEqual(res["result"]["response"], "Task completed successfully.")
             self.assertEqual(res["tokens"], 1240)
+            assert res["result"]["status"] == "SUCCESS"
+            assert res["result"]["response"] == "Task completed successfully."
+            assert res["tokens"] == 1240
 
 
 if __name__ == "__main__":
