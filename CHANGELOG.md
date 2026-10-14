@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Documentation: document setup, doctor reachability, unmetered cost models, and local egress for ollama, vllm, lmstudio, and llamacpp in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
 - Documentation: document bin/doctor checks and Settings readiness summary for all six runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with honest cost and quota models in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
 - Local-compat runtimes (ollama/vllm/lmstudio/llamacpp) are now fully wired end to end (implementation + tests + check.sh).
 - Local-compat runtimes: add ollama, vllm, lmstudio, and llamacpp to RUNTIMES with local endpoint resolution, honest zero-cost classification, and OpenAI-compatible completions command and scan handling.
