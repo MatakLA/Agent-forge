@@ -12,6 +12,10 @@
   anthropic-compat Anthropic Messages API on your model server (COMPAT_BASE_URL)
   mistral-vibe Mistral Vibe CLI on Mistral AI API (api.mistral.ai)
   copilot GitHub Copilot CLI on GitHub API (api.githubcopilot.com, api.github.com)
+  ollama  Ollama local model server on your endpoint (COMPAT_BASE_URL)
+  vllm    vLLM local model server on your endpoint (COMPAT_BASE_URL)
+  lmstudio LM Studio local model server on your endpoint (COMPAT_BASE_URL)
+  llamacpp llama.cpp local model server on your endpoint (COMPAT_BASE_URL)
 
 The API runtimes run inside the same locked-down container as agy (worker/Dockerfile.api adds Node, the CLIs and Aider). A key is
 a read-only file mount (/run/secrets/api-key) that worker/af-agent puts into the agent's environment only - it never appears in a
@@ -60,6 +64,21 @@ RUNTIMES = {
     # GitHub Copilot: GitHub Copilot CLI (api.githubcopilot.com, api.github.com)
     "copilot": dict(label="GitHub Copilot (GitHub Copilot CLI)", image=AGY_IMAGE, key=None,
                     hosts=["api.githubcopilot.com", "api.github.com"], api=False),
+    # Local model server runtimes (endpoint runtimes, no static allowlist entry)
+    "ollama": dict(label="Ollama (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                   api=False, endpoint=True, optional_key=True, default_port=11434, default_path="/v1/chat/completions"),
+    "vllm": dict(label="vLLM (local OpenAI-compatible model server)", image=AGY_IMAGE, key="compat.key", hosts=[],
+                 api=False, endpoint=True, optional_key=True, default_port=8000, default_path="/v1/chat/completions"),
+    "lmstudio": dict(label="LM Studio (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True, optional_key=True, default_port=1234, default_path="/v1/chat/completions"),
+    "llamacpp": dict(label="llama.cpp (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
+                     api=False, endpoint=True, optional_key=True, default_port=8080, default_path="/v1/chat/completions"),
+}
+LOCAL_COMPAT_PRESETS = {
+    "ollama": {"default_port": 11434, "default_path": "/v1/chat/completions"},
+    "vllm": {"default_port": 8000, "default_path": "/v1/chat/completions"},
+    "lmstudio": {"default_port": 1234, "default_path": "/v1/chat/completions"},
+    "llamacpp": {"default_port": 8080, "default_path": "/v1/chat/completions"},
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -78,6 +97,11 @@ QWEN_QUIET = ["--output-format", "stream-json", "--yolo"]
 MISTRAL_VIBE_QUIET = ["--output-format", "stream-json"]
 # GitHub Copilot: non-interactive stream-json output for scan()
 COPILOT_QUIET = ["--output-format", "stream-json"]
+# Ollama, vLLM, LM Studio, llama.cpp: local OpenAI-compatible endpoint runtimes
+OLLAMA_QUIET = []
+VLLM_QUIET = []
+LMSTUDIO_QUIET = []
+LLAMACPP_QUIET = []
 GEMINI_TRAILER = "Do the task described above."
 QWEN_TRAILER = "Do the task described above."
 ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?")
@@ -124,6 +148,10 @@ def cost_model(rt: str) -> dict:
         "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
         "mistral-vibe": "Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge",
         "copilot": "GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge",
+        "ollama": "Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)",
+        "vllm": "Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)",
+        "lmstudio": "Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)",
+        "llamacpp": "Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)",
     }
     if rt in unknown_details:
         return {"kind": "unknown", "detail": unknown_details[rt]}
@@ -239,6 +267,17 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv += (["--model", model] if model else [])
         argv += (["--resume", conversation] if conversation else [])
         return argv, prompt
+    if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+        quiet = {
+            "ollama": OLLAMA_QUIET,
+            "vllm": VLLM_QUIET,
+            "lmstudio": LMSTUDIO_QUIET,
+            "llamacpp": LLAMACPP_QUIET,
+        }.get(rt, [])
+        argv = [rt, "run"] + quiet
+        argv += (["--model", model] if model else [])
+        argv += (["--session", conversation] if conversation else [])
+        return argv, prompt
     raise ValueError(f"unknown runtime {rt!r}")
 
 
@@ -294,6 +333,85 @@ class ResultStr(str):
                 return val
             raise KeyError(item)
         return super().__getitem__(item)
+
+
+def _parse_openai_compat_dict(e, st, text, prices=None):
+    cid = (e.get("id") or e.get("conversation_id") or e.get("session_id")
+           or e.get("sessionId") or e.get("thread_id"))
+    if cid and not st["conversation_id"]:
+        st["conversation_id"] = str(cid)
+
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            msg = choice.get("message") or choice.get("delta") or {}
+            if isinstance(msg, dict):
+                tcs = msg.get("tool_calls")
+                if isinstance(tcs, list):
+                    st["tools"] += len(tcs)
+                elif msg.get("function_call"):
+                    st["tools"] += 1
+                c = msg.get("content") or ""
+                if "<<<<<<< SEARCH" in str(c):
+                    st["tools"] += 1
+                if c:
+                    text.append(str(c))
+    if e.get("content") and not e.get("choices"):
+        c = e.get("content")
+        if "<<<<<<< SEARCH" in str(c):
+            st["tools"] += 1
+        text.append(str(c))
+
+    if e.get("type") in ("tool", "tool_use", "tool_call", "tool_invocation"):
+        st["tools"] += 1
+    elif isinstance(e.get("tool_calls"), list):
+        st["tools"] += len(e["tool_calls"])
+
+    u = e.get("usage") or e.get("stats") or e.get("tokens")
+    inp, out, cached = 0, 0, 0
+    if isinstance(u, dict):
+        tot = u.get("total_tokens") or u.get("total")
+        inp = u.get("prompt_tokens") or u.get("input_tokens") or u.get("input") or 0
+        out = u.get("completion_tokens") or u.get("output_tokens") or u.get("output") or 0
+        cached = u.get("cached_tokens") or u.get("cached_prompt_tokens") or 0
+        if tot is not None:
+            st["tokens"] = max(0, int(tot) - int(cached))
+        elif inp or out:
+            st["tokens"] = max(0, int(inp) + int(out) - int(cached))
+    elif isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0:
+        st["tokens"] = int(u)
+
+    if "error" in e or e.get("is_error") or e.get("type") == "error":
+        err_obj = e.get("error")
+        err_msg = (err_obj.get("message") or err_obj.get("error") or str(err_obj)) if isinstance(err_obj, dict) else str(err_obj or e.get("message") or "error")
+        st["result"] = dict(status="ERROR", response="".join(text)[-4000:], error=str(err_msg), usage=u if isinstance(u, dict) else None, cost_usd=None)
+
+    is_terminal = False
+    for choice in (e.get("choices") or []):
+        if isinstance(choice, dict):
+            if choice.get("finish_reason"):
+                is_terminal = True
+            elif isinstance(choice.get("message"), dict) and "content" in choice["message"]:
+                is_terminal = True
+    if e.get("object") == "chat.completion":
+        is_terminal = True
+    if e.get("status") in ("success", "SUCCESS", "completed"):
+        is_terminal = True
+
+    if is_terminal and not (st["result"] and st["result"]["status"] == "ERROR"):
+        resp = "".join(text).strip()
+        if not resp and not text:
+            for choice in (e.get("choices") or []):
+                if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
+                    resp = str(choice["message"].get("content") or "")
+        p = _prices(prices or "") if prices else None
+        cost = ((inp - cached) * p[0] + cached * p[1] + out * p[2]) if (p and any(p)) else None
+        st["result"] = dict(
+            status="SUCCESS",
+            response=resp[-4000:],
+            error="",
+            usage=u if isinstance(u, dict) else None,
+            cost_usd=round(cost / 1e6, 6) if cost is not None else None,
+        )
 
 
 def scan(rt, lines, prices=None):
@@ -560,9 +678,11 @@ def scan(rt, lines, prices=None):
         return st
     if lines is None:
         lines = []
-    st = dict(tokens=None if rt in ("opencode", "mistral-vibe", "copilot") else 0, tools=0, conversation_id=None, result=None)
+    st = dict(tokens=None if rt in ("opencode", "mistral-vibe", "copilot", "ollama", "vllm", "lmstudio", "llamacpp") else 0, tools=0, conversation_id=None, result=None)
     text = []
     inp_tokens, out_tokens = 0, 0
+    raw_lines = []
+    seen_done = False
     for line in lines:
         if isinstance(line, bytes):
             try:
@@ -571,9 +691,14 @@ def scan(rt, lines, prices=None):
                 continue
         elif not isinstance(line, str):
             continue
+        raw_lines.append(line)
         line = line.strip()
         if line.startswith("data:"):
-            line = line[5:].strip()
+            data_content = line[5:].strip()
+            if data_content == "[DONE]":
+                seen_done = True
+                continue
+            line = data_content
         if not line.startswith("{"):
             continue
         try:
@@ -997,6 +1122,26 @@ def scan(rt, lines, prices=None):
                 err_raw = part.get("error") or e.get("error") or part.get("message") or e.get("message") or "error"
                 err_msg = (err_raw.get("message") or str(err_raw)) if isinstance(err_raw, dict) else str(err_raw)
                 st["result"] = dict(status="ERROR", response="\n".join(text)[-4000:], error=err_msg, usage=None, cost_usd=None)
+        elif rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            _parse_openai_compat_dict(e, st, text, prices=prices)
+    if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+        if seen_done and not st["result"]:
+            st["result"] = dict(
+                status="SUCCESS",
+                response="".join(text).strip()[-4000:],
+                error="",
+                usage=None,
+                cost_usd=None,
+            )
+        elif st["result"] is None:
+            joined = "\n".join(raw_lines).strip()
+            if joined.startswith("{") and joined.endswith("}"):
+                try:
+                    e = json.loads(joined)
+                    if isinstance(e, dict):
+                        _parse_openai_compat_dict(e, st, text, prices=prices)
+                except Exception:
+                    pass
     for k in ("aider_sent", "aider_recv", "aider_cost", "last_error"):
         st.pop(k, None)
     return st
