@@ -17,10 +17,13 @@ def call(method, path, data=None):
             return r.status, json.loads(r.read().decode() or "null")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()[:300]
+    except (urllib.error.URLError, OSError) as e:       # connection refused / timeout while Forgejo restarts
+        return 0, str(e)[:300]
 # Forgejo computes `mergeable` asynchronously: right after a PR is opened it is still false while the conflict check runs.
 # Reading it once made freshly opened, perfectly mergeable PRs look conflicted (and sent the task back to the worker).
 for i in range(15):
     c, pr = call("GET", f"/pulls/{a[0]}")
+    if c == 0 or c >= 500: print(f"merge-transient: Forgejo not answering (HTTP {c})", file=sys.stderr); sys.exit(75)
     if c != 200: print(f"PR #{a[0]} not found (HTTP {c})", file=sys.stderr); sys.exit(1)
     if pr["merged"] or pr["state"] != "open": print(f"PR #{a[0]} is not open (state {pr['state']}, merged {pr['merged']})", file=sys.stderr); sys.exit(1)
     if pr.get("mergeable"):
@@ -28,13 +31,15 @@ for i in range(15):
     time.sleep(2)
 else:
     print(f"PR #{a[0]} is not mergeable (still not after 30 s)", file=sys.stderr); sys.exit(1)
-for i in range(3):
+TRANSIENT = 75      # exit code: Forgejo is busy or unreachable - the caller retries later, it must never block the task
+for i in range(12):
     c, r = call("POST", f"/pulls/{a[0]}/merge", {"Do": "merge"})
     if c in (200, 204):
         break
-    if c == 405 and "try again" in str(r).lower():      # Forgejo: the merge check is still running
-        time.sleep(5); continue
+    busy = (c == 405 and "try again" in str(r).lower()) or c >= 500 or c == 0
+    if busy:                                             # Forgejo: merge check still running, restarting, or its disk is full
+        time.sleep(float(os.environ.get("MERGE_PR_RETRY_SECONDS", "5"))); continue
     print(f"merge failed: HTTP {c} {r}" + (" (not mergeable)" if c in (405, 409) else ""), file=sys.stderr); sys.exit(1)
 else:
-    print(f"merge failed: HTTP {c} {r}", file=sys.stderr); sys.exit(1)
+    print(f"merge-transient: HTTP {c} {r}", file=sys.stderr); sys.exit(TRANSIENT)
 print(f"merged PR #{a[0]} ({pr['head']['ref']} -> main)")
