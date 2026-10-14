@@ -273,6 +273,10 @@ def step_gate_review_merge(t):
     open(os.path.join(ctx.FD, "diffs", t["id"] + ".diff"), "w").write(diff[:400000])
     if len(diff) > ctx.C["DIFF_MAX"]:
         diff = diff[:ctx.C["DIFF_MAX"]] + f"\n... (diff truncated, {len(diff)} bytes total)"
+    if not diff.strip() and not numstat.strip():
+        # the branch equals main (the change is already there, e.g. after an auto-rebase): Forgejo refuses an empty PR
+        # forever with 405 "try again later", so there is nothing to review or merge
+        return lambda: finish(t, "nothing to merge - the branch is identical to main (its change is already there)", "orchestrator", "", None)
     PHASE[t["id"]] = "review by the orchestrator"
     text, who = llm("review", review_prompt(t, gate, diff), t["id"])
     v = extract_json(text) or {}
