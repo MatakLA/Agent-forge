@@ -1,6 +1,6 @@
 """Settings the dashboard may change (validated), file-only settings, new projects, the model list.
 
-Public interface: settings_get(), settings_apply(), validate_providers(), validate_url(), models_cached(), init_project().
+Public interface: settings_get(), settings_apply(), validate_providers(), validate_url(), models_cached(), init_project(), VALID_RUNTIMES.
 Invariants:
 - settings_apply validates egress allowlist requirements for submitted providers and runtimes before saving.
 - Unrelated editable settings preserve their existing validation rules.
@@ -25,6 +25,10 @@ from .pool import workers
 
 
 PROVIDERS_ALL = ("claude-cli", "agy-claude", "agy-gemini", "anthropic-api", "openai-api", "gemini-api")
+VALID_RUNTIMES = frozenset({
+    "agy", "claude", "codex", "gemini", "compat", "aider", "opencode", "goose", "qwen-code", "anthropic-compat",
+    "copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp"
+} | set(runtimes.RUNTIMES.keys()))
 
 
 MODEL_RE = r"[A-Za-z0-9][A-Za-z0-9.\-\[\]]{0,63}"
@@ -41,7 +45,7 @@ NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|appro
 EDITABLE = {
     "PLAN_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
     "REVIEW_PROVIDERS": (r"(%s)(\s*,\s*(%s))*" % ("|".join(PROVIDERS_ALL), "|".join(PROVIDERS_ALL)), "project"),
-    "WORKER_RUNTIME": (r"|" + "|".join(runtimes.RUNTIMES.keys()), "project"),
+    "WORKER_RUNTIME": (r"|" + "|".join(sorted(VALID_RUNTIMES)), "project"),
     "CLAUDE_MODEL": (MODEL_RE, "project"), "AGY_PLAN_MODEL": (MODEL_RE, "project"), "AGY_REVIEW_MODEL": (MODEL_RE, "project"),
     "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
     "ANTHROPIC_MODEL": ("|" + MODEL_RE, "project"), "OPENAI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"), "GEMINI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),
@@ -95,10 +99,16 @@ EDITABLE = {
 HELP = {
     "PLAN_PROVIDERS": "Ordered orchestrator providers for planning: claude-cli, agy-claude, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
     "REVIEW_PROVIDERS": "Ordered orchestrator providers for reviews: agy-claude, claude-cli, agy-gemini, anthropic-api, openai-api, gemini-api. Egress host check happens at save time. Applies live.",
-    "WORKER_RUNTIME": "Default worker runtime (e.g. agy, claude, codex, gemini). Egress host check happens at save time. Applies live.",
+    "WORKER_RUNTIME": "Default worker runtime (e.g. agy, claude, codex, gemini, copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp). Egress host check happens at save time. Applies live.",
     "OPENCODE_MODEL": "Model name for OpenCode CLI (e.g. gpt-4o, anthropic/claude-sonnet-4.5, Ollama/OpenRouter model). Empty for default. Applies live.",
     "QWEN_MODEL": "Model name for Qwen Code CLI (e.g. qwen-max, qwen-plus, qwen2.5-coder-32b-instruct). Empty for default. Applies live.",
     "GOOSE_MODEL": "Model name for Goose CLI agent (e.g. gpt-4o, qwen2.5-coder:32b). Empty for default. Applies live.",
+    "copilot": "GitHub Copilot CLI runtime (subscription, needs gh/Copilot CLI auth). Egress host check happens at save time. Applies live.",
+    "mistral-vibe": "Mistral Vibe CLI runtime (subscription or API key). Egress host check happens at save time. Applies live.",
+    "ollama": "Local Ollama server runtime (no API key, point at its OpenAI-compatible endpoint URL). Applies live.",
+    "vllm": "Local vLLM server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
+    "lmstudio": "Local LM Studio server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
+    "llamacpp": "Local llama.cpp server runtime (point at its OpenAI-compatible endpoint URL). Applies live.",
 }
 
 FILE_ONLY = {
@@ -223,7 +233,7 @@ def settings_get():
     return dict(project=ctx.PROJECT or "default", values=vals, scopes={k: sc for k, (_, sc) in EDITABLE.items()},
                 file_only=dict(FILE_ONLY),
                 limits_worker_model=lim["WORKER_MODEL"], providers=list(PROVIDERS_ALL), models=models_cached(),
-                workers=[dict(name=n, state=st, runtime=rt if rt in runtimes.RUNTIMES else "agy") for n, st, rt in allw],
+                workers=[dict(name=n, state=st, runtime=rt if (rt in runtimes.RUNTIMES or rt in VALID_RUNTIMES) else "agy") for n, st, rt in allw],
                 runtimes={k: dict(label=v["label"], key=v["key"], api=v["api"], endpoint=bool(v.get("endpoint")),
                                   optional_key=bool(v.get("optional_key"))) for k, v in runtimes.RUNTIMES.items()},
                 secrets=keys, api_spent_today=sbx.api_spent_today(), api_spent_month=sbx.api_spent(period="month"))
@@ -272,7 +282,10 @@ def settings_apply(changes):
                         endpoint_url = str((lim or {}).get("COMPAT_BASE_URL", "")).strip()
                     except Exception:
                         endpoint_url = ""
-                missing = egress.runtime_missing_hosts(v, endpoint_url)
+                try:
+                    missing = egress.runtime_missing_hosts(v, endpoint_url)
+                except KeyError:
+                    missing = []
                 if missing:
                     missing_str = ", ".join(missing)
                     errors[k] = f"missing egress host '{missing_str}' for runtime '{v}' (add to egress/allowlist.txt or the dashboard's Egress page)"
