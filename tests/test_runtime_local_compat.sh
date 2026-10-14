@@ -307,6 +307,26 @@ print(json.dumps(parsed))
 
   check "vllm error handling: result status is ERROR and message captured" \
     "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['status'] == 'ERROR' and 'simulated' in r['result']['error']\" \"$ERR_JSON\""
+
+  # 7b. Aider SEARCH/REPLACE diff format handling
+  DIFF_JSON=$(python3 -c "
+import json, os, subprocess, sys
+sys.path.insert(0, sys.argv[1] + '/bin/lib')
+import runtimes
+
+port = sys.argv[2]
+endpoint = f'http://127.0.0.1:{port}/v1/chat/completions'
+conv = {'system': 'Use SEARCH/REPLACE blocks', 'messages': [{'role': 'user', 'content': 'create hello.txt'}]}
+argv, stdin_text = runtimes.command('lmstudio', '', 'local-model', conversation=conv, endpoint_url=endpoint)
+proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+stdout, stderr = proc.communicate(input=stdin_text)
+lines = stdout.splitlines()
+parsed = runtimes.scan('lmstudio', lines)
+print(json.dumps(parsed))
+" "$ROOT" "$PORT")
+
+  check "lmstudio aider diff: tools count increments on SEARCH/REPLACE block" \
+    "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['tools'] >= 1\" \"$DIFF_JSON\""
 fi
 
 # 8. Pure scan checks for all four runtimes
