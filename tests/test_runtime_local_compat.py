@@ -1062,6 +1062,113 @@ fi
             assert res["result"]["response"] == "Task completed successfully."
             assert res["tokens"] == 1240
 
+    # -------------------------------------------------------------------------
+    # Dedicated edge cases per runtime (fixture error response shapes)
+    # -------------------------------------------------------------------------
+
+    def test_ollama_error_edge_case(self):
+        """scan('ollama', ...) handles fixture error response shape without crashing."""
+        err_payload = {
+            "error": {
+                "message": "model 'ollama:latest' not found, try pulling it first",
+                "type": "invalid_request_error",
+                "code": "simulated_error"
+            }
+        }
+        res = scan("ollama", [json.dumps(err_payload)])
+        assert res["result"] is not None
+        assert res["result"]["status"] == "ERROR"
+        assert "model 'ollama:latest' not found" in res["result"]["error"]
+
+        # Assert command with error endpoint builds valid argv without crashing
+        argv, stdin = command("ollama", "task", "ollama-model", endpoint_url="http://127.0.0.1:11434/error/chat/completions")
+        assert argv[0] == "curl"
+        assert argv[4] == "http://127.0.0.1:11434/error/chat/completions"
+        assert json.loads(stdin)["model"] == "ollama-model"
+
+    def test_vllm_error_edge_case(self):
+        """scan('vllm', ...) handles fixture error response shape without crashing."""
+        err_payload = {
+            "error": {
+                "message": "vLLM CUDA out of memory error during generation",
+                "type": "invalid_request_error",
+                "code": "simulated_error"
+            }
+        }
+        res = scan("vllm", [json.dumps(err_payload)])
+        assert res["result"] is not None
+        assert res["result"]["status"] == "ERROR"
+        assert "vLLM CUDA out of memory" in res["result"]["error"]
+
+        # Assert command with error endpoint builds valid argv without crashing
+        argv, stdin = command("vllm", "task", "vllm-model", endpoint_url="http://127.0.0.1:8000/error/chat/completions")
+        assert argv[0] == "curl"
+        assert argv[4] == "http://127.0.0.1:8000/error/chat/completions"
+        assert json.loads(stdin)["model"] == "vllm-model"
+
+    def test_lmstudio_error_edge_case(self):
+        """scan('lmstudio', ...) handles fixture error response shape without crashing."""
+        err_payload = {
+            "error": {
+                "message": "LM Studio context length exceeded maximum allowed tokens",
+                "type": "invalid_request_error",
+                "code": "simulated_error"
+            }
+        }
+        res = scan("lmstudio", [json.dumps(err_payload)])
+        assert res["result"] is not None
+        assert res["result"]["status"] == "ERROR"
+        assert "context length exceeded" in res["result"]["error"]
+
+        # Assert command with error endpoint builds valid argv without crashing
+        argv, stdin = command("lmstudio", "task", "lmstudio-model", endpoint_url="http://127.0.0.1:1234/error/chat/completions")
+        assert argv[0] == "curl"
+        assert argv[4] == "http://127.0.0.1:1234/error/chat/completions"
+        assert json.loads(stdin)["model"] == "lmstudio-model"
+
+    def test_llamacpp_error_edge_case(self):
+        """scan('llamacpp', ...) handles fixture error response shape without crashing."""
+        err_payload = {
+            "error": {
+                "message": "llama.cpp slot processing failed: internal server error",
+                "type": "invalid_request_error",
+                "code": "simulated_error"
+            }
+        }
+        res = scan("llamacpp", [json.dumps(err_payload)])
+        assert res["result"] is not None
+        assert res["result"]["status"] == "ERROR"
+        assert "slot processing failed" in res["result"]["error"]
+
+        # Assert command with error endpoint builds valid argv without crashing
+        argv, stdin = command("llamacpp", "task", "llamacpp-model", endpoint_url="http://127.0.0.1:8080/error/chat/completions")
+        assert argv[0] == "curl"
+        assert argv[4] == "http://127.0.0.1:8080/error/chat/completions"
+        assert json.loads(stdin)["model"] == "llamacpp-model"
+
+    def test_all_local_compat_scan_choice_error_finish_reason(self):
+        """scan(rt, ...) flags choice with finish_reason='error' as ERROR status."""
+        for rt in LOCAL_RUNTIMES:
+            payload = {
+                "choices": [{"finish_reason": "error", "error": "Model generation aborted due to safety filter"}]
+            }
+            res = scan(rt, [json.dumps(payload)])
+            assert res["result"] is not None
+            assert res["result"]["status"] == "ERROR"
+            assert "safety filter" in res["result"]["error"]
+
+    def test_all_local_compat_scan_status_failed_event(self):
+        """scan(rt, ...) flags event with type='step_failed' as ERROR status."""
+        for rt in LOCAL_RUNTIMES:
+            payload = {
+                "type": "step_failed",
+                "message": "Execution aborted by client timeout"
+            }
+            res = scan(rt, [json.dumps(payload)])
+            assert res["result"] is not None
+            assert res["result"]["status"] == "ERROR"
+            assert "Execution aborted" in res["result"]["error"]
+
 
 if __name__ == "__main__":
     unittest.main()
