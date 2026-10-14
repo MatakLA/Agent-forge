@@ -13,6 +13,7 @@ Important invariants:
 - readiness_summary exposes runtimes and providers status dictionaries without leaking secrets.
 - broken readiness import degrades gracefully to error JSON without crashing.
 - GET /api/readiness exposes readiness_summary and enforces host and token authentication.
+- GET /api/readiness/summary exposes all six new runtimes with non-empty cost/quota classifications.
 """
 import http.client
 import importlib.util
@@ -406,6 +407,84 @@ class TestDashboardReadinessApi(unittest.TestCase):
             for secret_val in canaries.values():
                 self.assertNotIn(secret_val, body)
         assert status == 200 and srv.DASHBOARD_TOKEN not in body and all(val not in body for val in canaries.values())
+
+    def test_api_readiness_summary_endpoint_lists_all_six_new_runtimes_with_non_empty_cost_quota(self):
+        """Invariant: GET /api/readiness/summary response lists all six new runtimes
+
+        (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with a non-empty cost/quota
+        cost_model classification for each runtime.
+        """
+        six_new_runtimes = ["copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp"]
+
+        # 1. Exercise the readiness-summary HTTP API endpoint added by task 0223
+        status, headers, body = self.req("/api/readiness/summary")
+        self.assertEqual(status, 200)
+        assert status == 200
+        self.assertIn("application/json", headers.get("content-type", "").lower())
+        assert "application/json" in headers.get("content-type", "").lower()
+
+        data = json.loads(body)
+        self.assertIsInstance(data, dict)
+        assert isinstance(data, dict)
+        self.assertIn("runtimes", data)
+        assert "runtimes" in data
+        self.assertIsInstance(data["runtimes"], dict)
+        assert isinstance(data["runtimes"], dict)
+
+        # 2. Verify all six new runtimes are present and have non-empty cost/quota classifications
+        for rt in six_new_runtimes:
+            with self.subTest(runtime=rt):
+                # Fail if any runtime is missing
+                self.assertIn(rt, data["runtimes"], f"Runtime {rt!r} missing from readiness summary response")
+                assert rt in data["runtimes"]
+
+                entry = data["runtimes"][rt]
+                self.assertIsInstance(entry, dict, f"Runtime {rt!r} entry must be a dictionary")
+                assert isinstance(entry, dict)
+
+                # Cost/quota field must exist and be non-null/non-empty
+                self.assertIn("cost_model", entry, f"Runtime {rt!r} must have a cost_model field")
+                assert "cost_model" in entry
+                cm = entry["cost_model"]
+                self.assertIsInstance(cm, dict, f"Runtime {rt!r} cost_model must be a dictionary, got {type(cm)}")
+                assert isinstance(cm, dict)
+
+                self.assertIn("kind", cm, f"Runtime {rt!r} cost_model missing 'kind' key")
+                assert "kind" in cm
+                self.assertIn("detail", cm, f"Runtime {rt!r} cost_model missing 'detail' key")
+                assert "detail" in cm
+
+                # Fail if kind or detail returns a null or empty classification
+                self.assertIsNotNone(cm["kind"], f"Runtime {rt!r} cost_model kind must not be None")
+                assert cm["kind"] is not None
+                self.assertIsInstance(cm["kind"], str)
+                assert isinstance(cm["kind"], str)
+                self.assertTrue(len(cm["kind"].strip()) > 0, f"Runtime {rt!r} cost_model kind must not be empty")
+                assert len(cm["kind"].strip()) > 0
+
+                self.assertIsNotNone(cm["detail"], f"Runtime {rt!r} cost_model detail must not be None")
+                assert cm["detail"] is not None
+                self.assertIsInstance(cm["detail"], str)
+                assert isinstance(cm["detail"], str)
+                self.assertTrue(len(cm["detail"].strip()) > 0, f"Runtime {rt!r} cost_model detail must not be empty")
+                assert len(cm["detail"].strip()) > 0
+
+                # Also verify contract status fields (ready and reason)
+                self.assertIn("ready", entry)
+                assert "ready" in entry
+                self.assertIn(entry["ready"], (True, False, None))
+                assert entry["ready"] in (True, False, None)
+                self.assertIn("reason", entry)
+                assert "reason" in entry
+                self.assertIsInstance(entry["reason"], str)
+                assert isinstance(entry["reason"], str)
+                self.assertFalse(entry["reason"].startswith("readiness check failed:"),
+                                 f"Runtime {rt!r} reason indicates check failure: {entry['reason']}")
+                assert not entry["reason"].startswith("readiness check failed:")
+
+        # In aggregate, all six runtimes present
+        self.assertTrue(all(rt in data["runtimes"] for rt in six_new_runtimes))
+        assert all(rt in data["runtimes"] for rt in six_new_runtimes)
 
 
 if __name__ == "__main__":
