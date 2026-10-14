@@ -8,7 +8,7 @@ Public interface:
 Important invariants:
 - bin/doctor prints exactly one line per runtime (16 entries) and per provider (6 entries).
 - All six new runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) are covered by doctor readiness checks.
-- Opencode, qwen and goose runtimes report honest ready/reason status dictionaries across ready and not-ready states.
+- Opencode, qwen-code and goose runtimes report honest ready/reason status dictionaries across ready and not-ready states.
 - Local-compat runtimes without configured endpoints report not-ready/not-configured ([WARN]), never falsely ready ([OK]).
 - Output format matches doctor conventions with [OK] and [WARN] markers.
 - Secrets are NEVER printed in stdout, stderr, or check dictionaries.
@@ -779,17 +779,21 @@ class TestDoctorReadiness(unittest.TestCase):
         assert f"[OK] ollama: Runtime 'ollama' is ready (http://127.0.0.1:{ready_port}/v1)" in proc_ready.stdout
 
     def test_doctor_readiness_opencode_qwen_goose_all_status_includes_three_keys(self):
-        """Acceptance criterion: readiness.all_status() includes opencode, qwen and goose with same dict shape.
+        """Acceptance criterion: readiness.all_status() includes opencode, qwen-code and goose with same dict shape.
 
         Dict shape matches the other runtimes: ready (bool), reason (str), state (str), detail (str),
         missing_settings (list), and missing_egress (list).
         """
-        target_keys = ("opencode", "qwen", "goose")
+        target_keys = ("opencode", "qwen-code", "goose")
         other_six = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
 
         st = readiness.all_status()
         self.assertIn("runtimes", st)
         rt_status = st["runtimes"]
+
+        # Assert no phantom 'qwen' alias key exists in all_status()["runtimes"]
+        self.assertNotIn("qwen", rt_status)
+        assert "qwen" not in rt_status
 
         # 1. Assert all other six existing runtimes are present and check their dict keys
         for rt in other_six:
@@ -802,7 +806,7 @@ class TestDoctorReadiness(unittest.TestCase):
             self.assertIsInstance(info["ready"], bool)
             self.assertIsInstance(info["reason"], str)
 
-        # 2. Assert opencode, qwen, and goose are present in all_status()["runtimes"]
+        # 2. Assert opencode, qwen-code, and goose are present in all_status()["runtimes"]
         for rt in target_keys:
             self.assertIn(rt, rt_status, f"Runtime '{rt}' missing from readiness.all_status()['runtimes']")
             info = rt_status[rt]
@@ -913,11 +917,17 @@ class TestDoctorReadiness(unittest.TestCase):
             assert "goose-ext.corp" in st_egress["missing_egress"]
 
     def test_status_of_qwen_readiness_states(self):
-        """Invariant: status_of('runtime', 'qwen') and 'qwen-code' evaluate qwen.key and DashScope egress honestly."""
+        """Invariant: status_of('runtime', 'qwen-code') evaluates qwen.key and DashScope egress honestly."""
+        # Verify unknown alias 'qwen' raises ValueError honestly
+        with self.assertRaises(ValueError) as ctx_alias:
+            readiness.status_of("runtime", "qwen")
+        self.assertIn("unknown runtime 'qwen'", str(ctx_alias.exception))
+        assert "unknown runtime 'qwen'" in str(ctx_alias.exception)
+
         # 1. Not ready: missing secret qwen.key
         with patch.object(readiness, "_has_secret", return_value=False), \
              patch.object(readiness, "_allowed_egress_hosts", return_value={"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}):
-            st_not_ready = readiness.status_of("runtime", "qwen")
+            st_not_ready = readiness.status_of("runtime", "qwen-code")
             self.assertIsInstance(st_not_ready, dict)
             self.assertFalse(st_not_ready["ready"])
             self.assertEqual(st_not_ready["state"], "missing_setting")
@@ -927,16 +937,10 @@ class TestDoctorReadiness(unittest.TestCase):
             assert "qwen.key" in st_not_ready["missing_settings"]
             assert "qwen.key" in st_not_ready["reason"]
 
-            # Also check qwen-code slug
-            st_code = readiness.status_of("runtime", "qwen-code")
-            self.assertFalse(st_code["ready"])
-            self.assertIn("qwen.key", st_code["missing_settings"])
-            assert st_code["ready"] is False
-
         # 2. Ready: secret present and egress allowed
         with patch.object(readiness, "_has_secret", return_value=True), \
              patch.object(readiness, "_allowed_egress_hosts", return_value={"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}):
-            st_ready = readiness.status_of("runtime", "qwen")
+            st_ready = readiness.status_of("runtime", "qwen-code")
             self.assertIsInstance(st_ready, dict)
             self.assertTrue(st_ready["ready"])
             self.assertEqual(st_ready["state"], "ok")
@@ -947,15 +951,11 @@ class TestDoctorReadiness(unittest.TestCase):
             assert st_ready["state"] == "ok"
             assert "is ready" in st_ready["reason"]
 
-            st_code_ready = readiness.status_of("runtime", "qwen-code")
-            self.assertTrue(st_code_ready["ready"])
-            assert st_code_ready["ready"] is True
-
         # 3. Not ready: secret present but egress missing
         with patch.object(readiness, "_has_secret", return_value=True), \
              patch.object(readiness, "_allowed_egress_hosts", return_value=set()), \
              patch.object(readiness, "_local_endpoint_host", return_value=""):
-            st_egress = readiness.status_of("runtime", "qwen")
+            st_egress = readiness.status_of("runtime", "qwen-code")
             self.assertIsInstance(st_egress, dict)
             self.assertFalse(st_egress["ready"])
             self.assertEqual(st_egress["state"], "missing_egress")
