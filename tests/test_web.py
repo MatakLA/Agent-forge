@@ -8,6 +8,7 @@ Invariants:
 - Authentication tokens are verified in constant time and redacted from error responses.
 - All identifiers (TASK_ID, GOAL_ID, DOC_NAME, HOST, TARGET) are validated before shell execution.
 - Readiness recommend endpoint (/api/readiness/recommend) enforces auth/host guards, calls foreman(['readiness-recommend']), and returns {top, ranked, message} JSON.
+- Readiness summary endpoint (/api/readiness/summary) enforces auth/host guards and returns honest per-runtime readiness and cost_model summary.
 - Control actions (autopilot on/off, pause/resume) and project names are validated before executing foreman commands, with round-trip distinct argv enforcement.
 - Control actions and payload shape in web/server.py match web/static/js/overview.js exactly.
 """
@@ -891,6 +892,181 @@ class TestWebServer(unittest.TestCase):
             assert "corrupted output" in data.get("error", "")
         finally:
             srv.foreman = old_foreman
+
+    def test_api_readiness_summary_endpoint_auth_and_host_guards(self):
+        """Invariant: GET /api/readiness/summary enforces DASHBOARD_TOKEN and DASHBOARD_HOSTS checks."""
+        for path in ("/api/readiness/summary", "/api/readiness/status"):
+            s_unauth, _, body_unauth = self.req("GET", path, headers={"Cookie": ""})
+            self.assertEqual(s_unauth, 401)
+            assert s_unauth == 401
+            self.assertIn("sign in", body_unauth)
+            assert "sign in" in body_unauth
+
+            s_badtoken, _, body_badtoken = self.req("GET", path, headers={"Cookie": "af_token=wrong_token"})
+            self.assertEqual(s_badtoken, 401)
+            assert s_badtoken == 401
+            self.assertIn("sign in", body_badtoken)
+            assert "sign in" in body_badtoken
+
+            s_badhost, _, body_badhost = self.req("GET", path, host="evil.attacker.com")
+            self.assertEqual(s_badhost, 403)
+            assert s_badhost == 403
+            self.assertIn("host not allowed", body_badhost)
+            assert "host not allowed" in body_badhost
+
+    def test_api_readiness_summary_endpoint_success_and_six_runtimes(self):
+        """Invariant: GET /api/readiness/summary returns 200 with honest per-runtime readiness and cost_model summary."""
+        six_keys = ("copilot", "mistral-vibe", "ollama", "vllm", "lmstudio", "llamacpp")
+        expected_items = readiness.runtime_items()
+
+        for path in ("/api/readiness/summary", "/api/readiness/status"):
+            status, headers, body = self.req("GET", path)
+            self.assertEqual(status, 200)
+            self.assertEqual(headers.get("Content-Type"), "application/json")
+            assert headers.get("Content-Type") == "application/json"
+
+            data = json.loads(body)
+            self.assertIn("runtimes", data)
+            assert "runtimes" in data
+            self.assertIsInstance(data["runtimes"], dict)
+            assert isinstance(data["runtimes"], dict)
+
+            # Assert order matches readiness.runtime_items()
+            self.assertEqual(list(data["runtimes"].keys()), expected_items)
+            assert list(data["runtimes"].keys()) == expected_items
+
+            # Assert all six new runtime keys are present
+            for rt in six_keys:
+                self.assertIn(rt, data["runtimes"])
+                assert rt in data["runtimes"]
+
+            # Ground every runtime's ready, reason, and cost_model directly against readiness.status_of and cost_model
+            for rt, entry in data["runtimes"].items():
+                self.assertIsInstance(entry, dict)
+                assert isinstance(entry, dict)
+
+                real_st = readiness.status_of("runtime", rt)
+                expected_ready = True if real_st.get("state") == "ok" else (False if real_st.get("state") in ("missing_setting", "missing_egress") else None)
+                expected_reason = real_st.get("detail", "")
+                expected_cm = readiness.cost_model(rt)
+
+                self.assertEqual(entry["ready"], expected_ready)
+                assert entry["ready"] == expected_ready
+
+                self.assertEqual(entry["reason"], expected_reason)
+                assert entry["reason"] == expected_reason
+
+                self.assertEqual(entry["cost_model"], expected_cm)
+                assert entry["cost_model"] == expected_cm
+
+                # Prove status_of was actually invoked successfully with the right args, never hit fallback string
+                self.assertFalse(entry["reason"].startswith("readiness check failed:"),
+                                 f"Runtime '{rt}' reason indicates status_of invocation failure: {entry['reason']}")
+                assert not entry["reason"].startswith("readiness check failed:")
+
+            # Explicitly verify all six new runtimes have grounded ready, reason and cost_model
+            for rt in six_keys:
+                self.assertIn(rt, data["runtimes"])
+                assert rt in data["runtimes"]
+                rt_entry = data["runtimes"][rt]
+                rt_st = readiness.status_of("runtime", rt)
+                rt_cm = readiness.cost_model(rt)
+                self.assertEqual(rt_entry["ready"], True if rt_st.get("state") == "ok" else False)
+                assert rt_entry["ready"] == (True if rt_st.get("state") == "ok" else False)
+                self.assertEqual(rt_entry["reason"], rt_st.get("detail", ""))
+                assert rt_entry["reason"] == rt_st.get("detail", "")
+                self.assertEqual(rt_entry["cost_model"], rt_cm)
+                assert rt_entry["cost_model"] == rt_cm
+
+            # Query param project handling
+            status_proj, _, body_proj = self.req("GET", f"{path}?project=alpha-1")
+            self.assertEqual(status_proj, 200)
+            assert status_proj == 200
+            data_proj = json.loads(body_proj)
+            self.assertIn("runtimes", data_proj)
+            assert "runtimes" in data_proj
+
+            # Bad project query param is rejected by shared preamble
+            status_badproj, _, body_badproj = self.req("GET", f"{path}?project=bad/name")
+            self.assertEqual(status_badproj, 400)
+            assert status_badproj == 400
+            self.assertEqual(json.loads(body_badproj), {"error": "bad project"})
+            assert json.loads(body_badproj) == {"error": "bad project"}
+
+    def test_api_readiness_summary_endpoint_no_secrets_leaked(self):
+        """Invariant: GET /api/readiness/summary never leaks secrets, API keys, or DASHBOARD_TOKEN in response."""
+        canaries = {
+            "ANTHROPIC_API_KEY": "CANARY_SECRET_ANTHROPIC_9999",
+            "OPENAI_API_KEY": "CANARY_SECRET_OPENAI_8888",
+            "GEMINI_API_KEY": "CANARY_SECRET_GEMINI_7777",
+            "MISTRAL_API_KEY": "CANARY_SECRET_MISTRAL_6666",
+        }
+        orig_env = {k: os.environ.get(k) for k in canaries}
+        try:
+            for k, v in canaries.items():
+                os.environ[k] = v
+            status, _, body = self.req("GET", "/api/readiness/summary")
+            self.assertEqual(status, 200)
+            assert status == 200
+            self.assertNotIn(srv.DASHBOARD_TOKEN, body)
+            assert srv.DASHBOARD_TOKEN not in body
+            for secret_val in canaries.values():
+                self.assertNotIn(secret_val, body)
+                assert secret_val not in body
+        finally:
+            for k, orig in orig_env.items():
+                if orig is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = orig
+
+    def test_api_readiness_summary_endpoint_error_degradation(self):
+        """Invariant: error in readiness module returns degraded 200 with error JSON, never unhandled 500."""
+        old_readiness = srv.readiness
+        try:
+            srv.readiness = None
+            status, _, body = self.req("GET", "/api/readiness/summary")
+            self.assertEqual(status, 200)
+            assert status == 200
+            data = json.loads(body)
+            self.assertEqual(data.get("runtimes"), {})
+            assert data.get("runtimes") == {}
+            self.assertIn("error", data)
+            assert "error" in data
+        finally:
+            srv.readiness = old_readiness
+
+    def test_api_readiness_summary_grounds_status_of_contract_mappings(self):
+        """Invariant: ready/reason mapping strictly reflects status_of() contract states (ok, missing_setting, missing_egress)."""
+        test_states = [
+            ("ok", True, "Runtime 'test-rt' is ready."),
+            ("missing_setting", False, "Runtime 'test-rt' is missing required setting(s): test.key."),
+            ("missing_egress", False, "Runtime 'test-rt' is missing egress allowlist for: test.host."),
+            ("unknown_other", None, "Runtime 'test-rt' has unknown state."),
+        ]
+        old_status_of = srv.readiness.status_of
+        try:
+            for state_val, expected_ready, detail_str in test_states:
+                srv.readiness.status_of = lambda kind, name, s=state_val, d=detail_str: {
+                    "state": s,
+                    "detail": d,
+                    "missing_settings": [] if s == "ok" else ["test.key"],
+                    "missing_egress": [] if s != "missing_egress" else ["test.host"],
+                }
+                status, _, body = self.req("GET", "/api/readiness/summary")
+                self.assertEqual(status, 200)
+                assert status == 200
+                data = json.loads(body)
+                self.assertIn("copilot", data["runtimes"])
+                entry = data["runtimes"]["copilot"]
+                self.assertEqual(entry["ready"], expected_ready)
+                assert entry["ready"] == expected_ready
+                self.assertEqual(entry["reason"], detail_str)
+                assert entry["reason"] == detail_str
+                self.assertFalse(entry["reason"].startswith("readiness check failed:"))
+                assert not entry["reason"].startswith("readiness check failed:")
+        finally:
+            srv.readiness.status_of = old_status_of
 
     def test_control_valid_action_and_project(self):
         """Invariant: POST /api/control with a valid project and each of the four control actions calls bin/foreman with the correct subcommand list and returns ok:true on rc=0."""
