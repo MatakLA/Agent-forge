@@ -13,6 +13,55 @@ vc.on('jsdomError', e => errors.push('jsdomError: ' + (e.message || e)));
 vc.on('error', e => errors.push('console.error: ' + e));
 setTimeout(() => { console.log('TIMEOUT; errors so far:\n' + errors.join('\n')); process.exit(3); }, 150000);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function testNewRuntimesPresent(d, check, w, errors) {
+  check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
+  w = w || (d && d.defaultView) || (typeof window !== 'undefined' ? window : null);
+  errors = errors || (typeof errors !== 'undefined' ? errors : []);
+
+  const newRtConfigs = [
+    {id: 'runtime-opt-copilot', val: 'copilot'},
+    {id: 'runtime-opt-mistral-vibe', val: 'mistral-vibe'},
+    {id: 'runtime-opt-ollama', val: 'ollama'},
+    {id: 'runtime-opt-vllm', val: 'vllm'},
+    {id: 'runtime-opt-lmstudio', val: 'lmstudio'},
+    {id: 'runtime-opt-llamacpp', val: 'llamacpp'}
+  ];
+  const newRtPresent = newRtConfigs.length === 6 && newRtConfigs.every(cfg => {
+    const el = d.getElementById(cfg.id);
+    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
+    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
+    const help = label ? label.querySelector('.muted') : null;
+    return !!label && !!help && help.textContent.trim().length > 0;
+  });
+  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', newRtPresent);
+
+  let rtPickerNoThrow = true;
+  let rtPickerUpdatesSelection = true;
+  if (w && w.MouseEvent) {
+    for (const cfg of newRtConfigs) {
+      const el = d.getElementById(cfg.id);
+      if (!el) {
+        rtPickerUpdatesSelection = false;
+        continue;
+      }
+      try {
+        el.dispatchEvent(new w.MouseEvent('click', {bubbles: true}));
+      } catch (err) {
+        rtPickerNoThrow = false;
+        errors.push('Selecting ' + cfg.id + ' threw: ' + (err.message || err));
+      }
+      const checked = d.querySelector('input[name="addw-rt"]:checked');
+      if (!checked || checked.value !== cfg.val || !el.checked) {
+        rtPickerUpdatesSelection = false;
+      }
+    }
+    check('settings / workers: selecting each new runtime picker option does not throw and updates visible selection',
+          rtPickerNoThrow && rtPickerUpdatesSelection);
+  }
+  return newRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
+}
+
 (async () => {
   const dom = await JSDOM.fromURL(base + '#tab=overview&poll=1', {runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc, beforeParse(win) { win.fetch = (u, o) => fetch(new URL(u, base), o); win.EventSource = undefined; }});
   const w = dom.window, d = w.document;
@@ -388,26 +437,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('settings / workers: add-worker runtime picker exposes selectable elements with ids runtime-opt-opencode, runtime-opt-qwen-code and runtime-opt-goose', rtPickerPresent);
 
   // Settings / Workers: task 0200 selectable runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp)
-  const newRtConfigs = [
-    {id: 'runtime-opt-copilot', val: 'copilot'},
-    {id: 'runtime-opt-mistral-vibe', val: 'mistral-vibe'},
-    {id: 'runtime-opt-ollama', val: 'ollama'},
-    {id: 'runtime-opt-vllm', val: 'vllm'},
-    {id: 'runtime-opt-lmstudio', val: 'lmstudio'},
-    {id: 'runtime-opt-llamacpp', val: 'llamacpp'}
-  ];
-  const newRtPresent = newRtConfigs.length === 6 && newRtConfigs.every(cfg => {
-    const el = d.getElementById(cfg.id);
-    if (!el || el.tagName !== 'INPUT' || el.type !== 'radio' || el.value !== cfg.val) return false;
-    const label = el.closest('label') || d.querySelector('label[for="' + cfg.id + '"]');
-    const help = label ? label.querySelector('.muted') : null;
-    return !!label && !!help && help.textContent.trim().length > 0;
-  });
-  check('settings / workers: WORKER_RUNTIME selector exposes copilot, mistral-vibe, ollama, vllm, lmstudio and llamacpp with help text', newRtPresent);
+  await testNewRuntimesPresent(d, check, w, errors);
 
   let rtPickerNoThrow = true;
   let rtPickerUpdatesSelection = true;
-  for (const cfg of [...rtPickerConfigs, ...newRtConfigs]) {
+  for (const cfg of rtPickerConfigs) {
     const el = d.getElementById(cfg.id);
     if (!el) {
       rtPickerUpdatesSelection = false;
@@ -1167,3 +1201,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);
 })().catch(e => { console.log('crash', e); console.log(errors.join('\n')); process.exit(4); });
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { testNewRuntimesPresent };
+}
