@@ -15,6 +15,8 @@ Important invariants:
 - Provider requirements are derived generically from settings.EDITABLE and verified unmocked.
 - recommend() ranks ready runtimes before not-ready runtimes and cheapest cost tier first.
 - recommend() returns top=null and non-empty message when no runtime is ready.
+- local-compat runtimes receive distinct non-paid cost model classifications from all_status()/cost_model().
+- recommend() never mis-ranks local-compat runtimes or crashes when unconfigured.
 """
 import json
 import os
@@ -518,6 +520,176 @@ class TestForemanReadiness(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(set(data.keys()), {"top", "ranked", "message"})
         self.assertEqual(data, readiness.recommend())
+
+    def test_local_compat_runtimes_distinct_non_paid_cost_classification_in_all_status(self):
+        """Invariant: all_status() includes an entry for each of ollama, vllm, lmstudio, llamacpp
+
+        with a distinct, non-paid cost classification from cost_model() (kind='unknown', self-hosted,
+        never 'metered' like claude/codex or 'quota' like agy).
+        """
+        local_compat_runtimes = ("ollama", "vllm", "lmstudio", "llamacpp")
+        paid_metered_runtimes = ("claude", "codex", "gemini", "compat", "aider")
+        subscription_runtimes = ("agy",)
+
+        all_st = readiness.all_status()
+        self.assertIn("runtimes", all_st)
+        assert "runtimes" in all_st
+
+        # Paid runtimes define the paid tiers
+        for paid_rt in paid_metered_runtimes:
+            paid_cm = readiness.cost_model(paid_rt)
+            self.assertEqual(paid_cm["kind"], "metered")
+            assert paid_cm["kind"] == "metered"
+        for sub_rt in subscription_runtimes:
+            sub_cm = readiness.cost_model(sub_rt)
+            self.assertEqual(sub_cm["kind"], "quota")
+            assert sub_cm["kind"] == "quota"
+        copilot_cm = readiness.cost_model("copilot")
+        self.assertIn("subscription", copilot_cm["detail"].lower())
+        assert "subscription" in copilot_cm["detail"].lower()
+
+        for rt in local_compat_runtimes:
+            with self.subTest(runtime=rt):
+                # 1. all_status() must include the runtime entry
+                self.assertIn(rt, all_st["runtimes"], f"Runtime {rt!r} missing from all_status()['runtimes']")
+                assert rt in all_st["runtimes"]
+                entry = all_st["runtimes"][rt]
+                self.assertIsInstance(entry, dict)
+                assert isinstance(entry, dict)
+                self.assertIn("state", entry)
+                assert "state" in entry
+                self.assertIn("detail", entry)
+                assert "detail" in entry
+                self.assertIn("missing_settings", entry)
+                assert "missing_settings" in entry
+                self.assertIn("missing_egress", entry)
+                assert "missing_egress" in entry
+
+                # 2. cost_model() must return distinct, honest, non-paid classification
+                cm = readiness.cost_model(rt)
+                self.assertIsInstance(cm, dict)
+                assert isinstance(cm, dict)
+                self.assertEqual(set(cm.keys()), {"kind", "detail"})
+                assert set(cm.keys()) == {"kind", "detail"}
+
+                # Distinct from paid tiers:
+                self.assertNotEqual(cm["kind"], "metered", f"{rt} must NOT use paid 'metered' tier")
+                assert cm["kind"] != "metered"
+                self.assertNotEqual(cm["kind"], "quota", f"{rt} must NOT use subscription 'quota' tier")
+                assert cm["kind"] != "quota"
+
+                # Exactly kind == 'unknown' (self-hosted / unmetered)
+                self.assertEqual(cm["kind"], "unknown")
+                assert cm["kind"] == "unknown"
+
+                # Detail must honestly describe self-hosted hardware capacity without per-token charges
+                self.assertIn("Self-hosted local", cm["detail"])
+                assert "Self-hosted local" in cm["detail"]
+                self.assertIn("no per-token charges", cm["detail"])
+                assert "no per-token charges" in cm["detail"]
+                self.assertIn("hardware", cm["detail"])
+                assert "hardware" in cm["detail"]
+                self.assertNotIn("subscription", cm["detail"].lower())
+                assert "subscription" not in cm["detail"].lower()
+                self.assertNotIn("billed per token", cm["detail"].lower())
+                assert "billed per token" not in cm["detail"].lower()
+
+    def test_recommend_unconfigured_local_compat_never_crashes_or_misranks(self):
+        """Invariant: recommend() never crashes (no divide-by-zero or exceptions) when no endpoint is
+
+        configured, and never mis-ranks local-compat runtimes (never ready, never top, never ahead of ready runtimes).
+        """
+        local_compat_runtimes = ("ollama", "vllm", "lmstudio", "llamacpp")
+        boundary_urls = [None, "", "   ", "not-a-valid-url", "://bad-url"]
+
+        for bad_url in boundary_urls:
+            with self.subTest(compat_base_url=bad_url):
+                env_override = {}
+                if bad_url is not None:
+                    env_override["COMPAT_BASE_URL"] = bad_url
+                else:
+                    os.environ.pop("COMPAT_BASE_URL", None)
+
+                with patch.dict(os.environ, env_override, clear=False):
+                    if hasattr(ctx, "CONF") and isinstance(ctx.CONF, dict):
+                        ctx.CONF.pop("COMPAT_BASE_URL", None)
+                    if hasattr(ctx, "C") and isinstance(ctx.C, dict):
+                        ctx.C.pop("COMPAT_BASE_URL", None)
+
+                    # 1. Must execute without raising divide-by-zero, ValueError, or any other exception
+                    res = readiness.recommend()
+                    self.assertIsInstance(res, dict)
+                    assert isinstance(res, dict)
+                    self.assertIn("top", res)
+                    assert "top" in res
+                    self.assertIn("ranked", res)
+                    assert "ranked" in res
+                    self.assertIn("message", res)
+                    assert "message" in res
+
+                    # 2. None of the local-compat runtimes should be marked ready
+                    ranked_map = {r["name"]: r for r in res["ranked"]}
+                    for rt in local_compat_runtimes:
+                        self.assertIn(rt, ranked_map)
+                        assert rt in ranked_map
+                        entry = ranked_map[rt]
+                        self.assertFalse(entry["ready"], f"{rt} must NOT be ready when unconfigured")
+                        assert entry["ready"] is False
+                        self.assertEqual(entry["cost_tier"], "unknown")
+                        assert entry["cost_tier"] == "unknown"
+                        self.assertIn("COMPAT_BASE_URL", entry["note"])
+                        assert "COMPAT_BASE_URL" in entry["note"]
+
+                    # 3. An unconfigured local-compat runtime must never be chosen as top
+                    if res["top"] is not None:
+                        self.assertNotIn(
+                            res["top"]["name"],
+                            local_compat_runtimes,
+                            f"Unconfigured local runtime {res['top']['name']!r} must never be top recommendation",
+                        )
+                        assert res["top"]["name"] not in local_compat_runtimes
+
+                    # 4. Ready entries must always precede not-ready local-compat entries
+                    ready_indices = [i for i, r in enumerate(res["ranked"]) if r["ready"]]
+                    local_indices = [i for i, r in enumerate(res["ranked"]) if r["name"] in local_compat_runtimes]
+                    if ready_indices:
+                        self.assertLess(
+                            max(ready_indices),
+                            min(local_indices),
+                            "Ready runtimes must always rank strictly before unconfigured local-compat runtimes",
+                        )
+                        assert max(ready_indices) < min(local_indices)
+
+    def test_recommend_local_compat_never_ranked_cheaper_than_free_when_ready(self):
+        """Invariant: Even when ready, a local-compat runtime with cost_tier 'unknown' is never
+
+        prioritized ahead of 'quota' (tier 0) or 'metered' (tier 1) as if it were cheaper-than-free.
+        """
+        def fake_status(kind, name):
+            # agy (quota), claude (metered), and ollama (local-compat unknown) are all ready
+            if name in ("agy", "claude", "ollama"):
+                return {"state": "ok", "detail": f"Runtime '{name}' is ready.", "missing_settings": [], "missing_egress": []}
+            return {"state": "missing_setting", "detail": f"Runtime '{name}' is missing setting.", "missing_settings": ["k"], "missing_egress": []}
+
+        with patch.object(readiness, "status_of", side_effect=fake_status):
+            res = readiness.recommend()
+
+        self.assertIsNotNone(res["top"])
+        assert res["top"] is not None
+        # agy is quota (tier 0), so agy must be top, not ollama
+        self.assertEqual(res["top"]["name"], "agy")
+        assert res["top"]["name"] == "agy"
+        self.assertEqual(res["top"]["cost_tier"], "quota")
+        assert res["top"]["cost_tier"] == "quota"
+
+        names = [r["name"] for r in res["ranked"] if r["ready"]]
+        self.assertEqual(names, ["agy", "claude", "ollama"])
+        assert names == ["agy", "claude", "ollama"]
+        # ollama is tier 'unknown' (priority 2), strictly behind agy (0) and claude (1)
+        self.assertLess(names.index("agy"), names.index("ollama"))
+        assert names.index("agy") < names.index("ollama")
+        self.assertLess(names.index("claude"), names.index("ollama"))
+        assert names.index("claude") < names.index("ollama")
 
 
 if __name__ == "__main__":
