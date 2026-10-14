@@ -72,6 +72,23 @@ def _auto_rebase(branch):
     return "rebased" if r[0] == 0 else "push-failed"
 
 
+def retry_merge_later(t, why):
+    """Forgejo was busy or unreachable (merge-pr exit 75): not the task's fault, so no review round is wasted and the task is
+    never blocked for it - only after 12 tries in a row (hours of outage) it goes to the owner."""
+    t = live_task(t)
+    if not t:
+        return
+    t["merge_retries"] = t.get("merge_retries", 0) + 1
+    t["history"].append(dict(at=sbx.now(), outcome="merge-retry", why=why))
+    if t["merge_retries"] > 12:
+        save_task(t)
+        return block(t, f"approved, but Forgejo kept refusing the merge for {t['merge_retries'] - 1} tries (last: {why})")
+    t["status"] = "gate"
+    t["not_before"] = time.time() + min(60 * t["merge_retries"], 1800)
+    save_task(t)
+    event(f"task {t['id']}: Forgejo busy ({why[:120]}) - merge again in {min(t['merge_retries'], 30)} min", task=t["id"])
+
+
 def requeue_gate(t, why):
     """Test + review again (main moved, merge check pending). Each round costs a review call, so after 4 in a row the task is
     blocked for the owner instead of looping."""
@@ -315,7 +332,9 @@ def do_merge(t, who, fb, gate):
         num = m2[0]
     else:
         num = int(m.group(1))
-    rc, out, err = sh([os.path.join(ctx.BIN, "merge-pr"), str(num)], timeout=150)
+    rc, out, err = sh([os.path.join(ctx.BIN, "merge-pr"), str(num)], timeout=600)
+    if rc in (75, 124) or "merge-transient" in out + err or "Please try again later" in out + err:
+        return lambda: retry_merge_later(t, (out + err).strip()[-200:])
     if rc != 0:
         rb2 = auto_rebase(t["branch"]) if "not mergeable" in out + err else None
         if rb2 == "rebased":

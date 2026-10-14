@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+Merging survives a busy Forgejo. `bin/merge-pr` now waits up to a minute for "Please try again later" (405), 5xx or a refused connection and exits 75; the foreman then retries the merge later with growing pauses (up to 12 tries) instead of blocking the task, and spends no extra review round on it. Real conflicts (409) behave as before.
 **Finite goals.** The planner refuses open-ended goals ("more", "improve", "continue") and asks the owner for a finite end state - the answer replaces the goal. The autopilot proposes only finite goals; when nothing is left in the vision it switches itself off and sends a `project_done` notification.
 
 **Open source.** Agent-Forge is now licensed under the Apache License 2.0 (was: Sustainable Use License, source-available).
