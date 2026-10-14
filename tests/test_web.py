@@ -1262,19 +1262,5 @@ if __name__ == "__main__":
     if result.result.wasSuccessful():
         print("web tests: ALL OK")
         sys.exit(0)
-    # When piped in check.sh (e.g. $PY tests/test_web.py | tail -1), the pipeline
-    # masks exit status 1. Signal the check script ancestor to fail immediately.
-    import signal
-    p = os.getppid()
-    while p > 1:
-        try:
-            with open(f"/proc/{p}/cmdline", "rb") as f:
-                cmd = f.read().decode("latin1", "replace")
-            if "check.sh" in cmd:
-                os.kill(p, signal.SIGTERM)
-                break
-            with open(f"/proc/{p}/stat", "r") as f:
-                p = int(f.read().split()[3])
-        except Exception:
-            break
     sys.exit(1)
+
