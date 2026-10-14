@@ -24,10 +24,10 @@ files.pythonhosted.org
 dashscope.aliyuncs.com
 dashscope-intl.aliyuncs.com
 
-# --- Mistral Vibe CLI ---
+# --- Mistral Vibe CLI (bin/lib/runtimes.py hosts('mistral-vibe')) ---
 api.mistral.ai
 
-# --- GitHub Copilot CLI ---
+# --- GitHub Copilot CLI (bin/lib/runtimes.py hosts('copilot')) ---
 api.githubcopilot.com
 api.github.com
 
