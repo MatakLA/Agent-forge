@@ -28,7 +28,7 @@ Adding a runtime = one entry in RUNTIMES plus a branch in command() and scan() (
 Agent-Forge (dispatch, supervisor caps, budgets, egress, the dashboard) only uses this interface. docs/RUNTIMES.md has the
 checklist. Event formats were taken from the real CLIs (claude 2.1, codex 0.161, gemini 0.63, aider 0.86) run against a fake API
 server, and are parsed defensively: unknown events are ignored, a missing result means the run failed."""
-import json, re
+import json, os, re
 from urllib.parse import urlsplit
 
 AGY_IMAGE = "sandbox-worker:1.2.11"
@@ -73,12 +73,6 @@ RUNTIMES = {
                      api=False, endpoint=True, optional_key=True, default_port=1234, default_path="/v1/chat/completions"),
     "llamacpp": dict(label="llama.cpp (local OpenAI-compatible model server)", image=AGY_IMAGE, key=None, hosts=[],
                      api=False, endpoint=True, optional_key=True, default_port=8080, default_path="/v1/chat/completions"),
-}
-LOCAL_COMPAT_PRESETS = {
-    "ollama": {"default_port": 11434, "default_path": "/v1/chat/completions"},
-    "vllm": {"default_port": 8000, "default_path": "/v1/chat/completions"},
-    "lmstudio": {"default_port": 1234, "default_path": "/v1/chat/completions"},
-    "llamacpp": {"default_port": 8080, "default_path": "/v1/chat/completions"},
 }
 # Codex contacts chatgpt.com and api.github.com unless these are off (checked with a logging proxy: then only api.openai.com)
 CODEX_QUIET = ["-c", "check_for_update_on_startup=false", "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
@@ -160,9 +154,10 @@ def cost_model(rt: str) -> dict:
     return {"kind": "quota", "detail": "tracked via agy /usage, not USD"}
 
 
-def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
+def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0, endpoint_url=None, **kwargs):
     """(argv inside the worker container, stdin text). API runtimes get the prompt on stdin (no 128 KiB argv limit). The model
-    server URL of compat / aider comes in the environment (AF_ENDPOINT, set by bin/run-supervisor), not in argv."""
+    server URL of compat / aider comes in the environment (AF_ENDPOINT, set by bin/run-supervisor); local-compat runtimes (ollama,
+    vllm, lmstudio, llamacpp) embed the endpoint URL directly into curl's argv."""
     rt = rt or "agy"
     if rt == "agy":
         argv = ["agy-run", "-p", prompt, "--model", model, "--dangerously-skip-permissions", "--output-format", "stream-json",
@@ -268,16 +263,69 @@ def command(rt, prompt, model, conversation=None, left_min=30, budget_usd=0.0):
         argv += (["--resume", conversation] if conversation else [])
         return argv, prompt
     if rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+        ep = endpoint_url or kwargs.get("endpoint") or os.environ.get("AF_ENDPOINT") or os.environ.get("COMPAT_BASE_URL") or ""
+        ep = str(ep).strip()
+        default_port = RUNTIMES[rt].get("default_port", 8000)
+        default_path = RUNTIMES[rt].get("default_path", "/v1/chat/completions")
+        if not ep:
+            target_url = f"http://127.0.0.1:{default_port}{default_path}"
+        elif "/chat/completions" in ep:
+            target_url = ep
+        elif ep.endswith("/v1") or ep.endswith("/v1/"):
+            target_url = ep.rstrip("/") + "/chat/completions"
+        else:
+            target_url = ep.rstrip("/") + default_path
+
         quiet = {
             "ollama": OLLAMA_QUIET,
             "vllm": VLLM_QUIET,
             "lmstudio": LMSTUDIO_QUIET,
             "llamacpp": LLAMACPP_QUIET,
         }.get(rt, [])
-        argv = [rt, "run"] + quiet
-        argv += (["--model", model] if model else [])
-        argv += (["--session", conversation] if conversation else [])
-        return argv, prompt
+        argv = ["curl", "-s", "-X", "POST", target_url] + quiet + ["-H", "Content-Type: application/json", "-d", "@-"]
+
+        messages = []
+        conv_data = None
+        if conversation:
+            if isinstance(conversation, (list, dict)):
+                conv_data = conversation
+            elif isinstance(conversation, str):
+                conv_str = conversation.strip()
+                if conv_str.startswith("[") or conv_str.startswith("{"):
+                    try:
+                        conv_data = json.loads(conv_str)
+                    except Exception:
+                        conv_data = None
+        if isinstance(conv_data, list):
+            for item in conv_data:
+                if isinstance(item, dict):
+                    role = item.get("role") or "user"
+                    content = item.get("content", "")
+                    messages.append({"role": role, "content": content})
+        elif isinstance(conv_data, dict):
+            if "system" in conv_data:
+                messages.append({"role": "system", "content": conv_data["system"]})
+            raw_msgs = conv_data.get("messages") or []
+            if isinstance(raw_msgs, list):
+                for item in raw_msgs:
+                    if isinstance(item, dict):
+                        role = item.get("role") or "user"
+                        content = item.get("content", "")
+                        messages.append({"role": role, "content": content})
+        if prompt:
+            if not messages or messages[-1].get("content") != prompt or messages[-1].get("role") != "user":
+                messages.append({"role": "user", "content": prompt})
+        elif not messages:
+            messages.append({"role": "user", "content": ""})
+
+        body = {
+            "model": model or "local-compat-model",
+            "messages": messages,
+        }
+        if conversation and isinstance(conversation, str) and not conv_data:
+            body["conversation_id"] = conversation
+
+        return argv, json.dumps(body)
     raise ValueError(f"unknown runtime {rt!r}")
 
 
