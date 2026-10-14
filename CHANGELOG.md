@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+**Finite goals.** The planner refuses open-ended goals ("more", "improve", "continue") and asks the owner for a finite end state - the answer replaces the goal. The autopilot proposes only finite goals; when nothing is left in the vision it switches itself off and sends a `project_done` notification.
+
 **Open source.** Agent-Forge is now licensed under the Apache License 2.0 (was: Sustainable Use License, source-available).
 Selling it, hosting it and building on it are allowed; the commercial license (`LICENSE_EE.md`) and the contributor license
 agreement are gone, contributions are accepted under Apache-2.0 (`git commit -s`).
