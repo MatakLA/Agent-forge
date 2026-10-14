@@ -8,7 +8,7 @@ Invariants:
 - Authentication tokens are verified in constant time and redacted from error responses.
 - All identifiers (TASK_ID, GOAL_ID, DOC_NAME, HOST, TARGET) are validated before shell execution.
 - Readiness recommend endpoint (/api/readiness/recommend) enforces auth/host guards, calls foreman(['readiness-recommend']), and returns {top, ranked, message} JSON.
-- Control actions (autopilot on/off) and project names are validated before executing foreman commands.
+- Control actions (autopilot on/off, pause/resume) and project names are validated before executing foreman commands, with round-trip distinct argv enforcement.
 - Control actions and payload shape in web/server.py match web/static/js/overview.js exactly.
 """
 import glob
@@ -981,62 +981,223 @@ class TestWebServer(unittest.TestCase):
     def test_control_unknown_action_rejected(self):
         """Invariant: POST /api/control with an action outside the full four-action CONTROL_ACTIONS set returns HTTP 400 and ok:false before any foreman() call is made."""
         H = {"X-Agent-Forge": "1"}
-        n = len(self.calls)
-        for bad_act in ("restart", "invalid", "", "stop", "start", "autopilot", "on", "off", "kill", "halt", "status"):
-            s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": bad_act}, H)
-            self.assertEqual(s, 400)
-            assert s == 400
-            data = json.loads(body)
-            self.assertFalse(data.get("ok"))
-            assert data.get("ok") is False
-            self.assertEqual(data.get("message"), "unknown action")
-            assert data.get("message") == "unknown action"
-            self.assertEqual(len(self.calls), n)
-            assert len(self.calls) == n
+        orig_foreman = srv.foreman
+        foreman_calls = []
+
+        def spy_foreman(*a, **k):
+            foreman_calls.append((a, k))
+            return orig_foreman(*a, **k)
+
+        srv.foreman = spy_foreman
+        try:
+            n = len(self.calls)
+            for bad_act in ("restart", "invalid", "", "stop", "start", "autopilot", "on", "off", "kill", "halt", "status"):
+                s, _, body = self.req("POST", "/api/control", {"project": "shop", "action": bad_act}, H)
+                self.assertEqual(s, 400)
+                assert s == 400
+                data = json.loads(body)
+                self.assertFalse(data.get("ok"))
+                assert data.get("ok") is False
+                self.assertEqual(data.get("message"), "unknown action")
+                assert data.get("message") == "unknown action"
+                self.assertEqual(len(foreman_calls), 0)
+                assert not foreman_calls
+                self.assertEqual(len(self.calls), n)
+                assert len(self.calls) == n
+        finally:
+            srv.foreman = orig_foreman
 
     def test_control_invalid_project_rejected(self):
         """Invariant: POST /api/control with an invalid project name returns HTTP 400 without calling foreman()."""
         H = {"X-Agent-Forge": "1"}
-        n = len(self.calls)
-        for bad_proj in ("../etc", "invalid name!", "bad/path", "UPPERCASE", "with spaces"):
-            s, _, body = self.req("POST", "/api/control", {"project": bad_proj, "action": "autopilot_on"}, H)
-            self.assertEqual(s, 400)
-            assert s == 400
-            self.assertEqual(len(self.calls), n)
-            assert len(self.calls) == n
+        orig_foreman = srv.foreman
+        foreman_calls = []
+
+        def spy_foreman(*a, **k):
+            foreman_calls.append((a, k))
+            return orig_foreman(*a, **k)
+
+        srv.foreman = spy_foreman
+        try:
+            n = len(self.calls)
+            for bad_proj in ("../etc", "invalid name!", "bad/path", "UPPERCASE", "with spaces"):
+                s, _, body = self.req("POST", "/api/control", {"project": bad_proj, "action": "autopilot_on"}, H)
+                self.assertEqual(s, 400)
+                assert s == 400
+                self.assertEqual(len(foreman_calls), 0)
+                assert not foreman_calls
+                self.assertEqual(len(self.calls), n)
+                assert len(self.calls) == n
+        finally:
+            srv.foreman = orig_foreman
 
     def test_control_wrong_method_rejected(self):
         """Invariant: GET or other non-POST requests to /api/control are rejected with 405 Method Not Allowed."""
-        s_ctl, _, _ = self.req("GET", "/api/control")
-        self.assertEqual(s_ctl, 405)
-        assert s_ctl == 405
-        s_head, _, _ = self.req("HEAD", "/api/control")
-        self.assertEqual(s_head, 405)
-        assert s_head == 405
+        orig_foreman = srv.foreman
+        foreman_calls = []
+
+        def spy_foreman(*a, **k):
+            foreman_calls.append((a, k))
+            return orig_foreman(*a, **k)
+
+        srv.foreman = spy_foreman
+        try:
+            n = len(self.calls)
+            s_ctl, _, _ = self.req("GET", "/api/control")
+            self.assertEqual(s_ctl, 405)
+            assert s_ctl == 405
+            s_head, _, _ = self.req("HEAD", "/api/control")
+            self.assertEqual(s_head, 405)
+            assert s_head == 405
+            self.assertEqual(len(foreman_calls), 0)
+            assert not foreman_calls
+            self.assertEqual(len(self.calls), n)
+            assert len(self.calls) == n
+        finally:
+            srv.foreman = orig_foreman
 
     def test_control_auth_and_csrf_origin_check(self):
         """Invariant: POST /api/control missing auth cookie/token or with mismatched Origin is rejected like /api/task and /api/goal."""
-        # Missing auth
-        s, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"Cookie": ""})
-        self.assertEqual(s, 401)
-        assert s == 401
+        orig_foreman = srv.foreman
+        foreman_calls = []
 
-        # Missing X-Agent-Forge header
-        s_no_csrf, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={})
-        self.assertEqual(s_no_csrf, 403)
-        assert s_no_csrf == 403
+        def spy_foreman(*a, **k):
+            foreman_calls.append((a, k))
+            return orig_foreman(*a, **k)
 
-        # Evil Origin
-        bad_origin = {"X-Agent-Forge": "1", "Origin": "http://evil.com"}
-        s_origin, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_origin)
-        self.assertEqual(s_origin, 403)
-        assert s_origin == 403
+        srv.foreman = spy_foreman
+        try:
+            n = len(self.calls)
+            # Missing auth cookie
+            s, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"Cookie": ""})
+            self.assertEqual(s, 401)
+            assert s == 401
 
-        # Evil Referer
-        bad_referer = {"X-Agent-Forge": "1", "Referer": "http://evil.com/attack"}
-        s_ref, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_referer)
-        self.assertEqual(s_ref, 403)
-        assert s_ref == 403
+            # Invalid auth cookie
+            s_bad_tok, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"Cookie": "af_token=wrong_token"})
+            self.assertEqual(s_bad_tok, 401)
+            assert s_bad_tok == 401
+
+            # Missing X-Agent-Forge header
+            s_no_csrf, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={})
+            self.assertEqual(s_no_csrf, 403)
+            assert s_no_csrf == 403
+
+            # Evil Origin
+            bad_origin = {"X-Agent-Forge": "1", "Origin": "http://evil.com"}
+            s_origin, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_origin)
+            self.assertEqual(s_origin, 403)
+            assert s_origin == 403
+
+            # Null Origin
+            s_null, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"X-Agent-Forge": "1", "Origin": "null"})
+            self.assertEqual(s_null, 403)
+            assert s_null == 403
+
+            # Empty Origin
+            s_empty, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers={"X-Agent-Forge": "1", "Origin": ""})
+            self.assertEqual(s_empty, 403)
+            assert s_empty == 403
+
+            # Evil Referer
+            bad_referer = {"X-Agent-Forge": "1", "Referer": "http://evil.com/attack"}
+            s_ref, _, _ = self.req("POST", "/api/control", {"action": "autopilot_on"}, headers=bad_referer)
+            self.assertEqual(s_ref, 403)
+            assert s_ref == 403
+
+            # All rejected requests must not have called foreman() or subprocess
+            self.assertEqual(len(foreman_calls), 0)
+            assert not foreman_calls
+            self.assertEqual(len(self.calls), n)
+            assert len(self.calls) == n
+
+            # Valid headers with allowed Origin and Referer succeed
+            s_ok, _, body_ok = self.req("POST", "/api/control", {"action": "autopilot_on"},
+                                        headers={"X-Agent-Forge": "1",
+                                                 "Origin": f"http://127.0.0.1:{self.port}",
+                                                 "Referer": f"http://127.0.0.1:{self.port}/"})
+            self.assertEqual(s_ok, 200)
+            assert s_ok == 200
+            self.assertTrue(json.loads(body_ok).get("ok"))
+            assert json.loads(body_ok).get("ok") is True
+            self.assertEqual(len(foreman_calls), 1)
+            assert len(foreman_calls) == 1
+        finally:
+            srv.foreman = orig_foreman
+
+    def test_control_round_trip(self):
+        """Invariant: Round-trip control calls (autopilot off then on, pause then resume) succeed and produce distinct argv lists each time."""
+        H = {"X-Agent-Forge": "1"}
+        orig_foreman = srv.foreman
+        foreman_calls = []
+
+        def spy_foreman(pf, args, inp=None, timeout=60):
+            foreman_calls.append((pf, list(args)))
+            return orig_foreman(pf, args, inp=inp, timeout=timeout)
+
+        srv.foreman = spy_foreman
+        try:
+            # Round trip 1: Autopilot off then Autopilot on
+            s1, _, body1 = self.req("POST", "/api/control", {"project": "shop", "action": "autopilot_off"}, H)
+            self.assertEqual(s1, 200)
+            assert s1 == 200
+            res1 = json.loads(body1)
+            self.assertTrue(res1.get("ok"))
+            assert res1.get("ok") is True
+            argv1 = foreman_calls[-1][1]
+            self.assertEqual(argv1, ["autopilot", "off"])
+            assert argv1 == ["autopilot", "off"]
+
+            s2, _, body2 = self.req("POST", "/api/control", {"project": "shop", "action": "autopilot_on"}, H)
+            self.assertEqual(s2, 200)
+            assert s2 == 200
+            res2 = json.loads(body2)
+            self.assertTrue(res2.get("ok"))
+            assert res2.get("ok") is True
+            argv2 = foreman_calls[-1][1]
+            self.assertEqual(argv2, ["autopilot", "on"])
+            assert argv2 == ["autopilot", "on"]
+
+            # Explicitly assert two different argv lists for the two actions (catches mapping bugs)
+            self.assertNotEqual(argv1, argv2)
+            assert argv1 != argv2
+
+            # Assert subprocess commands are also distinct and match expected
+            self.assertTrue(self.calls[-2][0].endswith("bin/foreman --project shop autopilot off"))
+            self.assertTrue(self.calls[-1][0].endswith("bin/foreman --project shop autopilot on"))
+            self.assertNotEqual(self.calls[-2][0], self.calls[-1][0])
+
+            # Round trip 2: Foreman pause then resume
+            s3, _, body3 = self.req("POST", "/api/control", {"project": "shop", "action": "pause"}, H)
+            self.assertEqual(s3, 200)
+            assert s3 == 200
+            res3 = json.loads(body3)
+            self.assertTrue(res3.get("ok"))
+            assert res3.get("ok") is True
+            argv3 = foreman_calls[-1][1]
+            self.assertEqual(argv3, ["pause"])
+            assert argv3 == ["pause"]
+
+            s4, _, body4 = self.req("POST", "/api/control", {"project": "shop", "action": "resume"}, H)
+            self.assertEqual(s4, 200)
+            assert s4 == 200
+            res4 = json.loads(body4)
+            self.assertTrue(res4.get("ok"))
+            assert res4.get("ok") is True
+            argv4 = foreman_calls[-1][1]
+            self.assertEqual(argv4, ["resume"])
+            assert argv4 == ["resume"]
+
+            # Explicitly assert two different argv lists for pause and resume
+            self.assertNotEqual(argv3, argv4)
+            assert argv3 != argv4
+
+            self.assertTrue(self.calls[-2][0].endswith("bin/foreman --project shop pause"))
+            self.assertTrue(self.calls[-1][0].endswith("bin/foreman --project shop resume"))
+            self.assertNotEqual(self.calls[-2][0], self.calls[-1][0])
+        finally:
+            srv.foreman = orig_foreman
+
 
     def test_control_actions_and_payload_match_frontend_overview_js(self):
         """Invariant: All four action identifiers and the payload shape match exactly what web/static/js/overview.js's controlAction() sends."""
