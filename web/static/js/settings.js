@@ -351,7 +351,7 @@ function runtimeCostLabel(cm) {
   const detailLower = detail.toLowerCase();
 
   // Self-hosted local runtimes (ollama, vllm, lmstudio, llamacpp)
-  if (detailLower.includes('self-hosted')) {
+  if (kind === 'self-hosted' || detailLower.includes('self-hosted')) {
     return 'self-hosted, no API cost';
   }
 
