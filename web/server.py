@@ -20,14 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
-
-try:
-    from foreman import readiness
-except ImportError:
-    try:
-        import bin.lib.foreman.readiness as readiness
-    except ImportError:
-        readiness = getattr(B, "readiness", None)
+from foreman import readiness
 
 
 DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
@@ -149,6 +142,15 @@ def as_json(out, err="", rc=0):
         return {"ok": False, "error": msg}
 
 
+# status_of() contract from bin/lib/foreman/readiness.py:
+# Returns {"state": "ok" | "missing_setting" | "missing_egress", "detail": str, ...}
+_STATUS_STATE_TO_READY = {
+    "ok": True,
+    "missing_setting": False,
+    "missing_egress": False,
+}
+
+
 def readiness_summary():
     """Return honest per-runtime readiness and cost model summary.
 
@@ -175,15 +177,8 @@ def readiness_summary():
             cm = {"kind": "unknown", "detail": f"cost model check failed: {e}"}
 
         state = st.get("state") if isinstance(st, dict) else None
-        if state == "ok":
-            ready = True
-        elif state in ("missing_setting", "missing_egress"):
-            ready = False
-        elif isinstance(st, dict) and "ready" in st:
-            ready = st["ready"]
-        else:
-            ready = None
-        reason = (st.get("detail") or st.get("reason") or "") if isinstance(st, dict) else str(st or "")
+        ready = _STATUS_STATE_TO_READY.get(state)
+        reason = st.get("detail", "") if isinstance(st, dict) else ""
         summary[rt] = {
             "ready": ready,
             "reason": reason,
