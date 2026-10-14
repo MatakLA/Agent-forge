@@ -7,7 +7,8 @@ PYSCRIPTS="bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/kil
   bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set
   bin/issues-intake scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py"
 SHSCRIPTS="bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
-  tools/fake-docker egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo tests/test_install_security.sh tests/test_install_smoke.sh tests/test_demo_mode.sh"
+  tools/fake-docker egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo tests/test_install_security.sh tests/test_install_smoke.sh tests/test_demo_mode.sh
+  scripts/pick-ai.sh tests/test_pick_ai.sh"
 for f in $PYSCRIPTS bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*.py; do
   $PY -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' "$f" || { echo "syntax error: $f"; exit 1; }
 done
@@ -149,6 +150,12 @@ if [ -f tests/test_runtime_anthropic_compat.py ]; then
 fi
 if [ -f tests/test_orphan_warning_ui.py ]; then
   $PY tests/test_orphan_warning_ui.py || exit 1
+fi
+if [ -f tests/test_wizard.py ]; then
+  $PY tests/test_wizard.py || exit 1
+fi
+if [ -f tests/test_pick_ai.sh ]; then
+  bash tests/test_pick_ai.sh || exit 1
 fi
 echo "check: ALL OK"
 
