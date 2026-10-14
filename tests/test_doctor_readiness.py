@@ -13,14 +13,17 @@ Important invariants:
 - Secrets are NEVER printed in stdout, stderr, or check dictionaries.
 - bin/doctor exits 0 when every readiness item is merely missing_setting/missing_egress.
 - Readiness checks report level='warn' for unconfigured runtimes/providers without causing hard doctor failure.
+- Local-compat runtimes (ollama, vllm, lmstudio, llamacpp) report distinct lines for 'not configured', 'unreachable' (with connection error), and 'ready' (when endpoint connects).
 """
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -503,7 +506,279 @@ class TestDoctorReadiness(unittest.TestCase):
         assert all(f" {rt}: " in proc.stdout for rt in six_keys)
         assert all(any(f" {rt}: " in c["message"] for c in readiness_checks) for rt in six_keys)
 
+    def test_local_compat_three_states_end_to_end(self):
+        """Acceptance criteria:
+
+        - bin/doctor prints a distinct, actionable line for each of ollama/vllm/lmstudio/llamacpp
+          that differs between 'not configured', 'unreachable' and 'ready'.
+        - tests/test_doctor_readiness.py covers all three states for at least one of the four runtimes
+          end-to-end (e.g. with a fake socket/server) and asserts the message text, not just a truthy/falsy result.
+        - existing doctor checks for other runtimes keep passing unchanged.
+        """
+        local_runtimes = ("ollama", "vllm", "lmstudio", "llamacpp")
+
+        # -------------------------------------------------------------
+        # State 1: 'not configured' (no endpoint URL set)
+        # -------------------------------------------------------------
+        with patch.object(readiness, "_get_compat_base_url", return_value=""):
+            doctor.CHECKS.clear()
+            res_not_cfg = doctor.check_readiness()
+            for rt in local_runtimes:
+                matching = [c for c in res_not_cfg["checks"] if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+                self.assertEqual(len(matching), 1, f"Expected 1 check for '{rt}', got {len(matching)}")
+                chk = matching[0]
+                self.assertEqual(chk["level"], "warn")
+                expected_msg = f"[WARN] {rt}: Runtime '{rt}' is not configured (missing COMPAT_BASE_URL)"
+                self.assertEqual(chk["message"], expected_msg)
+                self.assertIn("not configured", chk["message"])
+                self.assertIn("COMPAT_BASE_URL", chk["message"])
+                self.assertEqual(chk["fix"], "set COMPAT_BASE_URL in etc/limits.conf or Settings")
+                self.assertEqual(chk["fix_id"], "settings:COMPAT_BASE_URL")
+
+        # -------------------------------------------------------------
+        # State 2: 'unreachable' (endpoint configured but no server listening)
+        # -------------------------------------------------------------
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+        sock.close()
+
+        unreachable_url = f"http://127.0.0.1:{closed_port}/v1"
+        with patch.object(readiness, "_get_compat_base_url", return_value=unreachable_url):
+            doctor.CHECKS.clear()
+            res_unreach = doctor.check_readiness()
+            for rt in local_runtimes:
+                matching = [c for c in res_unreach["checks"] if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+                self.assertEqual(len(matching), 1, f"Expected 1 check for '{rt}', got {len(matching)}")
+                chk = matching[0]
+                self.assertEqual(chk["level"], "warn")
+                self.assertTrue(chk["message"].startswith(f"[WARN] {rt}: endpoint {unreachable_url} is unreachable ("))
+                self.assertIn("is unreachable", chk["message"])
+                self.assertIn(unreachable_url, chk["message"])
+                # Assert real connection error is captured in message text
+                self.assertTrue(
+                    "Connection refused" in chk["message"]
+                    or "111" in chk["message"]
+                    or "refused" in chk["message"].lower()
+                )
+                self.assertEqual(chk["fix"], f"start {rt} server on 127.0.0.1:{closed_port} or check COMPAT_BASE_URL")
+                self.assertEqual(chk["fix_id"], f"start:{rt}")
+
+        # -------------------------------------------------------------
+        # State 3: 'ready' (endpoint configured and fake server accepts connection)
+        # -------------------------------------------------------------
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("127.0.0.1", 0))
+        ready_port = server_sock.getsockname()[1]
+        server_sock.listen(10)
+
+        stop_server = threading.Event()
+
+        def accept_clients():
+            while not stop_server.is_set():
+                try:
+                    server_sock.settimeout(0.2)
+                    client_conn, _ = server_sock.accept()
+                    client_conn.close()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+        server_thread = threading.Thread(target=accept_clients, daemon=True)
+        server_thread.start()
+
+        ready_url = f"http://127.0.0.1:{ready_port}/v1"
+        try:
+            with patch.object(readiness, "_get_compat_base_url", return_value=ready_url):
+                doctor.CHECKS.clear()
+                res_ready = doctor.check_readiness()
+                for rt in local_runtimes:
+                    matching = [c for c in res_ready["checks"] if f" {rt}: " in c["message"] and c["section"] == "Readiness"]
+                    self.assertEqual(len(matching), 1, f"Expected 1 check for '{rt}', got {len(matching)}")
+                    chk = matching[0]
+                    self.assertEqual(chk["level"], "ok")
+                    expected_ready = f"[OK] {rt}: Runtime '{rt}' is ready ({ready_url})"
+                    self.assertEqual(chk["message"], expected_ready)
+                    self.assertIn("is ready", chk["message"])
+                    self.assertIn(ready_url, chk["message"])
+        finally:
+            stop_server.set()
+            server_sock.close()
+            server_thread.join(timeout=2.0)
+
+        # -------------------------------------------------------------
+        # Assert the three lines are mutually distinct for every runtime
+        # -------------------------------------------------------------
+        for rt in local_runtimes:
+            line_not_cfg = f"[WARN] {rt}: Runtime '{rt}' is not configured (missing COMPAT_BASE_URL)"
+            line_unreach = f"[WARN] {rt}: endpoint {unreachable_url} is unreachable (Connection refused)"
+            line_ready = f"[OK] {rt}: Runtime '{rt}' is ready ({ready_url})"
+            self.assertNotEqual(line_not_cfg, line_unreach)
+            self.assertNotEqual(line_not_cfg, line_ready)
+            self.assertNotEqual(line_unreach, line_ready)
+
+        assert all(rt in local_runtimes for rt in ("ollama", "vllm", "lmstudio", "llamacpp"))
+        assert len(local_runtimes) == 4
+
+    def test_check_local_compat_runtime_helper_directly(self):
+        """Invariant: check_local_compat_runtime directly evaluates not_configured, unreachable, and ready."""
+        # 1. Not configured when endpoint_url is empty
+        res_not_cfg = doctor.check_local_compat_runtime("ollama", endpoint_url="")
+        self.assertEqual(res_not_cfg["status"], "not_configured")
+        self.assertEqual(res_not_cfg["state"], "warn")
+        self.assertIn("not configured", res_not_cfg["message"])
+        self.assertIn("COMPAT_BASE_URL", res_not_cfg["message"])
+
+        # 2. Unreachable when port is closed
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+        sock.close()
+
+        res_unreach = doctor.check_local_compat_runtime("vllm", endpoint_url=f"http://127.0.0.1:{closed_port}/v1", timeout=1.0)
+        self.assertEqual(res_unreach["status"], "unreachable")
+        self.assertEqual(res_unreach["state"], "warn")
+        self.assertIn("is unreachable", res_unreach["message"])
+        self.assertTrue("error" in res_unreach and len(res_unreach["error"]) > 0)
+
+        # 3. Ready when fake server accepts connection
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("127.0.0.1", 0))
+        open_port = server_sock.getsockname()[1]
+        server_sock.listen(5)
+
+        stop_ev = threading.Event()
+
+        def accept_conn():
+            while not stop_ev.is_set():
+                try:
+                    server_sock.settimeout(0.2)
+                    c, _ = server_sock.accept()
+                    c.close()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+        th = threading.Thread(target=accept_conn, daemon=True)
+        th.start()
+        try:
+            res_ready = doctor.check_local_compat_runtime("lmstudio", endpoint_url=f"http://127.0.0.1:{open_port}/v1", timeout=1.0)
+            self.assertEqual(res_ready["status"], "ready")
+            self.assertEqual(res_ready["state"], "ok")
+            self.assertIn("is ready", res_ready["message"])
+            self.assertIn(f"127.0.0.1:{open_port}", res_ready["message"])
+        finally:
+            stop_ev.set()
+            server_sock.close()
+            th.join(timeout=1.0)
+
+        # 4. Public host rejection (never connects over network to public hosts)
+        res_public = doctor.check_local_compat_runtime("llamacpp", endpoint_url="https://api.openai.com/v1")
+        self.assertEqual(res_public["status"], "unreachable")
+        self.assertEqual(res_public["state"], "warn")
+        self.assertIn("not a local endpoint", res_public["message"])
+
+        assert res_not_cfg["status"] == "not_configured"
+        assert res_unreach["status"] == "unreachable"
+        assert res_ready["status"] == "ready"
+        assert res_public["status"] == "unreachable"
+
+    def test_check_local_compat_runtimes_batch(self):
+        """Invariant: check_local_compat_runtimes runs check for all four local runtimes."""
+        doctor.CHECKS.clear()
+        res = doctor.check_local_compat_runtimes(endpoint_url="")
+        self.assertEqual(len(res["warn"]), 4)
+        self.assertEqual(len(res["ok"]), 0)
+        self.assertEqual(len(res["bad"]), 0)
+        for rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            self.assertIn(rt, res["results"])
+            self.assertEqual(res["results"][rt]["status"], "not_configured")
+            self.assertTrue(any(f" {rt}: " in c["message"] for c in res["warn"]))
+
+        assert len(res["results"]) == 4
+
+    def test_doctor_subprocess_local_compat_three_states(self):
+        """Invariant: bin/doctor subprocess execution outputs distinct lines for the three states."""
+        # 1. Not configured in subprocess
+        env_not_cfg = dict(os.environ)
+        env_not_cfg.pop("COMPAT_BASE_URL", None)
+        proc_not_cfg = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env_not_cfg,
+        )
+        for rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            self.assertIn(f"[WARN] {rt}: Runtime '{rt}' is not configured (missing COMPAT_BASE_URL)", proc_not_cfg.stdout)
+
+        # 2. Unreachable in subprocess
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+        sock.close()
+
+        env_unreach = dict(os.environ)
+        env_unreach["COMPAT_BASE_URL"] = f"http://127.0.0.1:{closed_port}/v1"
+        proc_unreach = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env_unreach,
+        )
+        for rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            self.assertIn(f"[WARN] {rt}: endpoint http://127.0.0.1:{closed_port}/v1 is unreachable (", proc_unreach.stdout)
+
+        # 3. Ready in subprocess with fake socket server
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("127.0.0.1", 0))
+        ready_port = server_sock.getsockname()[1]
+        server_sock.listen(10)
+
+        stop_server = threading.Event()
+
+        def accept_clients():
+            while not stop_server.is_set():
+                try:
+                    server_sock.settimeout(0.2)
+                    c, _ = server_sock.accept()
+                    c.close()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+        th = threading.Thread(target=accept_clients, daemon=True)
+        th.start()
+        try:
+            env_ready = dict(os.environ)
+            env_ready["COMPAT_BASE_URL"] = f"http://127.0.0.1:{ready_port}/v1"
+            proc_ready = subprocess.run(
+                [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env_ready,
+            )
+            for rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+                self.assertIn(f"[OK] {rt}: Runtime '{rt}' is ready (http://127.0.0.1:{ready_port}/v1)", proc_ready.stdout)
+        finally:
+            stop_server.set()
+            server_sock.close()
+            th.join(timeout=2.0)
+
+        assert "[WARN] ollama: Runtime 'ollama' is not configured" in proc_not_cfg.stdout
+        assert f"[WARN] ollama: endpoint http://127.0.0.1:{closed_port}/v1 is unreachable" in proc_unreach.stdout
+        assert f"[OK] ollama: Runtime 'ollama' is ready (http://127.0.0.1:{ready_port}/v1)" in proc_ready.stdout
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
