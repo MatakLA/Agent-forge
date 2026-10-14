@@ -20,7 +20,7 @@ lh3.googleusercontent.com
 pypi.org
 files.pythonhosted.org
 
-# --- Qwen Code CLI (Alibaba DashScope) --- verify before production - exact Qwen Code CLI endpoint not confirmed
+# --- Qwen Code CLI (bin/lib/runtimes.py hosts('qwen')) ---
 dashscope.aliyuncs.com
 dashscope-intl.aliyuncs.com
 
