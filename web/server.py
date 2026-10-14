@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 WEB = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WEB)
 from dashboard import backend as B, live as L  # noqa: E402
+from foreman import readiness
+
 
 DEMO_MODE = os.environ.get("DEMO_MODE") == "1"
 if DEMO_MODE or B.DEMO_MODE:
@@ -138,6 +140,51 @@ def as_json(out, err="", rc=0):
         if DASHBOARD_TOKEN:
             msg = msg.replace(DASHBOARD_TOKEN, "[REDACTED]")
         return {"ok": False, "error": msg}
+
+
+# status_of() contract from bin/lib/foreman/readiness.py:
+# Returns {"state": "ok" | "missing_setting" | "missing_egress", "detail": str, ...}
+_STATUS_STATE_TO_READY = {
+    "ok": True,
+    "missing_setting": False,
+    "missing_egress": False,
+}
+
+
+def readiness_summary():
+    """Return honest per-runtime readiness and cost model summary.
+
+    Returns dict matching shape:
+    {"runtimes": {"<key>": {"ready": bool | None, "reason": str, "cost_model": dict}, ...}}
+    """
+    if readiness is None:
+        return {"runtimes": {}, "error": "readiness module unavailable"}
+
+    summary = {}
+    try:
+        items = readiness.runtime_items()
+    except Exception as e:
+        return {"runtimes": {}, "error": str(e) or type(e).__name__}
+
+    for rt in items:
+        try:
+            st = readiness.status_of("runtime", rt)
+        except Exception as e:
+            st = {"state": "error", "detail": f"readiness check failed: {e}"}
+        try:
+            cm = readiness.cost_model(rt)
+        except Exception as e:
+            cm = {"kind": "unknown", "detail": f"cost model check failed: {e}"}
+
+        state = st.get("state") if isinstance(st, dict) else None
+        ready = _STATUS_STATE_TO_READY.get(state)
+        reason = st.get("detail", "") if isinstance(st, dict) else ""
+        summary[rt] = {
+            "ready": ready,
+            "reason": reason,
+            "cost_model": cm if isinstance(cm, dict) else {"kind": "unknown", "detail": str(cm or "")},
+        }
+    return {"runtimes": summary}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -585,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/readiness/recommend":
             rc, out, err = foreman(pf, ["readiness-recommend"])
             self._json(as_json(out, err, rc))
+        elif path in ("/api/readiness/summary", "/api/readiness/status"):
+            self._json(as_json(readiness_summary()))
         elif path.startswith("/api/jobs/"):
             j = B.JOBS.get(path.rsplit("/", 1)[-1])
             self._json(j or {"error": "unknown job"})
