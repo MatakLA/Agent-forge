@@ -280,6 +280,25 @@ def _selftest():
           and sbx.consecutive_failures(L, "other") == 1)
     check("no_nul: a NUL byte is spelled out, so it can reach an argv",
           sbx.no_nul("a\x00b") == "a\\x00b" and sbx.no_nul("plain") == "plain")
+    # finite goals: an open-ended goal is held and the owner's answer replaces it
+    from .planning import hold_open_ended
+    from .owner import answer_question
+    from .prompts import finite_rule
+    old_fd2, tmp2 = ctx.FD, tempfile.mkdtemp(prefix="foreman-finite-")
+    try:
+        ctx.FD = tmp2; os.makedirs(os.path.join(tmp2, "goals"))
+        gx = dict(id="G20261014-000001", text="Add more runtimes", status="new", created=sbx.now()); save_goal(gx)
+        hold_open_ended(gx, {"open_ended": True, "question": "Which runtimes?", "finite_goal": "Add exactly Foo and Bar."})
+        gh = jload(os.path.join(tmp2, "goals", "G20261014-000001.json")); qs = jload(os.path.join(tmp2, "owner_questions.json"), [])
+        check("open-ended goal: not planned, blocked, and the question names the goal and the proposed finite version",
+              gh["status"] == "blocked" and len(qs) == 1 and qs[0].startswith("[G20261014-000001] Which runtimes?") and "exactly Foo and Bar" in qs[0])
+        answer_question(1, "Add exactly Foo and Bar runtimes, each with a doctor check; done when tests/check.sh passes.")
+        gh = jload(os.path.join(tmp2, "goals", "G20261014-000001.json"))
+        check("open-ended goal: the owner's answer becomes the goal text and it is planned again",
+              gh["status"] == "new" and gh["text"].startswith("Add exactly Foo and Bar") and not jload(os.path.join(tmp2, "owner_questions.json"), []))
+        check("finite_rule: tells the planner how to refuse an open-ended goal", '"open_ended": true' in finite_rule() and "END STATE" in finite_rule())
+    finally:
+        ctx.FD = old_fd2; shutil.rmtree(tmp2, ignore_errors=True)
     # notifications payloads
     b, h = sbx.notify_payload("ntfy", "goal_done", "Cieľ hotový", "text")
     b2, _ = sbx.notify_payload("slack", "goal_done", "T", "m")

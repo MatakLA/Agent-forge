@@ -124,6 +124,8 @@ def notify(kind, obj=None, text=""):
         title, msg = "All workers are out of quota", text
     elif kind == "auth":
         title, msg = "An API key was rejected", text
+    elif kind == "project_done":
+        title, msg = "Project done", text
     elif kind == "approval":
         title, msg = "Waiting for your approval", text
     else:
