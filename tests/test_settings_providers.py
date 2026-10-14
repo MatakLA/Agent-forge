@@ -7,6 +7,7 @@ Invariants:
 - settings_apply rejects unknown providers in PLAN_PROVIDERS and REVIEW_PROVIDERS.
 - settings_apply requires OPENAI_MODEL when openai-api is used, and GEMINI_MODEL when gemini-api is used.
 - settings_apply and settings_get validate and surface OPENCODE_MODEL, QWEN_MODEL, and GOOSE_MODEL.
+- settings_apply accepts opencode, qwen, and goose as valid WORKER_RUNTIME settings and rejects invalid runtimes.
 - settings_apply rejects providers or runtimes whose required egress host is missing from allowlist.
 - Sensitive API keys and tokens are never echoed in errors, event logs, or return values.
 """
@@ -575,6 +576,20 @@ class TestSettingsProviders(unittest.TestCase):
             self.assertEqual(errs_ok, {})
         assert "WORKER_RUNTIME" in errs_claude and not errs_ok
 
+    def test_worker_runtime_opencode_qwen_goose_settings_validation(self):
+        """settings_apply accepts opencode, qwen, and goose as WORKER_RUNTIME and rejects bogus runtimes."""
+        for name in ("opencode", "qwen", "goose"):
+            errs = settings_apply({"WORKER_RUNTIME": name})
+            self.assertEqual(errs, {}, f"Expected settings_apply to accept WORKER_RUNTIME='{name}', got {errs}")
+            assert not errs, f"Validation error for {name}: {errs}"
+
+        for bogus in ("bogus-runtime", "unknown", "qwen-fake", "not_a_runtime"):
+            errs_bogus = settings_apply({"WORKER_RUNTIME": bogus})
+            self.assertIn("WORKER_RUNTIME", errs_bogus, f"Expected bogus runtime '{bogus}' to be rejected")
+            self.assertEqual(errs_bogus["WORKER_RUNTIME"], "invalid value")
+            assert "WORKER_RUNTIME" in errs_bogus and errs_bogus["WORKER_RUNTIME"] == "invalid value"
+
 
 if __name__ == "__main__":
     unittest.main()
+
