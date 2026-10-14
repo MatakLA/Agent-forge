@@ -437,24 +437,6 @@ function pageWorkers() {
       ' ' + (sec[k] ? '<b class="plus">✓</b>' : '<span class="muted">—</span>') + '</span>').join('') + '<button class="mini" id="key-change">set a key…</button></div>' +
     '<div id="key-form" style="display:none" class="btnrow"><select id="key-name"><option>anthropic.key</option><option>openai.key</option><option>gemini.key</option><option value="compat.key">compat.key (your server)</option><option>qwen.key</option></select>' +
     '<input type="password" id="key-val" autocomplete="off" placeholder="the key (stored on the server only)" style="flex:1;min-width:180px"><button class="mini" id="key-save">Save key</button></div>' +
-    field('WORKER_RUNTIME', sel('WORKER_RUNTIME', [
-      ['agy', 'Antigravity'],
-      ['claude', 'Claude Code'],
-      ['codex', 'Codex'],
-      ['gemini', 'Gemini CLI'],
-      ['compat', 'Codex · own server'],
-      ['aider', 'Aider · own server'],
-      ['anthropic-compat', 'Anthropic-compatible endpoint'],
-      ['copilot', 'GitHub Copilot'],
-      ['mistral-vibe', 'Mistral Vibe'],
-      ['ollama', 'Ollama'],
-      ['vllm', 'vLLM'],
-      ['lmstudio', 'LM Studio'],
-      ['llamacpp', 'llama.cpp'],
-      ['opencode', 'OpenCode'],
-      ['qwen', 'Qwen Code'],
-      ['goose', 'Goose']
-    ]), HELP.WORKER_RUNTIME) +
     field('COMPAT_BASE_URL', txt('COMPAT_BASE_URL', 'http://192.168.1.20:11434/v1  or  https://openrouter.ai/api/v1'), HELP.COMPAT_BASE_URL) +
     field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b'), HELP.WORKER_MODEL_COMPAT) +
     field('WORKER_MODEL_AIDER', txt('WORKER_MODEL_AIDER', 'e.g. qwen3-coder:30b'), HELP.WORKER_MODEL_AIDER) +
@@ -869,14 +851,13 @@ function renderSettings(force) {
 async function saveSettings() {
   const changes = {};
   const knownKeys = new Set(Object.keys(V()));
-  if ($('set-WORKER_RUNTIME')) knownKeys.add('WORKER_RUNTIME');
   if ($('set-GEMINI_API_BASE')) knownKeys.add('GEMINI_API_BASE');
   if ($('set-ORPHAN_LIMIT')) knownKeys.add('ORPHAN_LIMIT');
   if ($('set-ORPHAN_WARN')) knownKeys.add('ORPHAN_WARN');
   if ($('field-opencode-model')) knownKeys.add('OPENCODE_MODEL');
   if ($('field-qwen-model')) knownKeys.add('QWEN_MODEL');
   if ($('field-goose-model')) knownKeys.add('GOOSE_MODEL');
-  const defVal = k => (k === 'ORPHAN_LIMIT' ? 5 : k === 'ORPHAN_WARN' ? 3 : k === 'WORKER_RUNTIME' ? 'agy' : '');
+  const defVal = k => (k === 'ORPHAN_LIMIT' ? 5 : k === 'ORPHAN_WARN' ? 3 : '');
   for (const k of knownKeys) {
     const v = sval(k);
     const orig = V()[k] != null && V()[k] !== '' ? String(V()[k]) : String(defVal(k));

@@ -15,9 +15,9 @@ setTimeout(() => { console.log('TIMEOUT; errors so far:\n' + errors.join('\n'));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /**
- * Task 0200/0234: Verify that the WORKER_RUNTIME selector and dropdown expose the new runtimes:
+ * Task 0200/0234: Verify that the WORKER_RUNTIME selector exposes the new runtimes:
  * copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp, opencode, qwen, goose with their respective
- * selectable options, values, and help text/labels, and verify selection updates without throwing.
+ * selectable radio options, values, and help text/labels, and verify selection updates without throwing.
  */
 async function testNewRuntimesPresent(d, check, w, errors) {
   check = check || ((name, ok) => { if (typeof failed !== 'undefined') failed += !ok; console.log((ok ? 'ok   ' : 'FAIL ') + name); });
@@ -57,13 +57,6 @@ async function testNewRuntimesPresent(d, check, w, errors) {
   });
   check('settings / workers: WORKER_RUNTIME selector exposes opencode, qwen and goose with help text', goalRtPresent);
 
-  const rtDropdown = d.getElementById('set-WORKER_RUNTIME') || d.querySelector('select[name="WORKER_RUNTIME"]');
-  const dropdownOk = !!rtDropdown && ['opencode', 'qwen', 'goose'].every(val => {
-    const opt = Array.from(rtDropdown.options || []).find(o => o.value === val);
-    return !!opt && opt.text.trim().length > 0;
-  });
-  check('settings / workers: WORKER_RUNTIME dropdown contains options for opencode, qwen and goose with non-empty labels', dropdownOk);
-
   let rtPickerNoThrow = true;
   let rtPickerUpdatesSelection = true;
   if (w && w.MouseEvent) {
@@ -84,20 +77,10 @@ async function testNewRuntimesPresent(d, check, w, errors) {
         rtPickerUpdatesSelection = false;
       }
     }
-    if (rtDropdown && w.Event) {
-      for (const val of ['opencode', 'qwen', 'goose']) {
-        try {
-          rtDropdown.value = val;
-          rtDropdown.dispatchEvent(new w.Event('change', {bubbles: true}));
-        } catch (err) {
-          errors.push('Selecting ' + val + ' in dropdown threw: ' + (err.message || err));
-        }
-      }
-    }
     check('settings / workers: selecting each new runtime picker option does not throw and updates visible selection',
           rtPickerNoThrow && rtPickerUpdatesSelection);
   }
-  return sixRtPresent && goalRtPresent && dropdownOk && rtPickerNoThrow && rtPickerUpdatesSelection;
+  return sixRtPresent && goalRtPresent && rtPickerNoThrow && rtPickerUpdatesSelection;
 }
 
 /**
