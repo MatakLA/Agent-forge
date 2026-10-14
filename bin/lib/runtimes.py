@@ -130,11 +130,12 @@ def cost_model(rt: str) -> dict:
     """Return the cost/quota model classification for a runtime.
 
     Returns a dict with exactly two keys:
-    - 'kind': 'metered' (API with token cost), 'quota' (CLI with subscription quota), or 'unknown'
+    - 'kind': 'metered' (API with token cost), 'quota' (CLI with subscription quota), or 'unknown' (self-hosted/unmetered or external)
     - 'detail': short human-readable explanation
     """
     if rt not in RUNTIMES:
         raise ValueError(f"unknown runtime {rt!r}")
+    # Tier classification: 'metered' (token billing), 'quota' (subscription), or 'unknown' (self-hosted / unmetered / external)
     unknown_details = {
         "opencode": "OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge",
         "qwen-code": "Qwen Code (qwen-code) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge",
@@ -142,10 +143,10 @@ def cost_model(rt: str) -> dict:
         "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
         "mistral-vibe": "Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge",
         "copilot": "GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge",
-        "ollama": "Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)",
-        "vllm": "Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)",
-        "lmstudio": "Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)",
-        "llamacpp": "Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)",
+        "ollama": "Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "vllm": "Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "lmstudio": "Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+        "llamacpp": "Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges); cost/capacity depends on the owner's own hardware, not on Agent-Forge",
     }
     if rt in unknown_details:
         return {"kind": "unknown", "detail": unknown_details[rt]}

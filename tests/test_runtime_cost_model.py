@@ -11,6 +11,7 @@ Important invariants:
 - 'detail' is a non-empty human-readable explanation.
 - opencode, qwen-code, goose, anthropic-compat, copilot, mistral-vibe, ollama,
   vllm, lmstudio, and llamacpp return kind == 'unknown', each naming the runtime.
+- ollama, vllm, lmstudio, and llamacpp state that cost/capacity depends on the owner's own hardware, not on Agent-Forge.
 - agy returns kind == 'quota' (subscription tracked via agy /usage).
 - claude, codex, gemini, compat, aider return kind == 'metered' (API token billing).
 - The six new runtimes return honest 'unknown' classifications with no fabricated USD.
@@ -228,6 +229,11 @@ class TestRuntimeCostModel(unittest.TestCase):
                 res["detail"],
                 f"Self-hosted runtime {rt!r} detail must mention 'no per-token charges': {res['detail']!r}",
             )
+            self.assertIn(
+                "cost/capacity depends on the owner's own hardware, not on Agent-Forge",
+                res["detail"],
+                f"Self-hosted runtime {rt!r} detail must mention hardware dependency: {res['detail']!r}",
+            )
             # Detail must name the runtime
             clean_name = rt.replace("studio", " studio").replace("cpp", ".cpp")
             self.assertTrue(
@@ -342,6 +348,104 @@ class TestRuntimeCostModel(unittest.TestCase):
             runtimes.cost_model("unknown")
         with self.assertRaises(ValueError):
             runtimes.cost_model(123)
+
+    # -------------------------------------------------------------------------
+    # Dedicated tests for the four local-compat runtimes (Task 0226)
+    # -------------------------------------------------------------------------
+
+    def test_cost_model_ollama(self):
+        """cost_model('ollama') returns honest unknown tier and hardware note."""
+        res = runtimes.cost_model("ollama")
+        self.assertEqual(set(res.keys()), {"kind", "detail"})
+        self.assertEqual(res["kind"], "unknown")
+        self.assertIn("cost/capacity depends on the owner's own hardware, not on Agent-Forge", res["detail"])
+        self.assertIn("Self-hosted", res["detail"])
+        self.assertIn("no per-token charges", res["detail"])
+        self.assertIn("ollama", res["detail"].lower())
+        self.assertNotIn("$", res["detail"])
+
+    def test_cost_model_vllm(self):
+        """cost_model('vllm') returns honest unknown tier and hardware note."""
+        res = runtimes.cost_model("vllm")
+        self.assertEqual(set(res.keys()), {"kind", "detail"})
+        self.assertEqual(res["kind"], "unknown")
+        self.assertIn("cost/capacity depends on the owner's own hardware, not on Agent-Forge", res["detail"])
+        self.assertIn("Self-hosted", res["detail"])
+        self.assertIn("no per-token charges", res["detail"])
+        self.assertIn("vllm", res["detail"].lower())
+        self.assertNotIn("$", res["detail"])
+
+    def test_cost_model_lmstudio(self):
+        """cost_model('lmstudio') returns honest unknown tier and hardware note."""
+        res = runtimes.cost_model("lmstudio")
+        self.assertEqual(set(res.keys()), {"kind", "detail"})
+        self.assertEqual(res["kind"], "unknown")
+        self.assertIn("cost/capacity depends on the owner's own hardware, not on Agent-Forge", res["detail"])
+        self.assertIn("Self-hosted", res["detail"])
+        self.assertIn("no per-token charges", res["detail"])
+        self.assertTrue("lmstudio" in res["detail"].lower() or "lm studio" in res["detail"].lower())
+        self.assertNotIn("$", res["detail"])
+
+    def test_cost_model_llamacpp(self):
+        """cost_model('llamacpp') returns honest unknown tier and hardware note."""
+        res = runtimes.cost_model("llamacpp")
+        self.assertEqual(set(res.keys()), {"kind", "detail"})
+        self.assertEqual(res["kind"], "unknown")
+        self.assertIn("cost/capacity depends on the owner's own hardware, not on Agent-Forge", res["detail"])
+        self.assertIn("Self-hosted", res["detail"])
+        self.assertIn("no per-token charges", res["detail"])
+        self.assertTrue("llamacpp" in res["detail"].lower() or "llama.cpp" in res["detail"].lower())
+        self.assertNotIn("$", res["detail"])
+
+    def test_local_compat_four_runtimes_tier_and_hardware_note(self):
+        """Acceptance criterion: ollama, vllm, lmstudio, llamacpp each return unknown tier and hardware note."""
+        for rt in ("ollama", "vllm", "lmstudio", "llamacpp"):
+            res = runtimes.cost_model(rt)
+            self.assertEqual(set(res.keys()), {"kind", "detail"})
+            self.assertEqual(res["kind"], "unknown")
+            self.assertIn("cost/capacity depends on the owner's own hardware, not on Agent-Forge", res["detail"])
+            self.assertIn("Self-hosted", res["detail"])
+            self.assertIn("no per-token charges", res["detail"])
+            self.assertNotIn("$", res["detail"])
+
+    def test_existing_runtimes_unaffected_by_local_compat_updates(self):
+        """Acceptance criterion: existing copilot, mistral-vibe, and other runtimes are unaffected."""
+        copilot_res = runtimes.cost_model("copilot")
+        self.assertEqual(copilot_res["kind"], "unknown")
+        self.assertEqual(
+            copilot_res["detail"],
+            "GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge",
+        )
+
+        mistral_res = runtimes.cost_model("mistral-vibe")
+        self.assertEqual(mistral_res["kind"], "unknown")
+        self.assertEqual(
+            mistral_res["detail"],
+            "Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge",
+        )
+
+        # Quota runtime
+        self.assertEqual(runtimes.cost_model("agy"), {"kind": "quota", "detail": "tracked via agy /usage, not USD"})
+
+        # Metered runtimes
+        for metered_rt in ("claude", "codex", "gemini", "compat", "aider"):
+            self.assertEqual(
+                runtimes.cost_model(metered_rt),
+                {"kind": "metered", "detail": "billed per token, see Money page"},
+            )
+
+        # Other unknown runtimes
+        expected_other_unknown = {
+            "opencode": "OpenCode's backend model and its price are set in the user's own OpenCode config, not in Agent-Forge",
+            "qwen-code": "Qwen Code (qwen-code) talks to Alibaba DashScope whose model pricing is not tracked in Agent-Forge",
+            "goose": "Goose's provider and model pricing are configured in the user's own Goose environment, not in Agent-Forge",
+            "anthropic-compat": "Anthropic-compat points to an external or custom model server whose pricing is not set in Agent-Forge",
+        }
+        for rt, expected_detail in expected_other_unknown.items():
+            self.assertEqual(
+                runtimes.cost_model(rt),
+                {"kind": "unknown", "detail": expected_detail},
+            )
 
 
 if __name__ == "__main__":
