@@ -39,14 +39,22 @@ Use this flowchart to find the recommended configuration based on what subscript
 
 ```mermaid
 flowchart TD
-    Start(["Start: What AI resources do you have?"]) --> Q_Priv{"Need 100% offline / data privacy?"}
+    Start(["Start: What AI resources do you have?"]) --> Q_Priv{"Need 100% offline / data privacy or already running AI locally?"}
 
-    Q_Priv -- Yes --> Privacy["Worker: compat or aider (local Ollama/vLLM)\nOrchestrator: openai-api (local endpoint)"]
+    Q_Priv -- Yes --> Q_Local{"Which local server do you already run?"}
+    Q_Local -- "Ollama" --> OllamaPick["Worker: ollama\nOrchestrator: openai-api (local endpoint)"]
+    Q_Local -- "vLLM" --> vLLMPick["Worker: vllm\nOrchestrator: openai-api (local endpoint)"]
+    Q_Local -- "LM Studio" --> LMStudioPick["Worker: lmstudio\nOrchestrator: openai-api (local endpoint)"]
+    Q_Local -- "llama.cpp" --> LlamaCppPick["Worker: llamacpp\nOrchestrator: openai-api (local endpoint)"]
+    Q_Local -- "Other OpenAI-compatible" --> CompatPick["Worker: compat or aider\nOrchestrator: openai-api (local endpoint)"]
+
     Q_Priv -- No --> Q_Subs{"Do you have AI subscriptions?"}
 
     Q_Subs -- "Claude (Anthropic)" --> ClaudeSub["Orchestrator: claude-cli (Claude Code on VM)\nWorker: claude (Anthropic API key, per token)\nor agy (if also Google subscriber)"]
     Q_Subs -- "Google (Antigravity / Gemini)" --> GoogleSub["Worker: agy (Google subscription account)\nOrchestrator: agy-claude + agy-gemini\n(or claude-cli if available)"]
     Q_Subs -- "Both Claude & Google" --> HybridSub["Recommended Hybrid:\nOrchestrator: claude-cli (planner) + agy-claude (reviewer)\nWorkers: agy (Gemini quota for high-volume coding)"]
+    Q_Subs -- "GitHub Copilot" --> CopilotSub["Worker: copilot (GitHub Copilot subscription)"]
+    Q_Subs -- "Mistral Vibe" --> MistralSub["Worker: mistral-vibe (Mistral subscription or key)"]
     Q_Subs -- "None / Prefer API billing" --> Q_API{"Which API keys do you have?"}
 
     Q_API -- "Anthropic" --> AnthropicAPI["Orchestrator: anthropic-api\nWorker: claude (Anthropic API)"]
@@ -89,12 +97,12 @@ Worker runtimes execute inside locked-down containers. Outbound network traffic 
 | `goose` | Block's Goose CLI agent executing instructions from stdin on your server. | Block Goose agent; configured via environment or `~/.config/goose/config.yaml`. | Unknown (CLI stream does not expose token counts; `tokens: None`). | Configured model server host only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks host CLI presence, `COMPAT_BASE_URL`, and egress). | Teams using Block's Goose agent architecture with custom extensions. |
 | `qwen-code` | Alibaba Qwen Code CLI executing against DashScope models. | Alibaba DashScope API key stored in `qwen.key` secret. | Per-token if reported in CLI usage stats, else unknown (see provider pricing). | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com` | Yes (`bin/doctor` checks `qwen.key` and DashScope allowlist). | Teams running Qwen-series coding models on Alibaba Cloud DashScope. |
 | `anthropic-compat` | Claude Code CLI routed to an Anthropic-compatible gateway or local server. | Model server implementing Anthropic Messages API (LiteLLM, vLLM, Cloudflare); optional `compat.key`. | Unknown unless `PRICE_COMPAT` is configured; zero cost on local hardware. | Pinned model server host and port only (from `COMPAT_BASE_URL`). | Yes (`bin/doctor` checks endpoint configuration and egress rule). | Claude Code workflows running through private enterprise gateways or local proxies. |
-| `copilot` | GitHub Copilot CLI executing tasks non-interactively under a GitHub Copilot subscription. | GitHub account with active Copilot subscription (authenticated via `gh` / Copilot CLI). | Unknown (GitHub Copilot (copilot) is covered by a GitHub Copilot subscription; token pricing is not tracked in Agent-Forge). | `api.githubcopilot.com`, `api.github.com` | Yes (`bin/doctor` checks Copilot CLI auth and egress allowlist). | Developers with GitHub Copilot subscriptions using GitHub-supported models. |
-| `mistral-vibe` | Mistral Vibe CLI executing tasks non-interactively using Mistral AI models. | Mistral account with Vibe subscription or Mistral API key. | Unknown (Mistral Vibe (mistral-vibe) subscription or API pricing is managed in Mistral AI, not tracked in Agent-Forge). | `api.mistral.ai` | Yes (`bin/doctor` checks `mistral.key` and egress allowlist). | Developers using Mistral AI and Codestral models via Mistral's Vibe CLI. |
-| `ollama` | Local Ollama instance serving open-weights models over an OpenAI-compatible endpoint. | Local or network Ollama server; configure endpoint in `COMPAT_BASE_URL` (no key needed). | Self-hosted, no API cost / unknown (Self-hosted local Ollama server (ollama); real USD cost is unknown/not applicable (no per-token charges)). | None — reached via the local-endpoint mechanism, no static allowlist entry. | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and local endpoint reachability). | Privacy-first local setups running open-weights models through Ollama. |
-| `vllm` | Self-hosted vLLM high-throughput server implementing an OpenAI-compatible API. | vLLM model server; configure endpoint in `COMPAT_BASE_URL` (optional `compat.key`). | Self-hosted, no API cost / unknown (Self-hosted local vLLM server (vllm); real USD cost is unknown/not applicable (no per-token charges)). | None — reached via the local-endpoint mechanism, no static allowlist entry. | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and local endpoint reachability). | Teams with dedicated GPU workstations running vLLM for high-concurrency local inference. |
-| `lmstudio` | Local LM Studio application serving models via its local OpenAI-compatible API. | LM Studio running locally; configure endpoint in `COMPAT_BASE_URL` (no key needed). | Self-hosted, no API cost / unknown (Self-hosted local LM Studio server (lmstudio); real USD cost is unknown/not applicable (no per-token charges)). | None — reached via the local-endpoint mechanism, no static allowlist entry. | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and local endpoint reachability). | Developers running local models on desktop workstations through LM Studio. |
-| `llamacpp` | Local llama.cpp server (`llama-server`) exposing an OpenAI-compatible API. | llama.cpp `llama-server` instance; configure endpoint in `COMPAT_BASE_URL` (no key needed). | Self-hosted, no API cost / unknown (Self-hosted local llama.cpp server (llamacpp); real USD cost is unknown/not applicable (no per-token charges)). | None — reached via the local-endpoint mechanism, no static allowlist entry. | Yes (`bin/doctor` checks `COMPAT_BASE_URL` and local endpoint reachability). | Lightweight CPU and GPU inference using llama.cpp quantized GGUF models. |
+| `copilot` | GitHub Copilot CLI executing tasks non-interactively under a GitHub Copilot subscription. | GitHub account with active Copilot subscription (authenticated via `gh` / Copilot CLI). | Covered by a GitHub Copilot subscription (not metered per token in Agent-Forge). | `api.githubcopilot.com`, `api.github.com` | Yes (`bin/doctor` checks Copilot CLI authentication and required egress hosts). | Developers with GitHub Copilot subscriptions using GitHub-supported models. |
+| `mistral-vibe` | Mistral Vibe CLI executing tasks non-interactively using Mistral AI models. | Mistral account with Vibe subscription or Mistral API key (`mistral.key`). | Covered by Mistral Vibe subscription or Mistral API key (not metered per token in Agent-Forge). | `api.mistral.ai` | Yes (`bin/doctor` checks `mistral.key` secret and `api.mistral.ai` egress allowlist). | Developers using Mistral AI and Codestral models via Mistral's Vibe CLI. |
+| `ollama` | Runs against a local OpenAI-compatible Ollama server pointed at by the owner (no API key). | Local or LAN Ollama server; configure endpoint in `COMPAT_BASE_URL` (no API key needed). | Unmetered — depends on your own hardware rather than a subscription or per-token price. | None needed — traffic stays local/LAN (no public egress allowlist entry needed). | Yes (`bin/doctor` checks whether the configured local endpoint is reachable). | Developers already running local models in Ollama who want zero API costs. |
+| `vllm` | Runs against a local OpenAI-compatible vLLM high-throughput server pointed at by the owner (no API key). | Local or LAN vLLM server; configure endpoint in `COMPAT_BASE_URL` (no API key needed). | Unmetered — depends on your own hardware rather than a subscription or per-token price. | None needed — traffic stays local/LAN (no public egress allowlist entry needed). | Yes (`bin/doctor` checks whether the configured local endpoint is reachable). | High-throughput local inference on dedicated GPU workstations running vLLM. |
+| `lmstudio` | Runs against a local OpenAI-compatible LM Studio desktop server pointed at by the owner (no API key). | Local LM Studio application serving local models via `COMPAT_BASE_URL` (no API key needed). | Unmetered — depends on your own hardware rather than a subscription or per-token price. | None needed — traffic stays local/LAN (no public egress allowlist entry needed). | Yes (`bin/doctor` checks whether the configured local endpoint is reachable). | Desktop developers already running models locally through LM Studio. |
+| `llamacpp` | Runs against a local OpenAI-compatible llama.cpp (`llama-server`) instance pointed at by the owner (no API key). | Local `llama-server` instance; configure endpoint in `COMPAT_BASE_URL` (no API key needed). | Unmetered — depends on your own hardware rather than a subscription or per-token price. | None needed — traffic stays local/LAN (no public egress allowlist entry needed). | Yes (`bin/doctor` checks whether the configured local endpoint is reachable). | Lightweight CPU and GPU inference using llama.cpp quantized GGUF models. |
 
 ---
 
@@ -124,15 +132,22 @@ If you need the highest code generation success rate or already have an Anthropi
   - Higher monetary cost than subscription quotas for continuous 24/7 background operation.
   - Requires setting up API billing and workspace spending limits on the Anthropic Console.
 
-### 3. Local models via `compat` or `aider` for privacy & zero token cost
+### 3. Local models (Ollama, vLLM, LM Studio, llama.cpp, compat, aider) for privacy & zero token cost
 
-If your company policy prohibits code leaving your network or you have local GPU hardware (e.g., an Ollama or vLLM workstation), use `compat` or `aider`.
+If your company policy prohibits code leaving your network or you already run an AI locally on your own hardware, Agent-Forge provides dedicated runtimes for the most popular local OpenAI-compatible servers as well as generic `compat` and `aider` runtimes.
 
-- **How it works**: Set `COMPAT_BASE_URL` in `etc/limits.conf` (e.g., `http://192.168.1.50:11434/v1`). The egress proxy creates a strict rule allowing workers to reach *only* that specific IP and port.
-- **Choosing between `compat` and `aider`**:
-  - Choose `compat` if your server supports the modern **OpenAI Responses API** (Ollama 0.13+, vLLM, LM Studio 0.3.29+). It runs the official Codex CLI configured against your endpoint.
-  - Choose `aider` if your server only supports standard `/v1/chat/completions`. Aider maintains a project repo-map, performs file editing, and automatically runs your test suite (`TEST_CMD`) after each edit.
-- **Cost model**: Free tier (`0,0,0` USD per million tokens) when running on your own hardware. If pointed at a commercial gateway (like OpenRouter), you can specify `PRICE_COMPAT` in `etc/limits.conf` to track dollar spend.
+- **How it works**: Point Agent-Forge at your local model server by setting `COMPAT_BASE_URL` in `etc/limits.conf` or Settings → Workers (e.g., `http://127.0.0.1:11434/v1` for Ollama, `http://gpu-box:8000/v1` for vLLM, `http://127.0.0.1:1234/v1` for LM Studio, or `http://127.0.0.1:8080/v1` for llama.cpp).
+- **Picking the right runtime for an AI you already run locally**:
+  - **Ollama**: If you already run Ollama, choose `ollama` (`bin/worker-add N --runtime ollama`). Point `COMPAT_BASE_URL` at your Ollama endpoint (e.g. `http://127.0.0.1:11434/v1`). No API key is needed. Cost/quota is unmetered — it depends on your own hardware rather than a subscription or per-token price. Traffic stays local/LAN with no public egress allowlist entry needed. `bin/doctor` checks whether the configured local endpoint is reachable.
+  - **vLLM**: If you run vLLM on a dedicated GPU machine or workstation, choose `vllm` (`bin/worker-add N --runtime vllm`). Point `COMPAT_BASE_URL` at your vLLM server (e.g. `http://gpu-box:8000/v1` or `http://127.0.0.1:8000/v1`). No API key is needed. Cost/quota is unmetered — it depends on your own hardware rather than a subscription or per-token price. Traffic stays local/LAN with no public egress allowlist entry needed. `bin/doctor` checks whether the configured local endpoint is reachable.
+  - **LM Studio**: If you run LM Studio on your desktop, choose `lmstudio` (`bin/worker-add N --runtime lmstudio`). Point `COMPAT_BASE_URL` at your LM Studio server (e.g. `http://127.0.0.1:1234/v1`). No API key is needed. Cost/quota is unmetered — it depends on your own hardware rather than a subscription or per-token price. Traffic stays local/LAN with no public egress allowlist entry needed. `bin/doctor` checks whether the configured local endpoint is reachable.
+  - **llama.cpp**: If you run quantized GGUF models with `llama-server`, choose `llamacpp` (`bin/worker-add N --runtime llamacpp`). Point `COMPAT_BASE_URL` at your server (e.g. `http://127.0.0.1:8080/v1`). No API key is needed. Cost/quota is unmetered — it depends on your own hardware rather than a subscription or per-token price. Traffic stays local/LAN with no public egress allowlist entry needed. `bin/doctor` checks whether the configured local endpoint is reachable.
+  - **Other local servers or gateways (`compat` vs `aider`)**:
+    - Choose `compat` if your server supports the modern **OpenAI Responses API** (Ollama 0.13+, vLLM, LM Studio 0.3.29+, OpenRouter). It runs the official Codex CLI configured against your endpoint.
+    - Choose `aider` if your server only supports standard `/v1/chat/completions`. Aider maintains a project repo-map, performs file editing, and automatically runs your test suite (`TEST_CMD`) after each edit.
+- **Cost / quota model**: Unmetered — depends on your own hardware rather than a subscription or per-token price. For `compat` and `aider`, a free tier (`0,0,0` USD per million tokens) applies when running on your own hardware; if pointed at a commercial gateway (like OpenRouter), you can specify `PRICE_COMPAT` in `etc/limits.conf` to track dollar spend.
+- **Egress and network**: No public egress allowlist entry is needed for local model servers because traffic stays local/LAN. The egress proxy dynamically directs requests to the configured local endpoint host and port.
+- **Doctor check**: `bin/doctor` verifies whether the configured local endpoint is reachable before workers begin running tasks.
 - **Trade-offs**:
   - Local models under 30B parameters frequently struggle with multi-file reasoning, repo map navigation, and strict test fixing.
   - Recommended minimum local model: Qwen 2.5/3 Coder 32B Instruct or larger with 32k+ context window.
@@ -222,8 +237,8 @@ Now that you have chosen your orchestrator providers and worker runtimes, set up
      ```
    - For local model workers:
      ```bash
-     # Set COMPAT_BASE_URL in etc/limits.conf, then:
-     bin/worker-add 3 --runtime compat   # or --runtime aider
+     # Set COMPAT_BASE_URL in etc/limits.conf or Settings, then:
+     bin/worker-add 3 --runtime ollama   # or vllm, lmstudio, llamacpp, compat, aider
      ```
 4. **Validate with doctor**: Run `bin/doctor` to verify your tools, proxy enforcement, secret permissions, and worker quota states.
 5. **Start your project**: Follow the quickstart steps in [README.md](../README.md) to launch services with `sudo scripts/install-services` and post your first goal via `bin/foreman goal "..."`.
