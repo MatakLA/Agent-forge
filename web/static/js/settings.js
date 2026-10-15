@@ -795,31 +795,35 @@ async function setupGo() {
 }
 
 // ---- a worker's Antigravity sign-in: a real terminal (xterm.js) on the worker's `agy-run`, raw bytes both ways
-let loginW = null, loginTimer = null, loginTerm = null, loginFit = null, loginPos = 0, loginSend = Promise.resolve();
+let loginW = null, loginTimer = null, loginTerm = null, loginFit = null, loginPos = 0, loginSend = Promise.resolve(), loginSeq = 0;
 const loginPost = body => fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({worker: loginW}, body))});
 const b64 = u8 => { let s = ''; for (const c of u8) s += String.fromCharCode(c); return btoa(s); };
 async function openLogin(w) {
+  const seq = ++loginSeq;                       // a request still in flight after Close/reopen must not touch the new (or gone) terminal
+  if (loginTerm) { loginTerm.dispose(); loginTerm = null; }
   loginW = w; loginPos = 0;
   $('login').classList.add('on'); $('login-title').textContent = 'Sign ' + w + ' in to Antigravity'; $('login-url').textContent = '';
   const box = $('login-term'); box.textContent = '';
-  loginTerm = new Terminal({fontSize: 13, cursorBlink: true, scrollback: 2000, convertEol: false, theme: {background: '#000000'}});
-  loginFit = new FitAddon.FitAddon(); loginTerm.loadAddon(loginFit); loginTerm.open(box); loginFit.fit();
+  const term = loginTerm = new Terminal({fontSize: 13, cursorBlink: true, scrollback: 2000, convertEol: false, theme: {background: '#000000'}});
+  loginFit = new FitAddon.FitAddon(); term.loadAddon(loginFit); term.open(box); loginFit.fit();
   const enc = new TextEncoder();
-  loginTerm.onData(d => { loginSend = loginSend.then(() => loginPost({action: 'write', data: b64(enc.encode(d))})).catch(() => {}); });
-  loginTerm.onResize(sz => { loginPost({action: 'size', cols: sz.cols, rows: sz.rows}).catch(() => {}); });
-  await loginPost({action: 'start', cols: loginTerm.cols, rows: loginTerm.rows});
-  loginTerm.focus();
+  term.onData(d => { loginSend = loginSend.then(() => loginPost({action: 'write', data: b64(enc.encode(d))})).catch(() => {}); });
+  term.onResize(sz => { loginPost({action: 'size', cols: sz.cols, rows: sz.rows}).catch(() => {}); });
+  await loginPost({action: 'start', cols: term.cols, rows: term.rows});
+  if (seq !== loginSeq) return;
+  term.focus();
   clearInterval(loginTimer);
   loginTimer = setInterval(async () => {
     let r; try { r = await (await fetch('/api/login?worker=' + encodeURIComponent(w) + '&since=' + loginPos)).json(); } catch (e) { return; }
-    if (r.data) { const bin = atob(r.data), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); loginTerm.write(u8); loginPos = r.next; }
+    if (seq !== loginSeq) return;
+    if (r.data) { const bin = atob(r.data), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); term.write(u8); loginPos = r.next; }
     $('login-url').innerHTML = r.url && /accounts\.google\.com/.test(r.url) ? 'Open it and sign in with <b>the account for ' + esc(w) + '</b>: <a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url.slice(0, 60)) + '…</a>' : '';
   }, 500);
   window.addEventListener('resize', fitLogin);
 }
 function fitLogin() { try { if (loginFit && $('login').classList.contains('on')) loginFit.fit(); } catch (e) {} }
 async function closeLogin(check) {
-  clearInterval(loginTimer); window.removeEventListener('resize', fitLogin);
+  loginSeq++; clearInterval(loginTimer); window.removeEventListener('resize', fitLogin);
   if (loginTerm) { loginTerm.dispose(); loginTerm = null; }
   if (check) $('login-url').textContent = 'checking the sign-in…';
   let r = {}; try { r = await (await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: loginW, action: 'stop'})})).json(); } catch (e) {}
