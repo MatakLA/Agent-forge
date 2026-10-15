@@ -333,6 +333,26 @@ class TestForemanLoop(unittest.TestCase):
         self.assertEqual(tasks_after["0001-t1"]["status"], "pending")
         assert tasks_after["0001-t1"]["status"] == "pending"
 
+    def test_dispatch_ready_requeued_task_with_stale_worker_is_dispatched(self):
+        """A task sent back for rework / after a quota stop keeps its old 'worker' field; it must still be dispatched."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        t1 = dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=1, worker="worker-1",
+                  run="/old/run", files=["a.py"], role="developer", branch="feat/0001-t1", spec="spec 1", depends_on=[],
+                  feedback="rework please")
+        store.save_task(t1)
+
+        with patch.object(loop, "workers", return_value=["worker-1"]), \
+             patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", return_value=(0, "dispatched to worker-1 -> run (ok)", "")) as mock_sh, \
+             patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            dispatched = loop.dispatch_ready()
+
+        self.assertEqual(mock_sh.call_count, 1)
+        self.assertEqual(len(dispatched or []), 1)
+        after = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
+        self.assertEqual(after["status"], "running")
+        self.assertEqual(after["worker"], "worker-1")
+
     def test_orphaned_run_detection_and_safeguards(self):
         """Scenario 4: detect dead runs without supervisor as orphaned; do not flag recent runs or runs of finished tasks."""
         # Case A: RUN_DIR_RE matching run, task running in meta, no live supervisor -> orphaned

@@ -181,7 +181,7 @@ def dispatch_ready():
             if t_files & (busy_files | DISPATCHING_FILES):
                 continue
             fresh = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json")) or {}
-            if fresh.get("status") != "pending" or fresh.get("worker"):
+            if fresh.get("status") != "pending":        # a re-queued task keeps its old "worker"; only the status says it is claimed
                 continue
             if t.get("pin_worker"):                     # the owner assigned this task to one worker: wait for that one
                 if t["pin_worker"] not in free:
