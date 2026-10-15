@@ -456,7 +456,8 @@ class LoginSessions:
                 os.killpg(sess["proc"].pid, signal.SIGTERM)
             except Exception:
                 sess["proc"].terminate()
-        ok = "Five Hour" in ssh_run(f"docker exec {w} agy-run -p /usage --print-timeout 60s 2>/dev/null", timeout=90)
+        # signed in = /usage answers with quota rows; a fresh account has no "Five Hour" row until its first request
+        ok = "Limit Remaining" in ssh_run(f"docker exec {w} agy-run -p /usage --print-timeout 60s 2>/dev/null", timeout=90)
         return {"ok": True, "logged_in": ok}
 
 

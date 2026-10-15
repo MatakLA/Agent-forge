@@ -504,20 +504,19 @@ def read_quota(worker):
 def quota_verdict(rows, lim):
     """Returns (ok, message). Fail closed when nothing relevant could be parsed."""
     flt = str(lim["QUOTA_MODEL_FILTER"]).lower()
-    seen5 = seenw = False
+    seenw = False
     for r in rows:
         if flt not in r["model"].lower():
             continue
         lab = r["label"].lower()
         if "five hour" in lab:
-            seen5 = True
             if r["pct"] < lim["QUOTA_MIN_5H_PCT"]:
                 return False, f"quota low: {r['model']} 5-hour window {r['pct']:.0f}% < {lim['QUOTA_MIN_5H_PCT']:.0f}% (resets {r['reset']})"
         elif "week" in lab:
             seenw = True
             if r["pct"] < lim["QUOTA_MIN_WEEK_PCT"]:
                 return False, f"quota low: {r['model']} weekly {r['pct']:.0f}% < {lim['QUOTA_MIN_WEEK_PCT']:.0f}% (resets {r['reset']})"
-    if not (seen5 and seenw):
+    if not seenw:      # a fresh account has no 5-hour row until its first request, so only the weekly row is mandatory
         return False, "cannot determine quota (/usage unreadable or no matching rows) - refusing (fail closed)"
     return True, "quota ok"
 
