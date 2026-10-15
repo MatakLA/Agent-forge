@@ -173,6 +173,8 @@ def notify(kind, obj=None, text=""):
         title, msg = "The planner has questions for you", text
     elif kind == "quota_out":
         title, msg = "All workers are out of quota", text
+    elif kind == "stalled":
+        title, msg = "The team stands still", text
     elif kind == "auth":
         title, msg = "An API key was rejected", text
     elif kind == "project_done":

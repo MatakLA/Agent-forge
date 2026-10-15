@@ -43,6 +43,7 @@ class TestForemanLoop(unittest.TestCase):
         loop.RESERVED.clear()
         loop.LAST_DISPATCHED.clear()
         loop.QUOTA_CACHE.clear()
+        loop.STALL.update(since=0.0, told=False)
         loop.STARTUP_GRACE_DONE = False
         if hasattr(loop, "DISPATCHING"):
             loop.DISPATCHING.clear()
@@ -352,6 +353,30 @@ class TestForemanLoop(unittest.TestCase):
         after = store.jload(os.path.join(ctx.FD, "tasks", "0001-t1.json"))
         self.assertEqual(after["status"], "running")
         self.assertEqual(after["worker"], "worker-1")
+
+    def test_check_stall_tells_once_when_ready_task_and_free_worker_do_not_meet(self):
+        """Ready task + free worker + nothing dispatched for STALL_SEC -> one event and one notification; a dispatch or a quota rest clears it."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        store.save_task(dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=0, files=["a.py"],
+                             role="developer", branch="feat/0001-t1", spec="s", depends_on=[]))
+        with patch.object(loop, "workers", return_value=["worker-1"]), patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "notify") as mock_notify:
+            loop.check_stall([])
+            self.assertEqual(mock_notify.call_count, 0)                       # just started to wait
+            loop.STALL["since"] = time.time() - loop.STALL_SEC - 5
+            loop.check_stall([])
+            loop.check_stall([])
+            self.assertEqual(mock_notify.call_count, 1)                       # told once, not every tick
+            self.assertEqual(mock_notify.call_args[0][0], "stalled")
+            self.assertIn("0001-t1", mock_notify.call_args[1]["text"])
+            self.assertIn("STALLED", open(os.path.join(ctx.FD, "events.jsonl")).read())
+            loop.check_stall(["0001-t1"])                                     # something was dispatched: all clear
+            self.assertEqual(loop.STALL, {"since": 0.0, "told": False})
+            loop.STALL["since"] = time.time() - loop.STALL_SEC - 5
+            loop.COOLDOWN["worker-1"] = (time.time() + 600, "quota low")      # the only worker rests: waiting for quota is not a stall
+            loop.check_stall([])
+            self.assertEqual(loop.STALL["since"], 0.0)
+            self.assertEqual(mock_notify.call_count, 1)
 
     def test_orphaned_run_detection_and_safeguards(self):
         """Scenario 4: detect dead runs without supervisor as orphaned; do not flag recent runs or runs of finished tasks."""

@@ -651,15 +651,42 @@ def reload_conf_if_changed():
     CONF_MTIME.clear(); CONF_MTIME.update(mt)
 
 
+STALL_SEC = 1200
+STALL = {"since": 0.0, "told": False}
+
+
+def check_stall(dispatched):
+    """A task is ready and a worker is free, yet nothing starts for STALL_SEC: say so once (event + notification) instead of
+    idling silently for hours. A worker resting for its quota is not free, so a quota wait never counts."""
+    ts = tasks()
+    free = [w for w in workers() if not worker_busy(w) and w not in RESERVED and w not in DISPATCHING_WORKERS and COOLDOWN.get(w, (0, ""))[0] <= time.time()]
+    gm = {g["id"]: dict(g, paused=bool(g.get("paused") or g.get("state") == "paused" or g.get("status") == "paused")) for g in goals()}
+    running_files = {f for t in ts if t["status"] == "running" for f in t.get("files", [])}
+    ready = [t for t in ready_tasks(ts, running_files, gm) if not t.get("pin_worker") or t["pin_worker"] in free]
+    full = len([d for d in sbx.run_dirs() if sbx.is_running(d)]) >= sbx.load_limits()["MAX_PARALLEL"]
+    if dispatched or full or not (free and ready):
+        STALL.update(since=0.0, told=False)
+        return
+    now = time.time()
+    STALL["since"] = STALL["since"] or now
+    if not STALL["told"] and now - STALL["since"] >= STALL_SEC:
+        STALL["told"] = True
+        msg = (f"{ready[0]['id']} has been ready for {int((now - STALL['since']) // 60)} min and {', '.join(free)} sit idle, "
+               "but nothing was dispatched - the foreman needs a look")
+        event("STALLED: " + msg)
+        notify("stalled", text=msg)
+
+
 def tick():
     reload_conf_if_changed()
     collect()
     maybe_rotate_egress()
     try:
         if os.path.exists(os.path.join(ctx.FD, "PAUSED")) or sbx.killswitch_active():
+            STALL.update(since=0.0, told=False)
             return
         advance()
-        dispatch_ready()
+        check_stall(dispatch_ready())
         maybe_maintenance()
         maybe_upstream_sync()
     finally:
