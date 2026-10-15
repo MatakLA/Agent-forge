@@ -99,7 +99,16 @@ try:
         warn.append("no test file in the diff")
     dock = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "PYTHONDONTWRITEBYTECODE=1"]
-    t = sh(*dock, "-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=600)
+    def drun(*args, timeout):
+        # killing the docker client on a timeout does NOT stop the container (--rm only fires when it exits): name it and remove it
+        name = f"{os.path.basename(tmp)}-{os.urandom(3).hex()}"
+        try:
+            return sh(*dock, "--name", name, *args, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            sh("docker", "rm", "-f", name, timeout=60)
+            raise
+
+    t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=600)
     print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0 or bool(secrets)
     if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
@@ -125,7 +134,7 @@ for m in spec:
     print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
 ''')
         json.dump(spec, open(os.path.join(tmp, "spec.json"), "w"))
-        m = sh(*dock, "-e", "HOME=/tmp", "-e", f"TEST_CMD={TEST_CMD}", "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro",
+        m = drun("-e", "HOME=/tmp", "-e", f"TEST_CMD={TEST_CMD}", "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro",
                "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro", "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
         print(f"\n== mutation check ({len(spec)} mutants)")
         for l in m.stdout.splitlines():
