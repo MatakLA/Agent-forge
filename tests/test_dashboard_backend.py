@@ -186,6 +186,15 @@ class TestDashboardBackendSecurity(unittest.TestCase):
         self.assertIn("error", login.read("worker-1; touch /tmp/pwn"))
         assert "error" in login.start("worker-1; touch /tmp/pwn")
 
+    def test_login_stop_counts_a_weekly_only_account_as_signed_in(self):
+        """A fresh account's /usage has no "Five Hour" row; it is still signed in. An error text is not."""
+        login = backend.LoginSessions()
+        weekly = "Gemini Models\tWeekly Limit Remaining\t100%\t2026-10-22T20:27:30Z\n"
+        with patch.object(backend, "ssh_run", return_value=weekly):
+            self.assertTrue(login.stop("worker-8")["logged_in"])
+        with patch.object(backend, "ssh_run", return_value="Error: not logged in\n"):
+            self.assertFalse(login.stop("worker-8")["logged_in"])
+
     def test_login_sessions_send_rejects_control_sequences(self):
         """LoginSessions.send must reject control characters (newlines, escapes, Ctrl-C) to prevent breakout."""
         login = backend.LoginSessions()

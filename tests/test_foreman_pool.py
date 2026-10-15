@@ -149,6 +149,21 @@ class TestForemanPool(unittest.TestCase):
         )
         assert res4 is True
 
+    def test_quota_verdict_fresh_account_without_five_hour_row(self):
+        """A just-signed-in account lists only the weekly window: that is enough; no weekly row at all still fails closed."""
+        lim = {"QUOTA_MODEL_FILTER": "Gemini", "QUOTA_MIN_5H_PCT": 5, "QUOTA_MIN_WEEK_PCT": 5}
+        fresh = sbx.parse_usage("Gemini Models\tWeekly Limit Remaining\t100%\t2026-10-22T20:27:30Z\n"
+                                "Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-10-22T20:27:30Z\n")
+        self.assertTrue(sbx.quota_verdict(fresh, lim)[0])
+        low = sbx.parse_usage("Gemini Models\tWeekly Limit Remaining\t3%\t2026-10-22T20:27:30Z\n")
+        self.assertFalse(sbx.quota_verdict(low, lim)[0])
+        low5 = sbx.parse_usage("Gemini Models\tWeekly Limit Remaining\t90%\t2026-10-22T20:27:30Z\n"
+                               "Gemini Models\tFive Hour Limit Remaining\t2%\t2026-10-15T21:11:39Z\n")
+        self.assertFalse(sbx.quota_verdict(low5, lim)[0])
+        only5 = sbx.parse_usage("Gemini Models\tFive Hour Limit Remaining\t90%\t2026-10-15T21:11:39Z\n")
+        self.assertFalse(sbx.quota_verdict(only5, lim)[0])
+        self.assertFalse(sbx.quota_verdict([], lim)[0])
+
     def test_has_quota_boundary_at_exact_floor(self):
         """has_quota must allow a worker at exactly floor% remaining (boundary: >= vs >)."""
         floor = 2.0
