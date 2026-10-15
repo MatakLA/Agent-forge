@@ -38,7 +38,7 @@ ORCHESTRATOR_MODEL_RE = rf"({MODEL_RE})|({SERVER_MODEL_RE})"
 SECRET_KEY_RE = r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"
 URL_RE = r"https?://(?!.*\.\.)[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?"
 USD_RE = r"\d{1,6}(\.\d{1,2})?"
-NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval|project_done"
+NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval|stalled|project_done"
 
 
 # key -> (validation regex or (min, max), scope: "project" = this project's config, "limits" = etc/limits.conf for ALL projects)

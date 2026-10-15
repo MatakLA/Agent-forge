@@ -177,7 +177,7 @@ const HELP = {
 const PROVLABEL = {'claude-cli': 'Claude Code (subscription)', 'agy-claude': 'Claude via Antigravity', 'agy-gemini': 'Gemini via Antigravity',
   'anthropic-api': 'Anthropic API (paid)', 'openai-api': 'OpenAI API (paid)', 'gemini-api': 'Gemini API (paid)'};
 const EVENTS = [['goal_done', 'a goal is done'], ['approval', 'something waits for my OK'], ['task_blocked', 'a task is blocked'], ['questions', 'the planner has a question'],
-  ['killswitch', 'the kill switch tripped'], ['quota_out', 'every worker is out of quota'], ['auth', 'a key was rejected'], ['project_done', 'the project is finished']];
+  ['killswitch', 'the kill switch tripped'], ['quota_out', 'every worker is out of quota'], ['stalled', 'tasks are ready but nothing starts'], ['auth', 'a key was rejected'], ['project_done', 'the project is finished']];
 const SECRETS = {'anthropic.key': ['Anthropic API', 'pays per token; used by Claude Code workers and the Anthropic API planner'],
   'openai.key': ['OpenAI API', 'pays per token; used by Codex workers and the OpenAI API planner'],
   'gemini.key': ['Gemini API', 'pays per token; used by Gemini CLI workers and the Gemini API planner'],
