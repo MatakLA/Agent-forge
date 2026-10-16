@@ -493,12 +493,21 @@ def parse_usage(text):
     return rows
 
 
+QUOTA_RETRY_PAUSES = (5, 10)
+
+
 def read_quota(worker):
     if not WORKER_RE.fullmatch(worker):
         raise ValueError(f"invalid worker {worker!r}")
-    r = subprocess.run(["docker", "exec", worker, "agy-run", "-p", "/usage", "--print-timeout", "60s"],
-                       capture_output=True, text=True, timeout=120)
-    return parse_usage(r.stdout)
+    rows = []
+    for pause in QUOTA_RETRY_PAUSES + (None,):      # an unreadable answer (Google's quota service says "503 UNAVAILABLE" now and then) is retried
+        r = subprocess.run(["docker", "exec", worker, "agy-run", "-p", "/usage", "--print-timeout", "60s"],
+                           capture_output=True, text=True, timeout=120)
+        rows = parse_usage(r.stdout)
+        if rows or pause is None:
+            break
+        time.sleep(pause)
+    return rows
 
 
 def quota_verdict(rows, lim):

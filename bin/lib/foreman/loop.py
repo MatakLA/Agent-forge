@@ -262,10 +262,14 @@ def dispatch_ready():
                     if t_key:
                         claimed_keys.discard(t_key)
                     busy_files.difference_update(t_files)
-                    for w2 in free + [w]:
-                        COOLDOWN[w2] = (time.time() + 1800, reason)
-                    free.clear()
-                    event(f"dispatch of {t['id']} to {w} refused: {reason} - retry in 30 min", task=t["id"])
+                    unreadable = "cannot determine quota" in reason or "cannot read quota" in reason
+                    if unreadable:                      # the quota service hiccuped for this one worker: that says nothing about the others
+                        COOLDOWN[w] = (time.time() + 180, reason)
+                    else:
+                        for w2 in free + [w]:
+                            COOLDOWN[w2] = (time.time() + 1800, reason)
+                        free.clear()
+                    event(f"dispatch of {t['id']} to {w} refused: {reason} - retry in {3 if unreadable else 30} min", task=t["id"])
                     continue
                 run = out.split("-> ")[-1].split(" (")[0].strip()
                 t.update(status="running", worker=w, run=run, dispatched=sbx.now())
