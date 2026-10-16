@@ -303,9 +303,9 @@ def _selftest():
     from .planning import hold_open_ended
     from .owner import answer_question
     from .prompts import finite_rule
-    old_fd2, tmp2 = ctx.FD, tempfile.mkdtemp(prefix="foreman-finite-")
+    old_fd2, old_cfg2, tmp2 = ctx.FD, ctx.CFG_DIR, tempfile.mkdtemp(prefix="foreman-finite-")
     try:
-        ctx.FD = tmp2; os.makedirs(os.path.join(tmp2, "goals"))
+        ctx.FD = ctx.CFG_DIR = tmp2; os.makedirs(os.path.join(tmp2, "goals"))
         gx = dict(id="G20261014-000001", text="Add more runtimes", status="new", created=sbx.now()); save_goal(gx)
         hold_open_ended(gx, {"open_ended": True, "question": "Which runtimes?", "finite_goal": "Add exactly Foo and Bar."})
         gh = jload(os.path.join(tmp2, "goals", "G20261014-000001.json")); qs = jload(os.path.join(tmp2, "owner_questions.json"), [])
@@ -317,7 +317,7 @@ def _selftest():
               gh["status"] == "new" and gh["text"].startswith("Add exactly Foo and Bar") and not jload(os.path.join(tmp2, "owner_questions.json"), []))
         check("finite_rule: tells the planner how to refuse an open-ended goal", '"open_ended": true' in finite_rule() and "END STATE" in finite_rule())
     finally:
-        ctx.FD = old_fd2; shutil.rmtree(tmp2, ignore_errors=True)
+        ctx.FD, ctx.CFG_DIR = old_fd2, old_cfg2; shutil.rmtree(tmp2, ignore_errors=True)   # decisions.md is written into CFG_DIR: never the live one
     # notifications payloads
     b, h = sbx.notify_payload("ntfy", "goal_done", "Cieľ hotový", "text")
     b2, _ = sbx.notify_payload("slack", "goal_done", "T", "m")
