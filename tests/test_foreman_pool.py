@@ -149,6 +149,22 @@ class TestForemanPool(unittest.TestCase):
         )
         assert res4 is True
 
+    def test_read_quota_retries_an_unreadable_answer_and_empty_reads_are_cached_briefly(self):
+        err = type("R", (), {"stdout": "error: /usage failed: UNAVAILABLE (code 503)\n"})()
+        good = type("R", (), {"stdout": "Gemini Models\tWeekly Limit Remaining\t90%\t2026-10-22T20:27:30Z\n"})()
+        with patch.object(sbx.subprocess, "run", side_effect=[err, err, good]) as run, patch.object(sbx.time, "sleep") as slp:
+            rows = sbx.read_quota("worker-3")
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([c.args[0] for c in slp.call_args_list], [5, 10])
+        self.assertEqual(rows[0]["pct"], 90.0)
+        with patch.object(sbx.subprocess, "run", return_value=err) as run, patch.object(sbx.time, "sleep"):
+            self.assertEqual(sbx.read_quota("worker-3"), [])
+            self.assertEqual(run.call_count, 3)                      # gives up after the pauses, no endless loop
+        pool.QUOTA_CACHE["worker-3"] = (time.time() - 40, [])
+        with patch.object(sbx, "read_quota", return_value=[{"model": "Gemini Models"}]) as rq:
+            self.assertTrue(pool.quota_rows("worker-3", 900))        # an empty read older than 30 s is read again
+            self.assertEqual(rq.call_count, 1)
+
     def test_quota_verdict_fresh_account_without_five_hour_row(self):
         """A just-signed-in account lists only the weekly window: that is enough; no weekly row at all still fails closed."""
         lim = {"QUOTA_MODEL_FILTER": "Gemini", "QUOTA_MIN_5H_PCT": 5, "QUOTA_MIN_WEEK_PCT": 5}

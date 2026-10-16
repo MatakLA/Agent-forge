@@ -354,6 +354,23 @@ class TestForemanLoop(unittest.TestCase):
         self.assertEqual(after["status"], "running")
         self.assertEqual(after["worker"], "worker-1")
 
+    def test_dispatch_refused_for_unreadable_quota_rests_only_that_worker(self):
+        """bin/dispatch could not read /usage (503): that worker rests 3 min, the other free worker still gets a task."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        for i in (1, 2):
+            store.save_task(dict(id=f"000{i}-t{i}", key=f"k{i}", title=f"Task {i}", goal="G1", status="pending", attempts=0,
+                                 files=[f"f{i}.py"], role="developer", branch=f"feat/000{i}-t{i}", spec="s", depends_on=[]))
+        refusal = (3, "", "REFUSED: cannot determine quota (/usage unreadable or no matching rows) - refusing (fail closed)")
+        ok = (0, "dispatched to worker-2 -> run (ok)", "")
+        with patch.object(loop, "workers", return_value=["worker-1", "worker-2"]), patch.object(loop, "worker_busy", return_value=False), \
+             patch.object(loop, "sh", side_effect=[refusal, ok]) as mock_sh, patch.object(sbx, "quota_verdict", return_value=(True, "")):
+            dispatched = loop.dispatch_ready()
+        self.assertEqual(mock_sh.call_count, 2)
+        self.assertEqual(len(dispatched or []), 1)
+        rested = [w for w in ("worker-1", "worker-2") if w in loop.COOLDOWN]
+        self.assertEqual(len(rested), 1)
+        self.assertLessEqual(loop.COOLDOWN[rested[0]][0] - time.time(), 185)
+
     def test_check_stall_tells_once_when_ready_task_and_free_worker_do_not_meet(self):
         """Ready task + free worker + nothing dispatched for STALL_SEC -> one event and one notification; a dispatch or a quota rest clears it."""
         store.save_goal(dict(id="G1", text="goal 1", status="active"))

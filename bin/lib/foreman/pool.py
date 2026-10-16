@@ -52,7 +52,7 @@ QUOTA_CACHE = {}          # worker -> (epoch, rows from `agy /usage`)
 
 def quota_rows(w, max_age=300):
     at, rows = QUOTA_CACHE.get(w, (0, None))
-    if rows is None or time.time() - at > max_age:
+    if rows is None or time.time() - at > (max_age if rows else min(max_age, 30)):      # a failed (empty) read is not trusted for long
         try:
             rows = sbx.read_quota(w)
         except Exception:
