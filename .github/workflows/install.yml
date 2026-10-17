@@ -17,7 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install from scratch, as a user would
-        run: scripts/install.sh --demo
+        run: |
+          set -o pipefail
+          sudo systemctl start docker || true
+          scripts/install.sh --demo 2>&1 | tee install.log
+      - name: Summary on failure
+        if: failure()
+        run: |
+          echo "### ❌ Install Workflow Failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 80 install.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
       - name: The services run and answer
         run: |
           systemctl is-active agent-forge-foreman agent-forge-web
