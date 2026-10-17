@@ -120,7 +120,7 @@ def _selftest():
         errs = settings_apply({"CLAUDE_MODEL": "x; rm -rf /", "MAX_PARALLEL": "999", "NOPE": "1", "WORKERS": "worker-1,evil"})
         check("settings_apply rejects shell-ish values, out-of-range numbers, unknown keys, bad pools - and writes nothing",
               set(errs) == {"CLAUDE_MODEL", "MAX_PARALLEL", "NOPE", "WORKERS"} and "x; rm" not in open(os.path.join(st_dir, "etc", "foreman.conf")).read())
-        ok_ = settings_apply({"CLAUDE_MODEL": "opus", "WORKERS": "worker-1,worker-3", "WORKER_MODEL": "gemini-3.1-pro-high", "MAX_PARALLEL": "8",
+        ok_ = settings_apply({"CLAUDE_MODEL": "opus", "WORKERS": "worker-1,worker-3", "WORKER_MODEL": "gemini-3.8-flash-high", "MAX_PARALLEL": "8",
                               "OWNER_LANG": "Slovak"})
         fc, lc = open(os.path.join(st_dir, "etc", "foreman.conf")).read(), open(os.path.join(st_dir, "etc", "limits.conf")).read()
         check("settings_apply writes project keys in place (comments kept) and limits to etc/limits.conf",
