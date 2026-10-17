@@ -149,6 +149,9 @@ command -v sudo >/dev/null || die "sudo is needed."
 
 step "Docker"
 if ! docker info >/dev/null 2>&1; then
+  sudo systemctl start docker >/dev/null 2>&1 || true
+fi
+if ! docker info >/dev/null 2>&1; then
   if ! command -v docker >/dev/null || ! id -nG | grep -qw docker; then
     sudo bash scripts/vm-baseline-ubuntu.sh
   fi
