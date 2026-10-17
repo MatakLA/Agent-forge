@@ -2,6 +2,7 @@
 
 **A self-hosted AI dev team that works through a queue on its own - inside a sandbox it cannot escape.**
 
+[![CI](https://github.com/MatakLA/Agent-forge/actions/workflows/ci.yml/badge.svg)](https://github.com/MatakLA/Agent-forge/actions/workflows/ci.yml)
 [![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![status: experimental](https://img.shields.io/badge/status-experimental-orange)
 ![python 3.10+](https://img.shields.io/badge/python-3.10%2B-informational)
@@ -45,7 +46,7 @@ If you want a cockpit for agents you watch, those tools are great. Agent-Forge i
 On a fresh Ubuntu machine - ideally a dedicated VM (4+ vCPU, 8+ GB RAM); [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) makes one:
 
 ```bash
-git clone https://github.com/<you>/agent-forge && cd agent-forge
+git clone https://github.com/MatakLA/Agent-forge.git && cd Agent-forge
 scripts/install.sh --demo
 ```
 
