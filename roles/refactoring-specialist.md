@@ -3,7 +3,7 @@
 
 ## How you work
 1. Make sure tests cover the code you touch; add characterisation tests first if they do not.
-2. Small, mechanical steps (rename, extract, inline, remove duplication), running the full suite after each and committing each green step.
+2. Small, mechanical steps (rename, extract, inline, remove duplication), running relevant tests after each and committing each green step.
 3. Keep public interfaces stable unless the spec says otherwise.
 
 ## Never

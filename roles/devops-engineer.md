@@ -15,4 +15,4 @@ Build/run scripts, container files, CI configuration, config templates, health c
 
 ## Definition of done
 - Scripts are idempotent, documented, and verified (dry run or test) in the reply.
-- Full suite green; branch pushed.
+- Relevant tests green (merge gate runs full suite); branch pushed.

@@ -214,7 +214,7 @@ def step_upstream_merge(t):
             if rb in ("rebased", "uptodate"):
                 return lambda: requeue_gate(t, f"main moved on {up.kind} - auto-rebased, testing again before the merge")
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, "
-                                     "rerun the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
+                                     "rerun relevant tests, `git push --force-with-lease`. Change nothing else.", "", count=False)
     except upstream.UpstreamError as e:
         st = dict(why=str(e))
     except Exception:
@@ -307,7 +307,7 @@ def step_gate_review_merge(t):
         rb = auto_rebase(t["branch"])
         if rb == "conflict":
             return lambda: rework(t, "Your branch conflicts with main in a way that cannot be merged automatically. `git fetch origin && git rebase "
-                                     "origin/main`, resolve the conflicts keeping both sides' intent, rerun the full test suite, `git push "
+                                     "origin/main`, resolve the conflicts keeping both sides' intent, rerun relevant tests, `git push "
                                      "--force-with-lease`. Change nothing else.", "", count=False)
         if rb == "rebased":
             event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
@@ -429,7 +429,7 @@ def do_merge(t, who, fb, gate):
             return lambda: requeue_gate(t, f"could not update the branch before merging ({rb2}) - trying again")
         if "not mergeable" in out + err:
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, rerun "
-                                     "the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
+                                     "relevant tests, `git push --force-with-lease`. Change nothing else.", "", count=False)
         return lambda: block(t, f"merge failed: {(out + err)[-300:]}")
     return lambda: finish(t, f"merged PR #{num}", who, fb, num)
 
@@ -466,7 +466,7 @@ def step_owner_merge(t):
         rb = auto_rebase(t["branch"])
         if rb == "conflict":
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, rerun "
-                                     "the full test suite, `git push --force-with-lease`. Change nothing else.", "", count=False)
+                                     "relevant tests, `git push --force-with-lease`. Change nothing else.", "", count=False)
         if rb == "rebased":
             return lambda: requeue_gate(t, "main moved since your approval - auto-rebased")
         if rb in ("missing", "push-failed"):

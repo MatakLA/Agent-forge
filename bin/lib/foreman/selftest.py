@@ -291,6 +291,11 @@ def _selftest():
           [x[0] for x in nt] == ["0010-a", "0011-a", "0012-b"] and nt[0][1]["files"] == ["x.py"] and nt[0][2] == ["0012-b"]
           and nt[1][1]["risk"] == "risky" and nt[1][1]["acceptance"] == ["one"] and nt[2][2] == ["0010-a"] and isinstance(nt[2][1]["spec"], str))
     check("norm_tasks: a reply that is not a plan gives no tasks", norm_tasks({"tasks": "x"}, 1) == [] and norm_tasks(None, 1) == [])
+    nt_full = norm_tasks({"tasks": [{"key": "c", "acceptance": ["all tests in the repo pass", "existing full test suite still passes unmodified", "specific component behaves"]}]}, 20)
+    check("norm_tasks: full test suite acceptance criteria sanitized to scoped tests",
+          nt_full[0][1]["acceptance"] == ["relevant tests for touched files/domain pass (merge gate runs full suite)",
+                                          "relevant tests for touched files/domain pass (merge gate runs full suite)",
+                                          "specific component behaves"])
     # kill switch streak: neutral outcomes neither count nor reset; ok resets; other projects are ignored
     L = [dict(reason=r, project=p) for r, p in (("ok", ""), ("failed", ""), ("killswitch", ""), ("token-cap", ""), ("failed", "other"),
                                                  ("quota", ""), ("failed", ""))]

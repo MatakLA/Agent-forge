@@ -58,7 +58,11 @@ def salvage(reason):
         return None
     what = "auto-saved when the run hit its " + reason if reason in ("token-cap", "timeout") else f"auto-committed at the end of the run ({reason})"
     r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
-           f'set -o pipefail; [ "$(git branch --show-current)" = "{br}" ] || exit 3; '
+           f'set -o pipefail; '
+           f'if [ "$(git branch --show-current)" != "{br}" ]; then '
+           f'  git checkout "{br}" 2>/dev/null || git checkout -B "{br}" 2>/dev/null || true; '
+           f'fi; '
+           f'[ "$(git branch --show-current)" = "{br}" ] || exit 3; '
            f"git add -A -- . ':(exclude)*/__pycache__/*' ':(exclude)*.pyc' ':(exclude).pytest_cache' "
            # databases and logs that test runs leave in the source tree (seen: tools/gym.db) are never part of the work
            f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' ':(exclude).aider*' && "

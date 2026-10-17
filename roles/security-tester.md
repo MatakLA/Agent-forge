@@ -14,4 +14,4 @@ Real network attacks, touching anything outside the repository, deleting or weak
 ## Definition of done
 - Every entry point has boundary + injection coverage.
 - Findings listed by severity (high/medium/low) with the test that shows each.
-- Full suite green (vulnerability tests that would fail are reported, not committed as failing); branch pushed.
+- Relevant tests green (merge gate runs full suite; vulnerability tests that would fail are reported, not committed as failing); branch pushed.

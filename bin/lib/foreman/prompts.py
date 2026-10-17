@@ -156,6 +156,7 @@ def plan_prompt(g, followup=None):
                f"instead of waiting. depends_on only when a task cannot even start without another task's merged code.\n"
                f"- No routine review tasks: every branch is already gated (full test suite in a clean container) and reviewed. Add a tester / "
                f"security-tester task only for risky work (money, personal data, security, dates/timezones) or when the goal asks.\n"
+               f"- Task acceptance criteria must test only the specific files and behavior this task owns. NEVER write 'full test suite passes', 'entire suite green', or whole-repository test runs in task acceptance criteria — the merge gate already tests the full suite.\n"
                f"- Size every task for about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger. "
                f"A task owns at most {ctx.C['MAX_TASK_FILES']} files (shared registries do not count) - tasks spread over more files hit the "
                f"token cap about twice as often, and the foreman splits them before anyone starts.\n"
@@ -219,7 +220,7 @@ def rules_block(t):
 - Budget: about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
   (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`). Do not re-read large files you already read.
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
-- Trial and error until the FULL suite passes: run `{sbx.test_cmd()}` from the repo root, read failures, fix, repeat.
+- Test only what you touch: run only the tests relevant to your changed files/domain (e.g. `pytest tests/test_your_module.py` or a targeted check). NEVER run the full repository test suite from the root — the merge gate automatically runs the full test suite in an isolated clean container before merging.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
