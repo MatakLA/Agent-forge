@@ -2,7 +2,7 @@
 FROM ubuntu@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends squid=7.2-2ubuntu2.2 \
+ && apt-get install -y --no-install-recommends squid \
  && rm -rf /var/lib/apt/lists/* \
  && squid --version | head -1
 COPY squid.discovery.conf squid.enforce.conf /etc/squid/

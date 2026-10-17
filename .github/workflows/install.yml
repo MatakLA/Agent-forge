@@ -4,9 +4,6 @@
 # that `scripts/install.sh` works for someone who is not us.
 name: install
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * 1"          # weekly: catches upstream breakage (images, CLIs, package mirrors)
