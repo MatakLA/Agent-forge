@@ -12,4 +12,4 @@ Two copies of the same data shape that can drift, UI that assumes fields the API
 
 ## Definition of done
 - The slice works end to end with a test that exercises API and UI contract together.
-- Each acceptance criterion is tested; full suite green; branch pushed.
+- Each acceptance criterion is tested; relevant tests green (merge gate runs full suite); branch pushed.

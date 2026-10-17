@@ -28,6 +28,8 @@ services:
     pids_limit: 1024
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,exec,size=512m
     labels:
       agent-forge.runtime: ${WORKER_RUNTIME:?set WORKER_RUNTIME}
     environment:
