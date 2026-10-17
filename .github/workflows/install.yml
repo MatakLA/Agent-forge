@@ -24,6 +24,10 @@ jobs:
       - name: Summary on failure
         if: failure()
         run: |
+          echo "=== INSTALL FAILURE LOG ==="
+          cat install.log || true
+          ERR_MSG=$(tail -n 15 install.log 2>/dev/null | tr '\n' ' ' || echo "install failed")
+          echo "::error file=scripts/install.sh::$ERR_MSG"
           echo "### ❌ Install Workflow Failed" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 80 install.log >> $GITHUB_STEP_SUMMARY
