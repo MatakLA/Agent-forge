@@ -16,6 +16,7 @@ test: check
 	@tests/test_supervisor.sh
 	@tests/test_runtimes.sh
 	@tests/test_ui.sh
+	@RUN_DOCKER_TESTS=1 tests/test_demo_mode.sh
 
 doctor:
 	@$(PY) bin/doctor
