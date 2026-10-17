@@ -253,20 +253,21 @@ parsed = runtimes.scan(rt, lines)
 print(json.dumps(parsed))
 " "$ROOT" "$rt" "$PORT")
 
+    echo "$RUN_JSON" > "$T/run.json"
     check "$rt live fixture: result status is SUCCESS" \
-      "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['status'] == 'SUCCESS'\" \"$RUN_JSON\""
+      'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$T/run.json"'
 
     check "$rt live fixture: response text extracted correctly" \
-      "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['response'] == 'Task completed successfully.'\" \"$RUN_JSON\""
+      'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"result\"][\"response\"] == \"Task completed successfully.\"" "$T/run.json"'
 
     check "$rt live fixture: tokens parsed accurately from usage (1240)" \
-      "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['tokens'] == 1240, f'got {r[\"tokens\"]}'\" \"$RUN_JSON\""
+      'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"tokens\"] == 1240" "$T/run.json"'
 
     check "$rt live fixture: cost_usd is None by default" \
-      "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['cost_usd'] is None\" \"$RUN_JSON\""
+      'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"result\"][\"cost_usd\"] is None" "$T/run.json"'
 
     check "$rt live fixture: conversation_id parsed from completion id" \
-      "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['conversation_id'] == 'chatcmpl-fake-local-001'\" \"$RUN_JSON\""
+      'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"conversation_id\"] == \"chatcmpl-fake-local-001\"" "$T/run.json"'
   done
 
   # 6. Conversation session handling with conversation ID
@@ -286,8 +287,9 @@ parsed = runtimes.scan('ollama', lines)
 print(json.dumps(parsed))
 " "$ROOT" "$PORT")
 
+  echo "$CONV_JSON" > "$T/conv.json"
   check "ollama conversation: scan() extracts conversation id" \
-    "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['status'] == 'SUCCESS'\" \"$CONV_JSON\""
+    'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$T/conv.json"'
 
   # 7. Error response handling against /error endpoint
   ERR_JSON=$(python3 -c "
@@ -305,8 +307,9 @@ parsed = runtimes.scan('vllm', lines)
 print(json.dumps(parsed))
 " "$ROOT" "$PORT")
 
+  echo "$ERR_JSON" > "$T/err.json"
   check "vllm error handling: result status is ERROR and message captured" \
-    "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['result']['status'] == 'ERROR' and 'simulated' in r['result']['error']\" \"$ERR_JSON\""
+    'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"result\"][\"status\"] == \"ERROR\" and \"simulated\" in r[\"result\"][\"error\"]" "$T/err.json"'
 
   # 7b. Aider SEARCH/REPLACE diff format handling
   DIFF_JSON=$(python3 -c "
@@ -325,8 +328,9 @@ parsed = runtimes.scan('lmstudio', lines)
 print(json.dumps(parsed))
 " "$ROOT" "$PORT")
 
+  echo "$DIFF_JSON" > "$T/diff.json"
   check "lmstudio aider diff: tools count increments on SEARCH/REPLACE block" \
-    "python3 -c \"import json, sys; r=json.loads(sys.argv[1]); assert r['tools'] >= 1\" \"$DIFF_JSON\""
+    'python3 -c "import json, sys; r=json.load(open(sys.argv[1])); assert r[\"tools\"] >= 1" "$T/diff.json"'
 fi
 
 # 8. Pure scan checks for all four runtimes
