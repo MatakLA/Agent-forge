@@ -157,18 +157,7 @@ export AF_TEST_BASE_URL="http://127.0.0.1:$PORT"
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT/v1"
 
 # 4. Start the fake Anthropic Messages server fixture
-if command -v node >/dev/null 2>&1; then
-  # When node is available, exercise fake-model-api.js on port 8099
-  PORT=8099
-  export COMPAT_BASE_URL="http://127.0.0.1:8099/v1"
-  export AF_ENDPOINT="http://127.0.0.1:8099/v1"
-  export AF_TEST_BASE_URL="http://127.0.0.1:8099"
-  export ANTHROPIC_BASE_URL="http://127.0.0.1:8099/v1"
-  node "$ROOT/tests/fixtures/fake-model-api.js" > "$T/server.log" 2>&1 &
-  SERVER_PID=$!
-else
-  # Python fallback server providing Anthropic Messages API streaming & error handling
-  python3 -c "
+python3 -c "
 import http.server, json, sys, time
 
 port = int(sys.argv[1])
@@ -305,8 +294,7 @@ sys.stderr.write(f'fake Anthropic Messages server listening on 127.0.0.1:{port}\
 sys.stderr.flush()
 server.serve_forever()
 " "$PORT" > "$T/server.log" 2>&1 &
-  SERVER_PID=$!
-fi
+SERVER_PID=$!
 
 # Wait for fake server to accept connections
 for _ in $(seq 1 40); do

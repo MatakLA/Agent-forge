@@ -22,13 +22,13 @@ if ! command -v node >/dev/null 2>&1; then
   exit 0
 fi
 
-# 2. Arm cleanup trap for EXIT before the up call
-trap 'bash "$ROOT/tests/test_quickstart_setup.sh" down' EXIT
-
-# 3. Run setup up and export all six KEY=VALUE lines
-UP_OUT=$(bash "$ROOT/tests/test_quickstart_setup.sh" up)
+# 2. Run setup up and export all six KEY=VALUE lines
+UP_OUT=$(bash "$ROOT/scripts/quickstart-e2e-setup.sh" up)
 eval "$UP_OUT"
 export ANTHROPIC_API_BASE OPENAI_API_BASE GEMINI_API_BASE QUICKSTART_RUNS_DIR QUICKSTART_FAKE_API_PID QUICKSTART_FAKE_DOCKER_DIR
 
-# 4. Run quickstart_e2e_runner.py and exit with its exact return code
+# Arm cleanup trap for EXIT
+trap 'bash "$ROOT/scripts/quickstart-e2e-setup.sh" down "${QUICKSTART_RUNS_DIR:-}" "${QUICKSTART_FAKE_API_PID:-}"' EXIT
+
+# 3. Run quickstart_e2e_runner.py and exit with its exact return code
 python3 tests/fixtures/quickstart_e2e_runner.py
