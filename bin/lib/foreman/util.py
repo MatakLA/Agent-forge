@@ -164,6 +164,23 @@ def _strs(v):
     return [str(x) for x in v if isinstance(x, (str, int, float))] if isinstance(v, list) else ([str(v)] if isinstance(v, str) and v else [])
 
 
+FULL_SUITE_RE = re.compile(r"\b(full|entire|whole)\s+(test\s+)?suite\b|\ball\s+(existing\s+)?tests?\s+(in\s+the\s+repo(sitory)?\s+)?pass", re.I)
+
+
+def sanitize_acceptance(items):
+    """Ensures tasks never demand running the entire repository test suite, which causes worker timeouts."""
+    out = []
+    for a in _strs(items):
+        s = str(a).strip()
+        if not s:
+            continue
+        if FULL_SUITE_RE.search(s):
+            out.append("relevant tests for touched files/domain pass (merge gate runs full suite)")
+        else:
+            out.append(s[:500])
+    return out[:12]
+
+
 def norm_tasks(d, start, limit=8):
     """The planner's task list made safe to use, whatever the model returned: only objects, every field coerced to the
     expected type, unique ids. Returns [(task_id, fields, [depends_on task ids])]. Malformed output used to raise in the
@@ -185,7 +202,7 @@ def norm_tasks(d, start, limit=8):
                       risk="risky" if str(x.get("risk", "")).lower() == "risky" else "routine",
                       files=[f for f in (x.get("files") if isinstance(x.get("files"), list) else [])
                              if isinstance(f, str) and FILES_LINE.match(f) and ".." not in f.split("/") and not f.startswith("/")][:20],
-                      spec=str(x.get("spec") or "")[:20000], acceptance=[a[:500] for a in _strs(x.get("acceptance"))][:12])
+                      spec=str(x.get("spec") or "")[:20000], acceptance=sanitize_acceptance(x.get("acceptance")))
         out.append((tid, fields, deps))
     return out
 

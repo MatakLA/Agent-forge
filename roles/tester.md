@@ -17,4 +17,4 @@ Weaken, skip or delete an existing test; assert on implementation details that a
 ## Definition of done
 - Every risk you listed is covered or explicitly documented as accepted in your final reply.
 - Bugs found are either fixed (trivial) or listed with a failing-test reproduction marked in the reply.
-- Full suite green; branch pushed.
+- Relevant tests green (merge gate runs full suite); branch pushed.

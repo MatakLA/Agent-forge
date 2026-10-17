@@ -3,3 +3,4 @@
 - Every new public function gets a docstring and at least one test.
 - Money is always Decimal, never float. Time zones are always explicit.
 - No network access from the code or the tests.
+- Test execution efficiency: do NOT run the full test suite inside worker tasks. Run only the test files relevant to your task and touched files. The automated merge gate independently runs the full test suite in an isolated clean container before merging.

@@ -125,7 +125,7 @@ def context_pack(t):
         return ""
     return ("## Context pack (generated from main for this task)\nThis already contains the files and interfaces you need. Do not open "
             "them again with tools; read further files only when something you need is really missing here.\n"
-            f"Tests: `{sbx.test_cmd()}` from the repository root{f' (project code in `{pd}/`)' if pd else ''}.\n\n" + "\n".join(out))
+            f"Test runner: `{sbx.test_cmd()}` (run targeted tests for your changes; merge gate runs full suite){f' (project code in `{pd}/`)' if pd else ''}.\n\n" + "\n".join(out))
 
 
 def _bucket(key, n):

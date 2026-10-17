@@ -18,4 +18,4 @@ String-built SQL, silent `except: pass`, new dependencies the spec did not allow
 - Every operation in the spec exists with the exact names and shapes from the spec.
 - Each acceptance criterion has at least one test that would fail without the code.
 - Invalid input is rejected with a clear error, covered by tests.
-- Full test suite green; branch pushed.
+- Relevant tests green (merge gate runs full suite); branch pushed.

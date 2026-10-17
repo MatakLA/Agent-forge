@@ -5,7 +5,7 @@ import os, time
 import sbx
 
 from . import ctx
-from .util import _strs, approvals, extract_json, norm_tasks
+from .util import _strs, approvals, extract_json, norm_tasks, sanitize_acceptance
 from .store import (event, goals, gsave, gstate, jload, jsave, locked, new_goal_id, next_task_number, notify, save_goal, save_task,
                     state_tx, tasks)
 from .pool import workers
@@ -91,7 +91,7 @@ def step_split(t):
     new task keeps the branch, so it continues from the auto-saved WIP."""
     refresh_repo()
     prompt = (f"{context_bundle()}\n## A task that is too big\nTask {t['id']} ({t['role']}): {t['title']}\n### Spec\n{t['spec']}\n### Acceptance\n" +
-              "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n### Files\n{', '.join(t.get('files', []))}\n\n"
+              "\n".join(f"- {a}" for a in sanitize_acceptance(t.get("acceptance", []))) + f"\n### Files\n{', '.join(t.get('files', []))}\n\n"
               + (f"It owns {len(own_files(t))} files; tasks spread over more than {ctx.C['MAX_TASK_FILES']} files hit the token cap about twice "
                  f"as often, so it is split before anyone works on it. " if t.get("presplit") and not t.get("caps") else
                  f"Its worker was stopped by the per-run token cap {t.get('caps', 0)} times. Work already done may be on branch `{t['branch']}` "
