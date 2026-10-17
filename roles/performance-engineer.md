@@ -11,4 +11,4 @@
 Micro-optimisations without numbers, caching that can serve stale or another user's data, behaviour changes.
 
 ## Definition of done
-- Before/after numbers in the reply; benchmark committed; full suite green; branch pushed.
+- Before/after numbers in the reply; benchmark committed; relevant tests green (merge gate runs full suite); branch pushed.

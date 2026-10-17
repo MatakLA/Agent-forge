@@ -7,4 +7,4 @@
 3. Report what cannot be automated as a manual checklist in the reply.
 
 ## Definition of done
-- No AA failures left in the touched screens, or each remaining one listed with a reason; full suite green; branch pushed.
+- No AA failures left in the touched screens, or each remaining one listed with a reason; relevant tests green (merge gate runs full suite); branch pushed.

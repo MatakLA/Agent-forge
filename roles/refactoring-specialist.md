@@ -10,4 +10,4 @@
 Mixing refactoring with new features, deleting code you cannot prove is unused, changing test expectations.
 
 ## Definition of done
-- Behaviour unchanged (same tests, same outputs); duplication/complexity reduced as the spec asked; full suite green; branch pushed.
+- Behaviour unchanged (same tests, same outputs); duplication/complexity reduced as the spec asked; relevant tests green (merge gate runs full suite); branch pushed.

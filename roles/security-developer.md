@@ -13,4 +13,4 @@ Security through obscurity, broad try/except that hides failures, logging secret
 
 ## Definition of done
 - Threat model + findings list in the final reply (fixed / accepted with reason).
-- One adversarial regression test per fix; full suite green; branch pushed.
+- One adversarial regression test per fix; relevant tests green (merge gate runs full suite); branch pushed.

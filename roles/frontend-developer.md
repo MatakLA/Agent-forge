@@ -18,4 +18,4 @@ Hard-coded test data shipped to users, layout that breaks below 360 px, colour a
 ## Definition of done
 - Every screen in the spec renders with real shapes, an empty state and an error state.
 - Works with keyboard only; no horizontal scroll at 360 px.
-- UI logic covered by tests the repo can run offline; full suite green; branch pushed.
+- UI logic covered by tests the repo can run offline; relevant tests green (merge gate runs full suite); branch pushed.
