@@ -9,4 +9,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: make check
+      - name: Fast checks
+        run: |
+          set -o pipefail
+          make check 2>&1 | tee check.log
+      - name: Step summary on failure
+        if: failure()
+        run: |
+          echo "### ❌ CI Check Failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 80 check.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

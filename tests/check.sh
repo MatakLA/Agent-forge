@@ -140,7 +140,7 @@ fi
 if [ -f tests/test_install_smoke.py ]; then
   python3 tests/test_install_smoke.py || exit 1
 fi
-if [ -f tests/test_demo_mode.sh ]; then
+if [ -f tests/test_demo_mode.sh ] && [ "${RUN_DOCKER_TESTS:-0}" = "1" ]; then
   bash tests/test_demo_mode.sh || exit 1
 fi
 if [ -f tests/test_demo_mode.py ]; then
