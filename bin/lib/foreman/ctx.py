@@ -20,7 +20,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # Which orchestrator answers each decision, tried in order. Free (subscription) providers: claude-cli (Claude Code),
             # agy-claude / agy-gemini (Antigravity in a worker container). Paid per-token APIs: anthropic-api, openai-api - only
             # used when listed here AND a key is configured (see docs/PROVIDERS.md).
-            PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli",
+            PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli,agy-gemini",
             MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
             ORPHAN_LIMIT=5, ORPHAN_WARN=3,
             SHARED_FILES="", PROJECT_DIR="", OWNER_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
