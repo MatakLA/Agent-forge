@@ -104,8 +104,8 @@ def _agy(w, prompt, model, schema=None):
     """Tool-less Antigravity call (no --dangerously-skip-permissions): the reviewer/planner reads only what is in the prompt,
     so worker-written content in a diff cannot make it run commands. Runs from an empty working directory."""
     t0w = time.time()
-    rc, out, err = sh(["docker", "exec", "-w", "/tmp", w, "agy-run", "-p", prompt, "--model", model, "--output-format", "stream-json",
-                       "--print-timeout", "15m"] + (["--json-schema", schema] if schema else []), timeout=1100)
+    rc, out, err = sh(["docker", "exec", "-i", "-w", "/tmp", w, "agy-run", "--model", model, "--output-format", "stream-json",
+                       "--print-timeout", "15m"] + (["--json-schema", schema] if schema else []), timeout=1100, inp=prompt)
     res = {}
     for line in out.splitlines():
         e = extract_json(line) if line.startswith("{") else None

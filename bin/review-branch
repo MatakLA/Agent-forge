@@ -108,7 +108,8 @@ try:
             sh("docker", "rm", "-f", name, timeout=60)
             raise
 
-    t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=600)
+    t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD,
+             timeout=int(os.environ.get("GATE_TIMEOUT", "900")))
     print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0 or bool(secrets)
     if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
