@@ -32,10 +32,11 @@ def sh(*a, timeout=90):
 def _lines(path):
     out = []
     try:
-        for l in open(path):
-            l = l.split("#", 1)[0].strip()
-            if l:
-                out.append(l)
+        with open(path, "r", encoding="utf-8") as f:
+            for l in f:
+                l = l.split("#", 1)[0].strip()
+                if l:
+                    out.append(l)
     except FileNotFoundError:
         pass
     return out
