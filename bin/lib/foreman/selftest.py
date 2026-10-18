@@ -28,6 +28,16 @@ def selftest():
 def _selftest():
     import shutil, tempfile
     bad = 0
+    real_notify = sbx.notify
+    sbx.notify = lambda *a, **k: False
+    try:
+        return _selftest_body(bad, real_notify)
+    finally:
+        sbx.notify = real_notify
+
+
+def _selftest_body(bad, real_notify):
+    import shutil, tempfile
 
     def check(name, ok):
         nonlocal bad
@@ -332,9 +342,11 @@ def _selftest():
     try:
         sbx.RUNS = ob_dir
         sbx.project_conf = lambda project=None: {"NOTIFY_URL": "outbox", "NOTIFY_EVENTS": "goal_done"}
+        sbx.notify = real_notify
         sent = sbx.notify("goal_done", "Cieľ hotový", "x" * 5000), sbx.notify("task_blocked", "T", "m")
         rows = [json.loads(l) for l in open(sbx.notify_outbox_path(), encoding="utf-8")]
     finally:
+        sbx.notify = lambda *a, **k: False
         sbx.RUNS, sbx.project_conf = ob_runs, ob_conf
         shutil.rmtree(ob_dir, ignore_errors=True)
     check("notify: NOTIFY_URL=outbox appends filtered events to runs/notify-outbox.jsonl",

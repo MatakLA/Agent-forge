@@ -348,13 +348,14 @@ class TestForemanStore(unittest.TestCase):
         self.assertIsInstance(next_num, int)
 
         # notify() accepts various kinds and types without raising
-        store.notify("goal_done", {"text": "done", "summary": "sum"})
-        store.notify("task_blocked", {"id": "0001", "blocked_why": "why"})
-        store.notify("questions", text="Clarification needed")
-        store.notify("quota_out", text="Quota exhausted")
-        store.notify("auth", text="Auth failed")
-        store.notify("approval", text="Approval needed")
-        store.notify("custom_kind", None, "custom text")
+        with mock.patch.object(store.sbx, "notify") as mock_notify:
+            store.notify("goal_done", {"text": "done", "summary": "sum"})
+            store.notify("task_blocked", {"id": "0001", "blocked_why": "why"})
+            store.notify("questions", text="Clarification needed")
+            store.notify("quota_out", text="Quota exhausted")
+            store.notify("auth", text="Auth failed")
+            store.notify("approval", text="Approval needed")
+            store.notify("custom_kind", None, "custom text")
 
         # goals() on empty vs populated
         self.assertEqual(store.goals(), [])
