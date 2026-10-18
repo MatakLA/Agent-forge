@@ -82,6 +82,13 @@ function applyI18n() {
     lb.textContent = currentLang.toUpperCase().slice(0, 4);
     lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for custom)';
   }
+  const uils = $('ui-lang-sel');
+  if (uils) {
+    if (![...uils.options].some(o => o.value === currentLang)) {
+      uils.add(new Option(currentLang + ' (custom)', currentLang), 0);
+    }
+    uils.value = currentLang;
+  }
 }
 
 async function loadLocale(lang) {
@@ -127,6 +134,8 @@ function applyTheme(theme) {
     tb.textContent = THEME_ICONS[theme] || '◐';
     tb.title = t('theme.' + theme, 'Theme: ' + theme) + ' (click to toggle)';
   }
+  const uits = $('ui-theme-sel');
+  if (uits && uits.value !== currentTheme) uits.value = currentTheme;
 }
 
 function cycleTheme() {
