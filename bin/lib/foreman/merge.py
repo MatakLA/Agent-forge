@@ -313,7 +313,7 @@ def step_gate_review_merge(t):
             event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
         PHASE[t["id"]] = "tests in a clean container"
         refresh_repo()
-        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=900)
+        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=1500)
         gate = (out + err)[-8000:]
         if rc == 2:
             # infrastructure trouble is not the worker's fault and must not burn one of its attempts
