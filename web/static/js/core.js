@@ -183,10 +183,13 @@ function pills() {
 }
 function stats() {
   if (!F) return '';
-  const t = F.today || {}, ts = F.tasks || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
+  const t = F.today || {}, ts = F.tasks || [], gs = F.goals || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
   const box = (v, lab, cls, go) => '<div class="stat' + (cls ? ' ' + cls : '') + '"' + (go ? ' data-go="' + go + '"' : '') + '><b>' + v + '</b><span>' + lab + '</span></div>';
   const mine = inboxItems().length, blocked = n('blocked');
-  return box(n('running'), 'running', '', 'live') + box(n('pending', 'splitting'), 'waiting', '', 'tasks') + box(n('gate', 'review', 'merging', 'merge-ready'), 'checking', '', 'tasks') +
+  const waitingTasks = ts.filter(x => ['pending', 'splitting'].includes(x.status));
+  const pausedCount = waitingTasks.filter(x => gs.some(g => g.id === x.goal && (g.paused || g.status === 'paused'))).length;
+  const waitLabel = 'waiting' + (pausedCount ? ' (' + pausedCount + ' paused)' : '');
+  return box(n('running'), 'running', '', 'live') + box(waitingTasks.length, waitLabel, pausedCount ? 'warn' : '', 'tasks') + box(n('gate', 'review', 'merging', 'merge-ready'), 'checking', '', 'tasks') +
     box(t.merged != null ? t.merged : n('done'), 'done today', '', 'insights') + (mine ? box(mine, 'need you', 'hot', 'overview') : '') + (blocked ? box(blocked, 'blocked', 'bad', 'tasks') : '');
 }
 document.addEventListener('click', e => { const g = e.target.closest('.stat[data-go]'); if (g) setTab(g.dataset.go); });

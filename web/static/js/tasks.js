@@ -3,6 +3,64 @@
 
 const orphanBadge = t => t && t.orphan_warning ? '<span class="badge warn" title="crashing repeatedly">crashing repeatedly - ' + esc(t.orphan_streak) + '/' + esc(t.orphan_limit || ((S && S.values && S.values.ORPHAN_LIMIT) || 5)) + ' consecutive orphan recoveries</span>' : '';
 
+function whyWaiting(t) {
+  if (t.status !== 'pending' && t.status !== 'splitting') return null;
+  const g = F && (F.goals || []).find(x => x.id === t.goal);
+  if (g && (g.paused || g.status === 'paused')) {
+    return {
+      code: 'paused',
+      short: 'Goal paused',
+      graphLabel: 'Goal paused',
+      detail: 'Goal "' + (g.text ? g.text.slice(0, 70) + '…' : g.id) + '" is paused by the owner. Tasks of paused goals do not start until the goal is resumed.',
+      goalId: g.id
+    };
+  }
+  const done = new Set(((F && F.tasks) || []).filter(x => x.status === 'done').map(x => x.id));
+  const unmet = (t.depends_on || []).filter(d => !done.has(d));
+  if (unmet.length) {
+    return {
+      code: 'deps',
+      short: 'Needs ' + unmet.slice(0, 2).join(', '),
+      graphLabel: 'Needs ' + unmet[0].slice(0, 10),
+      detail: 'Waits for dependency task(s) to finish and merge first: ' + unmet.join(', ') + '.'
+    };
+  }
+  const running = ((F && F.tasks) || []).filter(x => x.status === 'running');
+  const conflict = running.find(r => (r.files || []).some(f => (t.files || []).includes(f)));
+  if (conflict) {
+    const shared = (t.files || []).filter(f => (conflict.files || []).includes(f));
+    return {
+      code: 'file_conflict',
+      short: 'File conflict (' + conflict.id + ')',
+      graphLabel: 'Conflict (' + conflict.id.slice(0, 8) + ')',
+      detail: 'Waits because task ' + conflict.id + ' is currently running on ' + (conflict.worker || 'a worker') + ' and editing the same file(s): ' + shared.join(', ') + '. Tasks with overlapping files cannot run in parallel.'
+    };
+  }
+  if (t.not_before && t.not_before * 1000 > Date.now()) {
+    const mins = Math.max(1, Math.round((t.not_before * 1000 - Date.now()) / 60000));
+    return {
+      code: 'backoff',
+      short: 'Retry in ' + mins + 'm',
+      graphLabel: 'Retry ' + mins + 'm',
+      detail: 'Temporary retry backoff. Will be retried automatically in ' + mins + ' minute(s).'
+    };
+  }
+  if (t.pin_worker) {
+    return {
+      code: 'assigned',
+      short: 'Assigned to ' + t.pin_worker,
+      graphLabel: '→ ' + t.pin_worker,
+      detail: 'Assigned to ' + t.pin_worker + '. Starts when ' + t.pin_worker + ' becomes free.'
+    };
+  }
+  return {
+    code: 'ready',
+    short: 'Ready to dispatch',
+    graphLabel: 'Ready',
+    detail: 'Ready to run! Waiting for an idle worker to pick it up.'
+  };
+}
+
 // ---- board
 function boardHtml() {
   const ts = F.tasks || [];
@@ -22,6 +80,11 @@ function boardHtml() {
     const countStr = total > shown.length ? shown.length + ' of ' + total : String(shown.length);
     return '<div class="col"><h4>' + lab + '<span class="muted">' + countStr + '</span></h4>' + (shown.map(t => {
       const deps = (t.depends_on || []).filter(d => !ts.find(x => x.id === d && x.status === 'done'));
+      const ww = whyWaiting(t);
+      const waitBadge = (ww && k === 'wait') ? (ww.code === 'paused' ? ' <span class="badge warn" title="' + esc(ww.detail) + '">⏸ goal paused</span>' :
+        ww.code === 'file_conflict' ? ' <span class="badge" title="' + esc(ww.detail) + '">⚡ ' + esc(ww.short) + '</span>' :
+        ww.code === 'ready' ? ' <span class="badge ok" title="' + esc(ww.detail) + '">▶ ready</span>' :
+        ' <span class="badge" title="' + esc(ww.detail) + '">' + esc(ww.short) + '</span>') : '';
       return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
         '<div class="id">' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
         (t.pin_worker ? ' <span class="badge" title="assigned by you">→ ' + esc(t.pin_worker) + '</span>' : '') +
@@ -29,7 +92,7 @@ function boardHtml() {
         roleTag(t.role) + (t.worker && k !== 'wait' ? '<span>' + esc(t.worker) + '</span>' : '') +
         (t.attempts ? '<span class="warn">attempt ' + (t.attempts + 1) + '/' + (t.max_attempts || 4) + '</span>' : '') +
         (t.pr ? '<span>PR #' + esc(t.pr) + '</span>' : '') + (deps.length && k === 'wait' ? '<span>waits for ' + deps.map(esc).join(', ') + '</span>' : '') +
-        (k === 'wait' ? est(t) : '') + (t.diff ? '<span class="plus" title="+' + t.diff.added + ' lines added">+' + t.diff.added + '</span><span class="minus" title="−' + t.diff.removed + ' lines removed">−' + t.diff.removed + '</span>' : '') +
+        waitBadge + (k === 'wait' ? est(t) : '') + (t.diff ? '<span class="plus" title="+' + t.diff.added + ' lines added">+' + t.diff.added + '</span><span class="minus" title="−' + t.diff.removed + ' lines removed">−' + t.diff.removed + '</span>' : '') +
         (phase(t.id) ? '<span class="accent">' + esc(phase(t.id)) + '</span>' : '') + '</div></div>';
     }).join('') || '<div class="empty">—</div>') + (total > shown.length ? '<div class="muted small center">… ' + (total - shown.length) + ' more (search finds them)</div>' : '') + '</div>';
   }).join('') + '</div>';
@@ -68,11 +131,16 @@ function dagSvg(nodes, crit) {
            '" fill="none" stroke="' + (hot ? 'var(--warn)' : 'var(--muted)') + '" stroke-width="' + (hot ? 2.5 : 1.3) + '"/>';
   }));
   nodes.forEach(t => { const p = pos[t.id], hot = onPath.has(t.id);
-    svg += '<g data-open="task:' + esc(t.id) + '" role="button" tabindex="0" focusable="true" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
-      '<title>' + esc(t.title) + ' · ' + esc(t.role) + ' · ' + esc(STATUS[t.status] || t.status) + '</title><rect x="' + p.x + '" y="' + p.y +
-      '" width="' + BW + '" height="' + BH + '" rx="7" fill="var(--card2)" stroke="' + (NODECOL[t.status] || 'var(--idle)') + '" stroke-width="' + (hot ? 3 : 1.8) + '"' +
+    const ww = whyWaiting(t);
+    const isPaused = ww && ww.code === 'paused';
+    const strokeCol = isPaused ? 'var(--warn)' : (NODECOL[t.status] || 'var(--idle)');
+    const dashArr = isPaused ? ' stroke-dasharray="4,3"' : '';
+    const statusText = isPaused ? '⏸ Paused (goal)' : (ww && ww.code === 'file_conflict' ? '⚡ ' + ww.graphLabel : (STATUS[t.status] || t.status));
+    svg += '<g data-open="task:' + esc(t.id) + '" role="button" tabindex="0" focusable="true" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(statusText) + ')">' +
+      '<title>' + esc(t.title) + ' · ' + esc(t.role) + (ww ? ' · ' + esc(ww.detail) : ' · ' + esc(STATUS[t.status] || t.status)) + '</title><rect x="' + p.x + '" y="' + p.y +
+      '" width="' + BW + '" height="' + BH + '" rx="7" fill="var(--card2)" stroke="' + strokeCol + '" stroke-width="' + (hot ? 3 : 1.8) + '"' + dashArr +
       (t.status === 'done' ? ' opacity=".55"' : '') + '/><text x="' + (p.x + 8) + '" y="' + (p.y + 15) + '">' + esc(t.id.slice(0, 24)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 29) +
-      '" class="sub">' + esc(((STATUS[t.status] || t.status) + ' · ' + t.title)).slice(0, 27) + '</text></g>'; });
+      '" class="sub">' + esc((statusText + ' · ' + t.title)).slice(0, 27) + '</text></g>'; });
   return svg + '</svg>';
 }
 function graphHtml() {
@@ -85,11 +153,13 @@ function graphHtml() {
   const crit = criticalPath(nodes);
   const left = crit.path.filter(id => (nodes.find(t => t.id === id) || {}).status !== 'done');
   const depCount = nodes.length - open.length;
-  return '<div class="muted small" style="margin-bottom:6px">' + nodes.length + ' task(s) in graph (' + open.length + ' open' + (depCount ? ', ' + depCount + ' finished dependencies' : '') + '). <b class="warn">Critical path</b>: ' + left.length + ' task(s) in a row (' +
+  const pausedTasks = open.filter(t => (whyWaiting(t) || {}).code === 'paused');
+  const pausedBanner = pausedTasks.length ? ' <span class="badge warn" title="Tasks of paused goals do not dispatch until resumed">⏸ ' + pausedTasks.length + ' task(s) wait because their goal is paused</span>' : '';
+  return '<div class="muted small" style="margin-bottom:6px">' + nodes.length + ' task(s) in graph (' + open.length + ' open' + (depCount ? ', ' + depCount + ' finished dependencies' : '') + ').' + pausedBanner + ' <b class="warn">Critical path</b>: ' + left.length + ' task(s) in a row (' +
     left.map(esc).join(' → ') + ') — about ' + fmtTok(crit.len) + ' tokens of work that cannot run in parallel. Click a task to open it.</div>' +
     '<div class="tablewrap pad">' + dagSvg(nodes, crit) + '</div>' +
-    '<div class="legend">' + [['pending', 'waiting'], ['running', 'running'], ['gate', 'checking'], ['approval', 'needs you'], ['blocked', 'blocked'], ['done', 'done (a dependency)']]
-      .map(([k, l]) => '<span><i style="background:' + NODECOL[k] + '"></i>' + l + '</span>').join('') + '</div>';
+    '<div class="legend">' + [['pending', 'waiting'], ['running', 'running'], ['gate', 'checking'], ['approval', 'needs you'], ['blocked', 'blocked'], ['done', 'done (a dependency)'], ['paused', 'goal paused']]
+      .map(([k, l]) => '<span><i style="background:' + (k === 'paused' ? 'var(--warn)' : NODECOL[k]) + (k === 'paused' ? ';outline:1px dashed var(--warn)' : '') + '"></i>' + l + '</span>').join('') + '</div>';
 }
 function renderTasks(force) {
   if (!F) return setHTML('tasks-view', window._ferr ? '<div class="empty bad">Could not load tasks: ' + esc(window._ferr) + '</div>' : '<div class="empty">loading…</div>', force);
@@ -156,8 +226,13 @@ function renderTaskSheet() {
       orphanBadge(t),
       t.pin_worker ? '<span class="badge">→ ' + esc(t.pin_worker) + '</span>' : '', t.model_override ? '<span class="badge">model ' + esc(t.model_override) + '</span>' : '',
       'attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4),
-      t.created ? 'created ' + esc(dfmt(t.created)) : '', t.finished ? 'finished ' + esc(dfmt(t.finished)) : ''].filter(Boolean).join(' · ');
+  const ww = whyWaiting(t);
+  const whyCard = ww ? '<div class="banner ' + (ww.code === 'paused' ? 'warn' : 'info') + '" style="margin:10px 0;padding:8px 12px;border-radius:8px">' +
+    '<b>' + (ww.code === 'paused' ? '⏸ ' : '⏳ ') + esc(ww.short) + '</b>: ' + esc(ww.detail) +
+    (ww.code === 'paused' && ww.goalId ? '<div style="margin-top:6px"><button class="mini primary" data-ga="resume" data-id="' + esc(ww.goalId) + '">Resume this goal</button></div>' : '') +
+    '</div>' : '';
   const html = '<h2>' + esc(t.title || id) + '</h2><div class="sub">' + subMeta + '</div>' +
+    whyCard +
     '<div class="btnrow">' + taskActions(t) + '</div>' + taskForm(t) +
     (g ? '<div class="goalref">Goal: <button class="linkbtn" data-open="goal:' + esc(g.id) + '" style="font:inherit;text-align:left">' + esc(g.text.slice(0, 140)) + '</button></div>' : '') +
     (t.status === 'approval' && t.awaiting === 'merge' && t.merge_feedback ? '<h3>The review says</h3><div class="note">' + esc(tsloc(t.merge_feedback)) + '</div>' : '') +
