@@ -534,11 +534,21 @@ function pageProject() {
       field('LOCAL_TZ', '<div style="display:flex;gap:6px;align-items:center">' + sel('LOCAL_TZ', TZ_OPTIONS) + '<button type="button" class="mini" id="detect-tz" title="Set to browser timezone">Detect</button></div>')) +
     card(t('settings.appearance_title', 'Dashboard appearance & language'),
       rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),
+        '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
         '<select id="ui-lang-sel" style="min-width:180px">' +
-        [['en', 'English (en)'], ['sk', 'Slovenčina (sk)'], ['sk_qwerty', 'Slovenčina QWERTY (sk_qwerty)'], ['eng_us', 'English US (eng_us)']].map(([c, n]) => '<option value="' + esc(c) + '"' + (currentLang === c ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
-        (!['en', 'sk', 'sk_qwerty', 'eng_us'].includes(currentLang) ? '<option value="' + esc(currentLang) + '" selected>' + esc(currentLang) + ' (custom)</option>' : '') +
-        '<option value="__custom">+ Custom locale file…</option>' +
-        '</select>') +
+        (LOCALES_LIST.length ? LOCALES_LIST : [
+          {code: 'en', name: 'English'},
+          {code: 'sk', name: 'Slovenčina'},
+          {code: 'sk_qwerty', name: 'Slovenčina (QWERTY)'},
+          {code: 'eng_us', name: 'English (US)'}
+        ]).map(l => '<option value="' + esc(l.code) + '"' + (currentLang === l.code ? ' selected' : '') + '>' + esc(l.name) + ' (' + esc(l.code) + ')</option>').join('') +
+        (!['en', 'sk', 'sk_qwerty', 'eng_us'].concat(LOCALES_LIST.map(l => l.code)).includes(currentLang) ? '<option value="' + esc(currentLang) + '" selected>' + esc(currentLang) + ' (custom)</option>' : '') +
+        '<option value="__upload">+ Upload locale (.json)…</option>' +
+        '<option value="__custom">+ Enter code manually…</option>' +
+        '</select>' +
+        '<input type="file" id="locale-file-picker" accept=".json" style="display:none">' +
+        '<button type="button" class="mini" id="upload-locale-btn" title="Upload a custom JSON dictionary file">Upload .json…</button>' +
+        '</div>') +
       rowAct('row-ui-theme', t('settings.ui_theme', 'Color theme'),
         '<select id="ui-theme-sel" style="min-width:180px">' +
         [['auto', 'Auto (system default)'], ['light', 'Light mode'], ['dark', 'Dark mode']].map(([m, n]) => '<option value="' + esc(m) + '"' + (currentTheme === m ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
@@ -756,6 +766,7 @@ document.addEventListener('click', async e => {
   const gk = q('[data-goto-key]'); if (gk) { e.preventDefault(); settingsGoto('key:' + gk.dataset.gotoKey); return; }
   if (t.id === 'save-settings') { saveSettings(); return; }
   if (t.id === 'discard-settings') { discardPend(); return; }
+  if (t.id === 'upload-locale-btn') { const p = $('locale-file-picker'); if (p) p.click(); return; }
   if (q('[data-retry]')) { S = null; sLoadedFor = null; window._ferr = null; loadSettings(true); schedule(true); return; }
   if (t.id === 'refresh-models') { t.disabled = true; t.textContent = 'loading…'; await post('/api/settings', {refresh_models: true}); await loadSettings(true); schedule(true); return; }
   if (t.id === 'detect-tz') {
@@ -818,7 +829,40 @@ document.addEventListener('change', e => {
   if (e.target.name === 'addw-rt') {
     SX.addUrl = ($('addw-urlin') || {}).value; SX.addModel = ($('addw-model') || {}).value; SX.addRt = e.target.value; schedule(true);
   }
+  if (e.target.id === 'locale-file-picker') {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async evt => {
+      try {
+        const content = JSON.parse(evt.target.result);
+        const defCode = file.name.replace(/\.json$/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+        const codePrompt = prompt('Enter locale code for “' + file.name + '”:', defCode);
+        if (!codePrompt || !codePrompt.trim()) return;
+        const code = codePrompt.trim().toLowerCase();
+        const r = await post('/api/locale', {code, content});
+        if (r.ok) {
+          toast('Locale “' + (r.name || code) + '” uploaded and applied!');
+          await loadLocalesList();
+          await loadLocale(code);
+        } else {
+          toast('Upload failed: ' + (r.error || r.message), true);
+        }
+      } catch (err) {
+        toast('Invalid JSON: ' + err.message, true);
+      } finally {
+        e.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+    return;
+  }
   if (e.target.id === 'ui-lang-sel') {
+    if (e.target.value === '__upload') {
+      const p = $('locale-file-picker'); if (p) p.click();
+      e.target.value = currentLang;
+      return;
+    }
     if (e.target.value === '__custom') {
       const custom = prompt('Enter locale code (locale file in web/static/locales/<name>.json, e.g. sk_qwerty, de, cs):', currentLang);
       if (custom && custom.trim()) {
