@@ -164,11 +164,25 @@ function syncHash() {
 }
 
 // ---- header: what is abnormal gets a pill; a healthy, running project shows just one
+let lastAutoRecover = 0;
+function checkFreshness() {
+  if (document.hidden) return;
+  const staleFor = foremanFetchedAt ? (Date.now() / 1000 - foremanFetchedAt) : 0;
+  if (staleFor > 30 && Date.now() - lastAutoRecover > 10000) {
+    lastAutoRecover = Date.now();
+    if (typeof connect === 'function') connect();
+    if (typeof tickPoll === 'function') tickPoll();
+  }
+}
 function pills() {
   if (!F) return '<span class="pill bad">foreman: ' + esc(window._ferr || 'loading') + '</span>';
   const p = [], staleFor = foremanFetchedAt ? (Date.now() / 1000 - foremanFetchedAt) : 0;
-  if (staleFor > 30)
-    return '<span class="pill bad">no fresh data for ' + Math.round(staleFor / 60) + ' min — do not trust the state below' + (window._ferr ? ' · cause: ' + esc(window._ferr) : '') + '</span>';
+  if (staleFor > 30) {
+    checkFreshness();
+    return '<span class="pill bad">no fresh data for ' + Math.round(staleFor / 60) + ' min — do not trust the state below' +
+      (window._ferr ? ' · cause: ' + esc(window._ferr) : '') +
+      ' <button class="mini" data-act="reconnect" style="margin-left:6px">Reconnect</button></span>';
+  }
   if (!F.alive) p.push('<span class="pill bad"><span class="dot bad"></span>foreman not running</span>');
   else if (F.killswitch) p.push('<span class="pill bad">kill switch ON' + (F.killswitch.scope === 'all' ? ' (all projects)' : '') + ' — ' +
     esc(F.killswitch.reason || '') + '</span><button class="primary sm" data-act="resume">Continue</button>');
@@ -243,7 +257,22 @@ async function tickPoll() { if (document.hidden || busyPoll) return; busyPoll = 
 function startPoll() { if (pollTimer) return; tickPoll(); pollTimer = setInterval(tickPoll, 2500); }
 function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 // for actions: show their effect at once instead of waiting for the next push
-const refreshSoon = () => setTimeout(() => { if (pollTimer || !ES) tickPoll(); }, 700);
+const refreshSoon = () => setTimeout(() => { tickPoll(); }, 700);
+
+// mobile / tab wake-up and auto-recovery
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    const staleFor = foremanFetchedAt ? (Date.now() / 1000 - foremanFetchedAt) : 0;
+    if (staleFor > 15) {
+      if (staleFor > 30 || !ES || ES.readyState !== EventSource.OPEN) connect();
+      tickPoll();
+    }
+  }
+});
+window.addEventListener('online', () => { connect(); tickPoll(); });
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-act="reconnect"]')) { connect(); tickPoll(); }
+});
 
 // ---- projects
 let projAt = 0;

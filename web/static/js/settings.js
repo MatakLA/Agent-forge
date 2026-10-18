@@ -22,13 +22,19 @@ async function killswitch(action, opts) {
   ksBusy = false;
   bx.innerHTML = (res.steps || []).map(s => '<div class="ev ' + (s.ok ? 'good' : 'bad') + '">' + (s.ok ? '✓ ' : '✗ ') + esc(s.label) + (s.output ? ': ' + esc(s.output) : '') + '</div>').join('') +
     '<button class="linkbtn" data-hide-result>hide</button>' || esc(res.error || '');
+  if (action === 'off') {
+    if (typeof SYS !== 'undefined' && SYS && SYS.egress) SYS.egress.killswitch = null;
+    if (F && F.killswitch) F.killswitch = null;
+  }
+  if (typeof sysLoad === 'function') sysLoad('egress', 0, true);
   refreshSoon();
 }
 function resumeDev() { killswitch('off', {all: !!(F && F.killswitch && F.killswitch.scope === 'all')}); }
 document.addEventListener('click', e => {
   if (e.target.closest('[data-hide-result]')) { $('resume-result').style.display = 'none'; return; }
   const a = e.target.closest('[data-act]'); if (!a) return;
-  const act = {resume: resumeDev, 'ks-on': () => killswitch('on'), 'ks-hard': () => killswitch('on', {hard: true}), 'ks-all': () => killswitch('on', {all: true})}[a.dataset.act];
+  const act = {resume: resumeDev, reconnect: () => { if (typeof connect === 'function') connect(); if (typeof tickPoll === 'function') tickPoll(); },
+    'ks-on': () => killswitch('on'), 'ks-hard': () => killswitch('on', {hard: true}), 'ks-all': () => killswitch('on', {all: true})}[a.dataset.act];
   if (act) act();
 });
 
