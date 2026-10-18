@@ -34,7 +34,10 @@ def event(msg, **kw):
     os.makedirs(ctx.FD, exist_ok=True)
     with open(os.path.join(ctx.FD, "events.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(dict(at=sbx.now(), msg=msg, **kw), ensure_ascii=False) + "\n")
-    print(f"{sbx.now()} {msg}", file=sys.stderr, flush=True)     # stderr: the journal gets it, a command's JSON output stays clean
+    try:
+        print(f"{sbx.now()} {msg}", file=sys.stderr, flush=True)     # stderr: the journal gets it, a command's JSON output stays clean
+    except OSError:
+        pass
 
 
 def gstate():
