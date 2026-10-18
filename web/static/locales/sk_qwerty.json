@@ -86,6 +86,11 @@
   "theme.light": "Motív: svetlý",
   "theme.dark": "Motív: tmavý",
 
+  "settings.appearance_title": "Vzhľad a jazyk rozhrania",
+  "settings.ui_lang": "Jazyk rozhrania",
+  "settings.ui_theme": "Farebný motív",
+  "settings.appearance_desc": "Zmeny sa aplikujú okamžite a uložia v prehliadači. Vlastné slovníky sú v web/static/locales/<nazov>.json.",
+
   "msg.running": "beží",
   "msg.paused": "pozastavené",
   "msg.no_fresh_data": "žiadne čerstvé dáta už {min} min — nespoliehajte sa na stav nižšie",

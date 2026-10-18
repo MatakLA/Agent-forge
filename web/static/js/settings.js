@@ -493,6 +493,18 @@ function pageProject() {
       'What you tick waits for you under Overview → Needs you (and a notification, if set up below). Nothing ticked = fully automatic.') +
     card('How the team behaves', field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) + field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) +
       field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) + field('OWNER_LANG', txt('OWNER_LANG', 'e.g. sk')) + field('LOCAL_TZ', txt('LOCAL_TZ', 'UTC'))) +
+    card(t('settings.appearance_title', 'Dashboard appearance & language'),
+      rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),
+        '<select id="ui-lang-sel" style="min-width:180px">' +
+        [['en', 'English (en)'], ['sk', 'Slovenčina (sk)'], ['sk_qwerty', 'Slovenčina QWERTY (sk_qwerty)'], ['eng_us', 'English US (eng_us)']].map(([c, n]) => '<option value="' + esc(c) + '"' + (currentLang === c ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
+        (!['en', 'sk', 'sk_qwerty', 'eng_us'].includes(currentLang) ? '<option value="' + esc(currentLang) + '" selected>' + esc(currentLang) + ' (custom)</option>' : '') +
+        '<option value="__custom">+ Custom locale file…</option>' +
+        '</select>') +
+      rowAct('row-ui-theme', t('settings.ui_theme', 'Color theme'),
+        '<select id="ui-theme-sel" style="min-width:180px">' +
+        [['auto', 'Auto (system default)'], ['light', 'Light mode'], ['dark', 'Dark mode']].map(([m, n]) => '<option value="' + esc(m) + '"' + (currentTheme === m ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
+        '</select>'),
+      t('settings.appearance_desc', 'Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.')) +
     card('Files', field('PROJECT_DIR', txt('PROJECT_DIR')) + field('VISION_FILE', txt('VISION_FILE', 'docs/vision.md')) + field('SHARED_FILES', txt('SHARED_FILES')),
       'Paths inside the repository.') +
     card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q')) + field('GATE_IMAGE', txt('GATE_IMAGE')),
@@ -751,6 +763,21 @@ document.addEventListener('change', e => {
   if (e.target.name === 'su-kind') suRefresh();
   if (e.target.name === 'addw-rt') {
     SX.addUrl = ($('addw-urlin') || {}).value; SX.addModel = ($('addw-model') || {}).value; SX.addRt = e.target.value; schedule(true);
+  }
+  if (e.target.id === 'ui-lang-sel') {
+    if (e.target.value === '__custom') {
+      const custom = prompt('Enter locale code (locale file in web/static/locales/<name>.json, e.g. sk_qwerty, de, cs):', currentLang);
+      if (custom && custom.trim()) {
+        loadLocale(custom.trim().toLowerCase());
+      } else {
+        e.target.value = currentLang;
+      }
+      return;
+    }
+    loadLocale(e.target.value);
+  }
+  if (e.target.id === 'ui-theme-sel') {
+    applyTheme(e.target.value);
   }
 });
 window.addEventListener('beforeunload', e => { if (Object.keys(PEND).length) { e.preventDefault(); e.returnValue = ''; } });

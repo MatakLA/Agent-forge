@@ -86,6 +86,11 @@
   "theme.light": "Theme: light",
   "theme.dark": "Theme: dark",
 
+  "settings.appearance_title": "Dashboard appearance & language",
+  "settings.ui_lang": "Dashboard UI language",
+  "settings.ui_theme": "Color theme",
+  "settings.appearance_desc": "Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.",
+
   "msg.running": "running",
   "msg.paused": "paused",
   "msg.no_fresh_data": "no fresh data for {min} min — do not trust the state below",
