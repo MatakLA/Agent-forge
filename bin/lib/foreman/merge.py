@@ -550,7 +550,7 @@ def diagnose_task(t, why):
                   f'"root_cause": "The exact technical root cause in {lang}", '
                   f'"suggested_fix": "Concrete instructions in {lang} on how to fix it in the code or tests", '
                   f'"report": "A complete, self-contained markdown report with Task ID, error summary, files, and fix instructions ready to copy-paste to an AI assistant"}}\n')
-        text, who = llm("review", prompt, t["id"])
+        text, who = llm("diagnose", prompt, t["id"])
         d = extract_json(text)
         if isinstance(d, dict) and d.get("summary"):
             d["who"] = who

@@ -241,14 +241,17 @@ function controlsHtml(model) {
     ? 'Autopilot on: when a worker would idle and the backlog is empty, the orchestrator proposes new goals from the vision.'
     : 'Autopilot off: when a worker would idle and the backlog is empty, the orchestrator does not propose new goals from the vision.';
 
+  const isAlive = m.alive !== false;
   const isPaused = Boolean(m.paused || m.killswitch);
   const fmAction = isPaused ? 'resume' : 'pause';
-  const fmLabel = 'Foreman: ' + (isPaused ? 'paused' : 'running');
+  const fmLabel = !isAlive ? 'Foreman: not running' : ('Foreman: ' + (isPaused ? 'paused' : 'running'));
 
   const ks = m.killswitch;
   const ksBlocked = isPaused && Boolean(ks);
   let fmTip = '';
-  if (ksBlocked) {
+  if (!isAlive) {
+    fmTip = 'Foreman background service is not running or is restarting.';
+  } else if (ksBlocked) {
     const ksReason = killswitchReason(ks);
     fmTip = 'Resume is blocked while the kill switch is engaged' + (ksReason ? ': ' + ksReason : '');
   } else if (isPaused) {
