@@ -443,6 +443,29 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 rc, out, err = foreman(pf, f"doc set {name}", inp=str(body.get("text", ""))[:200000], timeout=30)
             self._json(as_json(out, err, rc))
+        elif path == "/api/locale":
+            code = str(body.get("code", "")).strip().lower()
+            content = body.get("content")
+            if not re.fullmatch(r"[a-z0-9_-]{2,32}", code):
+                self._json({"error": "invalid locale code (lowercase letters, numbers, dashes/underscores, 2-32 chars)"}, 400); return
+            if not isinstance(content, dict):
+                self._json({"error": "locale content must be a JSON object"}, 400); return
+            clean = {str(k): str(v) for k, v in content.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool))}
+            if not clean:
+                self._json({"error": "locale content cannot be empty"}, 400); return
+            if "lang.name" not in clean:
+                clean["lang.name"] = code.capitalize()
+            loc_dir = os.path.join(WEB, "static", "locales")
+            os.makedirs(loc_dir, exist_ok=True)
+            fpath = os.path.join(loc_dir, f"{code}.json")
+            raw = json.dumps(clean, indent=2, ensure_ascii=False).encode("utf-8")
+            try:
+                with open(fpath, "wb") as f:
+                    f.write(raw)
+            except Exception as e:
+                self._json({"error": f"failed to write locale file: {e}"}, 500); return
+            STATIC[f"locales/{code}.json"] = (raw, "application/json")
+            self._json({"ok": True, "code": code, "name": clean["lang.name"]})
         elif path == "/api/workers":
             rt, act = str(body.get("runtime") or "agy"), body.get("action")
             if act == "remove":
@@ -605,6 +628,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/docs":
             rc, out, err = foreman(pf, "doc list", timeout=30)
             self._json(as_json(out, err, rc))
+        elif path == "/api/locales":
+            loc_dir = os.path.join(WEB, "static", "locales")
+            res = []
+            if os.path.isdir(loc_dir):
+                for f in sorted(os.listdir(loc_dir)):
+                    if f.endswith(".json") and not f.startswith("."):
+                        code = f[:-5]
+                        name = code.capitalize()
+                        try:
+                            data = json.load(open(os.path.join(loc_dir, f), "r", encoding="utf-8"))
+                            name = data.get("lang.name", name)
+                        except Exception:
+                            pass
+                        res.append({"code": code, "name": name})
+            self._json({"ok": True, "locales": res})
         elif path == "/api/doc":
             name = q.get("name", "")
             if not DOC_NAME.fullmatch(name):

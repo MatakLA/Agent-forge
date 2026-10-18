@@ -80,15 +80,40 @@ function applyI18n() {
   const lb = $('lang-btn');
   if (lb) {
     lb.textContent = currentLang.toUpperCase().slice(0, 4);
-    lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for custom)';
+    lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for options)';
   }
-  const uils = $('ui-lang-sel');
-  if (uils) {
-    if (![...uils.options].some(o => o.value === currentLang)) {
-      uils.add(new Option(currentLang + ' (custom)', currentLang), 0);
+  updateLocalesDropdown();
+}
+
+let LOCALES_LIST = [];
+async function loadLocalesList() {
+  try {
+    const r = await fetch('/api/locales');
+    if (r.ok) {
+      const d = await r.json();
+      if (Array.isArray(d.locales)) LOCALES_LIST = d.locales;
     }
-    uils.value = currentLang;
+  } catch (e) {}
+  updateLocalesDropdown();
+}
+
+function updateLocalesDropdown() {
+  const uils = $('ui-lang-sel');
+  if (!uils) return;
+  const list = LOCALES_LIST.length ? LOCALES_LIST : [
+    {code: 'en', name: 'English'},
+    {code: 'sk', name: 'Slovenčina'},
+    {code: 'sk_qwerty', name: 'Slovenčina (QWERTY)'},
+    {code: 'eng_us', name: 'English (US)'}
+  ];
+  let html = list.map(l => '<option value="' + esc(l.code) + '"' + (currentLang === l.code ? ' selected' : '') + '>' + esc(l.name) + ' (' + esc(l.code) + ')</option>').join('');
+  if (!list.some(l => l.code === currentLang)) {
+    html = '<option value="' + esc(currentLang) + '" selected>' + esc(currentLang) + ' (custom)</option>' + html;
   }
+  html += '<option value="__upload">+ Upload locale (.json)…</option>';
+  html += '<option value="__custom">+ Enter code manually…</option>';
+  if (uils.innerHTML !== html) uils.innerHTML = html;
+  uils.value = currentLang;
 }
 
 async function loadLocale(lang) {
@@ -113,7 +138,9 @@ async function loadLocale(lang) {
 }
 
 function cycleLang() {
-  const next = currentLang === 'en' ? 'sk' : 'en';
+  const codes = LOCALES_LIST.length ? LOCALES_LIST.map(l => l.code) : ['en', 'sk'];
+  const idx = codes.indexOf(currentLang);
+  const next = codes[(idx + 1) % codes.length] || (currentLang === 'en' ? 'sk' : 'en');
   loadLocale(next);
 }
 
@@ -145,6 +172,7 @@ function cycleTheme() {
 
 applyTheme(currentTheme);
 loadLocale(currentLang);
+loadLocalesList();
 
 project = store('af-project') || 'default';
 tab = store('af-tab') || 'overview';
