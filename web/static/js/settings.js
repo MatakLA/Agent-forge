@@ -66,7 +66,7 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback model',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', WORKER_MODEL_LIGHT: 'Model for light roles', LIGHT_ROLES: 'Light roles',
   ANTHROPIC_MODEL: 'Anthropic API model', OPENAI_MODEL: 'OpenAI API model', OPENAI_API_BASE: 'OpenAI API address', GEMINI_MODEL: 'Gemini API model', GEMINI_API_BASE: 'Gemini API address',
-  OWNER_LANG: 'Your language', LOCAL_TZ: 'Your time zone', PROJECT_DIR: 'Work only in this folder', VISION_FILE: 'Vision file', SHARED_FILES: 'Files tasks may share',
+  OWNER_LANG: 'AI communication language', LOCAL_TZ: 'Time zone', PROJECT_DIR: 'Work only in this folder', VISION_FILE: 'Vision file', SHARED_FILES: 'Files tasks may share',
   LOOP_SEC: 'Foreman interval (seconds)', ORPHAN_LIMIT: 'Block a task after N crashed runs', ORPHAN_WARN: 'Warn after N crashed runs', WORKERS: 'Workers of this project',
   AUTOPILOT: 'Autopilot', AUTO_MERGE: 'Merge automatically', CONTINUE_CONVERSATIONS: 'Reworks continue the worker\'s conversation', PLAN_AHEAD: 'Plan ahead while workers wait',
   MAINTENANCE: 'Check main while idle', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most', MAX_GOAL_ROUNDS: 'Rounds per goal, at most',
@@ -108,8 +108,8 @@ const HELP = {
   GEMINI_MODEL: 'The model used when the Gemini API plans or reviews (paid per token), e.g. gemini-2.5-pro.',
   OPENAI_API_KEY: 'Set on the Runtimes page.',
   GEMINI_API_KEY: 'Set on the Runtimes page.',
-  OWNER_LANG: 'The language of the goals, notes and questions you read, e.g. Slovak.',
-  LOCAL_TZ: 'Your time zone; times and deadlines shown to you use it.',
+  OWNER_LANG: 'Language the AI team writes in when formulating goals, questions, and notes for you (dashboard UI language is configured below).',
+  LOCAL_TZ: 'Time zone for server logs, CLI reports, and notifications (click Detect to use your browser time zone).',
   PROJECT_DIR: 'Work only inside this folder of the repository. Empty = the whole repository.',
   VISION_FILE: 'The file that says what the product should become. Autopilot reads it to choose the next goal.',
   SHARED_FILES: 'Files that several tasks may change at the same time (a registry, for example). Separate with commas.',
@@ -469,8 +469,11 @@ function pageModels() {
       field('LIGHT_ROLES', roles.length || cur('LIGHT_ROLES') ? multi('LIGHT_ROLES', roles) : txt('LIGHT_ROLES', 'tester,technical-writer')) +
       '<div class="btnrow"><button type="button" class="mini" id="refresh-models">Refresh the list of Antigravity models</button></div>',
       'For workers running on Antigravity.') +
-    card('Models of the other runtimes', field('WORKER_MODEL_CLAUDE', txt('WORKER_MODEL_CLAUDE', 'sonnet')) + field('WORKER_MODEL_CODEX', txt('WORKER_MODEL_CODEX', 'e.g. gpt-5.1-codex')) +
-      field('WORKER_MODEL_GEMINI', txt('WORKER_MODEL_GEMINI', 'the CLI\'s default')) + field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b')) +
+    card('Models of the other runtimes',
+      field('WORKER_MODEL_CLAUDE', sel('WORKER_MODEL_CLAUDE', [['sonnet', 'sonnet (recommended)'], ['opus', 'opus'], ['haiku', 'haiku']])) +
+      field('WORKER_MODEL_CODEX', sel('WORKER_MODEL_CODEX', [['', 'CLI default (gpt-5.1-codex)'], ['gpt-5.1-codex', 'gpt-5.1-codex'], ['gpt-4o', 'gpt-4o'], ['gpt-4o-mini', 'gpt-4o-mini'], ['o3-mini', 'o3-mini'], ['o1', 'o1']])) +
+      field('WORKER_MODEL_GEMINI', sel('WORKER_MODEL_GEMINI', [['', 'CLI default'], ['gemini-2.5-pro', 'gemini-2.5-pro'], ['gemini-2.5-flash', 'gemini-2.5-flash'], ['gemini-3.8-flash-high', 'gemini-3.8-flash-high']])) +
+      field('WORKER_MODEL_COMPAT', txt('WORKER_MODEL_COMPAT', 'e.g. qwen3-coder:30b')) +
       field('WORKER_MODEL_AIDER', txt('WORKER_MODEL_AIDER', 'e.g. qwen3-coder:30b')), 'Empty = the CLI\'s own default.') +
     card('Model routing', field('MODEL_ROUTING', sel('MODEL_ROUTING', [['off', 'off - use the models above'], ['auto', 'auto - the cheapest model that has proven itself']])) +
       field('ROUTING_MIN_TASKS', num('ROUTING_MIN_TASKS', null, 'tasks')) + field('ROUTING_MIN_FIRST_PASS', num('ROUTING_MIN_FIRST_PASS', null, '%')),
@@ -481,18 +484,54 @@ function pageModels() {
 }
 
 // ---- Project
+const LANG_OPTIONS = [
+  ['Slovak', 'Slovenčina (Slovak)'],
+  ['English', 'English'],
+  ['Czech', 'Čeština (Czech)'],
+  ['German', 'Deutsch'],
+  ['Polish', 'Polski'],
+  ['French', 'Français'],
+  ['Spanish', 'Español'],
+  ['Italian', 'Italiano'],
+  ['Hungarian', 'Magyar'],
+  ['Ukrainian', 'Українська']
+];
+const TZ_OPTIONS = [
+  ['Europe/Bratislava', 'Europe/Bratislava (CET/CEST)'],
+  ['Europe/Prague', 'Europe/Prague (CET/CEST)'],
+  ['Europe/Vienna', 'Europe/Vienna (CET/CEST)'],
+  ['Europe/Berlin', 'Europe/Berlin (CET/CEST)'],
+  ['Europe/Budapest', 'Europe/Budapest (CET/CEST)'],
+  ['Europe/Warsaw', 'Europe/Warsaw (CET/CEST)'],
+  ['Europe/London', 'Europe/London (GMT/BST)'],
+  ['Europe/Paris', 'Europe/Paris (CET/CEST)'],
+  ['Europe/Rome', 'Europe/Rome (CET/CEST)'],
+  ['Europe/Kyiv', 'Europe/Kyiv (EET/EEST)'],
+  ['UTC', 'UTC (Coordinated Universal Time)'],
+  ['America/New_York', 'America/New_York (Eastern)'],
+  ['America/Chicago', 'America/Chicago (Central)'],
+  ['America/Denver', 'America/Denver (Mountain)'],
+  ['America/Los_Angeles', 'America/Los_Angeles (Pacific)'],
+  ['Asia/Tokyo', 'Asia/Tokyo (JST)'],
+  ['Asia/Shanghai', 'Asia/Shanghai (CST)'],
+  ['Asia/Dubai', 'Asia/Dubai (GST)'],
+  ['Australia/Sydney', 'Australia/Sydney (AEST/AEDT)']
+];
+
 function pageProject() {
   const fk = V().FORGE_KIND || '', gh = fk === 'github' || fk === 'gitlab';
   return card('Where the code lives',
       rowAct('row-repo', 'Repository', (gh ? esc(fk === 'github' ? 'GitHub' : 'GitLab') + ': <b>' + esc(V().UPSTREAM_REPO) + '</b>' : fk === 'forgejo' ? 'only the internal Forgejo' : 'not chosen yet') +
         ' <button type="button" class="mini" id="open-setup">' + (fk ? 'Change…' : 'Choose…') + '</button>') +
-      (gh ? field('UPSTREAM_BRANCH', txt('UPSTREAM_BRANCH', 'main')) + field('UPSTREAM_MERGE', sel('UPSTREAM_MERGE', [['merge', 'a merge commit'], ['squash', 'squash and merge'], ['rebase', 'rebase and merge']])) : '') +
+      (gh ? field('UPSTREAM_BRANCH', sel('UPSTREAM_BRANCH', [['main', 'main'], ['master', 'master'], ['develop', 'develop']])) + field('UPSTREAM_MERGE', sel('UPSTREAM_MERGE', [['merge', 'a merge commit'], ['squash', 'squash and merge'], ['rebase', 'rebase and merge']])) : '') +
       det('d-forge', 'Internal Forgejo', rowAct('row-forge-url', LABEL.FORGE_URL, '<code>' + esc(V().FORGE_URL || '') + '</code>') + rowAct('row-forge-repo', LABEL.FORGE_REPO, '<code>' + esc(V().FORGE_REPO || '') + '</code>'),
         'set at install time, read-only here')) +
     card('What waits for your OK', field('APPROVE', multi('APPROVE', [['plan', 'a goal\'s plan is carried out'], ['risky', 'a risky task starts'], ['merge', 'a reviewed branch is merged']])),
       'What you tick waits for you under Overview → Needs you (and a notification, if set up below). Nothing ticked = fully automatic.') +
     card('How the team behaves', field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) + field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) +
-      field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) + field('OWNER_LANG', txt('OWNER_LANG', 'e.g. sk')) + field('LOCAL_TZ', txt('LOCAL_TZ', 'UTC'))) +
+      field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) +
+      field('OWNER_LANG', sel('OWNER_LANG', LANG_OPTIONS)) +
+      field('LOCAL_TZ', '<div style="display:flex;gap:6px;align-items:center">' + sel('LOCAL_TZ', TZ_OPTIONS) + '<button type="button" class="mini" id="detect-tz" title="Set to browser timezone">Detect</button></div>')) +
     card(t('settings.appearance_title', 'Dashboard appearance & language'),
       rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),
         '<select id="ui-lang-sel" style="min-width:180px">' +
@@ -585,7 +624,7 @@ function pageLimits() {
     field('MAX_PARALLEL', num('MAX_PARALLEL', null, 'runs')) + field('RUN_TOKEN_CAP', num('RUN_TOKEN_CAP', null, 'tokens')) + field('RUN_TIMEOUT_MIN', num('RUN_TIMEOUT_MIN', null, 'min')) +
     field('RUN_TIMEOUT_MAX_MIN', num('RUN_TIMEOUT_MAX_MIN', null, 'min')) + field('DAILY_TOKEN_BUDGET', num('DAILY_TOKEN_BUDGET', null, 'tokens')) + field('MAX_RUNS_PER_DAY', num('MAX_RUNS_PER_DAY', null, 'runs')) +
     field('CONSEC_FAIL_TRIP', num('CONSEC_FAIL_TRIP', null, 'runs')) + field('POLL_SEC', num('POLL_SEC', null, 'seconds'))) +
-    card('Quota of the Antigravity accounts', field('QUOTA_MODEL_FILTER', txt('QUOTA_MODEL_FILTER', 'Gemini')) + field('QUOTA_MIN_5H_PCT', num('QUOTA_MIN_5H_PCT', null, '%')) + field('QUOTA_MIN_WEEK_PCT', num('QUOTA_MIN_WEEK_PCT', null, '%')));
+    card('Quota of the Antigravity accounts', field('QUOTA_MODEL_FILTER', sel('QUOTA_MODEL_FILTER', [['Gemini', 'Gemini (default)'], ['Claude', 'Claude'], ['all', 'All / any']])) + field('QUOTA_MIN_5H_PCT', num('QUOTA_MIN_5H_PCT', null, '%')) + field('QUOTA_MIN_WEEK_PCT', num('QUOTA_MIN_WEEK_PCT', null, '%')));
 }
 
 // ---- Advanced: rarely needed
@@ -601,7 +640,11 @@ function pageAdvanced() {
       field('MAX_REWORK', num('MAX_REWORK', null, 'rounds')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS', null, 'times')) + field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS', null, 'goals')) +
       field('MAX_GOAL_ROUNDS', num('MAX_GOAL_ROUNDS', null, 'rounds')) + field('DIFF_MAX', num('DIFF_MAX', null, 'characters')) + field('LESSONS_MAX', num('LESSONS_MAX', null, 'lessons'))) +
     card('Housekeeping', field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS', null, 'days'))) +
-    card('Models of runtimes that cannot be added as workers yet', field('OPENCODE_MODEL', txt('OPENCODE_MODEL', 'e.g. gpt-4o')) + field('QWEN_MODEL', txt('QWEN_MODEL', 'e.g. qwen-max')) + field('GOOSE_MODEL', txt('GOOSE_MODEL', 'e.g. gpt-4o'))) +
+    det('d-unsupported-runtimes', 'Experimental runtimes (not yet available as workers)',
+      field('OPENCODE_MODEL', txt('OPENCODE_MODEL', 'e.g. gpt-4o')) +
+      field('QWEN_MODEL', txt('QWEN_MODEL', 'e.g. qwen-max')) +
+      field('GOOSE_MODEL', txt('GOOSE_MODEL', 'e.g. gpt-4o')),
+      'placeholder settings for future CLI runtimes') +
     fileOnlyCard();
 }
 
@@ -715,6 +758,17 @@ document.addEventListener('click', async e => {
   if (t.id === 'discard-settings') { discardPend(); return; }
   if (q('[data-retry]')) { S = null; sLoadedFor = null; window._ferr = null; loadSettings(true); schedule(true); return; }
   if (t.id === 'refresh-models') { t.disabled = true; t.textContent = 'loading…'; await post('/api/settings', {refresh_models: true}); await loadSettings(true); schedule(true); return; }
+  if (t.id === 'detect-tz') {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const el = $('set-LOCAL_TZ');
+    if (el && tz) {
+      if (![...el.options].some(o => o.value === tz)) el.add(new Option(tz, tz));
+      el.value = tz;
+      notePend('LOCAL_TZ');
+      toast('Time zone set to ' + tz);
+    }
+    return;
+  }
   // workers
   if (t.id === 'add-worker') { SX.addOpen = !SX.addOpen; schedule(true); return; }
   if (t.id === 'addw-cancel') { SX.addOpen = false; SX.addUrl = SX.addModel = null; schedule(true); return; }
