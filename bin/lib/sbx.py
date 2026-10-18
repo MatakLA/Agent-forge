@@ -2,7 +2,7 @@
 Provides path construction under runs and secrets, kill switch management, ledger tracking,
 safe regex validation (PROJECT_RE, ROLE_RE, WORKER_RE, MODEL_RE, SAFE_ARG, TEST_CMD_RE, IMAGE_RE),
 and safe test_cmd / gate_image retrieval with injection guards."""
-import fcntl, json, os, re, subprocess, time
+import base64, concurrent.futures, fcntl, json, os, re, subprocess, time
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -508,6 +508,80 @@ def read_quota(worker):
             break
         time.sleep(pause)
     return rows
+
+
+_WORKER_ACCOUNT_CACHE = {}
+
+
+def get_worker_account(worker, runtime="agy", max_age=300):
+    """Retrieve the email address or account name of a worker container."""
+    if not WORKER_RE.fullmatch(worker):
+        return None
+    now = time.time()
+    cached = _WORKER_ACCOUNT_CACHE.get(worker)
+    if cached and now - cached[0] < max_age:
+        return cached[1]
+
+    account = None
+    if runtime == "agy":
+        try:
+            cmd = ["docker", "exec", worker, "python3", "-c",
+                   "import json, base64, os\n"
+                   "p = '/home/worker/.gemini/antigravity-cli/antigravity-oauth-token'\n"
+                   "if os.path.exists(p):\n"
+                   "    try:\n"
+                   "        with open(p) as f:\n"
+                   "            d = json.load(f)\n"
+                   "            idt = d.get('id_token', '')\n"
+                   "            if idt and '.' in idt:\n"
+                   "                pld = idt.split('.')[1]\n"
+                   "                claims = json.loads(base64.urlsafe_b64decode(pld + '=' * ((4 - len(pld) % 4) % 4)))\n"
+                   "                print(claims.get('email') or claims.get('name') or claims.get('sub') or '')\n"
+                   "    except Exception:\n"
+                   "        pass\n"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                account = res.stdout.strip()
+        except Exception:
+            pass
+    elif runtime in ("claude", "codex", "gemini", "compat", "aider"):
+        labels = {
+            "claude": "Anthropic API",
+            "codex": "OpenAI API",
+            "gemini": "Gemini API",
+            "compat": "Model server",
+            "aider": "Aider",
+        }
+        account = labels.get(runtime, runtime)
+
+    _WORKER_ACCOUNT_CACHE[worker] = (now, account)
+    return account
+
+
+def get_all_worker_accounts(workers_and_runtimes, max_age=300):
+    """Fetch accounts for given (worker_name, runtime) tuples in parallel."""
+    now = time.time()
+    to_fetch = []
+    results = {}
+    for w, rt in workers_and_runtimes:
+        cached = _WORKER_ACCOUNT_CACHE.get(w)
+        if cached and now - cached[0] < max_age:
+            if cached[1]:
+                results[w] = cached[1]
+        else:
+            to_fetch.append((w, rt))
+    if to_fetch:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(to_fetch))) as ex:
+            futs = {ex.submit(get_worker_account, w, rt, max_age): w for w, rt in to_fetch}
+            for fut in concurrent.futures.as_completed(futs):
+                w = futs[fut]
+                try:
+                    res = fut.result()
+                    if res:
+                        results[w] = res
+                except Exception:
+                    pass
+    return results
 
 
 def quota_verdict(rows, lim):

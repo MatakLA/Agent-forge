@@ -342,11 +342,23 @@ def quota_loop():
         try:
             _, all_workers = discover_workers()
             for worker in all_workers:
+                acc_cmd = (
+                    f"docker exec {worker} python3 -c \""
+                    "import json, base64, os; p = '/home/worker/.gemini/antigravity-cli/antigravity-oauth-token'; "
+                    "print(json.loads(base64.urlsafe_b64decode(json.load(open(p))['id_token'].split('.')[1] + '====')).get('email', '')) "
+                    "if os.path.exists(p) else None\" 2>/dev/null"
+                )
+                acc = (ssh_run(acc_cmd, timeout=10) or "").strip() or None
                 out = ssh_run(f"docker exec {worker} agy-run -p /usage --print-timeout 60s 2>/dev/null", timeout=70)
                 rows = [r for r in parse_usage(out) if "5h" in r["label"].lower() or "five hour" in r["label"].lower()
                         or "week" in r["label"].lower()]
+                touch_kw = {}
                 if rows:
-                    ROSTER.touch("worker:" + worker, quota=rows)
+                    touch_kw["quota"] = rows
+                if acc:
+                    touch_kw["account"] = acc
+                if touch_kw:
+                    ROSTER.touch("worker:" + worker, **touch_kw)
         except Exception:
             pass
         time.sleep(QUOTA_POLL_INTERVAL)

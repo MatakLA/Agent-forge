@@ -233,9 +233,9 @@ def status(as_json):
                claude_until=fmt_ts(st["claude_until"]) if st.get("claude_until", 0) > time.time() else None,
 
                goals=[dict(id=g["id"], text=g["text"], status=g["status"], summary=g.get("summary", ""),
-                           tasks=[dict(id=t["id"], title=t["title"], role=t["role"], status=t["status"], attempts=t["attempts"],
+                           tasks=[dict(id=t["id"], title=t.get("title") or t.get("text", ""), role=t.get("role", ""), status=t.get("status", "pending"), attempts=t.get("attempts", 0),
                                        worker=t.get("worker"), pr=t.get("pr"), blocked_why=t.get("blocked_why", ""))
-                                  for t in ts if t["goal"] == g["id"]]) for g in goals()],
+                                  for t in ts if t.get("goal") == g["id"]]) for g in goals()],
                events=evs)
     if as_json:
         print(json.dumps(out, ensure_ascii=False)); return

@@ -94,12 +94,13 @@ function quotaHtml(m) {
     const wWk = wk.find(x => fam(x.model) === wFam) || wk[0];
     const left = wWk ? wWk.pct : null;
     const lasts = burn && left != null ? left / burn : null;
-    rows.push('<tr><td>' + esc(w) + '</td><td>' + (five.length ? five.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '% remaining' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') : '–') +
+    const acc = e.account || ((window.S && window.S.workers || []).find(x => x.name === w) || {}).account || '';
+    rows.push('<tr><td><b>' + esc(w) + '</b></td><td class="muted small">' + esc(acc || '–') + '</td><td>' + (five.length ? five.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '% remaining' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') : '–') +
       '</td><td>' + (wk.length ? wk.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '% remaining' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') : '–') +
       '</td><td class="num">' + (burn ? burn.toFixed(1) + ' %/day' : '–') + '</td><td>' + (lasts == null ? '–' : lasts > 14 ? '> 2 weeks (est.)' : '≈ ' + lasts.toFixed(1) + ' days (est.)') + '</td></tr>');
   }
   if (!rows.length) return '<h3>Antigravity quota</h3><div class="empty">No Antigravity subscription workers configured or reporting quota yet.</div>';
-  return '<h3>Antigravity quota</h3><div class="tablewrap"><table class="m"><tr><th>worker</th><th>5-hour window (% remaining)</th><th>weekly quota (% remaining)</th><th class="num">burn pace (% of week / day)</th><th class="num">lasts at this pace (estimate)</th></tr>' +
+  return '<h3>Antigravity quota</h3><div class="tablewrap"><table class="m"><tr><th>worker</th><th>account</th><th>5-hour window (% remaining)</th><th>weekly quota (% remaining)</th><th class="num">burn pace (% of week / day)</th><th class="num">lasts at this pace (estimate)</th></tr>' +
     rows.join('') + '</table></div><div class="muted small">Quota = % of subscription limit remaining from agy /usage. Burn pace and duration are estimates for the active worker model; when every worker is below its floor, the team plans ahead and waits.</div>';
 }
 function moneyInsights() {
