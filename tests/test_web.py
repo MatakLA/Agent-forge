@@ -688,8 +688,10 @@ class TestWebServer(unittest.TestCase):
             self.assertTrue(self.calls and self.calls[-1][0].endswith("bin/foreman readiness"))
             assert self.calls and self.calls[-1][0].endswith("bin/foreman readiness")
             data = json.loads(body)
-            self.assertEqual(data, stub_status)
-            assert data == stub_status
+            self.assertIn("_age", data)
+            data_clean = {k: v for k, v in data.items() if k != "_age"}
+            self.assertEqual(data_clean, stub_status)
+            assert data_clean == stub_status
             self.assertIn("runtimes", data)
             assert "runtimes" in data
             self.assertIn("providers", data)

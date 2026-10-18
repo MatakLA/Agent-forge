@@ -226,6 +226,7 @@ function renderTaskSheet() {
       orphanBadge(t),
       t.pin_worker ? '<span class="badge">→ ' + esc(t.pin_worker) + '</span>' : '', t.model_override ? '<span class="badge">model ' + esc(t.model_override) + '</span>' : '',
       'attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4),
+      t.created ? 'created ' + esc(dfmt(t.created)) : '', t.finished ? 'finished ' + esc(dfmt(t.finished)) : ''].filter(Boolean).join(' · ');
   const ww = whyWaiting(t);
   const whyCard = ww ? '<div class="banner ' + (ww.code === 'paused' ? 'warn' : 'info') + '" style="margin:10px 0;padding:8px 12px;border-radius:8px">' +
     '<b>' + (ww.code === 'paused' ? '⏸ ' : '⏳ ') + esc(ww.short) + '</b>: ' + esc(ww.detail) +
