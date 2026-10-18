@@ -6,6 +6,7 @@ secrets/
 .secrets/
 .env
 .env.*
+!.env.example
 
 # Temporary and runtime states
 runs/

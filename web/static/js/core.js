@@ -37,6 +37,106 @@ const small = t => '<span class="muted small">' + t + '</span>';
 let tab = 'overview', F = null, P = {roster: {}, panes: []}, project = 'default', foremanFetchedAt = 0, PROJ_LIST = [];
 const SUB = {tasks: 'board', insights: 'team', system: 'health', settings: 'workers'};
 const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; };
+
+// ---- theme & localization (i18n)
+let I18N = {};
+let currentLang = store('af-lang') || 'en';
+const t = (k, fb) => (I18N && I18N[k]) || fb || k;
+
+function updateStatusObjects() {
+  STATUS.splitting = t('status.splitting', 'Splitting');
+  STATUS.pending = t('status.pending', 'Waiting');
+  STATUS.running = t('status.running', 'Running');
+  STATUS.gate = t('status.gate', 'Checking');
+  STATUS.review = t('status.review', 'Checking');
+  STATUS.merging = t('status.merging', 'Merging');
+  STATUS['merge-ready'] = t('status.merge_ready', 'Merging');
+  STATUS.approval = t('status.approval', 'Needs you');
+  STATUS.done = t('status.done', 'Done');
+  STATUS.blocked = t('status.blocked', 'Blocked');
+  STATUS.cancelled = t('status.cancelled', 'Cancelled');
+
+  GSTATUS.new = t('gstatus.new', 'Planning');
+  GSTATUS.approval = t('gstatus.approval', 'Plan needs you');
+  GSTATUS.active = t('gstatus.active', 'Running');
+  GSTATUS.done = t('gstatus.done', 'Done');
+  GSTATUS.blocked = t('gstatus.blocked', 'Blocked');
+  GSTATUS.cancelled = t('gstatus.cancelled', 'Cancelled');
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const k = el.dataset.i18n;
+    if (I18N && I18N[k]) el.textContent = I18N[k];
+  });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+    const k = el.dataset.i18nPh;
+    if (I18N && I18N[k]) el.placeholder = I18N[k];
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const k = el.dataset.i18nTitle;
+    if (I18N && I18N[k]) el.title = I18N[k];
+  });
+  const lb = $('lang-btn');
+  if (lb) {
+    lb.textContent = currentLang.toUpperCase().slice(0, 4);
+    lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for custom)';
+  }
+}
+
+async function loadLocale(lang) {
+  currentLang = lang;
+  store('af-lang', lang);
+  try {
+    const r = await fetch('/static/locales/' + encodeURIComponent(lang) + '.json');
+    if (r.ok) {
+      I18N = await r.json();
+    } else if (lang !== 'en') {
+      const fb = await fetch('/static/locales/en.json');
+      if (fb.ok) I18N = await fb.json();
+    }
+  } catch (e) {
+    console.warn('Failed to load locale:', lang, e);
+  }
+  updateStatusObjects();
+  applyI18n();
+  applyTheme(currentTheme);
+  for (const k in lastHTML) delete lastHTML[k];
+  schedule(true);
+}
+
+function cycleLang() {
+  const next = currentLang === 'en' ? 'sk' : 'en';
+  loadLocale(next);
+}
+
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_ICONS = {auto: '◐', light: '☀', dark: '☾'};
+let currentTheme = store('af-theme') || 'auto';
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  store('af-theme', theme);
+  if (theme === 'auto') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+  const tb = $('theme-btn');
+  if (tb) {
+    tb.textContent = THEME_ICONS[theme] || '◐';
+    tb.title = t('theme.' + theme, 'Theme: ' + theme) + ' (click to toggle)';
+  }
+}
+
+function cycleTheme() {
+  const idx = THEMES.indexOf(currentTheme);
+  applyTheme(THEMES[(idx + 1) % THEMES.length]);
+}
+
+applyTheme(currentTheme);
+loadLocale(currentLang);
+
 project = store('af-project') || 'default';
 tab = store('af-tab') || 'overview';
 try { Object.assign(SUB, JSON.parse(store('af-sub') || '{}')); } catch (e) {}
@@ -131,7 +231,7 @@ document.addEventListener('click', e => { const b = e.target.closest('.seg butto
 
 // ---- the sheet: one at a time (task, goal, run replay, document, search, finished runs); Esc or a click outside closes it
 const SHEET = {kind: null, id: null};
-function sheetHTML(html) { return '<button class="close" data-close>Close</button>' + html; }
+function sheetHTML(html) { return '<button class="close" data-close>' + esc(t('btn.close', 'Close')) + '</button>' + html; }
 function openSheet(kind, id, html, wide) {
   SHEET.kind = kind; SHEET.id = id;
   const s = $('sheet'); s.className = 'sheet' + (wide ? ' wide' : '');
@@ -311,3 +411,16 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SHEET.kind) { closeSheet(); return; }
   if (e.key === '/' && !typing(document.activeElement) && !e.ctrlKey && !e.metaKey) { e.preventDefault(); openSearch(); }
 });
+
+const themeBtn = $('theme-btn');
+if (themeBtn) themeBtn.addEventListener('click', cycleTheme);
+const langBtn = $('lang-btn');
+if (langBtn) {
+  langBtn.addEventListener('click', cycleLang);
+  langBtn.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const custom = prompt('Enter locale code (e.g. sk_qwerty, sk, en):', currentLang);
+    if (custom && custom.trim()) loadLocale(custom.trim().toLowerCase());
+  });
+}
+
