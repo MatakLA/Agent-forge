@@ -153,7 +153,7 @@ document.addEventListener('click', async e => {
     fx.disabled = true; fx.textContent = 'working…';
     const r = await post('/api/fix', {fix: id});
     done(r, 'Done'); if (r.message && !r.ok) alert(r.message);
-    refreshSoon(); sysLoad('health', 0, true); return; }
+    refreshSoon(); sysLoad('health', 0, true); if (id === 'egress-up') sysLoad('egress', 0, true); return; }
   const gs = e.target.closest('[data-goset]');
   if (gs) { settingsGoto(gs.dataset.goset); return; }
   if (e.target.closest('[data-egress-reload]')) { sysLoad('egress', 0, true); return; }
