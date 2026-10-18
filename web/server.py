@@ -556,6 +556,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         if not host_allowed(self.headers.get("Host")):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
+        path = self.path.split("?")[0]
+        if path == "/app.apk":
+            apk_path = "/opt/host-setup/state/android/app.apk"
+            if os.path.isfile(apk_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.android.package-archive")
+                self.send_header("Content-Length", str(os.path.getsize(apk_path)))
+                self.send_header("Content-Disposition", 'attachment; filename="app.apk"')
+                self.end_headers()
+                return
+            self.send_response(404); self.end_headers(); return
         self.send_response(405); self.end_headers()
 
     def do_GET(self):
@@ -577,6 +588,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/index.html"):
             self._raw(STATIC["index.html"][0], "text/html; charset=utf-8", cache="no-cache"); return
+        if path == "/app.apk":
+            apk_path = "/opt/host-setup/state/android/app.apk"
+            if os.path.isfile(apk_path):
+                try:
+                    with open(apk_path, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.android.package-archive")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Content-Disposition", 'attachment; filename="app.apk"')
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                except OSError:
+                    self.send_response(500); self.end_headers(); return
+            self.send_response(404); self.end_headers(); return
         if path.startswith("/static/"):
             f = STATIC.get(path[len("/static/"):])
             if not f:
