@@ -197,6 +197,7 @@ def dashboard_json():
     gs = goals()
     backlog = jload(os.path.join(ctx.FD, "backlog.json"), [])
     return dict(project=ctx.PROJECT or "default", repo=sbx.FORGE_REPO, pool=pool, now=now, alive=alive, paused=os.path.exists(os.path.join(ctx.FD, "PAUSED")), killswitch=sbx.killswitch_active(),
+                owner_lang=ctx.C.get("OWNER_LANG", "English"),
                 autopilot=bool(ctx.C["AUTOPILOT"]) and not os.path.exists(os.path.join(ctx.FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
                 agy_cooldown={w: u for w, u in st.get("agy_cooldown", {}).items() if u > now},

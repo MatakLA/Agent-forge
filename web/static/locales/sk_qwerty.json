@@ -95,6 +95,35 @@
   "msg.paused": "pozastavené",
   "msg.no_fresh_data": "žiadne čerstvé dáta už {min} min — nespoliehajte sa na stav nižšie",
   "msg.nothing_needs_you": "Práve teraz nič nečaká na vaše schválenie.",
-  "msg.no_recent_activity": "Zatiaľ nebola zaznamenaná žiadna nedávna aktivita.",
-  "msg.loading": "načítavam…"
+  "msg.loading": "načítavam…",
+
+  "btn.copy_report": "📋 Skopírovať report pre AI",
+  "btn.send_back_words": "Vrátiť s mojimi slovami…",
+  "btn.open": "Otvoriť",
+  "btn.resume": "Pokračovať",
+  "btn.pause": "Pozastaviť",
+
+  "stat.running": "beží",
+  "stat.waiting": "čaká",
+  "stat.checking": "kontrola",
+  "stat.done_today": "dnes hotovo",
+  "stat.need_you": "čaká na vás",
+  "stat.blocked": "zablokované",
+  "stat.paused": "pozastavené",
+
+  "ctl.autopilot_on": "Autopilot: zapnutý",
+  "ctl.autopilot_off": "Autopilot: vypnutý",
+  "ctl.foreman_running": "Foreman: beží",
+  "ctl.foreman_paused": "Foreman: pozastavený",
+  "ctl.foreman_stopped": "Foreman: nebeží",
+  "ctl.autopilot_tip_on": "Autopilot zapnutý: ak worker nemá prácu a backlog je prázdny, orchestrátor navrhne nové ciele z vízie.",
+  "ctl.autopilot_tip_off": "Autopilot vypnutý: ak worker nemá prácu a backlog je prázdny, orchestrátor sám nové ciele nenavrhuje.",
+  "ctl.foreman_tip_running": "Beží: úlohy sú prideľované workerom hneď ako sú voľní.",
+  "ctl.foreman_tip_paused": "Pozastavené: žiadne nové úlohy sa neprideľujú; bežiace úlohy dobehnú.",
+  "ctl.foreman_tip_stopped": "Služba foreman na pozadí nebeží alebo sa práve reštartuje.",
+
+  "diag.title": "🤖 Diagnóza orchestrátora:",
+  "diag.root_cause": "Koreňová príčina:",
+  "diag.suggested_fix": "💡 Odporúčaná oprava:",
+  "diag.copied": "📋 Report skopírovaný do schránky! Vložte ho svojmu AI asistentovi."
 }

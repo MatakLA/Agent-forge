@@ -95,6 +95,35 @@
   "msg.paused": "paused",
   "msg.no_fresh_data": "no fresh data for {min} min — do not trust the state below",
   "msg.nothing_needs_you": "Nothing needs your approval right now.",
-  "msg.no_recent_activity": "No recent activity recorded yet.",
-  "msg.loading": "loading…"
+  "msg.loading": "loading…",
+
+  "btn.copy_report": "📋 Copy report for AI",
+  "btn.send_back_words": "Send back with my words…",
+  "btn.open": "Open",
+  "btn.resume": "Resume",
+  "btn.pause": "Pause",
+
+  "stat.running": "running",
+  "stat.waiting": "waiting",
+  "stat.checking": "checking",
+  "stat.done_today": "done today",
+  "stat.need_you": "need you",
+  "stat.blocked": "blocked",
+  "stat.paused": "paused",
+
+  "ctl.autopilot_on": "Autopilot: on",
+  "ctl.autopilot_off": "Autopilot: off",
+  "ctl.foreman_running": "Foreman: running",
+  "ctl.foreman_paused": "Foreman: paused",
+  "ctl.foreman_stopped": "Foreman: not running",
+  "ctl.autopilot_tip_on": "Autopilot on: when a worker would idle and the backlog is empty, the orchestrator proposes new goals from the vision.",
+  "ctl.autopilot_tip_off": "Autopilot off: when a worker would idle and the backlog is empty, the orchestrator does not propose new goals from the vision.",
+  "ctl.foreman_tip_running": "Running: tasks are dispatched to workers as they become available.",
+  "ctl.foreman_tip_paused": "Paused: no new tasks are dispatched; tasks already running continue to completion.",
+  "ctl.foreman_tip_stopped": "Foreman background service is not running or is restarting.",
+
+  "diag.title": "🤖 Orchestrator Diagnosis:",
+  "diag.root_cause": "Root cause:",
+  "diag.suggested_fix": "💡 Suggested fix:",
+  "diag.copied": "📋 Report copied to clipboard! Paste it to your AI assistant."
 }

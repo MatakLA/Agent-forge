@@ -116,7 +116,19 @@ function updateLocalesDropdown() {
   uils.value = currentLang;
 }
 
-async function loadLocale(lang) {
+const LANG_TO_OWNER = {
+  en: 'English',
+  eng_us: 'English',
+  sk: 'Slovak',
+  sk_qwerty: 'Slovak',
+  de: 'German',
+  cs: 'Czech',
+  fr: 'French',
+  es: 'Spanish',
+  pl: 'Polish'
+};
+
+async function loadLocale(lang, syncBackend = true) {
   currentLang = lang;
   store('af-lang', lang);
   try {
@@ -135,6 +147,14 @@ async function loadLocale(lang) {
   applyTheme(currentTheme);
   for (const k in lastHTML) delete lastHTML[k];
   schedule(true);
+
+  if (syncBackend) {
+    const targetOwner = LANG_TO_OWNER[lang] || (lang.startsWith('sk') ? 'Slovak' : (lang.startsWith('en') ? 'English' : ''));
+    if (targetOwner && F && F.owner_lang !== targetOwner) {
+      F.owner_lang = targetOwner;
+      post('/api/settings', {changes: {OWNER_LANG: targetOwner}}).catch(() => {});
+    }
+  }
 }
 
 function cycleLang() {
@@ -232,7 +252,7 @@ function copyTaskReport(t) {
   }
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(reportText).then(() => {
-      toast('📋 Report copied to clipboard! Paste it to your AI assistant.');
+      toast(t('diag.copied', '📋 Report copied to clipboard! Paste it to your AI assistant.'));
     }).catch(err => {
       prompt('Copy this report manually (Ctrl+C):', reportText);
     });
@@ -373,14 +393,18 @@ function pills() {
 }
 function stats() {
   if (!F) return '';
-  const t = F.today || {}, ts = F.tasks || [], gs = F.goals || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
+  const t_stat = F.today || {}, ts = F.tasks || [], gs = F.goals || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
   const box = (v, lab, cls, go) => '<div class="stat' + (cls ? ' ' + cls : '') + '"' + (go ? ' data-go="' + go + '"' : '') + '><b>' + v + '</b><span>' + lab + '</span></div>';
   const mine = inboxItems().length, blocked = n('blocked');
   const waitingTasks = ts.filter(x => ['pending', 'splitting'].includes(x.status));
   const pausedCount = waitingTasks.filter(x => gs.some(g => g.id === x.goal && (g.paused || g.status === 'paused'))).length;
-  const waitLabel = 'waiting' + (pausedCount ? ' (' + pausedCount + ' paused)' : '');
-  return box(n('running'), 'running', '', 'live') + box(waitingTasks.length, waitLabel, pausedCount ? 'warn' : '', 'tasks') + box(n('gate', 'review', 'merging', 'merge-ready'), 'checking', '', 'tasks') +
-    box(t.merged != null ? t.merged : n('done'), 'done today', '', 'insights') + (mine ? box(mine, 'need you', 'hot', 'overview') : '') + (blocked ? box(blocked, 'blocked', 'bad', 'tasks') : '');
+  const waitLabel = t('stat.waiting', 'waiting') + (pausedCount ? ' (' + pausedCount + ' ' + t('stat.paused', 'paused') + ')' : '');
+  return box(n('running'), t('stat.running', 'running'), '', 'live') +
+    box(waitingTasks.length, waitLabel, pausedCount ? 'warn' : '', 'tasks') +
+    box(n('gate', 'review', 'merging', 'merge-ready'), t('stat.checking', 'checking'), '', 'tasks') +
+    box(t_stat.merged != null ? t_stat.merged : n('done'), t('stat.done_today', 'done today'), '', 'insights') +
+    (mine ? box(mine, t('stat.need_you', 'need you'), 'hot', 'overview') : '') +
+    (blocked ? box(blocked, t('stat.blocked', 'blocked'), 'bad', 'tasks') : '');
 }
 document.addEventListener('click', e => { const g = e.target.closest('.stat[data-go]'); if (g) setTab(g.dataset.go); });
 
@@ -390,6 +414,10 @@ function onForeman(m) {
   if (m.full) F = m.full;
   else if (F && m.delta) { Object.assign(F, m.delta); (m.removed || []).forEach(k => delete F[k]); }
   window._ferr = m.error; foremanFetchedAt = m.fetched_at || 0;
+  if (F && F.owner_lang && !store('af-lang')) {
+    const defaultCode = (F.owner_lang.toLowerCase().startsWith('slovak') || F.owner_lang.toLowerCase().startsWith('sk')) ? 'sk' : 'en';
+    if (currentLang !== defaultCode) loadLocale(defaultCode, false);
+  }
   if (F && F.forge && F.forge.setup_needed) maybeSetup();
   schedule();
 }
