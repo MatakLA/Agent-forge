@@ -349,8 +349,21 @@ function killCard() {
 }
 function workerRow(w, pool) {
   const rt = w.runtime || 'agy', up = w.state === 'running';
+  const acc = w.account || (window.P && window.P.roster && (window.P.roster['worker:' + w.name] || {}).account) || '';
+  const rnode = window.P && window.P.roster && window.P.roster['worker:' + w.name];
+  const q = (rnode && rnode.quota) || [];
+  const fam = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
+  const low = (rows, re) => { const v = rows.filter(x => re.test(x.label)); return v.length ? Math.min(...v.map(x => x.pct)) : null; };
+  const qparts = [...new Set(q.map(x => fam(x.model)))].map(f => {
+    const rows = q.filter(x => fam(x.model) === f), h5 = low(rows, /five hour|5h/i), wk = low(rows, /week/i);
+    const bits = [h5 == null ? '' : h5.toFixed(0) + '%', wk == null ? '' : 'week ' + wk.toFixed(0) + '%'].filter(Boolean);
+    return bits.length ? f + ' ' + bits.join(' · ') : '';
+  }).filter(Boolean);
+  const qstr = qparts.length ? ' · ' + qparts.join(' · ') : '';
+  const accInfo = acc ? '<span class="worker-account muted small" title="Account / email" style="margin-right:8px">' + esc(acc) + (qstr ? ' <span class="badge" style="font-size:11px">' + esc(qstr.slice(3)) + '</span>' : '') + '</span>' : (qstr ? '<span class="badge" style="font-size:11px;margin-right:8px">' + esc(qstr.slice(3)) + '</span>' : '');
+
   return '<div class="poolrow" data-worker="' + esc(w.name) + '"><label class="chk"><input type="checkbox" value="' + esc(w.name) + '"' + (pool.includes(w.name) ? ' checked' : '') + '> <b>' + esc(w.name) + '</b></label>' +
-    '<span class="poolinfo"><span class="rt rt-' + esc(rt) + '">' + esc(rtName(rt)) + '</span> <span class="badge ' + (up ? 'ok' : 'warn') + '">' + (up ? 'running' : esc(w.state || 'stopped')) + '</span></span>' +
+    '<span class="poolinfo">' + accInfo + '<span class="rt rt-' + esc(rt) + '">' + esc(rtName(rt)) + '</span> <span class="badge ' + (up ? 'ok' : 'warn') + '">' + (up ? 'running' : esc(w.state || 'stopped')) + '</span></span>' +
     '<span class="rowact">' + (rt === 'agy' ? '<button type="button" class="mini" data-login="' + esc(w.name) + '">Sign in…</button>' : '') +
     '<button type="button" class="mini ghost" data-wremove="' + esc(w.name) + '"' + (SX.busy ? ' disabled' : '') + ' aria-label="Remove ' + esc(w.name) + '">Remove</button></span></div>';
 }
@@ -630,11 +643,27 @@ async function createRole() {
 // ---- Limits (all projects)
 function pageLimits() {
   const n = (S.workers || []).length, par = Number(cur('MAX_PARALLEL'));
+  const R = (window.P && window.P.roster) || {};
+  const agyWorkers = (S.workers || []).filter(w => (w.runtime || 'agy') === 'agy');
+  const quotaRows = agyWorkers.map(w => {
+    const e = R['worker:' + w.name] || {};
+    const acc = w.account || e.account || '–';
+    const q = e.quota || [];
+    const fam = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
+    const low = (rows, re) => { const v = rows.filter(x => re.test(x.label)); return v.length ? Math.min(...v.map(x => x.pct)) : null; };
+    const wk = q.filter(x => /week/i.test(x.label)), five = q.filter(x => /five hour|5h/i.test(x.label));
+    const h5 = low(five, /five hour|5h/i), wkp = low(wk, /week/i);
+    return '<tr><td><b>' + esc(w.name) + '</b></td><td class="muted small">' + esc(acc) + '</td><td>' +
+      (h5 != null ? h5.toFixed(0) + '%' : '–') + '</td><td>' +
+      (wkp != null ? wkp.toFixed(0) + '%' : '–') + '</td></tr>';
+  });
+  const quotaTable = quotaRows.length ? '<div class="tablewrap pad" style="margin-top:12px"><table class="m"><tr><th>Worker</th><th>Account / Email</th><th>5-hour window</th><th>Weekly quota</th></tr>' + quotaRows.join('') + '</table></div>' : '';
+
   return card('Limits <span class="pill warn">all projects</span>', (n > par ? '<div class="note">There are more workers (' + n + ') than runs allowed at the same time (' + par + ') - some will always wait.</div>' : '') +
     field('MAX_PARALLEL', num('MAX_PARALLEL', null, 'runs')) + field('RUN_TOKEN_CAP', num('RUN_TOKEN_CAP', null, 'tokens')) + field('RUN_TIMEOUT_MIN', num('RUN_TIMEOUT_MIN', null, 'min')) +
     field('RUN_TIMEOUT_MAX_MIN', num('RUN_TIMEOUT_MAX_MIN', null, 'min')) + field('DAILY_TOKEN_BUDGET', num('DAILY_TOKEN_BUDGET', null, 'tokens')) + field('MAX_RUNS_PER_DAY', num('MAX_RUNS_PER_DAY', null, 'runs')) +
     field('CONSEC_FAIL_TRIP', num('CONSEC_FAIL_TRIP', null, 'runs')) + field('POLL_SEC', num('POLL_SEC', null, 'seconds'))) +
-    card('Quota of the Antigravity accounts', field('QUOTA_MODEL_FILTER', sel('QUOTA_MODEL_FILTER', [['Gemini', 'Gemini (default)'], ['Claude', 'Claude'], ['all', 'All / any']])) + field('QUOTA_MIN_5H_PCT', num('QUOTA_MIN_5H_PCT', null, '%')) + field('QUOTA_MIN_WEEK_PCT', num('QUOTA_MIN_WEEK_PCT', null, '%')));
+    card('Quota of the Antigravity accounts', field('QUOTA_MODEL_FILTER', sel('QUOTA_MODEL_FILTER', [['Gemini', 'Gemini (default)'], ['Claude', 'Claude'], ['all', 'All / any']])) + field('QUOTA_MIN_5H_PCT', num('QUOTA_MIN_5H_PCT', null, '%')) + field('QUOTA_MIN_WEEK_PCT', num('QUOTA_MIN_WEEK_PCT', null, '%')) + quotaTable);
 }
 
 // ---- Advanced: rarely needed
