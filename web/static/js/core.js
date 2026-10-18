@@ -211,6 +211,45 @@ function done(r, okText) {
   return ok;
 }
 
+function copyTaskReport(t) {
+  if (!t) return;
+  let reportText = '';
+  if (t.diagnosis && t.diagnosis.report) {
+    reportText = t.diagnosis.report;
+  } else {
+    const diag = t.diagnosis || {};
+    reportText = '### 🚨 Task Failure Report for AI Assistant\n\n' +
+      '**Task:** `' + (t.id || '') + '` - *' + (t.title || '') + '*\n' +
+      '**Role:** `' + (t.role || '') + '` | **Goal:** `' + (t.goal || '') + '`\n' +
+      '**Status:** ' + (t.status || 'blocked') + ' (' + (t.attempts || 0) + ' attempts)\n\n' +
+      (diag.summary ? '#### 📋 Orchestrator Diagnosis:\n' + diag.summary + '\n\n' : '') +
+      (diag.root_cause ? '**Root cause:** ' + diag.root_cause + '\n\n' : '') +
+      (diag.suggested_fix ? '#### 💡 Suggested Fix:\n' + diag.suggested_fix + '\n\n' : '') +
+      (t.blocked_why ? '**Error details:** ' + t.blocked_why + '\n\n' : '') +
+      (t.files && t.files.length ? '#### 📁 Declared Files:\n' + t.files.map(f => '- `' + f + '`').join('\n') + '\n\n' : '') +
+      (t.gate_tail ? '#### 🔍 Gate Failure Output:\n```\n' + t.gate_tail.slice(-2500) + '\n```\n\n' : '') +
+      '**Instruction for AI Assistant:** Please fix this issue in the repository, ensure the test suite passes, and unblock the task.';
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(reportText).then(() => {
+      toast('📋 Report copied to clipboard! Paste it to your AI assistant.');
+    }).catch(err => {
+      prompt('Copy this report manually (Ctrl+C):', reportText);
+    });
+  } else {
+    prompt('Copy this report manually (Ctrl+C):', reportText);
+  }
+}
+
+document.addEventListener('click', e => {
+  const cr = e.target.closest && e.target.closest('[data-copyreport]');
+  if (cr) {
+    const tid = cr.dataset.copyreport;
+    const t = ((F && F.tasks) || []).find(x => x.id === tid) || (TD && TD.data && TD.data.task && TD.data.task.id === tid ? TD.data.task : null);
+    if (t) copyTaskReport(t);
+  }
+});
+
 // ---- rendering: only touch the DOM when a section's HTML changed (no flicker, no lost scroll, less battery)
 const lastHTML = {};
 function setHTML(id, html, force) {

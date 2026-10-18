@@ -58,8 +58,12 @@ function inboxHtml() {
         '">Answer</button><button class="mini" data-qd="' + it.n + '" title="the question does not matter">Dismiss</button>');
     }
     const t = it.task;
-    return card('blocked', '<span class="badge bad">blocked</span> ' + esc(t.title) + ' ' + small(esc(t.id)), esc(String(t.blocked_why || '').slice(0, 260)),
-      '<button class="primary sm" data-ta="retry" data-id="' + esc(t.id) + '">Retry</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">Send back with my words…</button>' +
+    const diag = t.diagnosis;
+    const whyText = diag ? (diag.summary + (diag.suggested_fix ? '\n\n💡 Fix: ' + diag.suggested_fix : '')) : String(t.blocked_why || '');
+    return card('blocked', '<span class="badge bad">blocked</span> ' + esc(t.title) + ' ' + small(esc(t.id)), esc(whyText.slice(0, 360)),
+      '<button class="primary sm" data-ta="retry" data-id="' + esc(t.id) + '">Retry</button>' +
+      '<button type="button" class="mini" data-copyreport="' + esc(t.id) + '" title="Copy error report to clipboard for AI assistant">📋 Copy report for AI</button>' +
+      '<button class="mini" data-fbtoggle="' + esc(it.key) + '">Send back with my words…</button>' +
       open('task', t.id) + '<button class="mini ghost" data-ta="cancel" data-id="' + esc(t.id) + '">Cancel</button>',
       fbForm(it.key, 'What should the worker do differently?', 'Send back'));
   }).join('');
