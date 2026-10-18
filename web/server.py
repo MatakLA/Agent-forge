@@ -736,7 +736,8 @@ def main():
     threading.Thread(target=L.quota_loop, daemon=True).start()
     threading.Thread(target=B.foreman_loop, daemon=True).start()
     threading.Thread(target=SLOW.warm_loop, daemon=True).start()
-    srv = Server(("127.0.0.1", B.BIND_PORT), Handler)
+    bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
+    srv = Server((bind_host, B.BIND_PORT), Handler)
     srv.serve_forever()
 
 

@@ -43,6 +43,7 @@ If you want a cockpit for agents you watch, those tools are great. Agent-Forge i
 
 ## Quickstart
 
+### Option 1: Automatic installation script
 On a fresh Ubuntu machine - ideally a dedicated VM (4+ vCPU, 8+ GB RAM); [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) makes one:
 
 ```bash
@@ -57,9 +58,27 @@ About 20 minutes: Docker, the egress proxy, an internal Forgejo, the worker imag
 2. **Add workers** - see below.
 3. **Enter a goal** - or let the autopilot build the demo project in [`examples/demo`](examples/demo).
 
+### Option 2: Docker Compose
+
+Spin up the unified Agent-Forge stack (internal Forgejo, egress proxy, and web dashboard) in seconds:
+
+```bash
+git clone https://github.com/MatakLA/Agent-forge.git && cd Agent-forge
+cp .env.example .env
+docker compose up -d
+```
+
+Open http://localhost:8171 for the dashboard and http://localhost:3000 for internal Forgejo.
+
 To try a realistic goal on an existing repository, see [`examples/sample-project/README.md`](examples/sample-project/README.md).
 
 `bin/doctor` checks the whole install and tells you how to fix what is wrong. All steps by hand: [docs/SETUP.md](docs/SETUP.md).
+
+### Themes & Localization (i18n)
+
+The dashboard supports:
+- **Color mode switch**: Click the theme button (`◐`) in the top bar to cycle between **Auto** (system preference detection), **Light** (`☀`), and **Dark** (`☾`) modes.
+- **Language dictionary system**: Click the language toggle (`EN` / `SK`) to switch UI language instantly without reloading. Custom locales (e.g. `sk_qwerty`, `de`, `cs`) can be added by placing `<code_name>.json` in [`web/static/locales/`](web/static/locales/) and right-clicking the language toggle. See [web/static/locales/README.md](web/static/locales/README.md).
 
 ## Workers: API keys or a subscription
 
