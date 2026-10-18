@@ -335,6 +335,12 @@ if not runner:
        "git rebase --abort 2>/dev/null; git merge --abort 2>/dev/null; fi; true")
     r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
            "git fetch -q origin && git checkout -q main && git pull -q --ff-only")
+    if r.returncode != 0:
+        # Recovery: stash any untracked or uncommitted leftovers that blocked checkout and retry
+        sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+           "git stash -u -m 'auto-stashed before checkout' 2>/dev/null; true")
+        r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+               "git checkout -q main && git pull -q --ff-only")
     open(run + "/setup.log", "w").write(r.stdout + r.stderr)
     if r.returncode != 0:
         open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")

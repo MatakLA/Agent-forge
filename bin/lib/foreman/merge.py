@@ -327,7 +327,27 @@ def step_gate_review_merge(t):
                                          "). Never put keys or tokens into the repository. Remove it from every commit of the branch (rewrite the "
                                          "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate)
             why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
-            return lambda: rework(t, f"Gate failed: {why}. Fix it (see the gate output) and push again.", gate)
+            failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
+            owned = set(t.get("files", []))
+            unowned = [f for f in sorted(set(failed_tests)) if f not in owned]
+            msg = f"Gate failed: {why}."
+            if unowned:
+                unowned_test_files = [f for f in unowned if re.search(r"(^|/)test_.*\.py$|\.test\.[mc]?[jt]s$", f)]
+                if unowned_test_files:
+                    t["files"] = list(dict.fromkeys(t.get("files", []) + unowned_test_files))
+                    save_task(t)
+                    msg += (f" Existing test file(s) outside your original files failed: {', '.join(unowned_test_files)}. "
+                            f"These test files have been added to your task's allowed files. If your task intentionally changes the interface or return shape, "
+                            f"update the test assertions to reflect the new spec. If your change was meant to be backward-compatible, "
+                            f"fix your implementation in your owned files so existing tests pass without changes. Do NOT delete or weaken assertions.")
+                else:
+                    msg += (f" Existing test(s) outside your owned files failed: {', '.join(unowned)}. "
+                            f"Your changes in {', '.join(t.get('files', [])) or 'your branch'} broke backward compatibility with existing code or test expectations. "
+                            f"Do NOT edit, delete or weaken tests outside your declared files; fix your implementation in {', '.join(t.get('files', [])) or 'your files'} "
+                            f"so existing contracts, payload structures and callers continue to work.")
+            else:
+                msg += " Fix it (see the gate output) and push again."
+            return lambda: rework(t, msg, gate)
         _, diff, _ = sh(["git", "diff", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO)
         _, numstat, _ = sh(["git", "diff", "--numstat", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO)
         added, removed = parse_numstat(numstat)
