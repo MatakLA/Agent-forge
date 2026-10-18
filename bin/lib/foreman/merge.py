@@ -528,6 +528,39 @@ def retry_review(t, who, raw_text):
     event(f"task {t['id']}: {who} gave no usable review verdict (retry {t['review_fails']}/3, worker not penalised): {note[:200]}", task=t["id"])
 
 
+def diagnose_task(t, why):
+    """When a task fails tests repeatedly or is blocked, ask the orchestrator to diagnose the failure
+    in the owner's language, explaining the root cause and suggesting a fix that can be forwarded to an AI assistant."""
+    try:
+        gate_tail = str(t.get("gate_tail") or "")[-3000:]
+        spec = str(t.get("spec") or "")[:1500]
+        files = ", ".join(t.get("files", [])) or "not specified"
+        lang = ctx.C.get("OWNER_LANG", "sk")
+        prompt = (f"A worker task in the project has failed its tests in the merge gate multiple times.\n"
+                  f"Task ID: {t['id']}\n"
+                  f"Title: {t.get('title', '')}\n"
+                  f"Goal: {t.get('goal', '')}\n"
+                  f"Declared files: {files}\n"
+                  f"Spec:\n{spec}\n"
+                  f"Last error/feedback:\n{why}\n"
+                  f"Gate error tail:\n```\n{gate_tail}\n```\n\n"
+                  f"Analyze this failure. In {lang}, provide a clear, concise diagnosis for the owner and an AI assistant.\n"
+                  f"Reply with ONLY a single JSON object in this schema:\n"
+                  f'{{"summary": "1-2 sentence plain explanation in {lang} of what broke and why", '
+                  f'"root_cause": "The exact technical root cause in {lang}", '
+                  f'"suggested_fix": "Concrete instructions in {lang} on how to fix it in the code or tests", '
+                  f'"report": "A complete, self-contained markdown report with Task ID, error summary, files, and fix instructions ready to copy-paste to an AI assistant"}}\n')
+        text, who = llm("review", prompt, t["id"])
+        d = extract_json(text)
+        if isinstance(d, dict) and d.get("summary"):
+            d["who"] = who
+            d["at"] = sbx.now()
+            return d
+    except Exception as e:
+        event(f"task {t['id']}: diagnose_task error: {e}", task=t["id"])
+    return None
+
+
 def rework(t, feedback, gate_tail, count=True):
     # Security: feedback and gate_tail persist to task JSON on disk; dashboard renders in <pre> tags via esc() (bypassing backend ANSI regex).
     t_id = t.get("id") if isinstance(t, dict) else ""
@@ -541,6 +574,13 @@ def rework(t, feedback, gate_tail, count=True):
     t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500]))
     if t["attempts"] > ctx.C["MAX_REWORK"]:
         return block(t, f"still failing after {t['attempts']} attempts: {feedback[:300]}")
+    if t["attempts"] >= 2 and not t.get("diagnosis"):
+        try:
+            diag = diagnose_task(t, feedback)
+            if diag:
+                t["diagnosis"] = diag
+        except Exception:
+            pass
     t.update(status="pending", feedback=feedback, gate_tail=gate_tail, review_fails=0, regates=0, not_before=0)
     t.pop("merge_approved", None)              # new work needs a new approval
     t.pop("awaiting", None)
@@ -557,6 +597,14 @@ def block(t, why):
         return
     t["history"].append(dict(at=sbx.now(), outcome="blocked", why=why[:1500]))
     t.update(status="blocked", blocked_why=why)
+    try:
+        diag = diagnose_task(t, why)
+        if diag:
+            t["diagnosis"] = diag
+            if diag.get("summary"):
+                t["blocked_why"] = f"{diag['summary']}\n\nTechnical details: {why[:300]}"
+    except Exception as e:
+        event(f"task {t['id']}: diagnosis failed: {e}", task=t["id"])
     save_task(t)
     sbx.alert(f"foreman: task {t['id']} blocked: {why[:200]}")
     event(f"task {t['id']} BLOCKED - needs the owner: {why[:300]}", task=t["id"])

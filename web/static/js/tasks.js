@@ -185,7 +185,7 @@ function taskActions(t) {
   if (t.status === 'approval' && t.awaiting === 'risky') return b('approve', 'Start it', 'primary sm') + b('cancel', 'Cancel');
   if (t.status === 'approval' && t.awaiting === 'plan') return '<button class="mini" data-open="goal:' + esc(t.goal) + '">Its plan waits for you — open the goal</button>';
   if (t.status === 'running') return t.cancel_requested ? small('stopping its run…') : b('cancel', 'Stop and cancel');
-  if (t.status === 'blocked') return b('retry', 'Retry', 'primary sm') + f('feedback', 'Send back with my words…') + b('cancel', 'Cancel');
+  if (t.status === 'blocked') return b('retry', 'Retry', 'primary sm') + '<button class="mini" data-copyreport="' + esc(t.id) + '" title="Copy report for AI assistant">📋 Copy report for AI</button>' + f('feedback', 'Send back with my words…') + b('cancel', 'Cancel');
   if (t.status === 'cancelled') return b('retry', 'Queue it again');
   if (t.status === 'pending' || t.status === 'splitting') return f('feedback', (t.attempts || (t.history || []).length) ? 'Send my words…' : 'Add a note…') +
     f('assign', 'Assign to…') + f('model', 'Model…') + b('cancel', 'Cancel');
@@ -234,6 +234,11 @@ function renderTaskSheet() {
     '</div>' : '';
   const html = '<h2>' + esc(t.title || id) + '</h2><div class="sub">' + subMeta + '</div>' +
     whyCard +
+    (t.diagnosis ? '<div class="banner warn" style="margin:12px 0;padding:12px 14px;border-radius:8px">' +
+      '<b style="font-size:1.05em">🤖 Orchestrator Diagnosis:</b><p style="margin:6px 0 4px 0">' + esc(t.diagnosis.summary || '') + '</p>' +
+      (t.diagnosis.root_cause ? '<div style="margin:4px 0"><b>Root cause:</b> ' + esc(t.diagnosis.root_cause) + '</div>' : '') +
+      (t.diagnosis.suggested_fix ? '<div style="margin:4px 0"><b>💡 Suggested fix:</b> ' + esc(t.diagnosis.suggested_fix) + '</div>' : '') +
+      '<div style="margin-top:8px"><button type="button" class="mini primary" data-copyreport="' + esc(t.id) + '">📋 Copy report for AI</button></div></div>' : '') +
     '<div class="btnrow">' + taskActions(t) + '</div>' + taskForm(t) +
     (g ? '<div class="goalref">Goal: <button class="linkbtn" data-open="goal:' + esc(g.id) + '" style="font:inherit;text-align:left">' + esc(g.text.slice(0, 140)) + '</button></div>' : '') +
     (t.status === 'approval' && t.awaiting === 'merge' && t.merge_feedback ? '<h3>The review says</h3><div class="note">' + esc(tsloc(t.merge_feedback)) + '</div>' : '') +
