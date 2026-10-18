@@ -188,7 +188,8 @@ def dashboard_json():
         if open_:                                     # the full spec and history of closed tasks: GET /api/task (task_detail)
             x.update(spec=t.get("spec", "")[:2500], acceptance=t.get("acceptance", []), blocked_why=t.get("blocked_why", ""),
                      feedback=t.get("feedback", "")[:1500], history=t.get("history", [])[-6:], mutations=t.get("mutations", []),
-                     merge_feedback=t.get("merge_feedback", "")[:800] if t.get("awaiting") == "merge" else "")
+                     merge_feedback=t.get("merge_feedback", "")[:800] if t.get("awaiting") == "merge" else "",
+                     diagnosis=t.get("diagnosis"))
             est = estimate(t, sz, own_files)
             if est:
                 x["estimate"] = est
@@ -369,7 +370,7 @@ def task_detail(tid):
     keep = ("id", "goal", "title", "role", "risk", "status", "attempts", "worker", "pr", "pr_url", "depends_on", "files", "spec", "acceptance",
             "blocked_why", "feedback", "history", "dispatched", "finished", "created", "diff", "total_lines", "mutations", "awaiting",
             "pin_worker", "model_override", "owner_notes", "cancel_requested", "merge_reviewer", "merge_feedback", "variant", "branch",
-            "split_from", "planned_by", "cancelled_why", "orphan_streak", "orphan_warning")
+            "split_from", "planned_by", "cancelled_why", "orphan_streak", "orphan_warning", "diagnosis")
     orphan_warn = int(ctx.C.get("ORPHAN_WARN", 3))
     orphan_limit = int(ctx.C.get("ORPHAN_LIMIT", 5))
     streak = int(t.get("orphan_streak") or 0)

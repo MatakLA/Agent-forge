@@ -68,7 +68,7 @@ class Unavailable(Exception):
 
 
 def providers_for(kind):
-    order = ctx.C.get("REVIEW_PROVIDERS") if kind == "review" else ctx.C.get("PLAN_PROVIDERS")
+    order = ctx.C.get("REVIEW_PROVIDERS") if kind in ("review", "diagnose") else ctx.C.get("PLAN_PROVIDERS")
     if isinstance(order, (list, tuple)):
         provs = [str(p).strip() for p in order if str(p).strip()]
     else:
@@ -129,7 +129,7 @@ LAST_LLM = {}
 
 
 def _via_agy(kind, prompt, family):
-    model = (ctx.C["AGY_REVIEW_MODEL"] if kind == "review" else ctx.C["AGY_PLAN_MODEL"]) if family == "claude" else ctx.C["AGY_FALLBACK_MODEL"]
+    model = (ctx.C["AGY_REVIEW_MODEL"] if kind in ("review", "diagnose") else ctx.C["AGY_PLAN_MODEL"]) if family == "claude" else ctx.C["AGY_FALLBACK_MODEL"]
     st, now = gstate(), time.time()
     cd = st.get("agy_cooldown", {})
     cand = [w for w in workers() if runtime_of(w) == "agy" and cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
@@ -236,6 +236,8 @@ def _via_paid_api(name, prompt, system):
 def schema_for(kind):
     if kind == "review":
         return REVIEW_SCHEMA
+    if kind == "diagnose":
+        return DIAGNOSE_SCHEMA
     if kind == "ask":
         return None
     return OBJECT_SCHEMA
@@ -333,6 +335,9 @@ REVIEW_SCHEMA = json.dumps({"type": "object", "required": ["verdict", "feedback"
     "verdict": {"type": "string", "enum": ["approve", "rework", "reject"]}, "feedback": {"type": "string"}, "lesson": {"type": "string"},
     "mutations": {"type": "array", "items": {"type": "object", "required": ["name", "file", "old", "new"], "properties": {
         "name": {"type": "string"}, "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}}}}})
+
+
+DIAGNOSE_SCHEMA = json.dumps({"type": "object", "required": ["summary"]})
 
 
 OBJECT_SCHEMA = json.dumps({"type": "object"})
