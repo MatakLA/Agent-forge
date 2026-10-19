@@ -349,8 +349,8 @@ function killCard() {
 }
 function workerRow(w, pool) {
   const rt = w.runtime || 'agy', up = w.state === 'running';
-  const acc = w.account || (window.P && window.P.roster && (window.P.roster['worker:' + w.name] || {}).account) || '';
-  const rnode = window.P && window.P.roster && window.P.roster['worker:' + w.name];
+  const acc = w.account || (P && P.roster && (P.roster['worker:' + w.name] || {}).account) || '';
+  const rnode = P && P.roster && P.roster['worker:' + w.name];
   const q = (rnode && rnode.quota) || [];
   const fam = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
   const low = (rows, re) => { const v = rows.filter(x => re.test(x.label)); return v.length ? Math.min(...v.map(x => x.pct)) : null; };
@@ -643,7 +643,7 @@ async function createRole() {
 // ---- Limits (all projects)
 function pageLimits() {
   const n = (S.workers || []).length, par = Number(cur('MAX_PARALLEL'));
-  const R = (window.P && window.P.roster) || {};
+  const R = (P && P.roster) || {};
   const agyWorkers = (S.workers || []).filter(w => (w.runtime || 'agy') === 'agy');
   const quotaRows = agyWorkers.map(w => {
     const e = R['worker:' + w.name] || {};
@@ -651,13 +651,12 @@ function pageLimits() {
     const q = e.quota || [];
     const fam = m => /claude/i.test(m) ? 'Claude' : /gemini/i.test(m) ? 'Gemini' : m;
     const low = (rows, re) => { const v = rows.filter(x => re.test(x.label)); return v.length ? Math.min(...v.map(x => x.pct)) : null; };
-    const wk = q.filter(x => /week/i.test(x.label)), five = q.filter(x => /five hour|5h/i.test(x.label));
-    const h5 = low(five, /five hour|5h/i), wkp = low(wk, /week/i);
-    return '<tr><td><b>' + esc(w.name) + '</b></td><td class="muted small">' + esc(acc) + '</td><td>' +
-      (h5 != null ? h5.toFixed(0) + '%' : '–') + '</td><td>' +
-      (wkp != null ? wkp.toFixed(0) + '%' : '–') + '</td></tr>';
+    const gem = q.filter(x => fam(x.model) === 'Gemini'), cl = q.filter(x => fam(x.model) === 'Claude');
+    const h5 = low(gem, /five hour|5h/i), wkp = low(gem, /week/i), clw = low(cl, /week/i);
+    const pc = v => v != null ? v.toFixed(0) + '%' : '–';
+    return '<tr><td><b>' + esc(w.name) + '</b></td><td class="muted small">' + esc(acc) + '</td><td>' + pc(h5) + '</td><td>' + pc(wkp) + '</td><td>' + pc(clw) + '</td></tr>';
   });
-  const quotaTable = quotaRows.length ? '<div class="tablewrap pad" style="margin-top:12px"><table class="m"><tr><th>Worker</th><th>Account / Email</th><th>5-hour window</th><th>Weekly quota</th></tr>' + quotaRows.join('') + '</table></div>' : '';
+  const quotaTable = quotaRows.length ? '<div class="tablewrap pad" style="margin-top:12px"><table class="m"><tr><th>Worker</th><th>Account / Email</th><th>Gemini 5-hour</th><th>Gemini weekly</th><th>Claude/GPT weekly</th></tr>' + quotaRows.join('') + '</table></div>' : '';
 
   return card('Limits <span class="pill warn">all projects</span>', (n > par ? '<div class="note">There are more workers (' + n + ') than runs allowed at the same time (' + par + ') - some will always wait.</div>' : '') +
     field('MAX_PARALLEL', num('MAX_PARALLEL', null, 'runs')) + field('RUN_TOKEN_CAP', num('RUN_TOKEN_CAP', null, 'tokens')) + field('RUN_TIMEOUT_MIN', num('RUN_TIMEOUT_MIN', null, 'min')) +

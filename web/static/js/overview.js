@@ -122,7 +122,7 @@ function teamHtml() {
     const body = t ? '<button class="node-task linkbtn" data-open="task:' + esc(t.id) + '" style="text-align:left;color:var(--text);display:block;width:100%">' + roleTag(t.role) + ' ' + esc(t.title) + '</button><div class="node-sub">' + esc(t.id) +
         ' · attempt ' + ((t.attempts || 0) + 1) + '/' + (t.max_attempts || 4) + (t.dispatched ? ' · ' + ago(t.dispatched) : '') + (e.tool_calls ? ' · ' + e.tool_calls + ' tools' : '') + '</div>'
       : '<div class="node-sub idle-why">' + esc(tsloc(idle) || ((live.reserved || []).includes(w) ? 'lent to the orchestrator' : 'free')) + '</div>';
-    const acc = ((window.S && window.S.workers || []).find(x => x.name === w) || {}).account || (e && e.account) || '';
+    const acc = ((typeof S !== 'undefined' && S && S.workers || []).find(x => x.name === w) || {}).account || (e && e.account) || '';
     const accLine = acc ? '<div class="node-sub muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(acc) + '">' + esc(acc) + '</div>' : '';
     const rt = rts[w];
     return '<div class="node' + (t ? ' busy' : '') + '"><div class="node-title"><span class="dot ' + (t ? 'running' : '') + '"></span>' + esc(w) +
