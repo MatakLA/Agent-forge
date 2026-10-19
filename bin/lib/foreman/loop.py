@@ -710,6 +710,17 @@ def run_loop():
             t["status"] = "gate"; save_task(t)
     stop = []
     signal.signal(signal.SIGTERM, lambda *a: stop.append(1))
+
+    def _heartbeat():                                # a long tick must not look like a dead foreman
+        hb = os.path.join(ctx.FD, "heartbeat")
+        while not stop:
+            try:
+                with open(hb, "w") as f:
+                    f.write(str(time.time()))
+            except OSError:
+                pass
+            time.sleep(10)
+    threading.Thread(target=_heartbeat, daemon=True).start()
     event("foreman started")
     was_off = None
     while not stop:

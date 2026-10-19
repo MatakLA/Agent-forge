@@ -148,7 +148,11 @@ def dashboard_json():
     pool = workers()                                   # first: it also learns each worker's runtime (WORKER_RT)
     st, ts, now = gstate(), tasks(), time.time()
     live = jload(os.path.join(ctx.FD, "live.json"), {})
-    alive = live.get("at", 0) > now - 3 * ctx.C["LOOP_SEC"] - 30
+    try:
+        beat = os.path.getmtime(os.path.join(ctx.FD, "heartbeat"))
+    except OSError:
+        beat = 0
+    alive = max(live.get("at", 0), beat) > now - 3 * ctx.C["LOOP_SEC"] - 30
     evs, llm_today = [], dict(calls=0, cost_usd=0.0, by={})
     try:
         evs = [json.loads(l) for l in open(os.path.join(ctx.FD, "events.jsonl")).read().splitlines()[-60:]]
