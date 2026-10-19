@@ -94,7 +94,7 @@ function quotaHtml(m) {
     const wWk = wk.find(x => fam(x.model) === wFam) || wk[0];
     const left = wWk ? wWk.pct : null;
     const lasts = burn && left != null ? left / burn : null;
-    const acc = e.account || ((window.S && window.S.workers || []).find(x => x.name === w) || {}).account || '';
+    const acc = e.account || ((typeof S !== 'undefined' && S && S.workers || []).find(x => x.name === w) || {}).account || '';
     rows.push('<tr><td><b>' + esc(w) + '</b></td><td class="muted small">' + esc(acc || '–') + '</td><td>' + (five.length ? five.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '% remaining' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') : '–') +
       '</td><td>' + (wk.length ? wk.map(x => fam(x) + ' ' + x.pct.toFixed(0) + '% remaining' + (x.reset ? ' <span class="muted">(' + esc(tsloc(String(x.reset).replace(/^resets?\s*/i, ''))) + ')</span>' : '')).join('<br>') : '–') +
       '</td><td class="num">' + (burn ? burn.toFixed(1) + ' %/day' : '–') + '</td><td>' + (lasts == null ? '–' : lasts > 14 ? '> 2 weeks (est.)' : '≈ ' + lasts.toFixed(1) + ' days (est.)') + '</td></tr>');
