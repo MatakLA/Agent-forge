@@ -9,7 +9,7 @@ Read-only review of a worker branch (fetch with the read-only monitoring token, 
 Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed."""
 import ast, json, os, re, shutil, subprocess, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-import sbx
+import sbx, quality
 a = sys.argv[1:]
 if not a or a[0].startswith("-"):
     print(__doc__); sys.exit(2)
@@ -94,6 +94,30 @@ try:
                     warn.append(f"{path}: new module without a module docstring (purpose, interface, invariants)")
             except (OSError, SyntaxError):
                 pass
+    # test economy and wiring (QUALITY_CHECK=off|warn|block, TEST_RATIO_MAX lines of tests per line of code)
+    pc = sbx.project_conf()
+    qmode = pc.get("QUALITY_CHECK", "warn")
+    quality_msg = ""
+    if qmode != "off":
+        try:
+            ratio_max = float(pc.get("TEST_RATIO_MAX", "1.5"))
+        except ValueError:
+            ratio_max = 1.5
+        t_add, c_add = quality.test_ratio(sh("git", "diff", "--numstat", f"{base}...HEAD", cwd=repo).stdout.splitlines())
+        print(f"\nlines added: code {c_add}, tests {t_add}" + (f" (ratio {t_add / c_add:.1f}, limit {ratio_max})" if c_add else ""))
+        if c_add and t_add > max(150, ratio_max * c_add):
+            quality_msg = (f"too many tests: {t_add} test lines for {c_add} code lines (limit {ratio_max} per code line, at least 150 allowed). "
+                           f"Keep tests for behaviour and invariants (what the function decides, edge cases that change the result); delete tests of "
+                           f"input validation boundaries that a schema already enforces, repeated cases that one parametrised test covers, and tests "
+                           f"of implementation details. Aim for about as many test lines as code lines.")
+        added_src = [l.split("\t")[-1] for l in ns if l.startswith("A")]
+        loose = quality.unreferenced(repo, added_src)
+        if loose:
+            warn.append("new source file(s) that no other file refers to yet (fine only if a later task of this goal wires them in): " + ", ".join(loose[:8]))
+        if quality_msg:
+            print("\n== QUALITY: " + quality_msg)
+            if qmode != "block":
+                warn.append("QUALITY: " + quality_msg)
     print(f"\ntest files: {tests or 'none'}, test functions: {ntests}")
     if not tests:
         warn.append("no test file in the diff")
@@ -111,7 +135,9 @@ try:
     t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD,
              timeout=int(os.environ.get("GATE_TIMEOUT", "1500")))
     print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
-    fail = t.returncode != 0 or bool(secrets)
+    fail = t.returncode != 0 or bool(secrets) or (bool(quality_msg) and qmode == "block")
+    if fail and t.returncode == 0 and not secrets:
+        print("== QUALITY-ONLY: the tests pass; the branch is refused for the quality finding above")
     if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
         fail = False                     # pytest found no tests at all: a branch without code tests (docs, design) is not red
         warn.append("the repository has no tests yet")

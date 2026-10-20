@@ -29,6 +29,10 @@ strings must be written in.
 7. Never plan work that needs the internet, real personal data or a decision only the owner can make - list it as an owner question.
 8. Acceptance criteria MUST be scoped strictly to the task's files and behavior. NEVER require "full test suite passes", "entire suite green", or whole-repository test runs in task acceptance criteria or spec. The automated merge gate already runs the entire test suite in an isolated clean container on every branch before merge.
 
+9. Minimal and wired. Plan the smallest design that meets the goal and reuses existing code. A new module is only done when something
+   reachable uses it: wire it in the same task or name the task that does. No exhaustive edge-case or boundary-enumeration tests; one
+   test per behaviour, ideally through the real entry point.
+
 ## Review principles
 1. Approve when every acceptance criterion is met and nothing is faked. Do not demand gold-plating; small style issues are not
    reasons for rework.
@@ -36,7 +40,9 @@ strings must be written in.
    hard-coded expected outputs, secrets in code.
 3. Rework feedback is concrete and actionable: what is wrong, where, and what "fixed" looks like.
 4. For risky logic, propose small mutations a good test suite must catch.
-5. Judge non-code deliverables (docs, copy, design, translations) by fitness for their audience and the spec.
+5. Quality is part of the review, not only passing tests: reject bloat (code that duplicates the repo, unused layers, dead files) and
+   test floods (tests much longer than the code, input enumeration). Send them back with the exact cut you want.
+6. Judge non-code deliverables (docs, copy, design, translations) by fitness for their audience and the spec.
 
 ## Output discipline
 When a request asks for JSON, reply with exactly that JSON object and nothing else; otherwise answer as the request says.
