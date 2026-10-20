@@ -639,7 +639,7 @@ def main():
         bad(f"egress check failed: {e}")
     img = os.environ.get("GATE_IMAGE", "sandbox-worker:1.2.11")
     rc, _, _ = sh("docker", "image", "inspect", img)
-    ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: docker compose -f worker/docker-compose.yml build)")
+    ok(f"worker/gate image {img}") if rc == 0 else bad(f"image {img} missing", "bin/worker-add 1 builds it (or: WORKER_N=0 docker compose -f worker/docker-compose.yml build)")
     ks = sbx.killswitch_active()
     warn(f"kill switch is ON ({ks.get('scope')}): {ks.get('reason')}", "read it, then: bin/killswitch off --start (or the dashboard's Continue)", "continue") \
         if ks else ok("kill switch off")

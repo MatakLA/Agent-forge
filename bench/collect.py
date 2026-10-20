@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs INSIDE devbox: collect.py <branch> - clone the bench repo's branch from the internal Forgejo (read-only monitor token),
+"""Runs on the Agent-Forge machine (called over ssh by run_bench.py): collect.py <branch> - clone the bench repo's branch from the internal Forgejo (read-only monitor token),
 run scenario.checks.py on it and print its one JSON line. Env FORGE_PROJECT=bench."""
 import os, subprocess, sys, tempfile
 sys.path.insert(0, os.path.expanduser("~/sandbox/bin/lib"))

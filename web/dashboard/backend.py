@@ -37,12 +37,13 @@ SSH_TIMEOUT = 6
 VM_IP = "" if DEMO_MODE else os.environ.get("VM_IP", "")
 
 
-FORGE_DIR = os.environ.get("FORGE_DIR", "~/sandbox" if VM_IP else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FORGE_DIR = os.environ.get("FORGE_DIR", "~/sandbox" if VM_IP else REPO_ROOT)
 
 
 try:
     _backend_dir = os.path.dirname(os.path.abspath(__file__))
-    _repo_root = os.path.dirname(os.path.dirname(_backend_dir))
+    _repo_root = REPO_ROOT
     for _cand in [
         os.path.join(_repo_root, "bin", "lib"),
         os.path.abspath(os.path.expanduser(os.path.join(FORGE_DIR, "bin", "lib"))),

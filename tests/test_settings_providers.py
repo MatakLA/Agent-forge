@@ -64,6 +64,8 @@ class TestSettingsProviders(unittest.TestCase):
                 "api.anthropic.com",
                 "api.openai.com",
                 "generativelanguage.googleapis.com",
+                "dashscope.aliyuncs.com",
+                "dashscope-intl.aliyuncs.com",
             ],
         )
         self._allowlist_patch.start()
@@ -582,6 +584,10 @@ class TestSettingsProviders(unittest.TestCase):
             errs = settings_apply({"WORKER_RUNTIME": name})
             self.assertEqual(errs, {}, f"Expected settings_apply to accept WORKER_RUNTIME='{name}', got {errs}")
             assert not errs, f"Validation error for {name}: {errs}"
+
+        with patch.object(egress, "allowlist", return_value=["api.anthropic.com"]):
+            errs = settings_apply({"WORKER_RUNTIME": "qwen"})
+            self.assertIn("missing egress host", errs.get("WORKER_RUNTIME", ""))
 
         for bogus in ("bogus-runtime", "unknown", "qwen-fake", "not_a_runtime"):
             errs_bogus = settings_apply({"WORKER_RUNTIME": bogus})

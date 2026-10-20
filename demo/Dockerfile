@@ -8,6 +8,7 @@ FROM python:3.12-slim
 
 ENV DEMO_MODE=1 \
     BIND_PORT=8171 \
+    BIND_HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/bin:${PATH}" \

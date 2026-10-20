@@ -181,7 +181,8 @@ expected_issues = [
 for exp in expected_issues:
     matching = [g for g in loaded_goals if exp["title"] in g.get("text", "")]
     if len(matching) != 1:
-        sys.stderr.write(f"FAIL: expected exactly 1 goal matching title {exp['title']!r}, found {len(matching)}\n")
+        want = exp["title"]
+        sys.stderr.write(f"FAIL: expected exactly 1 goal matching title {want!r}, found {len(matching)}\n")
         sys.exit(1)
     goal = matching[0]
     if goal.get("status") != "new":

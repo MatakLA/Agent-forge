@@ -55,6 +55,7 @@ const PAGEKEYS = {
   money: 'API_RUN_BUDGET_USD API_DAILY_BUDGET_USD API_MONTHLY_BUDGET_USD PROJECT_DAILY_BUDGET_USD PROJECT_MONTHLY_BUDGET_USD WORKER_DAILY_BUDGET_USD RUN_MAX_TOOL_CALLS PRICE_CODEX PRICE_GEMINI PRICE_COMPAT',
   limits: 'MAX_PARALLEL RUN_TOKEN_CAP RUN_TIMEOUT_MIN RUN_TIMEOUT_MAX_MIN DAILY_TOKEN_BUDGET MAX_RUNS_PER_DAY QUOTA_MODEL_FILTER QUOTA_MIN_5H_PCT QUOTA_MIN_WEEK_PCT CONSEC_FAIL_TRIP POLL_SEC',
   advanced: 'LOOP_SEC ORPHAN_LIMIT ORPHAN_WARN TASK_TOKEN_BUDGET MAX_TASK_FILES SELF_CHECK_ROUNDS MAX_REWORK SPLIT_AFTER_CAPS MAX_ACTIVE_GOALS MAX_GOAL_ROUNDS DIFF_MAX LESSONS_MAX RUNS_KEEP_DAYS ' +
+    'QUALITY_CHECK TEST_RATIO_MAX MAX_FILE_LINES ORIENT PACK_EXTRAS PROMPT_ORDER ' +
     'OPENCODE_MODEL QWEN_MODEL GOOSE_MODEL'};
 const KEYPAGE = {};
 for (const [pg, ks] of Object.entries(PAGEKEYS)) ks.split(' ').forEach(k => { KEYPAGE[k] = pg; });
@@ -72,7 +73,9 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   MAINTENANCE: 'Check main while idle', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most', MAX_GOAL_ROUNDS: 'Rounds per goal, at most',
   DIFF_MAX: 'Largest diff shown to the reviewer (bytes)', LESSONS_MAX: 'Lessons in each worker prompt, at most', SPLIT_AFTER_CAPS: 'Split a task after N token caps',
   TASK_TOKEN_BUDGET: 'Target task size (tokens)', MAX_TASK_FILES: 'Files per task, at most', SELF_CHECK_ROUNDS: 'Self-check rounds',
-  CONTEXT_PACK: 'Code summary in each task', CONTEXT_PACK_CHARS: 'Summary size, at most (characters)', AB_MODEL: 'Model to compare', AB_SHARE: 'Share of tasks on it (%)',
+  CONTEXT_PACK: 'Code summary in each task', CONTEXT_PACK_CHARS: 'Summary size, at most (characters)',
+  QUALITY_CHECK: 'Quality checks', TEST_RATIO_MAX: 'Test code per code line, at most', MAX_FILE_LINES: 'Source file length, at most (lines)',
+  ORIENT: 'Tell the worker where it stands', PACK_EXTRAS: 'Line spans and usages in the summary', PROMPT_ORDER: 'Order of the worker prompt', AB_MODEL: 'Model to compare', AB_SHARE: 'Share of tasks on it (%)',
   TEST_CMD: 'Test command', GATE_IMAGE: 'Test image', NOTIFY_URL: 'Send notifications to', NOTIFY_FORMAT: 'Message format', NOTIFY_EVENTS: 'Tell me when',
   RUNS_KEEP_DAYS: 'Compress run transcripts after (days)', API_WORKERS_POLICY: 'When API workers get work',
   WORKER_MODEL_CLAUDE: 'Claude Code worker model', WORKER_MODEL_CODEX: 'Codex worker model', WORKER_MODEL_GEMINI: 'Gemini CLI worker model',
@@ -132,6 +135,12 @@ const HELP = {
   TASK_TOKEN_BUDGET: 'How big the planner aims to make one task, in tokens.',
   CONTEXT_PACK: 'A short summary of the code that every task starts with. “ab” gives it to half of the tasks, so you can measure what it brings.',
   CONTEXT_PACK_CHARS: 'The longest that summary may be, in characters.',
+  QUALITY_CHECK: 'Scripted checks on finished work, with no AI involved: far more test code than code, new source files nothing uses, over-long files. “warn” tells the reviewer, “block” sends the work back, “off” skips the checks.',
+  TEST_RATIO_MAX: 'Tests may add at most this many times the code lines of the change (but never less than 150 lines).',
+  MAX_FILE_LINES: 'A source file longer than this that a task touches is flagged, because workers re-read big files every time.',
+  ORIENT: 'The supervisor puts the worker on its task branch and says what is already done, so the worker spends no steps on git commands.',
+  PACK_EXTRAS: 'Adds line ranges and “who uses what you change” to the code summary, and the branch diff on a rework. Off = the earlier, shorter prompts.',
+  PROMPT_ORDER: 'Experimental. “cache” puts the text that is the same for every task first, so providers with prompt caches can reuse it.',
   SELF_CHECK_ROUNDS: 'How many times a worker may fix failing tests itself before handing in the work. 0 = never.',
   MAX_TASK_FILES: 'A task that would change more files than this is split first.',
   AB_MODEL: 'A second worker model to try on ordinary tasks. Empty = no experiment.',
@@ -141,7 +150,7 @@ const HELP = {
   TEST_CMD: 'Runs the project\'s tests - in the gate, in the worker\'s self-check and on main. Empty = pytest.',
   GATE_IMAGE: 'The Docker image the tests run in. Empty = the worker image.',
   RUNS_KEEP_DAYS: 'Run transcripts older than this are compressed to save disk space.',
-  NOTIFY_URL: 'Where notifications go: an ntfy topic address, a Slack or Discord webhook, or “outbox” (the devbox writes a file that the host forwards to your phone). Empty = no notifications.',
+  NOTIFY_URL: 'Where notifications go: an ntfy topic address, a Slack or Discord webhook, or “outbox” (the foreman appends to a file that something else of yours forwards). Empty = no notifications.',
   NOTIFY_FORMAT: 'How the message is written for that service. Chosen for you when the address is a Slack or Discord webhook.',
   NOTIFY_EVENTS: 'What you are told about.',
   API_WORKERS_POLICY: 'Workers that pay per token take tasks only when no subscription worker is free (overflow), or are preferred (always).',
@@ -167,7 +176,7 @@ const HELP = {
   ROUTING_MIN_FIRST_PASS: 'And it must have been approved on the first review at least this often.',
   UPSTREAM_BRANCH: 'The branch on GitHub / GitLab that main is kept in sync with.',
   UPSTREAM_MERGE: 'How approved changes are merged on GitHub / GitLab.',
-  FORGE_URL: 'The address of the internal Git forge. It is set in etc/forge.conf on the devbox; to change it, edit the file and restart the foreman.',
+  FORGE_URL: 'The address of the internal Git forge. It is set in etc/forge.conf; to change it, edit the file and restart the foreman.',
   FORGE_REPO: 'The repository on the internal forge. It is set when the project is created; changing it needs a restart of the foreman.',
   MAX_PARALLEL: 'How many runs may go at the same time, over all projects.',
   RUN_TOKEN_CAP: 'A run is stopped when it has used this many tokens.',
@@ -681,6 +690,11 @@ function pageAdvanced() {
       field('TASK_TOKEN_BUDGET', num('TASK_TOKEN_BUDGET', null, 'tokens')) + field('MAX_TASK_FILES', num('MAX_TASK_FILES', null, 'files')) + field('SELF_CHECK_ROUNDS', num('SELF_CHECK_ROUNDS', null, 'rounds')) +
       field('MAX_REWORK', num('MAX_REWORK', null, 'rounds')) + field('SPLIT_AFTER_CAPS', num('SPLIT_AFTER_CAPS', null, 'times')) + field('MAX_ACTIVE_GOALS', num('MAX_ACTIVE_GOALS', null, 'goals')) +
       field('MAX_GOAL_ROUNDS', num('MAX_GOAL_ROUNDS', null, 'rounds')) + field('DIFF_MAX', num('DIFF_MAX', null, 'characters')) + field('LESSONS_MAX', num('LESSONS_MAX', null, 'lessons'))) +
+    card('Quality checks', field('QUALITY_CHECK', sel('QUALITY_CHECK', [['warn', 'warn - tell the reviewer'], ['block', 'block - send the work back'], ['off', 'off']])) +
+      field('TEST_RATIO_MAX', sel('TEST_RATIO_MAX', [['1', '1'], ['1.5', '1.5'], ['2', '2'], ['2.5', '2.5'], ['3', '3'], ['4', '4'], ['5', '5'], ['8', '8'], ['10', '10']])) +
+      field('MAX_FILE_LINES', num('MAX_FILE_LINES', 400, 'lines')), 'Scripted, no AI involved; the details are in docs/EFFICIENCY.md.') +
+    card('Worker prompt', field('ORIENT', sel('ORIENT', [['on', 'on'], ['off', 'off']])) + field('PACK_EXTRAS', sel('PACK_EXTRAS', [['on', 'on'], ['off', 'off']])) +
+      field('PROMPT_ORDER', sel('PROMPT_ORDER', [['default', 'default'], ['cache', 'cache - shared text first (experimental)']])), 'Turn these off to get the earlier prompts back, for example to compare in the benchmark.') +
     card('Housekeeping', field('RUNS_KEEP_DAYS', num('RUNS_KEEP_DAYS', null, 'days'))) +
     det('d-unsupported-runtimes', 'Experimental runtimes (not yet available as workers)',
       field('OPENCODE_MODEL', txt('OPENCODE_MODEL', 'e.g. gpt-4o')) +

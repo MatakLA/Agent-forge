@@ -12,7 +12,8 @@ need=("worker-$N.token"); [ "$RT" = agy ] && need+=("worker-$N-keyring") || need
 for f in "${need[@]}"; do [ -s "$S/$f" ] || { echo "missing secret $S/$f (bin/worker-add $N${RT:+ --runtime $RT}; API keys: bin/secret-set $KEYF)" >&2; exit 1; }; done
 docker volume inspect "worker_worker-$N-home" >/dev/null 2>&1 || docker volume create "worker_worker-$N-home" >/dev/null
 export WORKER_N="$N" WORKER_RUNTIME="$RT" WORKER_KEY_FILE="$KEYF"
-export FORGE_REPO="$(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; print(sbx.FORGE_REPO)")"
+FORGE_REPO="$(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; print(sbx.FORGE_REPO)")"
+export FORGE_REPO
 docker image inspect sandbox-worker:1.2.11 >/dev/null 2>&1 || docker compose -f "$D/docker-compose.yml" build
 if [ "$RT" = agy ]; then
   docker compose -f "$D/docker-compose.yml" up -d

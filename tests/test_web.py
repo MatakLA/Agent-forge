@@ -485,6 +485,39 @@ class TestWebServer(unittest.TestCase):
         self.assertNotIn(b'"tasks"', more.split(b'"delta"')[1])
         assert b'"tasks"' not in more.split(b'"delta"')[1]
 
+    def test_downloads_dir_serves_only_plain_files(self):
+        """Invariant: /downloads/<name> serves a regular file directly inside DASHBOARD_DOWNLOADS_DIR, nothing else, and needs auth."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.apk"), "wb") as f:
+                f.write(b"PK\x03\x04apk")
+            open(os.path.join(d, ".hidden"), "w").write("x")
+            os.mkdir(os.path.join(d, "sub"))
+            outside = tempfile.NamedTemporaryFile(delete=False)
+            outside.write(b"secret")
+            outside.close()
+            os.symlink(outside.name, os.path.join(d, "link"))
+            old = srv.DOWNLOADS_DIR
+            srv.DOWNLOADS_DIR = d
+            try:
+                st, hdrs, body = self.req("GET", "/downloads/app.apk")
+                self.assertEqual(st, 200)
+                self.assertEqual(body, "PK\x03\x04apk")
+                self.assertEqual(hdrs.get("Content-Type"), "application/vnd.android.package-archive")
+                self.assertIn("attachment", hdrs.get("Content-Disposition", ""))
+                st, hdrs, body = self.req("HEAD", "/downloads/app.apk")
+                self.assertEqual((st, hdrs.get("Content-Length")), (200, "7"))
+                for bad in ("/downloads/missing.apk", "/downloads/.hidden", "/downloads/sub", "/downloads/link",
+                            "/downloads/../server.py", "/downloads/%2e%2e/server.py", "/downloads/sub/x", "/downloads/"):
+                    self.assertEqual(self.req("GET", bad)[0], 404, bad)
+                st, _, _ = self.req("GET", "/downloads/app.apk", headers={"Cookie": ""})
+                self.assertIn(st, (401, 403))
+                srv.DOWNLOADS_DIR = ""
+                self.assertEqual(self.req("GET", "/downloads/app.apk")[0], 404)
+            finally:
+                srv.DOWNLOADS_DIR = old
+                os.unlink(outside.name)
+
     def test_demo_mode_mutating_posts_rejected(self):
         """Invariant: in DEMO_MODE, all mutating POST actions return 403 and error JSON."""
         srv.DEMO_MODE = True
@@ -1444,6 +1477,17 @@ class TestWebServer(unittest.TestCase):
         self.assertIsNone(srv.B.LOGIN._url("nothing", 80))
         self.assertEqual(srv.B.LOGIN.write("worker-1", "AAAA").get("error"), "no running login session")
         self.assertEqual(srv.B.LOGIN.resize("worker-1", 100, 30).get("error"), "no running login session")
+
+
+class TestForgeDirDefault(unittest.TestCase):
+    def test_default_forge_dir_is_the_repository_root(self):
+        """Without FORGE_DIR / VM_IP (the demo image, a plain checkout) the dashboard must find bin/foreman in the repository root."""
+        env = {k: v for k, v in os.environ.items() if k not in ("FORGE_DIR", "VM_IP", "DEMO_MODE")}
+        code = "import sys; sys.path.insert(0, 'web'); import dashboard.backend as b; print(b.FORGE_DIR)"
+        out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(os.path.realpath(out.stdout.strip()), os.path.realpath(ROOT))
+        self.assertTrue(os.path.isfile(os.path.join(out.stdout.strip(), "bin", "foreman")))
 
 
 if __name__ == "__main__":

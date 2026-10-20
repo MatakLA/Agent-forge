@@ -59,7 +59,7 @@ class TestDoctorEgressHosts(unittest.TestCase):
 
         # Isolated temporary directory for secrets
         self.tmp_secrets_dir = tempfile.TemporaryDirectory()
-        for k in ["anthropic.key", "openai.key", "gemini.key", "qwen.key", "compat.key"]:
+        for k in ["anthropic.key", "openai.key", "gemini.key", "qwen.key", "compat.key", "mistral.key"]:
             with open(os.path.join(self.tmp_secrets_dir.name, k), "w") as f:
                 f.write("test-secret-content\n")
         self.orig_secrets = sbx.SECRETS
@@ -170,6 +170,36 @@ class TestDoctorEgressHosts(unittest.TestCase):
         assert chk["level"] == "warn" and "dashscope.aliyuncs.com" in chk["message"]
         assert "dashscope.aliyuncs.com" in st["missing_egress"]
 
+    def test_missing_host_mistral_vibe(self):
+        """Invariant: Mistral Vibe runtime missing api.mistral.ai produces a clear warning naming the host(s)."""
+        self._write_allowlist([])
+        res = doctor.check_readiness()
+        chk = [c for c in res["checks"] if " mistral-vibe: " in c["message"]][0]
+        st = readiness.status_of("runtime", "mistral-vibe")
+
+        self.assertEqual(chk["level"], "warn")
+        self.assertIn("mistral-vibe", chk["message"])
+        self.assertIn("api.mistral.ai", chk["message"])
+        self.assertIn("api.mistral.ai", st["missing_egress"])
+        self.assertEqual(st["state"], "missing_egress")
+        assert chk["level"] == "warn" and st["state"] == "missing_egress"
+
+    def test_missing_host_copilot(self):
+        """Invariant: GitHub Copilot runtime missing api.githubcopilot.com and api.github.com produces a clear warning naming the host(s)."""
+        self._write_allowlist([])
+        res = doctor.check_readiness()
+        chk = [c for c in res["checks"] if " copilot: " in c["message"]][0]
+        st = readiness.status_of("runtime", "copilot")
+
+        self.assertEqual(chk["level"], "warn")
+        self.assertIn("copilot", chk["message"])
+        self.assertIn("api.githubcopilot.com", chk["message"])
+        self.assertIn("api.githubcopilot.com", st["missing_egress"])
+        self.assertIn("api.github.com", chk["message"])
+        self.assertIn("api.github.com", st["missing_egress"])
+        self.assertEqual(st["state"], "missing_egress")
+        assert chk["level"] == "warn" and st["state"] == "missing_egress"
+
     def test_missing_host_compat(self):
         """Invariant: Compat runtime missing model server host produces a clear warning naming the host."""
         os.environ["COMPAT_BASE_URL"] = "http://compat-server.internal:11434"
@@ -185,6 +215,33 @@ class TestDoctorEgressHosts(unittest.TestCase):
         self.assertEqual(st["state"], "missing_egress")
         assert chk["level"] == "warn" and "compat-server.internal" in chk["message"]
         assert "compat-server.internal" in st["missing_egress"]
+
+    def _assert_endpoint_runtime_warns(self, rt):
+        os.environ["COMPAT_BASE_URL"] = f"http://{rt}-server.internal:9000"
+        self._write_allowlist([])
+        res = doctor.check_readiness()
+        chk = [c for c in res["checks"] if f" {rt}: " in c["message"]][0]
+        st = readiness.status_of("runtime", rt)
+        self.assertEqual(chk["level"], "warn")
+        self.assertIn(f"{rt}-server.internal", chk["message"])
+        self.assertIn(f"{rt}-server.internal", st["missing_egress"])
+        self.assertEqual(st["state"], "missing_egress")
+
+    def test_missing_host_ollama(self):
+        """Invariant: a local-model runtime has no fixed host; its configured server host is what the warning names."""
+        self._assert_endpoint_runtime_warns("ollama")
+
+    def test_missing_host_vllm(self):
+        """Invariant: a local-model runtime has no fixed host; its configured server host is what the warning names."""
+        self._assert_endpoint_runtime_warns("vllm")
+
+    def test_missing_host_lmstudio(self):
+        """Invariant: a local-model runtime has no fixed host; its configured server host is what the warning names."""
+        self._assert_endpoint_runtime_warns("lmstudio")
+
+    def test_missing_host_llamacpp(self):
+        """Invariant: a local-model runtime has no fixed host; its configured server host is what the warning names."""
+        self._assert_endpoint_runtime_warns("llamacpp")
 
     def test_missing_host_aider(self):
         """Invariant: Aider runtime missing model server host produces a clear warning naming the host."""
@@ -282,6 +339,9 @@ class TestDoctorEgressHosts(unittest.TestCase):
             "generativelanguage.googleapis.com",
             "dashscope.aliyuncs.com",
             "dashscope-intl.aliyuncs.com",
+            "api.mistral.ai",
+            "api.githubcopilot.com",
+            "api.github.com",
             endpoint_host,
         ]
         self._write_allowlist(allowed_hosts)
@@ -298,7 +358,9 @@ class TestDoctorEgressHosts(unittest.TestCase):
 
                 self.assertEqual(st["missing_egress"], [])
                 self.assertEqual(st["state"], "ok")
-                self.assertEqual(chk["level"], "ok")
+                if rt in doctor.LOCAL_COMPAT_RUNTIMES:
+                    continue  # doctor probes a TCP connection for these, which this test must not depend on
+                self.assertEqual(chk["level"], "ok", chk["message"])
                 self.assertIn(f"[OK] {rt}: Runtime '{rt}' is ready.", chk["message"])
                 all_missing.extend(st["missing_egress"])
                 all_levels.append(chk["level"])

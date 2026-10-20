@@ -13,7 +13,7 @@ fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; tail -n 25 "$T/out" | sed 's/^/     | /'; fail=1; fi; }
 mkdir -p "$T/forge/sandbox" "$T/secrets" "$T/w"; echo t > "$T/secrets/monitor.token"
 git init -q --bare -b main "$T/forge/sandbox/playground.git"
-W="$T/w"; cd "$W"; git init -q -b main; git config user.email w@w; git config user.name worker-1
+W="$T/w"; cd "$W" || exit 1; git init -q -b main; git config user.email w@w; git config user.name worker-1
 printf '"""Util."""\n\ndef clamp_value(value, low, high):\n    result = value\n    if result < low:\n        result = low\n    if result > high:\n        result = high\n    return result\n' > util.py
 printf 'import util\n\ndef test_clamp():\n    assert util.clamp_value(5, 0, 3) == 3\n    assert util.clamp_value(-1, 0, 3) == 0\n    assert util.clamp_value(2, 0, 3) == 2\n' > test_util.py
 printf 'import time\n\ndef test_slow():\n    time.sleep(40)\n    assert True is True\n' > test_slow.py

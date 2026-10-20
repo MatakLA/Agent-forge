@@ -533,6 +533,30 @@ class TestForemanMerge(unittest.TestCase):
         self.assertTrue(any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"]))
         assert any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"])
 
+    def test_merge_upstream_refused_push_requeues_gate_with_reason(self):
+        """A push the upstream refuses sends the task back to the gate, with the reason in its history (no NameError later)."""
+        import upstream
+
+        class Up:
+            kind = "github"
+
+        def refuse(up, fd, branch):
+            raise upstream.UpstreamError("401 bad credentials")
+
+        old_push = upstream.push_branch
+        upstream.push_branch = refuse
+        try:
+            t = dict(id="0120-refused", history=[], status="gate", branch="feat/0120-refused", role="backend-developer",
+                     goal="G1", title="refused push", attempts=0)
+            merge.save_task(t)
+            fn = merge.merge_upstream(t, Up(), "reviewer", "ok", "all green")
+            fn()
+        finally:
+            upstream.push_branch = old_push
+        after = merge.live_task(t)
+        self.assertEqual(after["status"], "gate")
+        self.assertTrue(any("github not reachable / refused: 401 bad credentials" in h.get("why", "") for h in after["history"]))
+
     def test_rework_records_why_and_the_gate_flags_and_the_gate_gets_the_file_list(self):
         t = dict(id="0042-scope", history=[], status="gate", branch="feat/0042-scope", role="backend-developer", goal="G1",
                  title="scope", attempts=0, spec="s", acceptance=[], files=["a.py", "tests/test_a.py", "x,y.py"])
