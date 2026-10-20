@@ -38,6 +38,8 @@ def _selftest():
     try:
         return _selftest_body(bad, real_notify)
     finally:
+        import concurrent.futures as cf                  # steps the tested loop submitted to the pool must end while the stub is still in place
+        cf.wait(list(sys.modules[__package__ + ".jobs"].INFLIGHT.values()), timeout=60)
         sbx.notify, llm_mod._llm_inner = real_notify, real_llm
 
 
