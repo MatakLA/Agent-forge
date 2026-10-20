@@ -38,6 +38,7 @@ ORCHESTRATOR_MODEL_RE = rf"({MODEL_RE})|({SERVER_MODEL_RE})"
 SECRET_KEY_RE = r"(?!.*\.\.)[A-Za-z0-9_.*•-]{1,128}"
 URL_RE = r"https?://(?!.*\.\.)[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?"
 USD_RE = r"\d{1,6}(\.\d{1,2})?"
+LANG_RE = r"[^\W\d_][^\W\d_ ]*( [^\W\d_]+)?"      # a language name: Slovak, English, Brazilian Portuguese
 NOTIFY_KINDS = "goal_done|task_blocked|killswitch|questions|quota_out|auth|approval|stalled|project_done"
 
 
@@ -50,7 +51,8 @@ EDITABLE = {
     "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
     "ANTHROPIC_MODEL": ("|" + MODEL_RE, "project"), "OPENAI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"), "GEMINI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),
     "OPENAI_API_KEY": ("|" + SECRET_KEY_RE, "project"), "GEMINI_API_KEY": ("|" + SECRET_KEY_RE, "project"),
-    "WORKERS": (r"|worker-\d+(,worker-\d+)*", "project"), "OWNER_LANG": (r"[^\W\d_][^\W\d_ ]*( [^\W\d_]+)?", "project"),
+    "WORKERS": (r"|worker-\d+(,worker-\d+)*", "project"), "OWNER_LANG": (LANG_RE, "project"), "TASK_LANG": (LANG_RE, "project"), "DOCS_LANG": (LANG_RE, "project"),
+    "PRODUCT_LANG": ("|" + LANG_RE, "project"),
     "AUTOPILOT": (r"[01]", "project"), "AUTO_MERGE": (r"[01]", "project"), "CONTINUE_CONVERSATIONS": (r"[01]", "project"),
     "MAX_REWORK": ((0, 10), "project"), "MAX_ACTIVE_GOALS": ((1, 50), "project"), "SPLIT_AFTER_CAPS": ((1, 10), "project"),
     "TASK_TOKEN_BUDGET": ((50000, 5000000), "project"),

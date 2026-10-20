@@ -50,7 +50,7 @@ const PAGEKEYS = {
   models: 'PLAN_PROVIDERS REVIEW_PROVIDERS CLAUDE_MODEL AGY_PLAN_MODEL AGY_REVIEW_MODEL AGY_FALLBACK_MODEL ANTHROPIC_MODEL OPENAI_API_BASE OPENAI_MODEL GEMINI_API_BASE GEMINI_MODEL ' +
     'WORKER_MODEL WORKER_MODEL_RISKY WORKER_MODEL_LIGHT LIGHT_ROLES WORKER_MODEL_CLAUDE WORKER_MODEL_CODEX WORKER_MODEL_GEMINI WORKER_MODEL_COMPAT WORKER_MODEL_AIDER ' +
     'MODEL_ROUTING ROUTING_MIN_TASKS ROUTING_MIN_FIRST_PASS AB_MODEL AB_SHARE CONTEXT_PACK CONTEXT_PACK_CHARS',
-  project: 'UPSTREAM_BRANCH UPSTREAM_MERGE APPROVE AUTOPILOT AUTO_MERGE CONTINUE_CONVERSATIONS PLAN_AHEAD MAINTENANCE OWNER_LANG LOCAL_TZ PROJECT_DIR VISION_FILE SHARED_FILES ' +
+  project: 'UPSTREAM_BRANCH UPSTREAM_MERGE APPROVE AUTOPILOT AUTO_MERGE CONTINUE_CONVERSATIONS PLAN_AHEAD MAINTENANCE OWNER_LANG TASK_LANG PRODUCT_LANG DOCS_LANG LOCAL_TZ PROJECT_DIR VISION_FILE SHARED_FILES ' +
     'TEST_CMD GATE_IMAGE NOTIFY_URL NOTIFY_FORMAT NOTIFY_EVENTS',
   money: 'API_RUN_BUDGET_USD API_DAILY_BUDGET_USD API_MONTHLY_BUDGET_USD PROJECT_DAILY_BUDGET_USD PROJECT_MONTHLY_BUDGET_USD WORKER_DAILY_BUDGET_USD RUN_MAX_TOOL_CALLS PRICE_CODEX PRICE_GEMINI PRICE_COMPAT',
   limits: 'MAX_PARALLEL RUN_TOKEN_CAP RUN_TIMEOUT_MIN RUN_TIMEOUT_MAX_MIN DAILY_TOKEN_BUDGET MAX_RUNS_PER_DAY QUOTA_MODEL_FILTER QUOTA_MIN_5H_PCT QUOTA_MIN_WEEK_PCT CONSEC_FAIL_TRIP POLL_SEC',
@@ -66,7 +66,7 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback model',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', WORKER_MODEL_LIGHT: 'Model for light roles', LIGHT_ROLES: 'Light roles',
   ANTHROPIC_MODEL: 'Anthropic API model', OPENAI_MODEL: 'OpenAI API model', OPENAI_API_BASE: 'OpenAI API address', GEMINI_MODEL: 'Gemini API model', GEMINI_API_BASE: 'Gemini API address',
-  OWNER_LANG: 'AI communication language', LOCAL_TZ: 'Time zone', PROJECT_DIR: 'Work only in this folder', VISION_FILE: 'Vision file', SHARED_FILES: 'Files tasks may share',
+  OWNER_LANG: 'Language for you (goals, questions, notes)', TASK_LANG: 'Language of tasks and reviews', PRODUCT_LANG: 'Language of the product\'s own texts', DOCS_LANG: 'Language of code comments and commits', LOCAL_TZ: 'Time zone', PROJECT_DIR: 'Work only in this folder', VISION_FILE: 'Vision file', SHARED_FILES: 'Files tasks may share',
   LOOP_SEC: 'Foreman interval (seconds)', ORPHAN_LIMIT: 'Block a task after N crashed runs', ORPHAN_WARN: 'Warn after N crashed runs', WORKERS: 'Workers of this project',
   AUTOPILOT: 'Autopilot', AUTO_MERGE: 'Merge automatically', CONTINUE_CONVERSATIONS: 'Reworks continue the worker\'s conversation', PLAN_AHEAD: 'Plan ahead while workers wait',
   MAINTENANCE: 'Check main while idle', MAX_REWORK: 'Reworks per task, at most', MAX_ACTIVE_GOALS: 'Active goals, at most', MAX_GOAL_ROUNDS: 'Rounds per goal, at most',
@@ -108,7 +108,10 @@ const HELP = {
   GEMINI_MODEL: 'The model used when the Gemini API plans or reviews (paid per token), e.g. gemini-2.5-pro.',
   OPENAI_API_KEY: 'Set on the Runtimes page.',
   GEMINI_API_KEY: 'Set on the Runtimes page.',
-  OWNER_LANG: 'Language the AI team writes in when formulating goals, questions, and notes for you (dashboard UI language is configured below).',
+  OWNER_LANG: 'Language the AI team writes in when it formulates goals, questions, summaries and notes for you. Independent of the dashboard language below.',
+  TASK_LANG: 'Language of task titles, specs and acceptance criteria, review feedback and everything the orchestrator tells the workers. English is usually the most accurate and the cheapest in tokens.',
+  PRODUCT_LANG: 'Language of the texts the product\'s own users read (labels, messages, help). Empty = same as your language above.',
+  DOCS_LANG: 'Language of code comments, docstrings, commit messages and developer documentation.',
   LOCAL_TZ: 'Time zone for server logs, CLI reports, and notifications (click Detect to use your browser time zone).',
   PROJECT_DIR: 'Work only inside this folder of the repository. Empty = the whole repository.',
   VISION_FILE: 'The file that says what the product should become. Autopilot reads it to choose the next goal.',
@@ -543,7 +546,8 @@ function pageProject() {
       'What you tick waits for you under Overview → Needs you (and a notification, if set up below). Nothing ticked = fully automatic.') +
     card('How the team behaves', field('AUTOPILOT', tog('AUTOPILOT')) + field('AUTO_MERGE', tog('AUTO_MERGE')) + field('CONTINUE_CONVERSATIONS', tog('CONTINUE_CONVERSATIONS')) +
       field('PLAN_AHEAD', tog('PLAN_AHEAD')) + field('MAINTENANCE', tog('MAINTENANCE')) +
-      field('OWNER_LANG', sel('OWNER_LANG', LANG_OPTIONS)) +
+      field('OWNER_LANG', sel('OWNER_LANG', LANG_OPTIONS)) + field('TASK_LANG', sel('TASK_LANG', LANG_OPTIONS)) +
+      field('PRODUCT_LANG', sel('PRODUCT_LANG', [['', 'same as my language']].concat(LANG_OPTIONS))) + field('DOCS_LANG', sel('DOCS_LANG', LANG_OPTIONS)) +
       field('LOCAL_TZ', '<div style="display:flex;gap:6px;align-items:center">' + sel('LOCAL_TZ', TZ_OPTIONS) + '<button type="button" class="mini" id="detect-tz" title="Set to browser timezone">Detect</button></div>')) +
     card(t('settings.appearance_title', 'Dashboard appearance & language'),
       rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),

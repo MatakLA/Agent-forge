@@ -16,11 +16,31 @@ def load_system_prompt():
             parts.append(open(p).read().strip())
         except FileNotFoundError:
             pass
+    parts.append(language_rules())
     parts.append("## Role catalogue (assign exactly one per task; each worker gets the full playbook)\n" + role_catalogue())
     ls = lessons()
     if ls:
         parts.append("## Lessons this team learned from earlier reworks (apply them when planning and reviewing)\n" + "\n".join(f"- {l}" for l in ls))
     return "\n\n".join(parts)
+
+
+def languages():
+    """The four languages of a project: owner (goals, questions, notes), task (specs, reviews, orchestrator <-> workers),
+    product (text the product's own users read; empty = the owner's) and docs (code comments, commit messages, dev docs)."""
+    c = ctx.C
+    owner = c.get("OWNER_LANG") or "English"
+    return dict(owner=owner, task=c.get("TASK_LANG") or "English", product=c.get("PRODUCT_LANG") or owner, docs=c.get("DOCS_LANG") or "English")
+
+
+def language_rules():
+    L = languages()
+    return (f"""## Languages (the owner sets each one separately in Settings -> Project)
+- Owner-facing text - goal wording, goal acceptance criteria, summaries, questions, notes, diagnoses: **{L['owner']}**.
+- Team-internal text - task titles, specs and acceptance criteria, review feedback, lessons, everything you tell a worker: **{L['task']}**.
+- Text the product's own users read (labels, messages, help, generated content): **{L['product']}**. Say so in the spec of every
+  task that touches such text; where the project has a dictionary / i18n file, the strings belong there.
+- Code comments, docstrings, commit messages and developer documentation: **{L['docs']}**.
+Never translate code identifiers, file names, JSON keys, CLI flags or text the owner quoted exactly (an exact wording in a goal wins).""")
 
 
 def lessons():

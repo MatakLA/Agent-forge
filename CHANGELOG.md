@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+**Languages, each on its own.** Settings → Project now has four independent languages: yours (goals, questions, notes: `OWNER_LANG`), the team's (task specs, reviews, orchestrator ↔ workers: `TASK_LANG`, default English), the product's own user-facing texts (`PRODUCT_LANG`, empty = yours) and code comments / commit messages (`DOCS_LANG`). The orchestrator's system prompt, the planner, the reviewer and every worker prompt state them. Switching the dashboard's UI language no longer changes `OWNER_LANG`.
+
 Settings rebuilt as eight short pages (Workers, Runtimes, Models, Project, Money, Knowledge, Limits, Advanced). Every setting is on exactly one page, has a plain-language label and description, and unsaved edits are collected in one Save bar (with Discard, a warning before leaving, and a refused value marked at its field). New: remove a worker (`bin/worker-remove`: refuses while a run is in progress or when it is a project's only worker; deletes the container, volume, Forgejo bot user and secrets), add a role from the Knowledge page, and set API keys / the notification token from the page (write-only). The add-worker picker lists exactly the runtimes the server says it can create (`creatable`); the readiness table and the onboarding card are now part of Runtimes.
 
 System → Health, Disk and Egress open at once: the server answers from a cache and refreshes it in the background (`?fresh=1` measures again), `docker system df` / `docker ps -s` (minutes on a slow disk) are replaced by cheap queries, and the egress proxy log is rotated hourly instead of being re-read at 100+ MB.
