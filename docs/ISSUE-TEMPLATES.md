@@ -85,6 +85,11 @@ Consider an issue filed on GitHub or GitLab:
 
 ## Templates
 
+> **Security note.** `bin/issues-intake` turns every labelled issue into a goal that the team will work on. Enable it only on a
+> repository where *you alone* (or people you trust) can open issues or apply the `agent-forge` label. On a public repository
+> anyone could otherwise queue work for your agents. This is why the templates below are examples and are not installed in
+> Agent-Forge's own `.github/ISSUE_TEMPLATE/`, which holds ordinary bug and feature forms for humans.
+
 Agent-Forge provides example issue templates under `examples/issue-templates/` for four common goal types:
 - **Bug Fix:** For reporting crashes, broken tests, unexpected behavior, or regressions.
 - **New Feature:** For proposing new functionality, endpoints, or capabilities.
