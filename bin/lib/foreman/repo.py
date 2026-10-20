@@ -126,8 +126,13 @@ def usage_block(t, cm, max_chars):
         hs = sorted(set(hits[n]))
         if not hs:
             free.append(n); continue
-        shown = ", ".join(f"`{p}:{ln}`" for _, p, ln in hs[:4])
-        used.append(f"- `{n}` ({defined_in}): {shown}" + (f" (+{len(hs) - 4} more)" if len(hs) > 4 else ""))
+        by_file = {}
+        for is_t, p, ln in hs:
+            by_file.setdefault((is_t, p), []).append(ln)           # non-test files first (False sorts before True)
+        top = sorted(by_file.items())[:4]
+        shown = ", ".join(f"`{p}:{','.join(map(str, lns[:3]))}`" for (_, p), lns in top)
+        rest = len(hs) - sum(len(lns[:3]) for _, lns in top)
+        used.append(f"- `{n}` ({defined_in}): {shown}" + (f" (+{rest} more places)" if rest > 0 else ""))
     if not used and not free:
         return ""
     text = "\n".join(used)
