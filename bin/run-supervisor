@@ -186,10 +186,24 @@ CMD = os.environ.get("AF_TEST_CMD") or "python3 -m pytest -q -p no:cacheprovider
 PYTEST = "pytest" in CMD
 CHANGED_ONLY = os.environ.get("AF_SELF_CHECK_MODE") == "changed"        # the suite is known to be slow: only the tests this branch touches
 FULL_TIMEOUT = int(os.environ.get("AF_SELF_CHECK_TIMEOUT") or 600)
+try:
+    CONF = json.loads(os.environ.get("AF_SC_CONF") or "{}")             # quality, ratio_max, allowed (the task's files), shared (registries)
+except ValueError:
+    CONF = {}
 def sh(*c, t=60):
     return subprocess.run(list(c), capture_output=True, text=True, timeout=t)
-problems = []
-changed = set(sh("git", "diff", "--name-only", "origin/main").stdout.split()) | set(sh("git", "ls-files", "--others", "--exclude-standard").stdout.split())
+problems, hints = [], []                  # problems send the worker back; hints ride along when a fix round happens anyway
+base = sh("git", "merge-base", "origin/main", "HEAD").stdout.strip() or "origin/main"
+ns = []                                   # [(status, path)] of everything the branch changes, committed or not
+for l in sh("git", "diff", "--name-status", "--no-renames", base).stdout.splitlines():
+    st, _, path = l.partition("\t")
+    ns.append((st[:1], path))
+seen = {p for _, p in ns}
+# what test runs leave in the tree is never committed by the supervisor either (see salvage), so it is not part of the change
+LEFTOVER = re.compile(r"(^|/)__pycache__/|\.pyc$|(^|/)\.pytest_cache(/|$)|\.(db|sqlite3?|log)$|(^|/)\.aider")
+fresh = [f for f in sh("git", "ls-files", "--others", "--exclude-standard").stdout.split("\n") if f and f not in seen and not LEFTOVER.search(f)]
+ns += [("A", f) for f in fresh]
+changed = {p for _, p in ns}
 for f in sorted(changed):
     if re.search(r"(^|/)test_[^/]*\.py$", f):
         try:
@@ -200,48 +214,92 @@ for f in sorted(changed):
                           (r"importorskip", "importorskip"), (r"skipif", "skipif"), (r"assert True\b", "assert True")):
             if re.search(pat, src):
                 problems.append(f"{f} contains {name} (the gate rejects it)")
+
+
+def quality_findings():
+    # what the gate and the reviewer would send back anyway, found here so that it is fixed in this same conversation
+    ratio_max = float(CONF.get("ratio_max") or 1.5)
+    lines = sh("git", "diff", "--numstat", "--no-renames", base).stdout.splitlines()
+    for f in fresh:
+        try:
+            with open(f, errors="ignore") as fh:
+                lines.append(f"{sum(1 for _ in fh)}\t0\t{f}")
+        except OSError:
+            pass
+    t_add, c_add = test_ratio(lines)
+    msg = ratio_message(t_add, c_add, ratio_max)
+    if msg:
+        problems.append(msg)
+    out = outside_scope(ns, CONF.get("allowed") or [], CONF.get("shared") or [])
+    if out:
+        problems.append("you changed files that are not in this task's file list: " + ", ".join(out[:8]) + (" ..." if len(out) > 8 else "")
+                        + ". Undo those changes (`git checkout " + base[:12] + " -- <file>`; delete a new file) unless the spec cannot be met "
+                        "without them - then keep them and say why in your final reply.")
+    for p, ra, aa, rt, at in weakened_tests(sh("git", "diff", "--unified=0", "--no-renames", base, t=120).stdout)[:5]:
+        problems.append(f"{p}: existing tests were weakened (assertions {ra} removed / {aa} added, test functions {rt} removed / {at} added) - "
+                        "restore them; change a test only when the spec says the test itself is wrong")
+    for p, n, q, k in duplicate_defs(".", [(s, p) for s, p in ns if not is_test_path(p)], base=base)[:5]:
+        problems.append(f"{p}: `{n}` ({k} lines) is a copy of the one in {q} - import it from there instead of copying it")
+    for st, p in ns:
+        if st in ("A", "M") and p.endswith(".py") and os.path.exists(p) and len(hints) < 6:
+            try:
+                with open(p, errors="ignore") as fh:
+                    now = fh.read(400000)
+            except OSError:
+                continue
+            un = unused_imports(now, sh("git", "show", f"{base}:{p}").stdout if st == "M" else None)
+            if un:
+                hints.append(f"{p}: unused import(s) {', '.join(un)} - remove them")
+
+
+if (CONF.get("quality") or "off") != "off":
+    try:
+        quality_findings()
+    except Exception as e:                # a bug in a check must never block a run
+        hints.append(f"(quality checks could not run: {e})"[:150])
+
+
+def emit(**kw):
+    kw.update(problems=problems, hints=hints)
+    kw.setdefault("tail", "")
+    kw["ok"] = kw.pop("passed", True) and not problems
+    print(json.dumps(kw))
+    raise SystemExit
+
+
 started = time.time()
-if CHANGED_ONLY:
-    # the full suite is left to the gate; here only what the branch changed (new/changed test files + test_<module>.py next to
-    # a changed module) - that is where a worker's own mistakes are, and it takes seconds instead of the 10 minutes the full run wasted
-    targets = sorted(f for f in changed if re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", f) and os.path.exists(f))
-    for f in sorted(changed):
-        mod = re.match(r"(.*/)?([^/]+)\.py$", f)
-        if mod and not re.match(r"test_|.*_test$", mod.group(2)):
-            sib = (mod.group(1) or "") + "test_" + mod.group(2) + ".py"
-            if os.path.exists(sib) and sib not in targets:
-                targets.append(sib)
-    targets = [x for x in targets if re.fullmatch(r"[A-Za-z0-9._/-]+", x)][:30]
-    if not (PYTEST and targets):
-        print(json.dumps({"ok": not problems, "rc": None, "mode": "changed", "tail": "", "problems": problems,
-                          "summary": "slow suite, no changed pytest files to run - left to the gate"}))
-        raise SystemExit
+# the tests this branch touches (its own, the ones named after a changed module, the ones importing it) run first: when one of them is red
+# the worker hears about it in seconds, not after the whole suite
+targets = test_targets(".", ns) if PYTEST and fast_pytest_cmd(CMD) else []
+if targets:
     try:
         t = subprocess.run(shlex.split(CMD) + ["--maxfail=5"] + targets, capture_output=True, text=True, timeout=300)
         out, rc = t.stdout + t.stderr, t.returncode
     except subprocess.TimeoutExpired:
-        print(json.dumps({"ok": not problems, "rc": None, "mode": "changed", "tail": "", "problems": problems,
-                          "summary": "changed tests slower than 5 min - left to the gate"}))
-        raise SystemExit
-else:
-    try:
-        t = sh("sh", "-c", CMD + (" --maxfail=5" if PYTEST else ""), t=FULL_TIMEOUT)
-        out, rc = t.stdout + t.stderr, t.returncode
-    except subprocess.TimeoutExpired:
-        # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"; "slow" makes
-        # the supervisor remember it, so the next runs of this project do not wait for the same timeout again
-        print(json.dumps({"ok": not problems, "rc": None, "slow": True, "mode": "full", "tail": "", "problems": problems,
-                          "summary": f"suite slower than {FULL_TIMEOUT} s - left to the gate"}))
-        raise SystemExit
+        out, rc = "", 0
+        if CHANGED_ONLY:
+            emit(rc=None, mode="changed", summary="changed tests slower than 5 min - left to the gate")
+    if rc not in (0, 5, 126, 127):
+        last = out.strip().splitlines()[-1] if out.strip() else ""
+        emit(passed=False, rc=rc, mode="fast", summary=last[:200], tail=out[-3000:], secs=int(time.time() - started))
+    if CHANGED_ONLY:
+        last = out.strip().splitlines()[-1] if out.strip() else ""
+        emit(rc=0 if rc == 5 else rc, mode="changed", summary=last[:200], tail=out[-3000:], secs=int(time.time() - started))
+elif CHANGED_ONLY:
+    emit(rc=None, mode="changed", summary="slow suite, no changed pytest files to run - left to the gate")
+try:
+    t = sh("sh", "-c", CMD + (" --maxfail=5" if PYTEST else ""), t=FULL_TIMEOUT)
+    out, rc = t.stdout + t.stderr, t.returncode
+except subprocess.TimeoutExpired:
+    # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"; "slow" makes
+    # the supervisor remember it, so the next runs of this project do not wait for the same timeout again
+    emit(rc=None, slow=True, mode="full", summary=f"suite slower than {FULL_TIMEOUT} s - left to the gate")
 if rc in (126, 127):
     # the test tool is not installed in the worker image (e.g. a Node project with the default image): the gate decides
-    print(json.dumps({"ok": not problems, "rc": rc, "summary": "test command not available in the worker - left to the gate",
-                      "tail": "", "problems": problems}))
-    raise SystemExit
+    emit(rc=rc, summary="test command not available in the worker - left to the gate")
 rc = 0 if (rc == 5 and PYTEST) else rc
 last = out.strip().splitlines()[-1] if out.strip() else ""
-print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems,
-                  "mode": "changed" if CHANGED_ONLY else "full", "secs": int(time.time() - started)}))
+emit(passed=rc == 0, rc=rc, summary=last[:200], tail=out[-3000:], mode="full", secs=int(time.time() - started))
 """
 
 
@@ -273,19 +331,37 @@ def remember_slow_suite(cmd, slow):
         pass
 
 
+def self_check_script():
+    """The check the worker container runs: quality.py (the gate's own measurements, stdlib only) followed by SELF_CHECK_PY."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "quality.py")) as f:
+        return f.read() + "\n" + SELF_CHECK_PY
+
+
+def self_check_conf():
+    """Judged against the same project settings and the task's file list as the gate and the reviewer will use."""
+    pc = sbx.project_conf()
+    try:
+        ratio_max = float(pc.get("TEST_RATIO_MAX") or 1.5)
+    except ValueError:
+        ratio_max = 1.5
+    shared = [x.strip() for x in str(pc.get("SHARED_FILES", "")).split(",") if x.strip()]
+    return json.dumps({"quality": pc.get("QUALITY_CHECK", "warn"), "ratio_max": ratio_max, "allowed": (m.get("files") or [])[:40], "shared": shared[:40]})
+
+
 def self_check():
-    """The test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). A project whose full suite is too slow for
-    this (it timed out once) gets only the tests the branch touched until the verdict is probed again. Infrastructure trouble never
-    blocks the run: it counts as passed and the real gate decides."""
+    """The test suite + the gate's skip/xfail scan + its quality findings (test economy, files outside the task's list, weakened tests,
+    copied helpers) in the worker's clone (offline anyway). A project whose full suite is too slow for this (it timed out once) gets
+    only the tests the branch touched until the verdict is probed again. Infrastructure trouble never blocks the run: it counts as
+    passed and the real gate decides."""
     cmd = sbx.test_cmd()
     changed_only = slow_suite_known(cmd)
     try:
-        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"AF_TEST_CMD={cmd}",
+        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"AF_TEST_CMD={cmd}", "-e", "AF_SC_CONF=" + self_check_conf(),
                "-e", "AF_SELF_CHECK_MODE=" + ("changed" if changed_only else "full"),
                "-e", "AF_SELF_CHECK_TIMEOUT=" + (os.environ.get("AF_SELF_CHECK_TIMEOUT") if sbx.TEST_MODE and os.environ.get("AF_SELF_CHECK_TIMEOUT") else "600"),
-               "-w", sbx.WORKER_CLONE, W, "python3", "-", input=SELF_CHECK_PY, timeout=700)
+               "-w", sbx.WORKER_CLONE, W, "python3", "-", input=self_check_script(), timeout=700)
         res = json.loads(r.stdout.strip().splitlines()[-1])
-        if not changed_only and (res.get("slow") or res.get("rc") is not None):
+        if not changed_only and res.get("mode") != "fast" and (res.get("slow") or res.get("rc") is not None):
             remember_slow_suite(cmd, bool(res.get("slow")))
         return res
     except Exception as e:
@@ -295,11 +371,15 @@ def self_check():
 def fix_prompt(chk):
     br = m.get("branch") or "your task branch"
     probs = "".join(f"- {p}\n" for p in chk.get("problems") or [])
+    more = "".join(f"- {h}\n" for h in chk.get("hints") or [])
     cmd = sbx.test_cmd()
+    red = chk.get("rc") not in (None, 0)
     return (f"## Self-check before you finish: your branch is not ready\n"
-            f"This is the check the gate runs in a clean container; it would send the task back, so fix it now.\n{probs}"
-            f"\nTest output (`{cmd}`):\n```\n{chk.get('tail', '')[-3000:]}\n```\n"
-            f"Fix the cause - change a test only if the spec says the test itself is wrong, never skip or weaken one. Run "
+            f"This is what the gate and the reviewer check; it would send the task back, so fix it now.\n"
+            + (f"\nProblems:\n{probs}" if probs else "")
+            + (f"\nTest output (`{cmd}`):\n```\n{chk.get('tail', '')[-3000:]}\n```\n" if red else "")
+            + (f"\nWhile you are at it:\n{more}" if more else "")
+            + f"\nFix the cause - change a test only if the spec says the test itself is wrong, never skip or weaken one. Run "
             f"`{cmd}` until it passes, then commit and push to `{br}`. Final reply: what you changed and the final test "
             f"summary line.\n")
 
@@ -446,7 +526,7 @@ reason, rc = watch(cmd, "w")
 if not runner and reason is None and rc == 0 and last_result_ok():
     for i in range(int(m.get("self_check") or 0)):
         chk = self_check()
-        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error", "mode", "secs")})
+        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "hints", "error", "mode", "secs")})
         if chk.get("ok"):
             break
         conv = conversation_id()
@@ -463,5 +543,5 @@ if not runner and reason is None and rc == 0 and last_result_ok():
     else:
         if SELF_CHECKS and not SELF_CHECKS[-1].get("ok"):
             chk = self_check()                      # record whether the last fix made it green (CPU only, no tokens)
-            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error", "mode", "secs")})
+            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "hints", "error", "mode", "secs")})
 finish(reason, rc)

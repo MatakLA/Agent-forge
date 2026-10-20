@@ -65,6 +65,30 @@ every run that full timeout and still check nothing. Now the first such run reco
 (valid 7 days, tied to the project's `TEST_CMD`); until it expires the self-check runs only the pytest files the branch added or
 changed plus `test_<module>.py` next to a changed module, which takes seconds. The full suite stays the gate's job.
 
+## What the reviewer would send back, found by scripts (`bin/lib/quality.py`)
+Of 120 review rejections measured on a large Python project, 41 cited the quality gate / test ratio, 40 files outside the allowed list
+and 9 tests that lost assertions - all things a script can see. Each of these cost a new run (≈650 k tokens per merged task) and
+a ≈11 min gate. Now the supervisor's self-check, the gate and the foreman use the same module, and the worker hears about them in
+the **same conversation**, before it stops:
+
+| Finding | Self-check | Gate (`review-branch`) |
+|---|---|---|
+| a file outside the task's file list (tests of a listed module and `SHARED_FILES` are fine) | problem | `scope:` warning, flag `scope` |
+| an existing test lost assertions or test functions | problem | `weakened:`, flag `weakened` |
+| a definition copied from another file (same name, same body; JS and Python) | problem (source files) | `duplicate:`, flag `duplicate` |
+| far more test lines than code lines (`TEST_RATIO_MAX`) | problem | `== QUALITY` |
+| an unused import the change introduced | hint only | `unused-import:` |
+| a red test of the changed or importing files | problem, found by a **fast pass** (≤ 30 test files, `--maxfail=5`) in seconds | the fast pass runs first; red → the whole suite is not run (saves ≈11 min) |
+
+The task's file list travels in `meta.json` (`files`, from `DISPATCH_FILES`) and to the gate in `GATE_ALLOWED_FILES`; a task without a
+list is unrestricted. All checks follow `QUALITY_CHECK` (`off` switches them off); the fast pass only runs for a plain
+`pytest ...` `TEST_CMD` (`GATE_FAST=0` disables it in the gate). Editing an existing file no longer produces a warning by itself
+(it used to, on every modified file, and discouraged reuse); only deleted/moved files do.
+
+Every rework now stores **why** it happened (`kind`: conflict, secret, quality, tests-own, tests-existing, not-pushed, review,
+mutation) and the gate's `== FLAGS:` at that moment in the task's `history`; `team_metrics().totals` counts them
+(`rework_kinds`, `rework_flags`) - so the next rule is built from numbers, not impressions.
+
 ## Nothing is lost at the end of a run
 After every run (not only after a token cap) the supervisor commits and pushes whatever the worker left in its clone to the
 task branch, so "branch not pushed" no longer costs a rework. A run that changed nothing pushes nothing. (The commit used to be

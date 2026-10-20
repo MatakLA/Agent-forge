@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Usage: bin/review-branch <branch> [--diff] [--mutations SPEC.json]
 Read-only review of a worker branch (fetch with the read-only monitoring token, nothing is pushed or merged):
-  1. commits + diffstat + name-status; warns about modified/deleted files, non-worker authors, merge commits, secret-like strings
+  1. commits + diffstat + name-status; warns about deleted/renamed files, non-worker authors, merge commits, secret-like strings
   2. scans test files for skip/xfail/assert True and test functions without any assertion
-  3. runs the whole test suite in a fresh container (no network, read-only source, all caps dropped, 1 CPU / 1 GB, non-root)
-  4. --mutations: SPEC.json = [{"name":..., "file":"pkg/cli.py", "old":"exact text", "new":"replacement"}, ...]; each mutant must make the tests fail
-  5. --diff prints the full diff
+  3. measured quality findings (QUALITY_CHECK): test/code ratio, files outside the task's list (env GATE_ALLOWED_FILES), weakened tests,
+     copied helper functions, new unused imports, unwired and oversized files
+  4. runs the tests in a fresh container (no network, read-only source, all caps dropped, 1 CPU / 1 GB, non-root): first the changed test
+     files and their neighbours (a red one ends the gate at once - minutes saved), then the whole suite
+  5. --mutations: SPEC.json = [{"name":..., "file":"pkg/cli.py", "old":"exact text", "new":"replacement"}, ...]; each mutant must make the tests fail
+  6. --diff prints the full diff
+Prints "== FLAGS: a,b" (the kinds of warnings) just before the warnings list.
 Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed."""
 import ast, json, os, re, shutil, subprocess, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
@@ -24,7 +28,13 @@ SECRET_PATTERNS = ((r"sk-ant-[A-Za-z0-9_-]{20,}", "an Anthropic API key"), (r"\b
                    (r"BEGIN [A-Z ]*PRIVATE KEY", "a private key"))                # the project's TEST_CMD (default: python3 -m pytest -q -p no:cacheprovider)
 tok = open(os.path.join(sbx.SECRETS, "monitor.token")).read().strip()
 tmp = tempfile.mkdtemp(prefix="review-")
-warn = []
+warn, flags = [], []
+
+
+def W(flag, text):
+    warn.append(text)
+    if flag not in flags:
+        flags.append(flag)
 
 
 def sh(*c, cwd=None, timeout=300):
@@ -51,22 +61,23 @@ try:
     for l in sh("git", "log", "--format=%an|%p", f"{base}..HEAD", cwd=repo).stdout.splitlines():
         who, parents = l.split("|")
         if not re.fullmatch(r"worker-\d+", who):
-            warn.append(f"commit author is not a worker bot: {who}")
+            W("author", f"commit author is not a worker bot: {who}")
         if len(parents.split()) > 1:
-            warn.append("branch contains a merge commit")
+            W("merge-commit", "branch contains a merge commit")
     print("\n" + sh("git", "diff", "--stat", f"{base}...HEAD", cwd=repo).stdout.rstrip())
     ns = sh("git", "diff", "--name-status", f"{base}...HEAD", cwd=repo).stdout.splitlines()
     print("\nname-status: " + ", ".join(ns))
     for l in ns:
         st, path = l.split("\t", 1)[0], l.split("\t")[-1]
-        if not st.startswith("A"):
-            warn.append(f"existing file changed/deleted/renamed: {l}")
+        if st[:1] in ("D", "R", "C"):               # a plain edit of an existing file is normal (reuse beats copying); removal and moves are not
+            W("deleted-or-moved", f"file deleted/renamed/copied: {l}")
         if path.startswith(".") and path not in (".gitignore",):
-            warn.append(f"dot-file touched: {path}")
+            W("dot-file", f"dot-file touched: {path}")
+    changed = [(l.split("\t", 1)[0], l.split("\t")[-1]) for l in ns]
     added = sh("git", "diff", "--unified=0", f"{base}...HEAD", cwd=repo).stdout
     plus = [x for x in added.splitlines() if x.startswith("+") and not x.startswith("+++")]
     if any(re.search(r"\b[0-9a-f]{40}\b", x) for x in plus):
-        warn.append("added lines contain a 40-hex string (token-like)")
+        W("token-like", "added lines contain a 40-hex string (token-like)")
     # real secrets are a hard stop, not a warning: API keys of the worker runtimes, forge tokens, cloud keys, private keys
     secrets = [what for pat, what in SECRET_PATTERNS if any(re.search(pat, x) for x in plus)]
     if secrets:
@@ -78,20 +89,20 @@ try:
         src = open(os.path.join(repo, t)).read()
         for pat in (r"pytest\.mark\.skip", r"pytest\.skip\(", r"xfail", r"importorskip", r"assert True\b", r"skipif"):
             if re.search(pat, src):
-                warn.append(f"{t}: contains '{pat}'")
+                W("skip-marker", f"{t}: contains '{pat}'")
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 ntests += 1
                 has = any(isinstance(n, (ast.Assert,)) or (isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("raises", "fail")) for n in ast.walk(node))
                 if not has:
-                    warn.append(f"{t}::{node.name} has no assertion")
+                    W("no-assertion", f"{t}::{node.name} has no assertion")
     # documentation: every new module says what it is for (the code map and the workers' context packs are built from it)
     for l in ns:
         st, path = l.split("\t", 1)[0], l.split("\t")[-1]
         if st.startswith("A") and path.endswith(".py") and not re.search(r"(^|/)(test_[^/]*|conftest)\.py$", path):
             try:
                 if not ast.get_docstring(ast.parse(open(os.path.join(repo, path)).read())):
-                    warn.append(f"{path}: new module without a module docstring (purpose, interface, invariants)")
+                    W("no-docstring", f"{path}: new module without a module docstring (purpose, interface, invariants)")
             except (OSError, SyntaxError):
                 pass
     # test economy and wiring (QUALITY_CHECK=off|warn|block, TEST_RATIO_MAX lines of tests per line of code)
@@ -105,26 +116,44 @@ try:
             ratio_max = 1.5
         t_add, c_add = quality.test_ratio(sh("git", "diff", "--numstat", f"{base}...HEAD", cwd=repo).stdout.splitlines())
         print(f"\nlines added: code {c_add}, tests {t_add}" + (f" (ratio {t_add / c_add:.1f}, limit {ratio_max})" if c_add else ""))
-        if c_add and t_add > max(150, ratio_max * c_add):
-            quality_msg = (f"too many tests: {t_add} test lines for {c_add} code lines (limit {ratio_max} per code line, at least 150 allowed). "
-                           f"Keep tests for behaviour and invariants (what the function decides, edge cases that change the result); delete tests of "
-                           f"input validation boundaries that a schema already enforces, repeated cases that one parametrised test covers, and tests "
-                           f"of implementation details. Aim for about as many test lines as code lines.")
+        quality_msg = quality.ratio_message(t_add, c_add, ratio_max)
         added_src = [l.split("\t")[-1] for l in ns if l.startswith("A")]
         loose = quality.unreferenced(repo, added_src)
         if loose:
-            warn.append("new source file(s) that no other file refers to yet (fine only if a later task of this goal wires them in): " + ", ".join(loose[:8]))
+            W("unwired", "new source file(s) that no other file refers to yet (fine only if a later task of this goal wires them in): " + ", ".join(loose[:8]))
         grown = [l.split("\t")[-1] for l in ns if l[:1] in "AM"]
         big = quality.oversized(repo, grown, int(pc.get("MAX_FILE_LINES", "400") or 400))
         if big:
-            warn.append("big source file(s) - a worker has to re-read them every time; split into modules: " + ", ".join(f"{p} ({n} lines)" for p, n in big[:6]))
+            W("big-file", "big source file(s) - a worker has to re-read them every time; split into modules: " + ", ".join(f"{p} ({n} lines)" for p, n in big[:6]))
+        # facts a script can see, so the reviewer does not have to find them (the same checks run in the worker's self-check)
+        allowed = [f.strip() for f in os.environ.get("GATE_ALLOWED_FILES", "").split(",") if f.strip()]
+        shared = [x.strip() for x in str(pc.get("SHARED_FILES", "")).split(",") if x.strip()]
+        out = quality.outside_scope(changed, allowed, shared)
+        if out:
+            W("scope", "scope: files changed that are not in the task's file list: " + ", ".join(out[:8]) + (" ..." if len(out) > 8 else ""))
+        for tp, ra, aa, rt, at in quality.weakened_tests(added)[:5]:
+            W("weakened", f"weakened: {tp} lost assertions/tests (assertions {ra} removed / {aa} added, test functions {rt} removed / {at} added)")
+        mb = sh("git", "merge-base", base, "HEAD", cwd=repo).stdout.strip() or base
+        for dp, dn, dq, dk in quality.duplicate_defs(repo, [c for c in changed if c[0][:1] in ("A", "M")], base=mb)[:6]:
+            W("duplicate", f"duplicate: {dp} defines `{dn}` ({dk} lines), a copy of the one in {dq} - import it instead")
+        shown = 0
+        for st, up in changed:
+            if st[:1] in ("A", "M") and up.endswith(".py") and shown < 6:
+                try:
+                    with open(os.path.join(repo, up), errors="ignore") as fh:
+                        un = quality.unused_imports(fh.read(400000), sh("git", "show", f"{mb}:{up}", cwd=repo).stdout if st[:1] == "M" else None)
+                except OSError:
+                    continue
+                if un:
+                    shown += 1
+                    W("unused-import", f"unused-import: {up} imports {', '.join(un)} and never uses it")
         if quality_msg:
             print("\n== QUALITY: " + quality_msg)
             if qmode != "block":
-                warn.append("QUALITY: " + quality_msg)
+                W("ratio", "QUALITY: " + quality_msg)
     print(f"\ntest files: {tests or 'none'}, test functions: {ntests}")
     if not tests:
-        warn.append("no test file in the diff")
+        W("no-test-file", "no test file in the diff")
     dock = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "PYTHONDONTWRITEBYTECODE=1"]
     def drun(*args, timeout):
@@ -136,17 +165,32 @@ try:
             sh("docker", "rm", "-f", name, timeout=60)
             raise
 
-    t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD,
-             timeout=int(os.environ.get("GATE_TIMEOUT", "1500")))
-    print(f"\n== full test suite in a fresh container (`{TEST_CMD}`): " + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
+    gate_timeout = int(os.environ.get("GATE_TIMEOUT", "1500"))
+    # fast pass: the changed test files and their neighbours first. A red one is the common failure and shows within seconds; the whole suite
+    # (minutes, one CPU) runs only when this is green. Skipped for any test command that is not a plain pytest call.
+    t, fast_red = None, False
+    ftargets = quality.test_targets(repo, changed) if sbx.is_pytest(TEST_CMD) and quality.fast_pytest_cmd(TEST_CMD) and os.environ.get("GATE_FAST", "1") != "0" else []
+    if ftargets:
+        try:
+            f = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c",
+                     TEST_CMD + " --maxfail=5 " + " ".join(ftargets), timeout=min(600, gate_timeout))
+            if f.returncode not in (0, 5, 125, 126, 127):
+                t, fast_red = f, True
+            print(f"\n== fast pass, {len(ftargets)} changed/related test file(s): " + ((f.stdout + f.stderr).strip().splitlines() or ["(no output)"])[-1])
+        except subprocess.TimeoutExpired:
+            print(f"\n== fast pass, {len(ftargets)} test file(s): timed out - running the whole suite")
+    if t is None:
+        t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=gate_timeout)
+    print(f"\n== {'whole suite NOT run (fast pass is red)' if fast_red else 'full test suite'} in a fresh container (`{TEST_CMD}`): "
+          + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0 or bool(secrets) or (bool(quality_msg) and qmode == "block")
     if fail and t.returncode == 0 and not secrets:
         print("== QUALITY-ONLY: the tests pass; the branch is refused for the quality finding above")
     if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
         fail = False                     # pytest found no tests at all: a branch without code tests (docs, design) is not red
-        warn.append("the repository has no tests yet")
+        W("no-tests-yet", "the repository has no tests yet")
     if re.search(r"\b(skipped|xfailed|xpassed)\b", t.stdout.strip().splitlines()[-1] if t.stdout.strip() else ""):
-        warn.append("test run reports skipped/xfailed tests: " + t.stdout.strip().splitlines()[-1])
+        W("skipped-tests", "test run reports skipped/xfailed tests: " + t.stdout.strip().splitlines()[-1])
     if fail:
         print(t.stdout[-1500:], t.stderr[-500:])
     surv = 0
@@ -177,9 +221,11 @@ for m in spec:
             if d["result"] != "KILLED":
                 surv += 1
         if surv:
-            warn.append(f"{surv} mutant(s) survived or had a bad spec - check whether they are equivalent")
+            W("mutants", f"{surv} mutant(s) survived or had a bad spec - check whether they are equivalent")
     if "--diff" in a:
         print("\n== diff\n" + sh("git", "diff", f"{base}...HEAD", cwd=repo).stdout)
+    if flags:
+        print("\n== FLAGS: " + ",".join(flags))
     print("\n== warnings: " + ("none" if not warn else ""))
     for w in warn:
         print("  ! " + w)

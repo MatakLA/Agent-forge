@@ -533,6 +533,36 @@ class TestForemanMerge(unittest.TestCase):
         self.assertTrue(any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"]))
         assert any("in merging state with no PR reference and upstream unavailable" in h.get("why", "") for h in t_after["history"])
 
+    def test_rework_records_why_and_the_gate_flags_and_the_gate_gets_the_file_list(self):
+        t = dict(id="0042-scope", history=[], status="gate", branch="feat/0042-scope", role="backend-developer", goal="G1",
+                 title="scope", attempts=0, spec="s", acceptance=[], files=["a.py", "tests/test_a.py", "x,y.py"])
+        merge.save_task(t)
+        merge.auto_rebase = lambda b: "uptodate"
+        merge.already_merged_pr = lambda b: None
+        merge.refresh_repo = lambda: None
+        seen = {}
+
+        def gate_sh(cmd, *a, **kw):
+            if "diff" in cmd:
+                return (0, "+code\n", "")
+            if "review-branch" in cmd[0]:
+                seen["env"] = kw.get("env")
+                return (0, "gate tests passed\n== FLAGS: scope,duplicate\n== warnings:\n  scope: b.py\n", "")
+            return (0, "", "")
+
+        merge.sh = gate_sh
+        merge.llm = lambda *a, **kw: ('{"verdict": "rework", "feedback": "drop b.py"}', "lead")
+        merge.upstream_obj = lambda: None
+        merge.step_gate_review_merge(t)()
+        after = merge.live_task(t)
+        self.assertEqual(seen["env"], {"GATE_ALLOWED_FILES": "a.py,tests/test_a.py"})
+        self.assertEqual(after["status"], "pending")
+        last = [h for h in after["history"] if h.get("outcome") == "rework"][-1]
+        self.assertEqual((last["kind"], last["flags"]), ("review", ["scope", "duplicate"]))
+        merge.rework(after, "conflict", "", count=False, kind="conflict")
+        last = [h for h in merge.live_task(t)["history"] if h.get("outcome") == "rework"][-1]
+        self.assertEqual((last["kind"], last["flags"]), ("conflict", []))
+
     def test_feedback_and_gate_control_characters_safety(self):
         """Regression test for control characters (NUL, ANSI escape, bell, backspace) in feedback/gate_tail:
         asserts no crash and no raw NUL in any subprocess-bound argv across rework, requeue_gate, await_owner,

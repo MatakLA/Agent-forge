@@ -214,7 +214,7 @@ def step_upstream_merge(t):
             if rb in ("rebased", "uptodate"):
                 return lambda: requeue_gate(t, f"main moved on {up.kind} - auto-rebased, testing again before the merge")
             return lambda: rework(t, "Approved, but the branch conflicts with main. `git fetch origin && git rebase origin/main`, resolve, "
-                                     "rerun relevant tests, `git push --force-with-lease`. Change nothing else.", "", count=False)
+                                     "rerun relevant tests, `git push --force-with-lease`. Change nothing else.", "", count=False, kind="conflict")
     except upstream.UpstreamError as e:
         st = dict(why=str(e))
     except Exception:
@@ -308,12 +308,13 @@ def step_gate_review_merge(t):
         if rb == "conflict":
             return lambda: rework(t, "Your branch conflicts with main in a way that cannot be merged automatically. `git fetch origin && git rebase "
                                      "origin/main`, resolve the conflicts keeping both sides' intent, rerun relevant tests, `git push "
-                                     "--force-with-lease`. Change nothing else.", "", count=False)
+                                     "--force-with-lease`. Change nothing else.", "", count=False, kind="conflict")
         if rb == "rebased":
             event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
         PHASE[t["id"]] = "tests in a clean container"
         refresh_repo()
-        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=1500)
+        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=1500,
+                          env={"GATE_ALLOWED_FILES": ",".join(f for f in t.get("files", []) if "," not in str(f))})
         gate = (out + err)[-8000:]
         if rc == 2:
             # infrastructure trouble is not the worker's fault and must not burn one of its attempts
@@ -325,9 +326,9 @@ def step_gate_review_merge(t):
             if "== SECRET:" in gate:
                 return lambda: rework(t, "Gate failed: your branch adds a secret (" + gate.split("== SECRET: the branch adds ", 1)[1].split(" - refused")[0] +
                                          "). Never put keys or tokens into the repository. Remove it from every commit of the branch (rewrite the "
-                                         "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate)
+                                         "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate, kind="secret")
             if "== QUALITY-ONLY" in gate and "== QUALITY: " in gate:
-                return lambda: rework(t, "Gate failed on quality, not on tests: " + gate.split("== QUALITY: ", 1)[1].split("\n", 1)[0].strip(), gate)
+                return lambda: rework(t, "Gate failed on quality, not on tests: " + gate.split("== QUALITY: ", 1)[1].split("\n", 1)[0].strip(), gate, kind="quality")
             why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
             failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
             owned = set(t.get("files", []))
@@ -349,7 +350,7 @@ def step_gate_review_merge(t):
                             f"so existing contracts, payload structures and callers continue to work.")
             else:
                 msg += " Fix it (see the gate output) and push again."
-            return lambda: rework(t, msg, gate)
+            return lambda: rework(t, msg, gate, kind="not-pushed" if "could not fetch the branch" in gate else ("tests-existing" if unowned else "tests-own"))
         _, diff, _ = sh(["git", "diff", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO)
         _, numstat, _ = sh(["git", "diff", "--numstat", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO)
         added, removed = parse_numstat(numstat)
@@ -377,7 +378,7 @@ def step_gate_review_merge(t):
             return lambda: (add_lesson(lesson, t["id"]), block(t, f"rejected by {who}: {fb}"))
         if verdict != "approve":
             return lambda: (add_lesson(lesson, t["id"]),
-                            rework(t, (f"Review ({who}): " + fb) if fb else f"Review ({who}) asked for rework but gave no specifics - re-check the spec.", gate))
+                            rework(t, (f"Review ({who}): " + fb) if fb else f"Review ({who}) asked for rework but gave no specifics - re-check the spec.", gate, kind="review"))
         muts = [m for m in v.get("mutations", []) if isinstance(m, dict) and {"name", "file", "old", "new"} <= set(m)][:4]
         if muts:
             spec = os.path.join(ctx.FD, "mutations", t["id"] + ".json")
@@ -391,7 +392,7 @@ def step_gate_review_merge(t):
             if any(l.startswith("SURVIVED") for l in surv):
                 return lambda: rework(t, "Your tests do not catch these deliberate bugs in your code (mutation check); add tests that fail for "
                                          "each of them:\n" + "\n".join(f"- {m['name']}: in {m['file']} replace `{m['old']}` with `{m['new']}`"
-                                                                       for m in muts if any(m['name'] in l for l in surv if l.startswith('SURVIVED'))), out2[-3000:])
+                                                                       for m in muts if any(m['name'] in l for l in surv if l.startswith('SURVIVED'))), out2[-3000:], kind="mutation")
         if "merge" in approvals() and not t.get("merge_approved"):
             return lambda: await_owner(t, "merge", who, fb, gate)
         return do_merge(t, who, fb, gate)
@@ -563,7 +564,7 @@ def diagnose_task(t, why):
     return None
 
 
-def rework(t, feedback, gate_tail, count=True):
+def rework(t, feedback, gate_tail, count=True, kind=""):
     # Security: feedback and gate_tail persist to task JSON on disk; dashboard renders in <pre> tags via esc() (bypassing backend ANSI regex).
     t_id = t.get("id") if isinstance(t, dict) else ""
     if t_id:
@@ -573,7 +574,10 @@ def rework(t, feedback, gate_tail, count=True):
         return
     if count:
         t["attempts"] += 1
-    t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500]))
+    # kind = why it came back (conflict, secret, quality, tests-own, tests-existing, not-pushed, review, mutation); flags = the gate's measured
+    # warnings at that moment (scope, weakened, duplicate, ratio, ...): what to build the next self-check rule from
+    fl = re.search(r"^== FLAGS: ([\w,-]+)$", gate_tail or "", re.M)
+    t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500], kind=kind, flags=fl.group(1).split(",") if fl else []))
     if t["attempts"] > ctx.C["MAX_REWORK"]:
         return block(t, f"still failing after {t['attempts']} attempts: {feedback[:300]}")
     if t["attempts"] >= 2 and not t.get("diagnosis"):

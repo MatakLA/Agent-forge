@@ -98,9 +98,9 @@ J
 python3 "$T/bin/run-supervisor" "$d" || true
 check "salvage: uncommitted work beside .pytest_cache is committed and pushed" 'docker exec "$C" git -C /tmp/origin.git show feat/0004-s:left.py | grep -q Left && ! docker exec "$C" git -C /tmp/origin.git ls-tree -r --name-only feat/0004-s | grep -q pytest_cache'
 # self-check of a project whose full suite is slow: it is remembered, then only the tests the branch touched run
-extract() { python3 - "$T/bin/run-supervisor" <<'PYEOF'
+extract() { python3 - "$T/bin/run-supervisor" "$T/bin/lib/quality.py" <<'PYEOF'
 import re, sys
-print(re.search(r'SELF_CHECK_PY = r"""(.*?)"""', open(sys.argv[1]).read(), re.S).group(1))
+print(open(sys.argv[2]).read() + "\n" + re.search(r'SELF_CHECK_PY = r"""(.*?)"""', open(sys.argv[1]).read(), re.S).group(1))
 PYEOF
 }
 docker exec "$C" bash -c 'set -e; rm -rf /tmp/slow; git clone -q /tmp/origin.git /tmp/slow; cd /tmp/slow; git config user.email o@o; git config user.name o
@@ -129,5 +129,70 @@ EOF
 docker cp "$T/fake-agy-run" "$C:/tmp/agy-run"; docker exec -u root "$C" bash -c 'install -m 755 /tmp/agy-run "$(command -v agy-run)"'
 python3 "$T/bin/run-supervisor" "$T/runs/20260101T000004Z-$C" || true
 check "supervisor: a remembered slow suite switches the self-check to the changed tests" '[[ "$(python3 -c "import json,sys; print(\",\".join(c.get(\"mode\") for c in json.load(open(sys.argv[1]))[\"self_checks\"]))" "$T/runs/20260101T000004Z-$C/meta.json")" == "changed" ]]'
+# the self-check also finds what the gate and the reviewer would send back (same quality.py): files outside the task's list, too many tests,
+# weakened tests, a copied helper; an unused import is only a hint. Own origin, green main.
+docker exec "$C" bash -c 'set -e; rm -rf /tmp/qorigin.git /tmp/q; git init -q --bare -b main /tmp/qorigin.git; git clone -q /tmp/qorigin.git /tmp/q 2>/dev/null; cd /tmp/q
+  git config user.email o@o; git config user.name o
+  printf "\"\"\"Util.\"\"\"\n\ndef clamp_value(value, low, high):\n    result = value\n    if result < low:\n        result = low\n    if result > high:\n        result = high\n    return result\n" > util.py
+  printf "def test_keep():\n    assert 1 == 1\n    assert 2 == 2\n    assert 3 == 3\n" > test_keep.py
+  git add -A; git commit -qm base; git push -q origin HEAD:main; git fetch -q'
+scq() { extract | docker exec -i -e AF_SELF_CHECK_MODE=full -e AF_SC_CONF="$1" -w /tmp/q "$C" python3 - | tail -1; }
+fresh_branch() { docker exec "$C" bash -c 'cd /tmp/q; git checkout -q -f -B work origin/main; git clean -fdq'; }
+CONF='{"quality": "warn", "ratio_max": 1.5, "allowed": ["util.py"], "shared": []}'
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; printf "\"\"\"Other.\"\"\"\nX = 1\n" > other.py; git add -A; git commit -qm other'
+Q1="$(scq "$CONF")"
+check "self-check: a file outside the task's list is a problem" '[[ "$(field "$Q1" ok)" == "False" && "$(field "$Q1" problems)" == *"file list"*other.py* ]]'
+check "self-check: the same branch is fine for a task that owns the file" '[[ "$(field "$(scq "{\"quality\": \"warn\", \"allowed\": [\"other.py\"]}")" ok)" == "True" ]]'
+check "self-check: quality off adds nothing" '[[ "$(field "$(scq "{\"quality\": \"off\", \"allowed\": [\"util.py\"]}")" ok)" == "True" ]]'
+check "self-check: no file list means unrestricted" '[[ "$(field "$(scq "{\"quality\": \"warn\"}")" ok)" == "True" ]]'
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; printf "def test_keep():\n    assert 1 == 1\n" > test_keep.py; git commit -qam weaken'
+Q2="$(scq "{\"quality\": \"warn\"}")"
+check "self-check: removing assertions from an existing test is a problem" '[[ "$(field "$Q2" ok)" == "False" && "$(field "$Q2" problems)" == *weakened* ]]'
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; printf "\"\"\"Limits.\"\"\"\n\ndef clamp_value(value, low, high):\n    result = value\n    if result < low:\n        result = low\n    if result > high:\n        result = high\n    return result\n" > limits.py
+  printf "import os\n\nX = 2\n" > imp.py; git add -A; git commit -qm limits'
+Q3="$(scq "{\"quality\": \"warn\"}")"
+check "self-check: a copied helper is a problem naming the original" '[[ "$(field "$Q3" ok)" == "False" && "$(field "$Q3" problems)" == *clamp_value*util.py* ]]'
+check "self-check: an unused import is a hint, not a problem" '[[ "$(field "$Q3" hints)" == *"imp.py"*os* && "$(field "$Q3" problems)" != *imp.py* ]]'
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; { for i in $(seq 1 200); do printf "def test_case_%s():\n    assert %s == %s\n\n" $i $i $i; done; } > test_many.py; printf "\"\"\"One.\"\"\"\nY = 1\n" > one.py; git add -A; git commit -qm many'
+Q4="$(scq "{\"quality\": \"warn\"}")"
+check "self-check: far more test lines than code lines is a problem" '[[ "$(field "$Q4" ok)" == "False" && "$(field "$Q4" problems)" == *"too many tests"* ]]'
+# a red test of the branch is reported by the fast pass before the (long) suite runs
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; printf "import time\n\ndef test_unrelated_slow():\n    time.sleep(20)\n" > test_unrelated.py; git add -A; git commit -qm slow; git push -q origin HEAD:main; git fetch -q'
+fresh_branch
+docker exec "$C" bash -c 'cd /tmp/q; printf "def test_red():\n    assert 1 == 2\n" > test_red.py; git add -A; git commit -qm red'
+Q5="$(scq "{\"quality\": \"warn\"}")"
+check "self-check: a red changed test is reported by the fast pass, without waiting for the slow one" '[[ "$(field "$Q5" ok)" == "False" && "$(field "$Q5" mode)" == "fast" && "$(field "$Q5" secs)" -lt 15 ]]'
+# supervisor side: the task's file list from meta.json reaches the check; the fix round names the problem and shows no test output (tests are green)
+cat > "$T/fake-agy-run" <<'EOF'
+#!/bin/bash
+prompt=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "-p" ] && { j=$((i+1)); prompt="${!j}"; }; done
+conv=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--conversation" ] && { j=$((i+1)); conv="${!j}"; }; done
+step() { echo '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":1000}}}'; }
+if [ -z "$conv" ]; then
+  echo '{"event":"init","init":{"conversation_id":"conv-f"}}'
+  git checkout -q -b feat/0005-f origin/main
+  printf '"""Only."""\nA = 1\n' > only.py; printf '"""Extra."""\nB = 1\n' > extra.py
+  git add only.py extra.py && git -c user.name=worker-9 -c user.email=w@w commit -qm "both"
+else
+  printf '%s' "$prompt" > /tmp/fix5-prompt
+  git rm -q extra.py && git -c user.name=worker-9 -c user.email=w@w commit -qm "drop extra"
+fi
+step; echo '{"event":"result","result":{"status":"SUCCESS","response":"done"}}'
+EOF
+docker cp "$T/fake-agy-run" "$C:/tmp/agy-run"; docker exec -u root "$C" bash -c 'install -m 755 /tmp/agy-run "$(command -v agy-run)"'
+d="$T/runs/20260101T000005Z-$C"; mkdir -p "$d"; echo "# Task 0005-f" > "$d/prompt.md"
+cat > "$d/meta.json" <<J
+{"run_id": "20260101T000005Z-$C", "worker": "$C", "task": "0005-f.md", "test": false, "runner": null, "model": "fake", "project": "",
+ "repo": "sandbox/playground", "branch": "feat/0005-f", "conversation": "", "variant": "pack-default", "self_check": 1, "files": ["only.py"],
+ "limits": {"timeout_min": 30, "token_cap": 1500000}, "quota_before": [], "dispatched": "x"}
+J
+python3 "$T/bin/run-supervisor" "$d" || true
+check "supervisor: a file outside the task's list sends the worker back once, then the check is green" '[[ "$(python3 -c "import json,sys; print([c[\"ok\"] for c in json.load(open(sys.argv[1]))[\"self_checks\"]])" "$d/meta.json")" == "[False, True]" ]]'
+check "supervisor: the fix prompt names the file and has no test output section" 'docker exec "$C" grep -q "extra.py" /tmp/fix5-prompt && ! docker exec "$C" grep -q "Test output" /tmp/fix5-prompt'
 echo "supervisor test: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
 exit $fail
