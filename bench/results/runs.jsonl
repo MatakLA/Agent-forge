@@ -1,0 +1,1 @@
+{"version": "v0", "run": "20261020T104355Z-worker-7", "branch": "bench_v0_1792492019", "tokens": 0, "tool_calls": 0, "read_calls": 0, "duration_s": 903, "reason": "timeout", "prompt_tokens_est": 645, "quota_week_before": 8.0, "quota_week_after": 8.0, "branch_found": false}
