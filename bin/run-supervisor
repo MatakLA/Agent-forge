@@ -65,8 +65,10 @@ def salvage(reason):
            f'[ "$(git branch --show-current)" = "{br}" ] || exit 3; '
            f"git add -A -- . ':(exclude)*/__pycache__/*' ':(exclude)*.pyc' ':(exclude).pytest_cache' "
            # databases and logs that test runs leave in the source tree (seen: tools/gym.db) are never part of the work
-           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' ':(exclude).aider*' && "
-           f'(git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"); '
+           f"':(exclude)*.db' ':(exclude)*.sqlite' ':(exclude)*.sqlite3' ':(exclude)*.log' ':(exclude).aider*'; "
+           # `git add` exits 1 (but still stages everything) when an excluded pathspec names an ignored path - every clone in which
+           # pytest ran has .pytest_cache, which ignores itself - so the commit must not depend on its exit code
+           f'git diff --cached --quiet || git commit -qm "WIP: {what} (agent-forge)"; '
            # nothing beyond main (a run that did nothing): never push a branch equal to main - the gate would see an empty
            # diff and the review would take it for "already merged"
            f'[ -n "$(git log --oneline origin/main..HEAD | head -1)" ] || exit 4; '
@@ -177,10 +179,13 @@ def container_ok():
 
 
 SELF_CHECKS = []
+SLOW_SUITE_DAYS = 7                       # how long a "the full suite takes more than 10 min" verdict is trusted before it is probed again
 SELF_CHECK_PY = r"""
-import json, os, re, subprocess
+import json, os, re, shlex, subprocess, time
 CMD = os.environ.get("AF_TEST_CMD") or "python3 -m pytest -q -p no:cacheprovider"
 PYTEST = "pytest" in CMD
+CHANGED_ONLY = os.environ.get("AF_SELF_CHECK_MODE") == "changed"        # the suite is known to be slow: only the tests this branch touches
+FULL_TIMEOUT = int(os.environ.get("AF_SELF_CHECK_TIMEOUT") or 600)
 def sh(*c, t=60):
     return subprocess.run(list(c), capture_output=True, text=True, timeout=t)
 problems = []
@@ -195,14 +200,39 @@ for f in sorted(changed):
                           (r"importorskip", "importorskip"), (r"skipif", "skipif"), (r"assert True\b", "assert True")):
             if re.search(pat, src):
                 problems.append(f"{f} contains {name} (the gate rejects it)")
-try:
-    t = sh("sh", "-c", CMD + (" --maxfail=5" if PYTEST else ""), t=600)
-    out, rc = t.stdout + t.stderr, t.returncode
-except subprocess.TimeoutExpired:
-    # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"
-    print(json.dumps({"ok": not problems, "rc": None, "summary": "suite slower than 10 min - left to the gate", "tail": "",
-                      "problems": problems}))
-    raise SystemExit
+started = time.time()
+if CHANGED_ONLY:
+    # the full suite is left to the gate; here only what the branch changed (new/changed test files + test_<module>.py next to
+    # a changed module) - that is where a worker's own mistakes are, and it takes seconds instead of the 10 minutes the full run wasted
+    targets = sorted(f for f in changed if re.search(r"(^|/)(test_[^/]*|[^/]*_test)\.py$", f) and os.path.exists(f))
+    for f in sorted(changed):
+        mod = re.match(r"(.*/)?([^/]+)\.py$", f)
+        if mod and not re.match(r"test_|.*_test$", mod.group(2)):
+            sib = (mod.group(1) or "") + "test_" + mod.group(2) + ".py"
+            if os.path.exists(sib) and sib not in targets:
+                targets.append(sib)
+    targets = [x for x in targets if re.fullmatch(r"[A-Za-z0-9._/-]+", x)][:30]
+    if not (PYTEST and targets):
+        print(json.dumps({"ok": not problems, "rc": None, "mode": "changed", "tail": "", "problems": problems,
+                          "summary": "slow suite, no changed pytest files to run - left to the gate"}))
+        raise SystemExit
+    try:
+        t = subprocess.run(shlex.split(CMD) + ["--maxfail=5"] + targets, capture_output=True, text=True, timeout=300)
+        out, rc = t.stdout + t.stderr, t.returncode
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"ok": not problems, "rc": None, "mode": "changed", "tail": "", "problems": problems,
+                          "summary": "changed tests slower than 5 min - left to the gate"}))
+        raise SystemExit
+else:
+    try:
+        t = sh("sh", "-c", CMD + (" --maxfail=5" if PYTEST else ""), t=FULL_TIMEOUT)
+        out, rc = t.stdout + t.stderr, t.returncode
+    except subprocess.TimeoutExpired:
+        # a slow suite is not the worker's fault: leave the verdict to the gate instead of asking for a "fix"; "slow" makes
+        # the supervisor remember it, so the next runs of this project do not wait for the same timeout again
+        print(json.dumps({"ok": not problems, "rc": None, "slow": True, "mode": "full", "tail": "", "problems": problems,
+                          "summary": f"suite slower than {FULL_TIMEOUT} s - left to the gate"}))
+        raise SystemExit
 if rc in (126, 127):
     # the test tool is not installed in the worker image (e.g. a Node project with the default image): the gate decides
     print(json.dumps({"ok": not problems, "rc": rc, "summary": "test command not available in the worker - left to the gate",
@@ -210,7 +240,8 @@ if rc in (126, 127):
     raise SystemExit
 rc = 0 if (rc == 5 and PYTEST) else rc
 last = out.strip().splitlines()[-1] if out.strip() else ""
-print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems}))
+print(json.dumps({"ok": rc == 0 and not problems, "rc": rc, "summary": last[:200], "tail": out[-3000:], "problems": problems,
+                  "mode": "changed" if CHANGED_ONLY else "full", "secs": int(time.time() - started)}))
 """
 
 
@@ -219,13 +250,44 @@ def last_result_ok():
     return (stats()["result"] or {}).get("status") == "SUCCESS"
 
 
-def self_check():
-    """The full test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). Infrastructure trouble never
-    blocks the run: it counts as passed and the real gate decides."""
+def slow_suite_file():
+    return os.path.join(sbx.RUNS, "self-check-slow" + (f".{sbx.PROJECT}" if sbx.PROJECT else "") + ".json")
+
+
+def slow_suite_known(cmd):
+    """The last full self-check of this project (same test command) hit the timeout less than SLOW_SUITE_DAYS ago."""
     try:
-        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"AF_TEST_CMD={sbx.test_cmd()}", "-w", sbx.WORKER_CLONE, W,
-               "python3", "-", input=SELF_CHECK_PY, timeout=700)
-        return json.loads(r.stdout.strip().splitlines()[-1])
+        v = json.load(open(slow_suite_file()))
+        return v.get("cmd") == cmd and time.time() - float(v.get("at") or 0) < SLOW_SUITE_DAYS * 86400
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def remember_slow_suite(cmd, slow):
+    try:
+        if slow:
+            json.dump({"cmd": cmd, "at": time.time()}, open(slow_suite_file(), "w"))
+        elif os.path.exists(slow_suite_file()):
+            os.remove(slow_suite_file())
+    except OSError:
+        pass
+
+
+def self_check():
+    """The test suite + the gate's skip/xfail scan in the worker's clone (offline anyway). A project whose full suite is too slow for
+    this (it timed out once) gets only the tests the branch touched until the verdict is probed again. Infrastructure trouble never
+    blocks the run: it counts as passed and the real gate decides."""
+    cmd = sbx.test_cmd()
+    changed_only = slow_suite_known(cmd)
+    try:
+        r = sh("docker", "exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", f"AF_TEST_CMD={cmd}",
+               "-e", "AF_SELF_CHECK_MODE=" + ("changed" if changed_only else "full"),
+               "-e", "AF_SELF_CHECK_TIMEOUT=" + (os.environ.get("AF_SELF_CHECK_TIMEOUT") if sbx.TEST_MODE and os.environ.get("AF_SELF_CHECK_TIMEOUT") else "600"),
+               "-w", sbx.WORKER_CLONE, W, "python3", "-", input=SELF_CHECK_PY, timeout=700)
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+        if not changed_only and (res.get("slow") or res.get("rc") is not None):
+            remember_slow_suite(cmd, bool(res.get("slow")))
+        return res
     except Exception as e:
         return {"ok": True, "error": f"self-check could not run: {e}"[:200]}
 
@@ -384,7 +446,7 @@ reason, rc = watch(cmd, "w")
 if not runner and reason is None and rc == 0 and last_result_ok():
     for i in range(int(m.get("self_check") or 0)):
         chk = self_check()
-        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
+        SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error", "mode", "secs")})
         if chk.get("ok"):
             break
         conv = conversation_id()
@@ -401,5 +463,5 @@ if not runner and reason is None and rc == 0 and last_result_ok():
     else:
         if SELF_CHECKS and not SELF_CHECKS[-1].get("ok"):
             chk = self_check()                      # record whether the last fix made it green (CPU only, no tokens)
-            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error")})
+            SELF_CHECKS.append({k: chk.get(k) for k in ("ok", "rc", "summary", "problems", "error", "mode", "secs")})
 finish(reason, rc)

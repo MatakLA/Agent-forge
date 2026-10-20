@@ -77,5 +77,57 @@ check "marker, rework: state block says it continues origin, 0 behind / 1 ahead,
   'docker exec "$C" cat /tmp/prompt-seen | tr "\n" " " | grep -q "Start state (prepared by the supervisor.*continues origin/feat/0002-y.*0 commit(s) behind, 1 ahead.*first try.*END" && ! docker exec "$C" grep -q "start-state -->" /tmp/prompt-seen'
 marker_run 3 feat/0003-z
 check "marker, new task: new branch from origin/main" '[[ "$(docker exec "$C" cat /tmp/head-seen)" == "feat/0003-z" ]] && docker exec "$C" cat /tmp/prompt-seen | grep -q "new, from origin/main.*0 commit(s) behind, 0 ahead"'
+# salvage: work left uncommitted in a repo whose .gitignore lists .pytest_cache (the excluded pathspec makes git add exit 1 there) must still be committed and pushed
+cat > "$T/fake-agy-run" <<'EOF'
+#!/bin/bash
+echo '{"event":"init","init":{"conversation_id":"conv-s"}}'
+git checkout -q -b feat/0004-s origin/main
+mkdir -p .pytest_cache; echo cache > .pytest_cache/v; printf '.pytest_cache/\n' > .gitignore    # as in a real project's .gitignore
+printf '"""Left uncommitted."""\n' > left.py
+echo '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":1000}}}'
+echo '{"event":"result","result":{"status":"SUCCESS","response":"done"}}'
+EOF
+docker cp "$T/fake-agy-run" "$C:/tmp/agy-run"
+docker exec -u root "$C" bash -c 'install -m 755 /tmp/agy-run "$(command -v agy-run)"'
+d="$T/runs/20260101T000004Z-$C"; mkdir -p "$d"; echo "# Task 0004-s" > "$d/prompt.md"
+cat > "$d/meta.json" <<J
+{"run_id": "20260101T000004Z-$C", "worker": "$C", "task": "0004-s.md", "test": false, "runner": null, "model": "fake", "project": "",
+ "repo": "sandbox/playground", "branch": "feat/0004-s", "conversation": "", "variant": "pack-default", "self_check": 0,
+ "limits": {"timeout_min": 30, "token_cap": 1500000}, "quota_before": [], "dispatched": "x"}
+J
+python3 "$T/bin/run-supervisor" "$d" || true
+check "salvage: uncommitted work beside .pytest_cache is committed and pushed" 'docker exec "$C" git -C /tmp/origin.git show feat/0004-s:left.py | grep -q Left && ! docker exec "$C" git -C /tmp/origin.git ls-tree -r --name-only feat/0004-s | grep -q pytest_cache'
+# self-check of a project whose full suite is slow: it is remembered, then only the tests the branch touched run
+extract() { python3 - "$T/bin/run-supervisor" <<'PYEOF'
+import re, sys
+print(re.search(r'SELF_CHECK_PY = r"""(.*?)"""', open(sys.argv[1]).read(), re.S).group(1))
+PYEOF
+}
+docker exec "$C" bash -c 'set -e; rm -rf /tmp/slow; git clone -q /tmp/origin.git /tmp/slow; cd /tmp/slow; git config user.email o@o; git config user.name o
+  printf "import time\n\ndef test_other_is_slow_and_red():\n    time.sleep(8)\n    assert False\n" > test_old.py; git add -A; git commit -qm old; git push -q origin HEAD:main; git fetch -q
+  git checkout -q -b feat/slow origin/main; printf "def test_mine():\n    assert 1 + 1 == 2\n" > test_mine.py; git add -A; git commit -qm mine'
+sc() { extract | docker exec -i -e AF_SELF_CHECK_MODE="$1" -e AF_SELF_CHECK_TIMEOUT="${2:-600}" -w /tmp/slow "$C" python3 - | tail -1; }
+field() { python3 -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2]))" "$1" "$2"; }
+R1="$(sc full 3)"
+check "self-check, full suite slower than the timeout: reported as slow, left to the gate" '[[ "$(field "$R1" slow)" == "True" && "$(field "$R1" ok)" == "True" ]]'
+R2="$(sc changed)"
+check "self-check, known slow suite: only the changed test runs (green although the unchanged old test is red)" '[[ "$(field "$R2" ok)" == "True" && "$(field "$R2" mode)" == "changed" && "$(field "$R2" secs)" -lt 8 ]]'
+docker exec "$C" bash -c 'cd /tmp/slow; printf "def test_mine():\n    assert 1 == 2\n" > test_mine.py; git commit -qam break'
+R3="$(sc changed)"
+check "self-check, known slow suite: a red changed test is still reported" '[[ "$(field "$R3" ok)" == "False" && "$(field "$R3" summary)" == *failed* ]]'
+# supervisor side: the verdict is remembered in runs/ and trusted for a week
+python3 -c "import json, sys, time; json.dump({'cmd': 'python3 -m pytest -q -p no:cacheprovider', 'at': time.time()}, open(sys.argv[1] + '/runs/self-check-slow.json', 'w'))" "$T"
+sed -i 's/"self_check": 0/"self_check": 1/' "$T/runs/20260101T000004Z-$C/meta.json"
+rm -f "$T/runs/20260101T000004Z-$C"/{started,finished,exitcode}
+cat > "$T/fake-agy-run" <<'EOF'
+#!/bin/bash
+echo '{"event":"init","init":{"conversation_id":"conv-t"}}'
+git checkout -q feat/0004-s 2>/dev/null || git checkout -q -b feat/0004-s origin/main
+echo '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":1000}}}'
+echo '{"event":"result","result":{"status":"SUCCESS","response":"done"}}'
+EOF
+docker cp "$T/fake-agy-run" "$C:/tmp/agy-run"; docker exec -u root "$C" bash -c 'install -m 755 /tmp/agy-run "$(command -v agy-run)"'
+python3 "$T/bin/run-supervisor" "$T/runs/20260101T000004Z-$C" || true
+check "supervisor: a remembered slow suite switches the self-check to the changed tests" '[[ "$(python3 -c "import json,sys; print(\",\".join(c.get(\"mode\") for c in json.load(open(sys.argv[1]))[\"self_checks\"]))" "$T/runs/20260101T000004Z-$C/meta.json")" == "changed" ]]'
 echo "supervisor test: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
 exit $fail
