@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 64" width="320" height="64" role="img" aria-labelledby="t">
+  <title id="t">Agent-Forge</title>
+  <g fill="#6b7280">
+    <path d="M10 22 H44 Q54 22 60 28 Q52 31 40 31 V36 Q40 39 46 40 V46 H18 V40 Q24 39 24 36 V31 H10 Z"/>
+  </g>
+  <g fill="#e8743b">
+    <path d="M28 2 L30.5 7.5 L36 10 L30.5 12.5 L28 18 L25.5 12.5 L20 10 L25.5 7.5 Z"/>
+    <path d="M44 8 L45.2 10.8 L48 12 L45.2 13.2 L44 16 L42.8 13.2 L40 12 L42.8 10.8 Z"/>
+  </g>
+  <text x="76" y="43" font-family="Inter, 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="34" font-weight="700" fill="#6b7280">Agent-<tspan fill="#e8743b">Forge</tspan></text>
+</svg>

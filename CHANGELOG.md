@@ -1,107 +1,184 @@
 # Changelog
 
+All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
+alpha software: until 1.0, commands, settings and file formats can change between releases.
+
 ## Unreleased
 
-**Fewer orientation steps per run.** Measured on the reference install: one tool call per model step, about a quarter of the shell calls are `grep`/`find`/`ls`/`git status|log|diff|branch|fetch`, 92 % of reads already use line ranges, fully covered re-reads are rare (about 7 %). So the context pack now answers "where is it and who uses it": every definition in the code map carries its line span (`[L12-40]`), a "Who uses what you change" block lists `path:line` of callers outside the task's files (one `git grep` on main, no LLM) and the names nothing uses, and a rework gets its branch's diff against main. With `ORIENT=on` the supervisor puts the worker's clone on the task branch and writes a "Start state" block into the prompt (behind/ahead of main, the branch's commits), so workers no longer spend steps on `git fetch/checkout/status/log`; the rules also ask for batching (independent commands in one `run_command`). `PACK_EXTRAS` and `ORIENT` (both default on, in `foreman.conf`) switch the old behaviour back for A/B runs. `PROMPT_ORDER=cache` now puts a task-independent prefix (rules + one-line file list) first. The planner's code map is unchanged (no spans). Code-map cache is rebuilt once (`codemap.VERSION`).
+### Added
 
-**Quality gate: less test bloat, no dead code.** `review-branch` now measures two facts and prints them as `== QUALITY:` lines: tests added versus code added (limit `max(150, TEST_RATIO_MAX x code lines)`, default 1.5) and new source files that no other non-test file refers to. `QUALITY_CHECK=off|warn|block` (default warn); with `block` a quality-only failure goes back to the worker as rework. After each goal the planner is shown the unwired files of the goal's tasks on main and must add wiring tasks or delete them. Worker rules, planner/reviewer prompts, the orchestrator prompt and the tester playbook now state the standard: least code that is correct, reuse, wire it in, behaviour tests instead of input enumeration.
+- **`forge` command.** One entry point: `forge install`, `demo`, `update`, `uninstall`, `doctor`, `logs`, `url`, `version`. Every
+  other command (`status`, `goal`, `pause`, `backlog`, `answer`, ...) is handed to `bin/foreman`.
+- **One-line installer.** `curl -fsSL .../install.sh | bash` clones the repository and runs `scripts/install.sh` (flags such as
+  `--demo` and `--check` pass through; `FORGE_DIR`, `FORGE_REF` and `FORGE_REPO_URL` choose where, which ref and which source).
+  The installer can be repeated, installs Docker only if needed and installs the `forge` shortcut into `~/.local/bin`.
+- **`forge update [--check]` and `forge uninstall [--purge] [--yes] [--check]`.** Update fetches the new version, rebuilds what
+  changed and restarts the services. Uninstall keeps your data unless `--purge` is given (it asks for confirmation).
+- **Docker demo image** `ghcr.io/matakla/agent-forge-demo` (multi-arch, published on version tags): the real dashboard on invented
+  data with one `docker run`. `forge demo [up|down|status]` runs it from a checkout (`scripts/demo.sh status` is read-only).
+- **Community files:** Code of Conduct, SUPPORT, CONTRIBUTING, SECURITY, issue forms and GitHub Discussions.
+- **`make lint` / `tools/lint`:** shellcheck at warning level and pyflakes for undefined names, over every tracked script.
+  `.dockerignore`, `.editorconfig`, `.gitattributes`, CODEOWNERS and Dependabot for the Actions and base images.
+- **CI and release workflows:** checks and an install test on every change; a release workflow that builds and publishes the demo
+  image on version tags.
+- **Documentation:** `docs/INSTALL.md`, `FAQ.md`, `FEATURES.md`, `DASHBOARD.md`, `TROUBLESHOOTING.md`, a docs index, a logo, and
+  `QUICKSTART.md` (exact commands from `git clone` to a merged pull request on `examples/sample-project`),
+  `CHOOSING-AN-AI.md` (honest comparison of runtimes and providers), `DEMO.md` and the `openai-api` / `gemini-api` sections of
+  `PROVIDERS.md` (base URL and model settings, key management with `bin/secret-set`, cost and quota honesty, limitations, offline
+  tests). `docs/RUNTIMES.md` and `CHOOSING-AN-AI.md` document setup, `bin/doctor` checks, Settings readiness, honest cost and quota
+  models and local egress for every runtime, with an explicit "unknown" cost for OpenCode, Qwen Code, Goose and Anthropic-compat.
+- **Example project:** `examples/sample-project/` pairs `vision.md`, `project.conf`, `seed-repo/` and a README.
+- **Fewer orientation steps per run.** Every definition in the code map carries its line span (`[L12-40]`). A "Who uses what you
+  change" block lists `path:line` of callers outside the task's files and the names nothing uses (one `git grep` on main, no LLM),
+  and a rework gets its branch's diff against main. `ORIENT=on` puts the worker's clone on the task branch and writes a "Start
+  state" block (behind/ahead of main, the branch's commits) into the prompt; the rules also ask for batched commands.
+  `PACK_EXTRAS` and `ORIENT` (default on) switch the old behaviour back for A/B runs; `PROMPT_ORDER=cache` puts a
+  task-independent prefix first. The planner's code map is unchanged. Measured on the reference install: about a quarter of the
+  shell calls were `grep`/`find`/`ls`/`git status|log|diff|branch|fetch`, and 92 % of reads already used line ranges.
+- **Quality gate.** `review-branch` prints `== QUALITY:` lines: tests added versus code added (limit `max(150, TEST_RATIO_MAX x code
+  lines)`, default 1.5) and new source files that no other non-test file refers to. `QUALITY_CHECK=off|warn|block` (default
+  warn); with `block` a quality-only failure goes back to the worker as rework. After each goal the planner is shown the unwired
+  files and must add wiring tasks or delete them. Worker, planner, reviewer and tester prompts state the standard: least code that
+  is correct, reuse, wire it in, behaviour tests instead of input enumeration.
+- **Scripted checks instead of review round-trips.** `bin/lib/quality.py` feeds the worker's self-check, the gate and the foreman
+  with what reviewers used to send back: files outside the task's list, weakened tests, copied definitions, the test/code ratio,
+  unused imports (as hints). The gate prints a `== FLAGS:` line; rework history records the kind and flags, and the team metrics
+  count them. A fast pass (changed tests and their importers, `--maxfail=5`) runs first in the self-check and the gate, and a red
+  fast pass skips the full suite.
+- **Four independent languages** (Settings → Project): yours (goals, questions, notes: `OWNER_LANG`), the team's (task specs,
+  reviews, orchestrator and workers: `TASK_LANG`, default English), the product's own user-facing texts (`PRODUCT_LANG`, empty =
+  yours) and code comments and commit messages (`DOCS_LANG`). The orchestrator, planner, reviewer and worker prompts state them.
+- **Settings rebuilt as eight short pages** (Workers, Runtimes, Models, Project, Money, Knowledge, Limits, Advanced): every setting
+  is on exactly one page with a plain-language label, unsaved edits go into one Save bar (with Discard, a warning before leaving and
+  a refused value marked at its field). File-only settings are explained (`FILE_ONLY` in `bin/lib/foreman/settings.py`).
+- **Workers and keys from the dashboard.** Remove a worker (`bin/worker-remove`; refuses while a run is in progress or when it is a
+  project's only worker; deletes the container, volume, Forgejo bot user and secrets), add a role from the Knowledge page, and set
+  API keys and the notification token from the page (write-only). The add-worker picker lists exactly the runtimes the server says
+  it can create (`creatable`); the readiness table and the onboarding card are part of Runtimes.
+- **Overview switches** for autopilot and pause/resume, backed by `POST /api/control` (`bin/foreman` per project or default).
+- **Readiness.** `GET /api/readiness` and `bin/foreman readiness` show runtime and provider readiness.
+  `GET /api/readiness/recommend` ranks ready runtimes cheapest-first (with an honest fallback when none is ready) in Settings →
+  Runtimes. `cost_model()` in `bin/lib/runtimes.py` classifies each runtime's cost and quota, with "unknown" for unpriced ones.
+- **More worker runtimes:** OpenCode (`opencode`), Qwen Code (`qwen-code`; DashScope egress) and Goose (`goose`) with
+  non-interactive stream execution and configurable endpoint egress; dashboard-editable `OPENCODE_MODEL`, `QWEN_MODEL` and
+  `GOOSE_MODEL`, with readiness badges in the add-worker picker. Local-compat runtimes `ollama`, `vllm`, `lmstudio` and `llamacpp`
+  (local endpoint resolution, zero-cost classification, OpenAI-compatible completions command and scan handling, tests), and
+  `copilot` and `mistral-vibe`, are registered. `bin/worker-add` creates only `agy`, `claude`, `codex`, `gemini`, `compat` and
+  `aider`, because no worker image ships the other CLIs yet.
+- **Issue intake.** `bin/issues-intake` turns open GitHub / GitLab issues labelled `agent-forge` into foreman goals (seen-state
+  deduplication, dry-run support).
+- **Demo mode.** `bash scripts/demo.sh` runs the dashboard in a read-only Docker container on <http://localhost:8171> against
+  synthetic data; it needs only Docker, no API keys and no secrets.
+- **`NOTIFY_URL=outbox`:** notifications are appended to `runs/notify-outbox.jsonl` for a relay outside the machine, for when the
+  sandbox cannot reach your notification server itself. The file can be deleted at any time.
+- **Dashboard downloads:** the regular files directly in `DASHBOARD_DOWNLOADS_DIR` are served at `/downloads/<name>` after
+  sign-in (replaces a fixed single-file route).
+- **Tests:** an offline quickstart end-to-end check against a fake model API and fake Docker (`tests/test_quickstart_e2e.sh`, run
+  by `.github/workflows/quickstart-e2e.yml` on relevant changes), an issue-intake parsing test against a fake GitHub API, an install
+  smoke test (fresh layout, dashboard reachable at `/api/status`, static assets, no Docker; `tests/test_install_smoke.sh`), static
+  install-security tests (`tests/test_install_security.sh`), and tests for the `forge` CLI and the install flow.
 
-**Languages, each on its own.** Settings → Project now has four independent languages: yours (goals, questions, notes: `OWNER_LANG`), the team's (task specs, reviews, orchestrator ↔ workers: `TASK_LANG`, default English), the product's own user-facing texts (`PRODUCT_LANG`, empty = yours) and code comments / commit messages (`DOCS_LANG`). The orchestrator's system prompt, the planner, the reviewer and every worker prompt state them. Switching the dashboard's UI language no longer changes `OWNER_LANG`.
+### Changed
 
-Settings rebuilt as eight short pages (Workers, Runtimes, Models, Project, Money, Knowledge, Limits, Advanced). Every setting is on exactly one page, has a plain-language label and description, and unsaved edits are collected in one Save bar (with Discard, a warning before leaving, and a refused value marked at its field). New: remove a worker (`bin/worker-remove`: refuses while a run is in progress or when it is a project's only worker; deletes the container, volume, Forgejo bot user and secrets), add a role from the Knowledge page, and set API keys / the notification token from the page (write-only). The add-worker picker lists exactly the runtimes the server says it can create (`creatable`); the readiness table and the onboarding card are now part of Runtimes.
+- **License: Apache-2.0** (was the source-available Sustainable Use License). Selling, hosting and building on Agent-Forge are
+  allowed; contributions are accepted under Apache-2.0 (`git commit -s`).
+- **README, QUICKSTART and SETUP rewritten.** The README now leads with the three ways to try it; `docs/SETUP.md` is the manual,
+  step-by-step installation.
+- **Finite goals.** The planner refuses open-ended goals ("more", "improve", "continue") and asks for a finite end state; the answer
+  replaces the goal. The autopilot proposes only finite goals; when nothing is left in the vision it switches itself off and sends
+  a `project_done` notification.
+- **Merging survives a busy Forgejo.** `bin/merge-pr` waits up to a minute for "Please try again later" (405), 5xx or a refused
+  connection and exits 75. The foreman then retries the merge with growing pauses (up to 12 tries) instead of blocking the task,
+  and spends no extra review round on it. Real conflicts (409) behave as before.
+- **Slow suites are remembered.** A self-check that finds the full suite too slow remembers it for 7 days and runs only the changed
+  test files meanwhile, instead of waiting out the timeout on every run.
+- **Switching the dashboard's UI language no longer changes `OWNER_LANG`.**
+- **System → Health, Disk and Egress open at once:** the server answers from a cache and refreshes it in the background
+  (`?fresh=1` measures again), `docker system df` / `docker ps -s` are replaced by cheap queries, and the egress proxy log is
+  rotated hourly instead of being re-read at 100+ MB.
+- The code-map cache is rebuilt once (`codemap.VERSION`); the usage block groups callers per file, tests last.
+- `bin/doctor` names the full worker-image build command when the image is missing.
+- The benchmark (`bench/run_bench.py`) reaches the Agent-Forge machine through `BENCH_SSH` instead of a fixed address.
+- **Issue forms are for humans now.** `.github/ISSUE_TEMPLATE/` holds a bug report and a feature request (blank issues off,
+  security reports go to a private advisory). The four agent-task forms, which label an issue `agent-forge` and so let anyone queue
+  work for a team that runs `bin/issues-intake`, live on as examples in `examples/issue-templates/` with a warning in
+  `docs/ISSUE-TEMPLATES.md`.
+- Workflows: `ci` lints, runs `make check` on Python 3.10 and 3.12 and builds the demo image with a no-private-files check;
+  `install` also runs for changes to the installer and checks `forge uninstall` and `--purge`; every workflow has read-only
+  permissions and cancels superseded runs.
 
-System → Health, Disk and Egress open at once: the server answers from a cache and refreshes it in the background (`?fresh=1` measures again), `docker system df` / `docker ps -s` (minutes on a slow disk) are replaced by cheap queries, and the egress proxy log is rotated hourly instead of being re-read at 100+ MB.
+### Fixed
 
-A task whose branch is identical to main (its change already landed, e.g. after the auto-rebase) is finished as "nothing to merge" instead of looping on Forgejo's 405 for an empty pull request.
+- The six settings added with the quality gate (`QUALITY_CHECK`, `TEST_RATIO_MAX`, `MAX_FILE_LINES`, `ORIENT`, `PACK_EXTRAS`,
+  `PROMPT_ORDER`) had no row in the dashboard; they are on the Advanced page now, with a label and a help text each.
+- The dashboard looked for the foreman in `~/sandbox` even on a local install, so a fresh checkout (and the demo image) showed an
+  error instead of its data. Local mode now uses the checkout it runs from; `FORGE_DIR` still overrides.
+- The demo image started on `127.0.0.1` inside the container, so the published port answered nothing. It binds `0.0.0.0` now (the
+  CI job checks that the demo serves data, not only that it starts).
+- `tests/check.sh` ran six tests through `| tail -1`, which hides a failing exit code, and 20 test files were not run at all. Every
+  test is gated now, a test file that `check.sh` does not mention fails the run, and the run fails when a test changes the
+  checkout's kill switch or `etc/*.conf`. This turned up and fixed: a demo-mode test that tripped the real kill switch and wrote
+  `AUTOPILOT=1` into `etc/foreman.conf`, an egress test that tried to clone from the internal Forgejo, and stale expectations in
+  the dashboard, doctor and settings tests.
+- When GitHub or GitLab refused or could not be reached for a task's push, the follow-up step failed with a `NameError` (the error
+  variable was used after its `except` block) instead of sending the task back to the gate with the reason. Found by the new
+  lint; a regression test covers it.
+- A task whose branch is identical to main (its change already landed, for example after the auto-rebase) is finished as "nothing
+  to merge" instead of looping on Forgejo's 405 for an empty pull request.
+- `salvage()` chained the commit to the exit code of `git add`, which is 1 whenever `.gitignore` lists `.pytest_cache`, so
+  uncommitted work was never saved. It now always commits.
+- A hostile NUL byte in test or gate output could crash the supervisor when it reached the next retry prompt; it is escaped.
+- Foreman loop:
+  - `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks (in-flight tracking, early state
+    persistence), and neither it nor `why_no_task` dispatches tasks of paused goals.
+  - `orphaned` validates `RUN_DIR_RE`, checks recent start markers and never flags runs of finished tasks;
+    `recover_orphan` clears worker and run bindings and resets `LAST_DISPATCHED`.
+  - Orphan loops are detected: consecutive crash-and-orphan cycles with no progress warn at `ORPHAN_WARN` (default 3) and block
+    the task at `ORPHAN_LIMIT` (default 5); first-pass orphans at startup are exempt.
+  - `feed_idle_workers` counts planning tasks as pending capacity, so backlog goals are not pulled too early and idle spin stops.
+- Foreman merge:
+  - `auto_rebase` aborts cleanly on conflict or failure and leaves no `.git/rebase-merge` state.
+  - `requeue_gate` blocks tasks over the retry cap with a clear reason; merge helpers never merge blocked or cancelled tasks.
+  - The merge steps clear in-memory `PHASE` tracking on completion or failure; tasks stuck in `merging` without a PR reference go
+    back to `gate`.
+- Foreman store: read-modify-write is serialized with `state_tx()` locking and atomic via a temporary file in `jsave()`;
+  `save_task()` and `save_goal()` no longer resurrect deleted tasks and goals; `state_tx()` and `locked()` are re-entrant in one
+  thread.
+- Worker pool: `worker_busy(w)` checks that the supervisor process is alive, so dead runs no longer mark a worker busy forever;
+  `order_by_quota` breaks ties by least-recently-dispatched and handles null quotas (no starvation); `is_cooling_down(w)` and
+  `pool_quota_out()` prune expired cooldowns and stale quota caches; `pool_quota_out()` also applies each worker's own cap via
+  `api_budget_left(w)`, so exhaustion reasons are accurate.
 
-Merging survives a busy Forgejo. `bin/merge-pr` now waits up to a minute for "Please try again later" (405), 5xx or a refused connection and exits 75; the foreman then retries the merge later with growing pauses (up to 12 tries) instead of blocking the task, and spends no extra review round on it. Real conflicts (409) behave as before.
-**Finite goals.** The planner refuses open-ended goals ("more", "improve", "continue") and asks the owner for a finite end state - the answer replaces the goal. The autopilot proposes only finite goals; when nothing is left in the vision it switches itself off and sends a `project_done` notification.
-- Documentation: document setup, doctor reachability, unmetered cost models, and local egress for ollama, vllm, lmstudio, and llamacpp in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
-- Documentation: document bin/doctor checks and Settings readiness summary for all six runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with honest cost and quota models in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
-- Local-compat runtimes (ollama/vllm/lmstudio/llamacpp) are now fully wired end to end (implementation + tests + check.sh).
-- Local-compat runtimes: add ollama, vllm, lmstudio, and llamacpp to RUNTIMES with local endpoint resolution, honest zero-cost classification, and OpenAI-compatible completions command and scan handling.
-- Documentation: document six new selectable worker runtimes (copilot, mistral-vibe, ollama, vllm, lmstudio, llamacpp) with cost models and egress requirements in docs/RUNTIMES.md and docs/CHOOSING-AN-AI.md.
-- Quickstart offline E2E check: verify examples/sample-project install, plan, dispatch, gate, and merge steps within wall-clock budgets using fake model API and fake Docker fixtures (tests/test_quickstart_e2e.sh, tests/test_quickstart_e2e.py).
-- Issue intake parsing E2E test: verify bin/issues-intake creates one goal per eligible GitHub issue with role taken from label-to-role mapping against a fake GitHub API fixture (tests/test_issues_intake_parsing.sh, tests/fixtures/fake-forge-api-github.js).
-- Runtime recommendation: rank ready runtimes cheapest-first in Settings > Onboarding via GET /api/readiness/recommend with honest fallback when none are ready.
-- Control endpoint: POST /api/control triggers autopilot on/off and foreman pause/resume per project or default via bin/foreman.
-- Readiness API and CLI: expose runtime and provider readiness status via GET /api/readiness and `bin/foreman readiness` subcommand.
-- Runtime cost model: add honest per-runtime cost/quota classifier `cost_model()` to `bin/lib/runtimes.py` with explicit unknown classification for unpriced runtimes.
-- Documentation: document honest cost/quota model per runtime in docs/RUNTIMES.md with explicit unknown classification for OpenCode, Qwen Code, Goose, and Anthropic-compat.
-- Cross-link docs/CHOOSING-AN-AI.md with the dashboard Settings Onboarding checklist.
-- Settings: surface file-only settings with human-readable explanations via `FILE_ONLY` in `bin/lib/foreman/settings.py` and `settings_get()`.
-- Dashboard: Overview tab can now toggle autopilot and pause/resume the foreman without the CLI.
-- Quickstart CI workflow: `.github/workflows/quickstart-e2e.yml` runs the quickstart e2e check on demand and on relevant path changes.
-- Add docs/QUICKSTART.md: exact commands for git-clone-to-merged-PR in under 30 minutes on examples/sample-project.
-- Settings UI: add-worker runtime picker entries and per-runtime model fields with readiness badges for OpenCode, Qwen Code and Goose in `web/static/js/settings.js`.
-- Runtime settings: dashboard-editable model settings (`OPENCODE_MODEL`, `QWEN_MODEL`, `GOOSE_MODEL`) for OpenCode, Qwen Code and Goose runtimes in `bin/lib/foreman/settings.py`.
-- Orchestrator providers documentation: `docs/PROVIDERS.md` now covers `openai-api` and `gemini-api` setup (base URL and model settings fields, key management via `bin/secret-set`), cost/quota honesty, schema and URL validation limitations, and offline testing.
-- Escape hostile NUL bytes: a hostile NUL byte in test/gate output could crash the supervisor when it reached the next retry prompt; now it is escaped.
-- OpenCode runtime: support SST's OpenCode CLI (`opencode`) with non-interactive JSON stream execution and configurable endpoint egress.
-- Qwen Code runtime: support Alibaba Qwen Code CLI (`qwen-code`) with non-interactive stream-json execution and DashScope egress allowlist.
-- Goose runtime: support Block's Goose CLI agent (`goose`) with non-interactive execution and configurable endpoint egress.
-- Add examples/sample-project/: public example project pairing vision.md, project.conf, seed-repo/, and README.md
-- Add docs/CHOOSING-AN-AI.md: honest comparison of all supported runtimes and providers
-- Add docs/DEMO.md: Docker-only demo mode design and user guide
-- One-command demo mode: `bash scripts/demo.sh` runs the dashboard in a read-only Docker container on http://localhost:8171 against synthetic data, requiring only Docker and no API keys or secrets.
-- GitHub / GitLab issue intake: `bin/issues-intake` bridges open issues labelled `agent-forge` into foreman goals with seen-state deduplication and dry-run support.
-- Install smoke test: Hermetic install smoke test verifying fresh layout startup, web dashboard reachability at /api/status, and static asset delivery without Docker infrastructure (`tests/test_install_smoke.sh`, `tests/test_install_smoke.py`).
-- Foreman loop: `dispatch_ready` prevents double dispatch and file-overlap bypass across racing ticks via in-flight tracking and early state persistence.
-- Foreman loop: `dispatch_ready` and `why_no_task` respect goals with state or status set to 'paused', never dispatching their tasks.
-- Foreman loop: `orphaned` validates `RUN_DIR_RE`, checks recent start markers, and never flags runs of already-finished tasks as orphans.
-- Foreman loop: `recover_orphan` clears task worker/run bindings to restore dispatchability and resets worker dispatch history in `LAST_DISPATCHED`.
-- Foreman loop: orphan-loop detection tracks consecutive crashes with no progress, alerting at ORPHAN_WARN, blocking at ORPHAN_LIMIT via merge.block, and exempting startup first-pass orphans.
-- Foreman loop: `feed_idle_workers` counts planning tasks toward pending capacity, preventing premature backlog goal pulls and idle spin.
-- Foreman loop: orphan-loop detection blocks tasks after consecutive crash-and-orphan cycles with no progress via `ORPHAN_LIMIT` (default 5) and raises warnings/notifications via `ORPHAN_WARN` (default 3).
-- Foreman merge: `auto_rebase` aborts rebase cleanly on conflict or failure, cleaning temporary files and leaving no `.git/rebase-merge` state behind.
-- Foreman merge: `requeue_gate` blocks tasks exceeding the retry cap with a clear reason, and merge helpers guard against silently merging blocked or cancelled tasks.
-- Foreman merge: `step_gate_review_merge` and merge steps clear in-memory `PHASE` tracking on completion or mid-step failure, preventing dangling phases without active jobs.
-- Foreman merge: `step_upstream_merge` and gate steps recover tasks stuck in status 'merging' with no PR reference back to 'gate'.
-- Foreman merge: audited gate output and review feedback path; verified safe from subprocess argv injection (PR bodies pass via files and API payloads), and noted ANSI control sequences bypass terminal stripping in dashboard feedback rendering.
-- Foreman store: serialize read-modify-write via `state_tx()` locking and ensure crash-safe atomic updates via temporary file replacement in `jsave()`.
-- Foreman store: prevent resurrection of deleted tasks and goals in `save_task()` and `save_goal()` by refusing to recreate files removed after being read.
-- Foreman store: support reentrant `state_tx()` and `locked()` in the same thread without deadlocking on nested file locks.
+### Security
 
-**Secret store permission hardening.** `bin/secret-set` enforces mode 0600 on secrets files via `fchmod` and `chmod`, unlinks pre-existing temporary files with `O_NOFOLLOW` to prevent permission inheritance or symlink attacks, and confirms storage without echoing secret values.
+- **Secrets:** `bin/secret-set` forces mode 0600 (`fchmod`, `chmod`), unlinks pre-existing temporary files with `O_NOFOLLOW` and
+  confirms storage without echoing the value. Tokens, settings changes and the vision travel over stdin only, never in argv or
+  `/proc/*/cmdline`. `worker/git-credential-forgejo` disables shell tracing and reads tokens from the secrets files only.
+  `bin/forgejo-api` rejects tokens in URL query strings (they would leak into access and egress logs).
+- **Dashboard server:** Host header validation on every path including `/healthz`, with numeric ports required (DNS rebinding);
+  Origin and Referer checks on state-changing POSTs (CSRF). Remote command generation in `web/dashboard/backend.py` validates every
+  owner-supplied parameter against strict allow-lists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and quotes
+  with `shlex.quote`. `LoginSessions.send` validates worker names and blocks terminal control sequences and newlines (PTY breakout).
+- **Entrypoints:** `worker/entrypoint.sh` validates `FORGEJO_USER` and `FORGE_REPO` against strict patterns, quotes every
+  expansion, sets umask 077, strips group/other permissions on the workspace and `.git`, and drops root to the `worker` user.
+  `egress/entrypoint.sh` validates `EGRESS_MODE` (`enforce|discovery`), sets umask 027, checks that the enforce configuration
+  parses before starting the daemon, and drops root to `proxy`.
+- **Paths and input:** `bin/lib/foreman/knowledge.py` rejects `..`, separators and absolute paths in `doc_path`, `doc_set`,
+  `doc_reset` and `role_playbook`, enforces the role slug format and checks `realpath` containment. `bin/lib/sbx.py` rejects
+  traversal in `ks_path`, `project_conf`, `project_pool` and `ledger_path`, and fails safe with `ValueError` on malicious `TEST_CMD`
+  or `GATE_IMAGE` values. `bin/dispatch` validates worker names, `DISPATCH_MODEL` and `DISPATCH_ROLE` before running anything.
+- **Install scripts:** `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` use restrictive umasks (077 and 027); `etc/` and the
+  secrets directory are 0700, configs and secrets 0600. Static tests check safe remote execution and secret handling.
+- **Audit note:** the gate output and review feedback path was checked and is safe from argv injection (pull request bodies go
+  through files and API payloads). ANSI control sequences in feedback are not stripped before the dashboard renders them.
 
-**Git credential helper trace suppression.** `worker/git-credential-forgejo` disables shell tracing (`set +x`, `set +v`) to prevent tokens leaking to stderr or debug logs, tolerates verbose flags, and strictly reads tokens from secrets files rather than argv.
+### Removed
 
-**Forgejo API URL query token protection.** `bin/forgejo-api` rejects requests containing tokens in URL query strings to avoid leaking secrets into access and egress proxy logs, strictly passing monitoring credentials via HTTP `Authorization` headers.
-
-**Worker pool liveness against orphaned runs.** `worker_busy(w)` verifies supervisor process liveness rather than run-directory presence alone so dead runs never mark workers busy forever.
-
-**Starvation-free dispatch rotation.** `order_by_quota` safely breaks ties using least-recently-used dispatch timestamps and handles null quotas to ensure fair round-robin dispatch across workers.
-
-**Worker cooldown expiration and cache invalidation.** `is_cooling_down(w)` and `pool_quota_out()` prune expired cooldown entries and purge stale quota cache so recovered workers become dispatchable immediately.
-
-**Worker-specific API budget checks.** `pool_quota_out()` enforces individual worker caps via `api_budget_left(w)` conjunctively with cooldown status, surfacing accurate exhaustion reasons without silently blocking the pool.
-
-**Dashboard backend SSH command injection hardening.** Remote command generation in `web/dashboard/backend.py` validates all owner-supplied parameters against strict allowlists (`PROJECT_RE`, `REPO_RE`, `WORKER_RE`, `LANG_RE`, `VALID_RUNTIMES`) and safely escapes shell arguments with `shlex.quote` (`create_project_job`, `add_worker_job`, `connect_upstream_job`, `pflag`).
-
-
-**PTY breakout protection.** `LoginSessions` validates worker names and strictly blocks terminal control sequences and newlines in `send(w, text)` to prevent breakout into secondary shell commands.
-
-**Credentials over stdin.** Tokens, settings changes, and product vision markdown are verified to travel strictly over stdin (`inp=...`), never formatted into command line argv or exposed in `/proc/*/cmdline`.
-
-**Open source.** Agent-Forge is now licensed under the Apache License 2.0 (was: Sustainable Use License, source-available).
-Selling it, hosting it and building on it are allowed; the commercial license (`LICENSE_EE.md`) and the contributor license
-agreement are gone, contributions are accepted under Apache-2.0 (`git commit -s`).
-
-`NOTIFY_URL=outbox`: notifications are appended to `runs/notify-outbox.jsonl` for a relay outside the machine (when the
-sandbox may not reach your notification server itself); the file can be deleted at any time.
-
-`worker/entrypoint.sh`: Validate `FORGEJO_USER` and `FORGE_REPO` against strict allow-patterns before execution, quote all shell variable expansions, set umask 077, strip group/other permissions on workspace and `.git`, and drop root privileges to unprivileged `worker` user.
-`egress/entrypoint.sh`: Validate `EGRESS_MODE` against allow-pattern `^(enforce|discovery)$`, set umask 027, verify enforce configuration parsing before daemon exec, and drop root privileges to unprivileged `proxy` user.
-`web/server.py`: Enforce Host header validation across all request paths including `/healthz` and require numeric ports to prevent DNS rebinding.
-`web/server.py`: Validate Origin and Referer headers against allowed hosts on state-changing POST requests as a CSRF guard.
-`bin/lib/foreman/knowledge.py`: Reject directory traversal (`..`, `/`, `\`), absolute paths, and malformed names in `doc_path`, `doc_set`, `doc_reset`, and `role_playbook`.
-`bin/lib/foreman/knowledge.py`: Enforce canonical `ROLE_SLUG` validation on role identifiers in `role_playbook` to prevent path traversal when loading role playbooks.
-`bin/lib/foreman/knowledge.py`: Enforce realpath containment verification (`commonpath`) in `doc_path` and `doc_reset` as defense-in-depth against directory traversal.
-`bin/lib/sbx.py`: Reject directory traversal (`..` and path separators) in `ks_path`, `project_conf`, `project_pool`, and `ledger_path`, and add safe path helpers for runs and secrets.
-`bin/lib/sbx.py`: Reject malicious `TEST_CMD` and `GATE_IMAGE` values in configuration by failing safe with `ValueError` rather than falling back or executing verbatim.
-`bin/dispatch`: Enforce preflight validation of worker identifiers, `DISPATCH_MODEL`, and `DISPATCH_ROLE` against safe regexes before subprocess execution.
-
-**Security: Install scripts hardening.** `scripts/install.sh` and `scripts/vm-baseline-ubuntu.sh` enforce restrictive umasks (`umask 077` and `umask 027`) and file permissions (mode 0700 for `etc/` and secrets directory, mode 0600 for configuration and secret files) so no secrets or configs are created world- or group-readable; static regression tests verify safe remote execution and secret handling (`tests/test_install_security.sh`).
+- The root `docker-compose.yml`, `Dockerfile` and `.env.example` ("unified stack"). The installer replaces them for a real
+  install and the demo image for a look around.
+- The commercial license (`LICENSE_EE.md`) and the contributor license agreement.
+- The fixed single-file download route of the dashboard (see `DASHBOARD_DOWNLOADS_DIR` above).
+- `docs/PENDING-QUOTA.md`, an internal work list.
 
 ## 0.11.0 - 2026-10-08
 **You stay in the loop when you want to.** `APPROVE=plan,risky,merge` per project: a goal's plan, each risky task and each
