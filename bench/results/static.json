@@ -1,0 +1,44 @@
+[
+ {
+  "id": "v0",
+  "label": "First release",
+  "date": "2026-10-05",
+  "chars": 3928,
+  "est_tokens": 982
+ },
+ {
+  "id": "v1",
+  "label": "+ context pack",
+  "date": "2026-10-07",
+  "chars": 15725,
+  "est_tokens": 3931
+ },
+ {
+  "id": "v2",
+  "label": "+ scoped testing rule",
+  "date": "2026-10-17",
+  "chars": 16187,
+  "est_tokens": 4046
+ },
+ {
+  "id": "v3",
+  "label": "+ engineering standard",
+  "date": "2026-10-20",
+  "chars": 17560,
+  "est_tokens": 4390
+ },
+ {
+  "id": "v4",
+  "label": "+ save-tokens rules, read hints",
+  "date": "2026-10-20",
+  "chars": 17980,
+  "est_tokens": 4495
+ },
+ {
+  "id": "v5",
+  "label": "+ cache-friendly order (experiment)",
+  "date": "2026-10-20",
+  "chars": 17980,
+  "est_tokens": 4495
+ }
+]

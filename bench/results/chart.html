@@ -1,0 +1,35 @@
+<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Worker token benchmark</title>
+<style>
+:root{--bg:#fff;--fg:#1c1e21;--mut:#6b7280;--a:#2563eb;--b:#10b981;--c:#d1d5db;--warn:#f59e0b}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e8eaed;--mut:#9aa0a6;--c:#3a3f47}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;padding:16px;max-width:900px;margin-inline:auto}
+h1{font-size:1.3rem}svg{width:100%;height:auto}text{fill:var(--fg);font-size:12px}.m{fill:var(--mut)}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:4px 8px;border-bottom:1px solid var(--c);text-align:right}td:first-child,th:first-child{text-align:left}
+</style></head><body>
+<h1>Tokeny workera na rovnakej úlohe, verzia po verzii</h1>
+<p class="m" id="note"></p><svg id="chart" viewBox="0 0 860 340"></svg>
+<p>Skutočné behy: priemer tokenov z N behov (bodky = jednotlivé behy), šedý pruh = odhad veľkosti samotného promptu.</p>
+<table id="t"></table>
+<script>
+const DATA = [{"v": {"id": "v0", "commit": "8a98f47", "date": "2026-10-05", "label": "First release", "env": {}}, "static": {"id": "v0", "label": "First release", "date": "2026-10-05", "chars": 3928, "est_tokens": 982}, "tokens": [], "tools": [], "good": 0, "n": 0}, {"v": {"id": "v1", "commit": "3d70778", "date": "2026-10-07", "label": "+ context pack", "env": {}}, "static": {"id": "v1", "label": "+ context pack", "date": "2026-10-07", "chars": 15725, "est_tokens": 3931}, "tokens": [], "tools": [], "good": 0, "n": 0}, {"v": {"id": "v2", "commit": "c5cc4d0", "date": "2026-10-17", "label": "+ scoped testing rule", "env": {}}, "static": {"id": "v2", "label": "+ scoped testing rule", "date": "2026-10-17", "chars": 16187, "est_tokens": 4046}, "tokens": [], "tools": [], "good": 0, "n": 0}, {"v": {"id": "v3", "commit": "60c8f64", "date": "2026-10-20", "label": "+ engineering standard", "env": {}}, "static": {"id": "v3", "label": "+ engineering standard", "date": "2026-10-20", "chars": 17560, "est_tokens": 4390}, "tokens": [], "tools": [], "good": 0, "n": 0}, {"v": {"id": "v4", "commit": "bcf596c", "date": "2026-10-20", "label": "+ save-tokens rules, read hints", "env": {}}, "static": {"id": "v4", "label": "+ save-tokens rules, read hints", "date": "2026-10-20", "chars": 17980, "est_tokens": 4495}, "tokens": [], "tools": [], "good": 0, "n": 0}, {"v": {"id": "v5", "commit": "HEAD", "date": "2026-10-20", "label": "+ cache-friendly order (experiment)", "env": {"BENCH_ORDER": "cache"}}, "static": {"id": "v5", "label": "+ cache-friendly order (experiment)", "date": "2026-10-20", "chars": 17980, "est_tokens": 4495}, "tokens": [], "tools": [], "good": 0, "n": 0}];
+const svg=document.getElementById('chart'),ns='http://www.w3.org/2000/svg';
+function el(n,a,t){const e=document.createElementNS(ns,n);for(const k in a)e.setAttribute(k,a[k]);if(t!=null)e.textContent=t;svg.appendChild(e);return e}
+const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+const max=Math.max(1,...DATA.flatMap(d=>d.tokens),...DATA.map(d=>d.static?d.static.est_tokens:0));
+const W=860,H=340,L=60,B=50,T=20,bw=(W-L-20)/DATA.length;
+const y=v=>H-B-(v/max)*(H-B-T);
+for(let i=0;i<=4;i++){const v=max*i/4;el('line',{x1:L,x2:W-10,y1:y(v),y2:y(v),stroke:'var(--c)'});el('text',{x:L-6,y:y(v)+4,'text-anchor':'end',class:'m'},v>=1000?Math.round(v/1000)+'k':Math.round(v))}
+DATA.forEach((d,i)=>{const x=L+i*bw+bw*0.15,w=bw*0.7;
+ if(d.static)el('rect',{x,y:y(d.static.est_tokens),width:w,height:H-B-y(d.static.est_tokens),fill:'var(--c)'});
+ const a=avg(d.tokens);
+ if(a!=null){el('rect',{x:x+w*0.25,y:y(a),width:w*0.5,height:H-B-y(a),fill:d.v.env&&d.v.env.BENCH_ORDER?'var(--b)':'var(--a)'});
+  d.tokens.forEach(t=>el('circle',{cx:x+w/2,cy:y(t),r:3.5,fill:'var(--fg)'}));
+  el('text',{x:x+w/2,y:y(a)-8,'text-anchor':'middle'},Math.round(a/1000)+'k')}
+ el('text',{x:x+w/2,y:H-B+16,'text-anchor':'middle'},d.v.id);
+ el('text',{x:x+w/2,y:H-B+30,'text-anchor':'middle',class:'m'},d.v.date.slice(5))});
+const total=DATA.reduce((s,d)=>s+d.n,0);
+document.getElementById('note').textContent=total?('Behov spolu: '+total+'.'):'Zatiaľ žiadne skutočné behy (kvóta workerov sa obnoví neskôr) - vidno len veľkosť promptov.';
+document.getElementById('t').innerHTML='<tr><th>Verzia</th><th>Prompt ~tok.</th><th>Behy</th><th>Tokeny (priemer)</th><th>Volania nástrojov</th><th>Správne</th></tr>'+
+ DATA.map(d=>'<tr><td>'+d.v.id+' '+d.v.label+'</td><td>'+(d.static?d.static.est_tokens:'-')+'</td><td>'+d.n+'</td><td>'+(d.n?Math.round(avg(d.tokens)):'-')+'</td><td>'+(d.n?Math.round(avg(d.tools)):'-')+'</td><td>'+(d.n?d.good+'/'+d.n:'-')+'</td></tr>').join('');
+</script></body></html>
