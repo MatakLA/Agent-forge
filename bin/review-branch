@@ -114,6 +114,10 @@ try:
         loose = quality.unreferenced(repo, added_src)
         if loose:
             warn.append("new source file(s) that no other file refers to yet (fine only if a later task of this goal wires them in): " + ", ".join(loose[:8]))
+        grown = [l.split("\t")[-1] for l in ns if l[:1] in "AM"]
+        big = quality.oversized(repo, grown, int(pc.get("MAX_FILE_LINES", "400") or 400))
+        if big:
+            warn.append("big source file(s) - a worker has to re-read them every time; split into modules: " + ", ".join(f"{p} ({n} lines)" for p, n in big[:6]))
         if quality_msg:
             print("\n== QUALITY: " + quality_msg)
             if qmode != "block":

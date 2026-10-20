@@ -132,6 +132,7 @@ def context_pack(t):
         tf = codemap.test_for(f, cm)
         if tf:
             related.append(tf)
+    related += [r for r in t.get("read", []) if r in cm]
     related += codemap.mentioned_in(t.get("spec", "") + " " + " ".join(t.get("acceptance", [])), cm)
     related = [r for r in dict.fromkeys(related) if r not in shown and r not in mine]
     if related:
