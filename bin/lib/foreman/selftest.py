@@ -1,13 +1,13 @@
 """Pure-function and small integration tests of the foreman; spend nothing (`bin/foreman --selftest`)."""
 import datetime as dt, json, os, subprocess, time
 
-import sbx, runtimes
+import sbx, runtimes, codemap
 
 from . import ctx
 from .util import extract_json, norm_tasks, parse_limit, parse_numstat, ready_tasks, sh, slugify
 from .store import goals, jload, new_goal_id, save_goal, tasks
 from .pool import has_quota, order_by_quota, quota_pct
-from .repo import CODEMAP, context_pack, own_files, variant
+from .repo import CODEMAP, branch_diff, codemap_main, context_pack, own_files, usage_block, variant
 from .knowledge import role_catalogue, role_playbook
 from .prompts import worker_spec
 from .merge import auto_rebase
@@ -223,6 +223,9 @@ def _selftest_body(bad, real_notify):
         open(os.path.join(ctx.REPO, "birthdays.py"), "w").write('"""Birthday reminders."""\nimport store\n\ndef upcoming(days=7):\n    return []\n')
         open(os.path.join(ctx.REPO, "test_birthdays.py"), "w").write('import birthdays\n\ndef test_up():\n    assert birthdays.upcoming() == []\n')
         open(os.path.join(ctx.REPO, "other.py"), "w").write("def unrelated():\n    pass\n")
+        open(os.path.join(ctx.REPO, "util.js"), "w").write("function render() {\n  return 1;\n}\nfunction other() {\n  return 2;\n}\n")
+        open(os.path.join(ctx.REPO, "reports.py"), "w").write("import store\n\ndef daily():\n    return store.list_contacts()\n")
+        open(os.path.join(ctx.REPO, "store.py"), "a").write("\ndef list_contacts():\n    return []\n\ndef purge_all():\n    return None\n")
         for c in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]):
             sh(["git"] + c, cwd=ctx.REPO)
         sh(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=ctx.REPO)
@@ -232,7 +235,45 @@ def _selftest_body(bad, real_notify):
               "def upcoming(days=7):" in cp and "def add(name: str) -> dict  # Add a contact." in cp and "`other.py`" in cp
               and 'return {"name": name}' not in cp and "NO MODULE DOCSTRING" in cp)
         cp2 = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[], attempts=1))
-        check("context pack: a rework does not resend main's version of the worker's own files", "def upcoming(days=7):\n" not in cp2 and "git diff origin/main" in cp2)
+        check("context pack: a rework does not resend main's version of the worker's own files, and says why",
+              "def upcoming(days=7):\n" not in cp2 and "Your branch already has earlier work" in cp2)
+        sh(["git", "checkout", "-qb", "test/0003-b"], cwd=ctx.REPO)
+        open(os.path.join(ctx.REPO, "birthdays.py"), "a").write("\ndef extra():\n    return 42\n")
+        sh(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "branch work"], cwd=ctx.REPO)
+        sh(["git", "update-ref", "refs/remotes/origin/test/0003-b", "HEAD"], cwd=ctx.REPO)
+        sh(["git", "checkout", "-q", "-"], cwd=ctx.REPO)
+        t3 = dict(id="0003-b", branch="test/0003-b", files=["birthdays.py"], spec="", acceptance=[], attempts=1)
+        bd = branch_diff(t3, 20000)
+        cp3 = context_pack(t3)
+        check("context pack: a rework gets its branch's earlier work as a diff against main (and no diff when the branch is unknown)",
+              "+def extra():" in bd and "Your branch's earlier work" in cp3 and "+def extra():" in cp3
+              and branch_diff(dict(branch="test/none"), 20000) == "" and branch_diff(dict(), 20000) == "")
+        ctx.C.update(PACK_EXTRAS="off")
+        cp3off = context_pack(t3)
+        check("PACK_EXTRAS=off: no spans, no usage block, no branch diff",
+              "[L" not in cp3off and "Who uses what you change" not in cp3off and "+def extra():" not in cp3off
+              and "[L" not in context_pack(dict(id="0003-c", files=["store.py"], spec="", acceptance=[])))
+        ctx.C.update(PACK_EXTRAS="on")
+        cm_ = codemap_main()
+        rend = codemap.render(cm_, ["store.py", "util.js"])
+        check("codemap: every definition carries its line span (python by ast, other languages up to the next definition)",
+              "def add(name: str) -> dict  # Add a contact.  [L3-5]" in rend and "function render()  [L1-3]" in rend
+              and "function other()  [L4-6]" in rend)
+        plain = codemap.render(cm_, ["store.py"], with_lines=False, sizes=False)
+        check("codemap: with_lines=False / sizes=False give the stable text (no spans, no line counts)",
+              "[L" not in plain and "lines)" not in plain and "def add(name: str) -> dict  # Add a contact." in plain)
+        check("codemap.public_names: top-level definitions only", codemap.public_names(cm_["store.py"]) == ["add", "list_contacts", "purge_all"])
+        ub = usage_block(dict(id="0003-d", files=["store.py"], spec="", acceptance=[]), cm_, 10000)
+        check("usage block: callers outside the task's files with path:line; names nothing uses are free to change; short names skipped",
+              "`list_contacts` (store.py): `reports.py:4`" in ub and "free to change" in ub and "`purge_all`" in ub.split("free to change")[1]
+              and "`add`" not in ub and "`store.py:" not in ub)
+        ub2 = usage_block(dict(id="0003-d", files=["store.py", "reports.py"], spec="", acceptance=[]), cm_, 10000)
+        check("usage block: a caller that is itself one of the task's files is not listed", "reports.py:4" not in ub2)
+        stable, task_part = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[]), parts=True)
+        stable2, _ = context_pack(dict(id="0004-z", files=["store.py"], spec="Use birthdays.upcoming().", acceptance=[]), parts=True)
+        check("context pack parts: the stable half is the same for different tasks and holds the file list; the task half holds the task's files",
+              stable == stable2 and "## All files in the project" in stable and "`other.py`" in stable and "[L" not in stable.split("## All files")[1] and "lines)" not in stable
+              and "def upcoming(days=7):" in task_part and "## All files in the project" not in task_part)
         ctx.C.update(CONTEXT_PACK_CHARS=400)
         check("context pack respects CONTEXT_PACK_CHARS", len(context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[]))) < 1100)
     finally:

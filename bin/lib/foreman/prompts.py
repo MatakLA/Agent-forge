@@ -117,7 +117,7 @@ def context_bundle(all_tasks=None):
     tree = repo_tree()
     pd = ctx.C["PROJECT_DIR"].strip("/")
     cm = codemap_main()
-    mods = codemap.render(cm, [p for p in sorted(cm) if not cm[p]["test"]], max_chars=50000)
+    mods = codemap.render(cm, [p for p in sorted(cm) if not cm[p]["test"]], max_chars=50000, with_lines=False)
     tests = [p for p in sorted(cm) if cm[p]["test"]]
     mods += f"\n\nTest files: {', '.join(tests)}" if tests else ""
     agents = read_repo((pd + "/AGENTS.md") if pd else "AGENTS.md", 8000) or "(none)"
@@ -219,6 +219,16 @@ def clone_hint():
     return "~/" + os.path.relpath(sbx.WORKER_CLONE, "/home/worker")
 
 
+START_MARKER = sbx.START_MARKER
+
+
+def orient_on():
+    """ORIENT=on: the supervisor puts the worker's clone on the task branch before the agent starts and replaces START_MARKER with
+    where it stands, so the agent spends no steps on git orientation (fetch, checkout, status, log, branch) - and the rules text
+    no longer mentions the branch, so it is the same for every task."""
+    return str(ctx.C.get("ORIENT", "on")) != "off"
+
+
 def rules_block(t):
     pd = ctx.C["PROJECT_DIR"].strip("/")
     agents = f"`{pd}/AGENTS.md`" if pd else "`AGENTS.md`"
@@ -233,19 +243,28 @@ def rules_block(t):
     parametrize variants; do NOT enumerate input boundaries, types or permutations of one rule. Prefer one test through the real entry
     point over many tests of private helpers.
 """)
+    if orient_on():
+        START = ("- Your clone is already on the task branch (the supervisor fetched and checked it out: earlier attempts and any auto-saved WIP\n"
+                 "  commit are on it, otherwise it starts from `origin/main`). \"Start state\" at the end of this prompt says where it stands. Do not\n"
+                 "  spend steps on `git fetch/checkout/status/log/branch` or `ls` to find out - continue from it, never start over.\n")
+        PUSH = "HEAD"
+    else:
+        START = (f"- Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout -B {t['branch']} origin/{t['branch']}` and continue from it\n"
+                 f"  (it holds earlier attempts and possibly an auto-saved WIP commit - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.\n")
+        PUSH = t["branch"]
     return (f"""## How you work (always)
 - Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
   the whole team), do not touch git config.
-- Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout -B {t['branch']} origin/{t['branch']}` and continue from it
-  (it holds earlier attempts and possibly an auto-saved WIP commit - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.
-- Budget: about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
-  (`git add -A && git commit -m "..." && git push -u origin {t['branch']}`). Do not re-read large files you already read.
+{START}- Budget: about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
+  (`git add -A && git commit -m "..." && git push -u origin {PUSH}`). Do not re-read large files you already read.
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Backward compatibility: your changes in owned files must not break existing callers or existing tests outside your owned files. If existing tests fail in the merge gate, adjust your implementation in your owned files so existing contracts and shapes continue to work.
 - Test only what you touch: run only the tests relevant to your changed files/domain (e.g. `pytest tests/test_your_module.py` or a targeted check). NEVER run the full repository test suite from the root — the merge gate automatically runs the full test suite in an isolated clean container before merging.
-{STD}- Save tokens (every tool output is sent again with each later step): read a file longer than 300 lines in parts (`grep -n`, `sed -n 'A,Bp'`),
-  never `cat` it whole; do not re-read what the context pack above already shows or what you read earlier; run tests quietly
-  (`pytest -q -x --tb=short 2>&1 | tail -40`) and look at the full output only for a failure; do not `ls -R` or `find` the repo - the pack has the map.
+{STD}- Save tokens (every step sends your whole context again, so FEWER steps beat shorter ones): put independent commands into ONE
+  `run_command` (`sed -n '10,40p' a.py; sed -n '5,30p' b.py; grep -n foo c.py`) and make all edits of one file in one call. Read a file longer
+  than 300 lines in parts (`sed -n 'A,Bp'`, the pack's `[L12-40]` spans), never `cat` it whole; do not re-read what the context pack above
+  already shows or what you read earlier; run tests quietly (`pytest -q -x --tb=short 2>&1 | tail -40`) and look at the full output only
+  for a failure; do not `ls -R` or `find` the repo - the pack has the map.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
@@ -287,8 +306,9 @@ def branch_stat(t):
 def worker_spec(t, continuing=False):
     """The prompt a worker gets. `continuing`: the worker resumes its own earlier agy conversation (it already has the full
     task and playbook), so it only needs what changed - much shorter, and no re-reading of the repository."""
+    tail = [START_MARKER] if orient_on() else []
     if continuing:
-        return "\n".join([f"# Task {t['id']} - continue (same branch `{t['branch']}`)\n", rework_block(t), rules_block(t)])
+        return "\n".join([f"# Task {t['id']} - continue (same branch `{t['branch']}`)\n", rework_block(t), rules_block(t)] + tail)
     pb = role_playbook(t["role"])
     role = f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n")
     head = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `{clone_hint()}`   Goal: {t['goal']}\n"]
@@ -298,15 +318,20 @@ def worker_spec(t, continuing=False):
             goal_context(t),
             "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
             "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n"]
-    pack = []
+    pack, stable = [], []
+    cache = str(ctx.C.get("PROMPT_ORDER", "default")) == "cache"
     if variant(t)["pack"]:
         try:
-            pack.append(context_pack(t))
+            if cache:
+                st, sp = context_pack(t, parts=True)
+                stable, pack = [st], [sp]
+            else:
+                pack.append(context_pack(t))
         except Exception as e:                  # the pack is an optimisation; a task never fails because of it
             event(f"task {t['id']}: context pack failed: {e}", task=t["id"])
-    if str(ctx.C.get("PROMPT_ORDER", "default")) == "cache":
-        # identical text first (rules, playbook, project pack), what differs per task last: a provider-side prompt cache only helps a shared prefix
-        s = [rules_block(t), role] + pack + head + task + [rework_block(t)]
+    if cache:
+        # identical text first (rules, project map, playbook), what differs per task last: a provider-side prompt cache only helps a shared prefix
+        s = [rules_block(t)] + stable + [role] + head + task + pack + [rework_block(t)]
     else:
         s = head + [role] + task + [rules_block(t), rework_block(t)] + pack
-    return "\n".join(x for x in s if x)
+    return "\n".join(x for x in s + tail if x)

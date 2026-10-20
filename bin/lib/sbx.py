@@ -45,6 +45,7 @@ SAFE_ARG = re.compile(r"[A-Za-z0-9._/:-]{1,200}")
 PROJECT = os.environ.get("FORGE_PROJECT", "")
 if PROJECT and not PROJECT_RE.fullmatch(PROJECT):
     raise SystemExit(f"invalid FORGE_PROJECT {PROJECT!r} (lowercase letters, digits, dashes)")
+START_MARKER = "<!-- start-state -->"          # a worker prompt carries it where the supervisor writes the clone's start state (ORIENT=on)
 WORKER_CLONE = f"/home/worker/work/{PROJECT}" if PROJECT else "/home/worker/playground"
 SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
 
