@@ -221,11 +221,12 @@ class TestFakeModelApiProviders(unittest.TestCase):
 
     def test_call_openai_api_404_resilience(self):
         """Invariant: call_openai_api handles 404 endpoint gracefully without crashing."""
-        res = providers.call_openai_api(
-            prompt="Hello",
-            model="gpt-4o",
-            api_base=f"http://127.0.0.1:{self.port}/unfaked"
+        # The fixture answers any URL ending in /chat/completions, so the 404 has to be injected.
+        err = urllib.error.HTTPError(
+            url=f"http://127.0.0.1:{self.port}", code=404, msg="Not Found", hdrs={}, fp=io.BytesIO(b'{"error":"not found"}')
         )
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            res = providers.call_openai_api(prompt="Hello", model="gpt-4o", api_base=f"http://127.0.0.1:{self.port}")
         self.assertTrue(res["is_error"])
         self.assertIn("404", str(res["error"]))
         assert res["is_error"] is True

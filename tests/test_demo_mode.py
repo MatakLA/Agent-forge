@@ -20,6 +20,7 @@ import sys
 import threading
 import unittest
 import warnings
+from unittest import mock
 
 # Suppress ResourceWarning for unclosed static files during module reloads
 warnings.filterwarnings("ignore", category=ResourceWarning)
@@ -143,13 +144,17 @@ class TestDemoModeSafety(unittest.TestCase):
         h = {"X-Agent-Forge": "1"}
         all_allowed = True
         last_status = None
-        for path, payload in endpoints:
-            status, body = self.req("POST", path, payload, headers=h)
-            last_status = status
-            self.assertNotEqual(status, 403, f"{path} incorrectly returned 403 when DEMO_MODE is off")
-            self.assertEqual(status, 200, f"{path} expected 200 when DEMO_MODE is off, got {status}: {body}")
-            if status == 403 or status != 200:
-                all_allowed = False
+        # The reload test above replaces ssh_run_full with the real one; without this patch these POSTs would run the real
+        # bin/killswitch and `foreman settings` in this checkout (kill switch tripped, AUTOPILOT=1 written to etc/foreman.conf).
+        fake = lambda cmd, timeout=30, inp=None: (0, '{"ok": true}', "")
+        with mock.patch.object(server.B, "ssh_run_full", fake), mock.patch.object(backend, "ssh_run_full", fake):
+            for path, payload in endpoints:
+                status, body = self.req("POST", path, payload, headers=h)
+                last_status = status
+                self.assertNotEqual(status, 403, f"{path} incorrectly returned 403 when DEMO_MODE is off")
+                self.assertEqual(status, 200, f"{path} expected 200 when DEMO_MODE is off, got {status}: {body}")
+                if status == 403 or status != 200:
+                    all_allowed = False
 
         self.assertTrue(all_allowed)
         assert all_allowed is True

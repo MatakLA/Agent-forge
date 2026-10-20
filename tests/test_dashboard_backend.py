@@ -178,13 +178,35 @@ class TestDashboardBackendSecurity(unittest.TestCase):
         assert job["state"] == "failed" and len(self.calls) == 0
 
     def test_login_sessions_rejects_malicious_worker_name(self):
-        """LoginSessions must reject worker names with shell metacharacters."""
+        """LoginSessions must reject worker names with shell metacharacters, and never open a session for one."""
         login = backend.LoginSessions()
-        self.assertIn("error", login.start("worker-1; touch /tmp/pwn"))
-        self.assertIn("error", login.stop("worker-1; touch /tmp/pwn"))
-        self.assertIn("error", login.send("worker-1; touch /tmp/pwn", "token"))
-        self.assertIn("error", login.read("worker-1; touch /tmp/pwn"))
-        assert "error" in login.start("worker-1; touch /tmp/pwn")
+        bad = "worker-1; touch /tmp/pwn"
+        with patch.object(backend.subprocess, "Popen") as popen:
+            self.assertEqual(login.start(bad), {"error": "bad worker"})
+            self.assertEqual(login.stop(bad), {"error": "bad worker"})
+            popen.assert_not_called()
+        self.assertIn("error", login.write(bad, "dG9rZW4="))
+        self.assertIn("error", login.resize(bad, 80, 24))
+        self.assertFalse(login.read(bad)["running"])
+        self.assertEqual(login.s, {})
+        assert "error" in login.start(bad)
+
+    def test_login_write_goes_to_the_session_terminal_only(self):
+        """The browser terminal sends raw keystrokes (control keys are legitimate there); they reach only that worker's pty,
+        as validated base64 of bounded size - never a shell."""
+        import base64
+        login = backend.LoginSessions()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        login.s["worker-1"] = {"proc": proc, "rfd": 99, "buf": "", "raw": "", "out": b"", "base": 0, "cols": 80, "started": 0}
+        with patch.object(backend.os, "write", return_value=1) as w:
+            self.assertEqual(login.write("worker-1", base64.b64encode(b"4/0AY0e-gValidAuthToken_123\r").decode()), {"ok": True})
+            w.assert_called_once_with(99, b"4/0AY0e-gValidAuthToken_123\r")
+            w.reset_mock()
+            self.assertEqual(login.write("worker-1", "not base64!!"), {"error": "bad data"})
+            self.assertEqual(login.write("worker-1", base64.b64encode(b"x" * 8193).decode()), {"error": "too much at once"})
+            self.assertEqual(login.write("worker-2", "dG9rZW4="), {"error": "no running login session"})
+            w.assert_not_called()
 
     def test_login_stop_counts_a_weekly_only_account_as_signed_in(self):
         """A fresh account's /usage has no "Five Hour" row; it is still signed in. An error text is not."""
@@ -194,33 +216,6 @@ class TestDashboardBackendSecurity(unittest.TestCase):
             self.assertTrue(login.stop("worker-8")["logged_in"])
         with patch.object(backend, "ssh_run", return_value="Error: not logged in\n"):
             self.assertFalse(login.stop("worker-8")["logged_in"])
-
-    def test_login_sessions_send_rejects_control_sequences(self):
-        """LoginSessions.send must reject control characters (newlines, escapes, Ctrl-C) to prevent breakout."""
-        login = backend.LoginSessions()
-        sess_mock = {"proc": MagicMock(), "rfd": 1, "wf": MagicMock(), "buf": ""}
-        sess_mock["proc"].poll.return_value = None
-        login.s["worker-1"] = sess_mock
-
-        breakout_payloads = [
-            "token\nmalicious_cmd",
-            "token\rmalicious_cmd",
-            "\x03malicious_cmd",
-            "token\x1b[2Jmalicious",
-            "token\x04",
-            "token\x1a",
-        ]
-        for payload in breakout_payloads:
-            with self.subTest(payload=payload):
-                res = login.send("worker-1", payload)
-                self.assertIn("error", res)
-                sess_mock["wf"].write.assert_not_called()
-
-        # Legitimate single-line token is accepted
-        res = login.send("worker-1", "4/0AY0e-gValidAuthToken_123")
-        self.assertEqual(res, {"ok": True})
-        sess_mock["wf"].write.assert_called_once_with(b"4/0AY0e-gValidAuthToken_123\r")
-        assert res == {"ok": True}
 
     def test_poll_project_rejects_malicious_name(self):
         """poll_project must reject crafted project names and avoid calling ssh_run."""
@@ -393,15 +388,14 @@ class TestDashboardReadinessApi(unittest.TestCase):
         assert status == 401 and status_bad == 401
 
     def test_api_readiness_broken_backend_returns_degraded_200_not_500(self):
-        """When readiness import/execution fails, GET /api/readiness returns degraded 200 instead of 500."""
-        with patch.object(backend, "readiness", None):
-            status, headers, body = self.req("/api/readiness")
+        """When the in-process readiness module is unusable, GET /api/readiness/summary returns degraded 200 instead of 500."""
+        with patch.object(srv, "readiness", None):
+            status, headers, body = self.req("/api/readiness/summary")
             self.assertEqual(status, 200)
             data = json.loads(body)
             self.assertEqual(data.get("runtimes"), {})
-            self.assertEqual(data.get("providers"), {})
             self.assertIn("error", data)
-        assert status == 200 and data.get("runtimes") == {} and data.get("providers") == {} and "error" in data
+        assert status == 200 and data.get("runtimes") == {} and "error" in data
 
     def test_api_readiness_no_secret_leaks_in_http_response(self):
         """GET /api/readiness never leaks DASHBOARD_TOKEN or canary secrets in HTTP response."""

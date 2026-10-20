@@ -152,7 +152,8 @@ def merge_upstream(t, up, who, fb, gate):
         upstream.push_branch(up, ctx.FD, t["branch"])
         pr = up.open_pr(t["branch"], f"{t['id']}: {t['title']}"[:120], body)
     except upstream.UpstreamError as e:
-        return lambda: requeue_gate(t, f"{up.kind} not reachable / refused: {str(e)[:200]}")
+        reason = f"{up.kind} not reachable / refused: {str(e)[:200]}"
+        return lambda: requeue_gate(t, reason)
     if not ctx.C["AUTO_MERGE"]:
         return lambda: await_merge(t, pr, f"PR open on {up.kind} - waiting for you to merge it", who, fb)
     return lambda: await_merge(t, pr, f"PR opened on {up.kind}", who, fb, now=True)

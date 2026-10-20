@@ -83,7 +83,7 @@ check "worker: playground directory has group and other permissions stripped (go
 
 # Test umask 077 creates new files as 600 / directories as 700
 NEW_HOME="$T/new_home"
-mkdir -p "$NEW_HOME"
+mkdir -p "$NEW_HOME/playground/.git"   # an existing clone: the entrypoint must not try to reach the forge
 HOME="$NEW_HOME" FORGEJO_USER="worker-1" FORGE_REPO="sandbox/playground" \
   bash "$WORKER_ENTRY" bash -c 'touch "$HOME/created.txt" && mkdir "$HOME/created_dir"' >/dev/null 2>&1
 

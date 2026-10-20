@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Worker token benchmark: the same task (scenario.task.md on the `tasklog` repo) given to every Agent-Forge version's worker prompt.
 Usage:  run_bench.py static                  prompt size per version (offline, free) -> results/static.json
-        run_bench.py run <version> [reps]    real runs on the lent worker (costs model quota) -> results/runs.jsonl
+        run_bench.py run <version> [reps]    real runs on a worker (costs model quota; needs BENCH_SSH) -> results/runs.jsonl
         run_bench.py chart                   results/chart.html from static.json + runs.jsonl
 Invariants: a version is a git commit of agent-forge checked out as a worktree; its own worker_spec() renders the prompt; only the
 prompt differs between versions (same dispatch, model, worker, repo, task)."""
-import json, os, re, shlex, statistics, subprocess, sys, time
+import json, os, re, shlex, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AF = os.path.dirname(HERE)
@@ -78,7 +78,7 @@ def static():
 
 
 def stream_stats(raw):
-    tools, reads, tokens, kinds = 0, 0, 0, {}
+    tools, reads, tokens = 0, 0, 0
     for line in raw.splitlines():
         try:
             e = json.loads(line)
@@ -102,6 +102,8 @@ def weekly(rows):
 
 
 def real(vid, reps):
+    if not SSH:
+        sys.exit('set BENCH_SSH to a command that reaches the Agent-Forge machine, e.g. BENCH_SSH="ssh dev@forge-vm"')
     v = next(x for x in VERSIONS if x["id"] == vid)
     os.makedirs(RES, exist_ok=True)
     for i in range(reps):

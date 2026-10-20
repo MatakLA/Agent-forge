@@ -12,9 +12,10 @@ through bin/foreman / bin/killswitch / bin/worker-add / ..., which validate thei
 Live updates are pushed with Server-Sent Events (/api/stream): the foreman's state as deltas, new transcript lines only.
 
 Config (environment): BIND_PORT (8171), FORGE_DIR, VM_IP / VM_USER / VM_KEY / VM_KNOWN_HOSTS for remote mode, DASHBOARD_HOSTS,
-DASHBOARD_TOKEN (optional sign-in), FOREMAN_SERVICE / FOREMAN_SERVICE_PROJECT (systemd unit names), CLAUDE_PROJECT.
+DASHBOARD_TOKEN (optional sign-in), FOREMAN_SERVICE / FOREMAN_SERVICE_PROJECT (systemd unit names), CLAUDE_PROJECT,
+DASHBOARD_DOWNLOADS_DIR (optional: the regular files directly in it are served at /downloads/<name> after sign-in).
 """
-import atexit, hmac, json, os, re, shlex, signal, sys, threading, time, urllib.parse
+import atexit, hmac, json, mimetypes, os, re, shlex, shutil, signal, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WEB = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +51,18 @@ def shutdown(*_a):
 #  - optional DASHBOARD_TOKEN: open the page once as /?token=<token>; a SameSite=Strict, HttpOnly cookie keeps you signed in.
 DASHBOARD_HOSTS = {h.strip().lower() for h in os.environ.get("DASHBOARD_HOSTS", "").split(",") if h.strip()}
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
+DOWNLOADS_DIR = os.environ.get("DASHBOARD_DOWNLOADS_DIR", "")
+mimetypes.add_type("application/vnd.android.package-archive", ".apk")
+
+
+def download_file(path):
+    """The regular file /downloads/<name> stands for: directly inside DOWNLOADS_DIR, no sub-directories, no symlink out of it."""
+    name = urllib.parse.unquote(path[len("/downloads/"):])
+    if not DOWNLOADS_DIR or not name or "/" in name or "\x00" in name or name.startswith("."):
+        return None
+    base = os.path.realpath(DOWNLOADS_DIR)
+    full = os.path.realpath(os.path.join(base, name))
+    return full if os.path.dirname(full) == base and os.path.isfile(full) else None
 SEC_HEADERS = {"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                                           "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}
@@ -557,17 +570,29 @@ class Handler(BaseHTTPRequestHandler):
         if not host_allowed(self.headers.get("Host")):
             self._deny(403, "host not allowed (set DASHBOARD_HOSTS to add your reverse proxy's name)"); return
         path = self.path.split("?")[0]
-        if path == "/app.apk":
-            apk_path = "/opt/host-setup/state/android/app.apk"
-            if os.path.isfile(apk_path):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.android.package-archive")
-                self.send_header("Content-Length", str(os.path.getsize(apk_path)))
-                self.send_header("Content-Disposition", 'attachment; filename="app.apk"')
-                self.end_headers()
-                return
-            self.send_response(404); self.end_headers(); return
+        if path.startswith("/downloads/"):
+            if self._allowed():
+                self._send_download(path, head=True)
+            return
         self.send_response(405); self.end_headers()
+
+    def _send_download(self, path, head=False):
+        full = download_file(path)
+        if not full:
+            self.send_response(404); self.end_headers(); return
+        try:
+            f = open(full, "rb")
+        except OSError:
+            self.send_response(500); self.end_headers(); return
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(full)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(os.path.basename(full)))
+            self.end_headers()
+            if not head:
+                shutil.copyfileobj(f, self.wfile)
 
     def do_GET(self):
         if not host_allowed(self.headers.get("Host")):
@@ -588,22 +613,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/index.html"):
             self._raw(STATIC["index.html"][0], "text/html; charset=utf-8", cache="no-cache"); return
-        if path == "/app.apk":
-            apk_path = "/opt/host-setup/state/android/app.apk"
-            if os.path.isfile(apk_path):
-                try:
-                    with open(apk_path, "rb") as f:
-                        data = f.read()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/vnd.android.package-archive")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.send_header("Content-Disposition", 'attachment; filename="app.apk"')
-                    self.end_headers()
-                    self.wfile.write(data)
-                    return
-                except OSError:
-                    self.send_response(500); self.end_headers(); return
-            self.send_response(404); self.end_headers(); return
+        if path.startswith("/downloads/"):
+            self._send_download(path); return
         if path.startswith("/static/"):
             f = STATIC.get(path[len("/static/"):])
             if not f:
