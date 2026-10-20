@@ -14,6 +14,7 @@ VERSIONS = json.load(open(os.path.join(HERE, "versions.json")))
 # Command that reaches the machine Agent-Forge runs on, e.g. BENCH_SSH="ssh -i ~/.ssh/forge_key dev@forge-vm". Only `run` needs it.
 SSH = shlex.split(os.environ.get("BENCH_SSH", ""))
 PROJECT, WORKER, MODEL = "bench", os.environ.get("BENCH_WORKER", "worker-8"), os.environ.get("BENCH_MODEL", "gemini-3.8-flash-high")
+MINUTES = int(os.environ.get("BENCH_MINUTES", "75"))
 
 
 def run(*cmd, cwd=None, inp=None, check=True):
@@ -27,8 +28,8 @@ def task_dict(branch):
     md = open(os.path.join(HERE, "scenario.task.md")).read()
     spec = md.split("## The task", 1)[1].split("## Acceptance criteria", 1)[0].strip()
     acc = [l[2:].strip() for l in md.split("## Acceptance criteria", 1)[1].splitlines() if l.startswith("- ")]
-    return dict(id="0001-stats-by-tag", title="Add `tasklog stats --by-tag`", goal="G-bench", branch=branch, role="backend-developer", risk="routine",
-                files=["stats.py", "tests/test_stats.py", "cli.py"], read=["storage.py", "tags.py", "clock.py"], spec=spec, acceptance=acc, attempts=0)
+    return dict(id="0001-total", title="Add `tasklog total`", goal="G-bench", branch=branch, role="backend-developer", risk="routine",
+                files=["cli.py", "tests/test_total.py"], read=["clock.py", "storage.py"], spec=spec, acceptance=acc, attempts=0)
 
 
 def clone():
@@ -110,16 +111,16 @@ def real(vid, reps):
         run(*SSH, f"cat > {remote}", inp=prompt)
         env = f"FORGE_PROJECT={PROJECT} FORGE_REPO=sandbox/bench DISPATCH_BRANCH={branch} DISPATCH_MODEL={MODEL} DISPATCH_VARIANT=bench-{vid}"
         for _ in range(180):                      # the lent worker may still be finishing its last foreman task
-            if "busy" not in run(*SSH, f"cd ~/sandbox && {env} bin/dispatch --check {WORKER}", check=False):
+            if "busy" not in run(*SSH, f"cd ~/sandbox && {env} bin/dispatch --check {WORKER} 2>&1", check=False):
                 break
             time.sleep(20)
-        out = run(*SSH, f"cd ~/sandbox && {env} bin/dispatch {WORKER} {remote} 30", check=False)
+        out = run(*SSH, f"cd ~/sandbox && {env} bin/dispatch {WORKER} {remote} {MINUTES} 2>&1", check=False)
         m = re.search(r"-> (\S+) \(", out)
         if not m:
             sys.exit("dispatch refused: " + out.strip()[-300:])
         rundir = m.group(1)
         t0 = time.time()
-        while time.time() - t0 < 45 * 60:
+        while time.time() - t0 < (MINUTES + 15) * 60:
             meta = json.loads(run(*SSH, f"cat {rundir}/meta.json"))
             if meta.get("finished"):
                 break

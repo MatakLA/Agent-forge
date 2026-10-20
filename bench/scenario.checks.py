@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic verifier for the benchmark scenario (tasklog `stats --by-tag`).
+"""Deterministic verifier for the benchmark scenario (tasklog `total`).
 
 Usage: python3 scenario.checks.py REPO_DIR   -> prints one JSON line
   {"tests_pass": bool, "output_ok": bool, "wired": bool, "test_lines": int, "code_lines": int}
-tests_pass: the whole suite passes and tests/test_stats.py exists; output_ok: exact stdout/exit codes of `cli.py stats --by-tag`
-on a seeded store (also --since, empty, usage errors); wired: cli.py imports stats; test_lines / code_lines: total lines of
+tests_pass: the whole suite passes and tests/test_total.py exists; output_ok: exact stdout/exit codes of `cli.py total`
+on a seeded store (also --since, empty, usage errors); wired: cli.py defines cmd_total; test_lines / code_lines: total lines of
 tests/*.py and of the top-level *.py (the untouched scenario has 466 / 896).
 Exit code 0 when everything is ok, else 1.
 """
@@ -23,17 +23,8 @@ SEED = [
     ("2024-03-07T08:30", 30, "inbox", []),
     ("2024-03-11T09:00", 60, "ui", ["frontend"]),
 ]
-ALL = """TAG         ENTRIES  MINUTES
-backend           2      210
-api               1       90
-frontend          1       60
-review            1       45
-(untagged)        1       30
-"""
-SINCE = """TAG         ENTRIES  MINUTES
-frontend          1       60
-(untagged)        1       30
-"""
+ALL = "5 entries, 5h45m\n"
+SINCE = "2 entries, 1h30m\n"
 
 
 def run(cmd, cwd, store, timeout=300):
@@ -51,7 +42,7 @@ def lines(paths):
 
 
 def suite(repo, store):
-    if not os.path.exists(os.path.join(repo, "tests", "test_stats.py")):
+    if not os.path.exists(os.path.join(repo, "tests", "test_total.py")):
         return False
     have_pytest = subprocess.run([sys.executable, "-c", "import pytest"], capture_output=True).returncode == 0
     cmd = [sys.executable, "-m", "pytest", "-q"] if have_pytest else [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"]
@@ -64,14 +55,13 @@ def output_ok(repo, tmp):
     entries = [{"id": i + 1, "start": s, "minutes": m, "label": lb, "tags": t, "note": ""} for i, (s, m, lb, t) in enumerate(SEED)]
     with open(full, "w") as f:
         json.dump({"next_id": len(SEED) + 1, "entries": entries}, f)
-    cli = [sys.executable, "cli.py", "stats"]
+    cli = [sys.executable, "cli.py", "total"]
     checks = [
-        (cli + ["--by-tag"], full, 0, ALL),
-        (cli + ["--by-tag", "--since", "2024-03-07"], full, 0, SINCE),
-        (cli + ["--by-tag", "--since", "2030-01-01"], full, 0, "No entries.\n"),
-        (cli + ["--by-tag"], empty, 0, "No entries.\n"),
-        (cli, full, 2, None),
-        (cli + ["--by-tag", "--since", "yesterday"], full, 2, None),
+        (cli, full, 0, ALL),
+        (cli + ["--since", "2024-03-07"], full, 0, SINCE),
+        (cli + ["--since", "2030-01-01"], full, 0, "No entries.\n"),
+        (cli, empty, 0, "No entries.\n"),
+        (cli + ["--since", "yesterday"], full, 2, None),
     ]
     for cmd, store, code, out in checks:
         r = run(cmd, repo, store, 60)
@@ -86,7 +76,7 @@ def main():
         store = os.path.join(tmp, "s.json")
         res = {"tests_pass": suite(repo, store), "output_ok": output_ok(repo, tmp)}
     try:
-        res["wired"] = bool(re.search(r"^\s*(import stats\b|from stats import)", open(os.path.join(repo, "cli.py")).read(), re.M))
+        res["wired"] = bool(re.search(r"def cmd_total", open(os.path.join(repo, "cli.py")).read(), re.M))
     except OSError:
         res["wired"] = False
     res["test_lines"] = lines(glob.glob(os.path.join(repo, "tests", "*.py")))
