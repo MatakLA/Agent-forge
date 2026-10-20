@@ -232,6 +232,7 @@ def _selftest_body(bad, real_notify):
         open(os.path.join(ctx.REPO, "other.py"), "w").write("def unrelated():\n    pass\n")
         open(os.path.join(ctx.REPO, "util.js"), "w").write("function render() {\n  return 1;\n}\nfunction other() {\n  return 2;\n}\n")
         open(os.path.join(ctx.REPO, "reports.py"), "w").write("import store\n\ndef daily():\n    return store.list_contacts()\n")
+        open(os.path.join(ctx.REPO, "test_reports.py"), "w").write("import store\n" + "".join(f"def test_{i}():\n    assert store.list_contacts() == []\n" for i in range(6)))
         open(os.path.join(ctx.REPO, "store.py"), "a").write("\ndef list_contacts():\n    return []\n\ndef purge_all():\n    return None\n")
         for c in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]):
             sh(["git"] + c, cwd=ctx.REPO)
@@ -274,6 +275,8 @@ def _selftest_body(bad, real_notify):
         check("usage block: callers outside the task's files with path:line; names nothing uses are free to change; short names skipped",
               "`list_contacts` (store.py): `reports.py:4`" in ub and "free to change" in ub and "`purge_all`" in ub.split("free to change")[1]
               and "`add`" not in ub and "`store.py:" not in ub)
+        check("usage block: hits are grouped per file (non-test files first, at most 3 lines each) with a count of the rest",
+              "`list_contacts` (store.py): `reports.py:4`, `test_reports.py:3,5,7` (+3 more places)" in ub)
         ub2 = usage_block(dict(id="0003-d", files=["store.py", "reports.py"], spec="", acceptance=[]), cm_, 10000)
         check("usage block: a caller that is itself one of the task's files is not listed", "reports.py:4" not in ub2)
         stable, task_part = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[]), parts=True)
