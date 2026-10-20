@@ -93,6 +93,13 @@ def stream_stats(raw):
     return tools, reads
 
 
+def weekly(rows):
+    for r in rows or []:
+        if r.get("model", "").startswith("Gemini") and "Weekly" in r.get("label", ""):
+            return r.get("pct")
+    return None
+
+
 def real(vid, reps):
     v = next(x for x in VERSIONS if x["id"] == vid)
     os.makedirs(RES, exist_ok=True)
@@ -102,6 +109,10 @@ def real(vid, reps):
         remote = f"/tmp/{branch}.md"
         run(*SSH, f"cat > {remote}", inp=prompt)
         env = f"FORGE_PROJECT={PROJECT} FORGE_REPO=sandbox/bench DISPATCH_BRANCH={branch} DISPATCH_MODEL={MODEL} DISPATCH_VARIANT=bench-{vid}"
+        for _ in range(180):                      # the lent worker may still be finishing its last foreman task
+            if "busy" not in run(*SSH, f"cd ~/sandbox && {env} bin/dispatch --check {WORKER}", check=False):
+                break
+            time.sleep(20)
         out = run(*SSH, f"cd ~/sandbox && {env} bin/dispatch {WORKER} {remote} 30", check=False)
         m = re.search(r"-> (\S+) \(", out)
         if not m:
@@ -118,7 +129,8 @@ def real(vid, reps):
         chk = run(*SSH, f"cd ~/sandbox && FORGE_PROJECT={PROJECT} FORGE_REPO=sandbox/bench python3 bench/collect.py {branch}", check=False).strip().splitlines()
         check = json.loads(chk[-1]) if chk and chk[-1].startswith("{") else {}
         row = dict(version=vid, run=os.path.basename(rundir), branch=branch, tokens=meta.get("tokens", 0), tool_calls=meta.get("tool_calls", tools),
-                   read_calls=reads, duration_s=meta.get("duration_s", 0), reason=meta.get("reason"), prompt_tokens_est=len(prompt) // 4, **check)
+                   read_calls=reads, duration_s=meta.get("duration_s", 0), reason=meta.get("reason"), prompt_tokens_est=len(prompt) // 4,
+                   quota_week_before=weekly(meta.get("quota_before")), quota_week_after=weekly(meta.get("quota_after")), **check)
         with open(os.path.join(RES, "runs.jsonl"), "a") as f:
             f.write(json.dumps(row) + "\n")
         os.makedirs(os.path.join(RES, "raw"), exist_ok=True)
@@ -146,7 +158,8 @@ if __name__ == "__main__":
     if cmd == ["static"]:
         static()
     elif cmd == ["run"]:
-        real(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 1)
+        for vid in sys.argv[2].split(","):
+            real(vid, int(sys.argv[3]) if len(sys.argv) > 3 else 1)
     elif cmd == ["chart"]:
         chart()
     else:
