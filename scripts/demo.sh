@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # scripts/demo.sh — One-command demo launch and teardown script for Agent-Forge.
-# Public interface: scripts/demo.sh [up|down|-h|--help]
+# Public interface: scripts/demo.sh [up|down|status|-h|--help]   (also: forge demo ...)
 # Invariants:
 # - Default action (no args or 'up'): builds and starts only the 'demo' compose service.
 # - Polls http://localhost:8171/ once a second up to 60s until responsive, printing URL on success.
 # - Action 'down': stops and removes the demo compose service.
+# - Action 'status': read-only; says whether the demo container runs (exit 0 when up, 1 when not).
 # - Fails fast with actionable error and non-zero exit if compose or polling fails.
 # - Rejects unknown arguments with usage message and exit code 1.
 # - References demo/docker-compose.yml and requires zero host credentials or tokens.
@@ -21,13 +22,14 @@ MAX_WAIT="${DEMO_MAX_WAIT:-60}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/demo.sh [up|down]
+Usage: scripts/demo.sh [up|down|status]
 
 One-command launcher and teardown for the Agent-Forge Docker demo.
 
 Commands:
   up         Build and start the demo dashboard container (default)
   down       Stop and remove the demo dashboard container
+  status     Say whether the demo dashboard is running
 
 Options:
   -h, --help Show this help message
@@ -45,6 +47,9 @@ elif [ $# -eq 1 ]; then
     down)
       ACTION="down"
       ;;
+    status)
+      ACTION="status"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -56,6 +61,16 @@ elif [ $# -eq 1 ]; then
   esac
 else
   usage >&2
+  exit 1
+fi
+
+if [ "$ACTION" = "status" ]; then
+  # Ask Docker (a real install's dashboard may also answer on this port, so the port alone proves nothing).
+  if docker compose -f "$COMPOSE_FILE" ps -q "$SERVICE" 2>/dev/null | grep -q .; then
+    echo "Demo dashboard is running: $URL   (stop it with: forge demo down)"
+    exit 0
+  fi
+  echo "Demo dashboard is not running   (start it with: forge demo up)"
   exit 1
 fi
 
@@ -84,4 +99,4 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-echo "Demo dashboard ready. Open $URL in your browser."
+echo "Demo dashboard ready. Open $URL in your browser.   (stop it with: forge demo down)"

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# forge - the front door to Agent-Forge: install, try, update and remove it, and look after it day to day.
+#   forge help        every command
+# Works from the checkout (./forge) or through the symlinks scripts/install.sh puts in ~/.local/bin (forge, agent-forge).
+set -Eeuo pipefail
+ROOT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+cd "$ROOT"
+
+VERSION="$(cat VERSION 2>/dev/null || echo unknown)"
+PORT="${BIND_PORT:-8171}"
+
+usage() {
+  cat <<EOT
+Agent-Forge $VERSION - an autonomous AI dev team on your own machine
+
+Get started
+  forge demo [up|down|status]   try the dashboard with synthetic data (needs only Docker, no accounts, ~1 minute)
+  forge install [--demo] [--check]
+                                the real thing on this Ubuntu/Debian machine (Docker, services, internal Forgejo; ~15-20 min)
+  forge url                     where to open the dashboard (and the ssh tunnel command for a remote machine)
+  forge pick-ai                 which AI to use for your budget and machine (offline, nothing is sent anywhere)
+
+Day to day
+  forge status                  goals, tasks, workers and recent events
+  forge goal "<what you want>"  queue a goal (or: echo "..." | forge goal -)
+  forge pause | resume          stop / restart taking new steps (running worker runs are not killed)
+  forge worker add N [--runtime agy|claude|codex|gemini|compat|aider]
+  forge worker remove N         add / remove a worker (the dashboard's Settings page does the same)
+  forge doctor [--quick]        end-to-end health check, with a fix for everything it finds
+  forge logs [SERVICE] [-f]     SERVICE: foreman (default), web, egress, forgejo, worker-N
+
+Keep it current
+  forge update [--check]        fast-forward to the newest version on main, rebuild what changed, restart the services
+  forge uninstall [--purge]     remove the services and containers (--purge: also your data); --check shows the plan
+  forge version
+
+Anything else is passed to bin/foreman:  forge task <id> show, forge backlog, forge money, ...  (bin/foreman --help)
+Docs: README.md, docs/INSTALL.md, docs/TROUBLESHOOTING.md, docs/FAQ.md
+EOT
+}
+
+die() { printf '✘ %s\n' "$1" >&2; shift; for h in "$@"; do printf '    → %s\n' "$h" >&2; done; exit 1; }
+
+# The first non-loopback address of this machine (a Tailscale address is preferred: it is what a remote you can reach uses).
+host_ip() {
+  local ip=""
+  if command -v tailscale >/dev/null 2>&1; then ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"; fi
+  [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  printf '%s' "$ip"
+}
+
+cmd_url() {
+  local port="$PORT" unit=/etc/systemd/system/agent-forge-web.service
+  if [ -z "${BIND_PORT:-}" ] && [ -r "$unit" ]; then
+    port="$(sed -n 's/.*BIND_PORT=\([0-9]\+\).*/\1/p' "$unit" | head -1)"; port="${port:-8171}"
+  fi
+  echo "Dashboard:  http://127.0.0.1:$port   (it listens on this machine only)"
+  if [ -n "${SSH_CONNECTION:-}" ] || [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    local ip; ip="$(host_ip)"
+    echo "From your laptop:  ssh -L $port:127.0.0.1:$port $(id -un)@${ip:-<this machine>}   then open http://127.0.0.1:$port"
+  fi
+  echo "Never publish it to the internet - it is an admin console (SECURITY.md)."
+}
+
+service_unit() {
+  case "${1:-foreman}" in
+    foreman) echo agent-forge-foreman ;;
+    web|dashboard) echo agent-forge-web ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_logs() {
+  local what="foreman" follow=() a
+  for a in "$@"; do
+    case "$a" in -f|--follow) follow=(-f) ;; *) what="$a" ;; esac
+  done
+  case "$what" in
+    foreman|web|dashboard)
+      command -v journalctl >/dev/null 2>&1 || die "journalctl not found - this machine has no systemd." "Run bin/foreman run in a terminal to see the foreman."
+      exec journalctl -u "$(service_unit "$what")" --no-pager -n 100 ${follow[@]+"${follow[@]}"} ;;
+    egress) what=egress-proxy ;;
+    forgejo) ;;
+    worker-[0-9]*) ;;
+    *) die "Unknown service '$what'." "forge logs [foreman|web|egress|forgejo|worker-N] [-f]" ;;
+  esac
+  exec docker logs --tail 100 ${follow[@]+"${follow[@]}"} "$what"
+}
+
+cmd="${1:-help}"
+[ $# -eq 0 ] || shift
+case "$cmd" in
+  help|-h|--help)    usage ;;
+  version|-V|--version) echo "Agent-Forge $VERSION$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null | sed 's/^/ (/;s/$/)/')" ;;
+  install)           exec bash scripts/install.sh "$@" ;;
+  demo)              exec bash scripts/demo.sh "$@" ;;
+  update|upgrade)    exec bash scripts/update.sh "$@" ;;
+  uninstall)         exec bash scripts/uninstall.sh "$@" ;;
+  doctor)            exec python3 bin/doctor "$@" ;;
+  pick-ai)           exec bash scripts/pick-ai.sh "$@" ;;
+  worker)            sub="${1:-}"; [ $# -eq 0 ] || shift
+                     case "$sub" in
+                       add)    exec bash bin/worker-add "$@" ;;
+                       remove) exec bash bin/worker-remove "$@" ;;
+                       *)      die "Usage: forge worker add N [--runtime ...] | forge worker remove N" ;;
+                     esac ;;
+  url)               cmd_url ;;
+  logs)              cmd_logs "$@" ;;
+  status|pause|resume|goal|task|backlog|money|projects|questions|answer|search|ask|settings)
+                     exec python3 bin/foreman "$cmd" "$@" ;;
+  *)                 if python3 bin/foreman --help 2>/dev/null | grep -q "bin/foreman $cmd"; then exec python3 bin/foreman "$cmd" "$@"; fi
+                     usage >&2; echo >&2; die "Unknown command '$cmd'." "forge help" ;;
+esac

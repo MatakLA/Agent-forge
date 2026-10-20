@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Fast checks, no Docker, no model calls: what `make check` runs and what a project gate can run (`bash tests/check.sh`).
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PY=${PY:-python3}
+# gate CMD...: run a test, show its last line, and stop the whole run when it fails (a bare `| tail -1` would hide the exit code)
+gate() { local out; out=$("$@" 2>&1) || { printf '%s\n' "$out"; echo "FAILED: $*"; exit 1; }; printf '%s\n' "$out" | tail -1; }
+# the tests must never touch a live install: its kill switch and settings stay exactly as they were
+live_state() { cat runs/KILLSWITCH runs/KILLSWITCH-* etc/foreman.conf etc/limits.conf 2>/dev/null | cksum; }
+live_before=$(live_state)
 PYSCRIPTS="bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api
   bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set
   bin/issues-intake scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py"
-SHSCRIPTS="bin/worker-add bin/worker-remove bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
+SHSCRIPTS="bin/worker-add bin/worker-remove bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/update.sh scripts/uninstall.sh install.sh forge tests/test_forge_cli.sh tests/test_install_flow.sh tools/lint scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
   tools/fake-docker egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_review_branch.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo tests/test_install_security.sh tests/test_install_smoke.sh tests/test_demo_mode.sh tests/test_worker_remove.sh
   scripts/pick-ai.sh tests/test_pick_ai.sh"
 for f in $PYSCRIPTS bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*.py; do
@@ -19,23 +24,23 @@ if command -v node >/dev/null 2>&1; then
   done
 fi
 $PY bin/foreman --selftest | tail -1 | grep -q "ALL OK" || { $PY bin/foreman --selftest | grep -v '^ok'; exit 1; }
-$PY tests/test_web.py | tail -1
-$PY tests/test_upstream.py | tail -1
-$PY tests/test_merge_pr.py | tail -1
+gate $PY tests/test_web.py
+gate $PY tests/test_upstream.py
+gate $PY tests/test_merge_pr.py
 if [ -f tests/test_foreman_loop.py ]; then
-  $PY tests/test_foreman_loop.py | tail -1
+  gate $PY tests/test_foreman_loop.py
 fi
 if [ -f tests/test_foreman_merge.py ]; then
   $PY tests/test_foreman_merge.py | tail -1 | grep "ALL OK" || { $PY tests/test_foreman_merge.py; exit 1; }
 fi
 if [ -f tests/test_foreman_settings.py ]; then
-  $PY tests/test_foreman_settings.py | tail -1
+  gate $PY tests/test_foreman_settings.py
 fi
 $PY tests/test_foreman_languages.py 2>&1 | tail -1 | grep -q '^OK' || { $PY tests/test_foreman_languages.py; exit 1; }
 $PY tests/test_quality.py 2>&1 | tail -1 | grep -q "^OK" || { $PY tests/test_quality.py; exit 1; }
 echo "language tests: ALL OK"
 if [ -f tests/test_egress_security.sh ]; then
-  bash tests/test_egress_security.sh | tail -1
+  gate bash tests/test_egress_security.sh
 fi
 if [ -f tests/test_foreman_pool.py ]; then
   $PY tests/test_foreman_pool.py | grep -q "ALL OK" || { $PY tests/test_foreman_pool.py; exit 1; }
@@ -137,6 +142,12 @@ if command -v node >/dev/null 2>&1; then
     $PY tests/test_issues_intake_malformed.py || exit 1
   fi
 fi
+if [ -f tests/test_forge_cli.sh ]; then
+  bash tests/test_forge_cli.sh | tail -1 | grep -q "ALL OK" || { bash tests/test_forge_cli.sh; exit 1; }
+fi
+if [ -f tests/test_install_flow.sh ]; then
+  bash tests/test_install_flow.sh | tail -1 | grep -q "ALL OK" || { bash tests/test_install_flow.sh; exit 1; }
+fi
 if [ -f tests/test_install_smoke.sh ]; then
   bash tests/test_install_smoke.sh || exit 1
 fi
@@ -170,7 +181,37 @@ fi
 if [ -f tests/test_cache.py ]; then
   $PY tests/test_cache.py | tail -1 | grep -q "ALL OK" || { $PY tests/test_cache.py; exit 1; }
 fi
+if [ -f tests/test_docs_links.py ]; then
+  $PY tests/test_docs_links.py 2>&1 | tail -1 | grep -q "^OK" || { $PY tests/test_docs_links.py; exit 1; }
+fi
+for t in tests/test_cost_model_reporting.py \
+         tests/test_dashboard_backend.py \
+         tests/test_doctor_egress_hosts.py \
+         tests/test_doctor_providers.py \
+         tests/test_doctor_readiness.py \
+         tests/test_egress_runtime_hosts.py \
+         tests/test_fake_model_api_providers.py \
+         tests/test_fake_model_api_providers.sh \
+         tests/test_foreman_llm.py \
+         tests/test_foreman_prompts.py \
+         tests/test_foreman_readiness.py \
+         tests/test_llm_providers_security.py \
+         tests/test_provider_egress_hosts.py \
+         tests/test_quickstart_budget.py \
+         tests/test_quickstart_setup.sh \
+         tests/test_runtime_cost_model.py \
+         tests/test_runtime_qwen.py \
+         tests/test_settings_conf_audit.py \
+         tests/test_settings_egress_validation.py \
+         tests/test_settings_providers.py; do
+  case "$t" in
+    *.sh) out="$(bash "$t" 2>&1)" ;;
+    *) out="$($PY "$t" 2>&1)" ;;
+  esac || { printf '%s\n' "$out"; echo "FAILED: $t"; exit 1; }
+done
+# every test file must be run by this script, or it silently rots
+for t in tests/test_*; do
+  grep -qF "$(basename "$t")" tests/check.sh || { echo "not run by tests/check.sh: $t"; exit 1; }
+done
+[ "$(live_state)" = "$live_before" ] || { echo "the tests changed runs/KILLSWITCH or etc/*.conf of this checkout"; exit 1; }
 echo "check: ALL OK"
-
-
-
