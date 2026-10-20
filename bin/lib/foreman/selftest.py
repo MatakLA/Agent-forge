@@ -28,12 +28,17 @@ def selftest():
 def _selftest():
     import shutil, tempfile
     bad = 0
-    real_notify = sbx.notify
-    sbx.notify = lambda *a, **k: False
+    import sys
+    llm_mod = sys.modules[__package__ + ".llm"]          # (foreman.llm the module; the package attribute `llm` is the function)
+
+    def no_model(*a, **k):
+        raise llm_mod.Unavailable("selftest: no model calls")
+    real_notify, real_llm = sbx.notify, llm_mod._llm_inner
+    sbx.notify, llm_mod._llm_inner = (lambda *a, **k: False), no_model     # hermetic: on a machine with workers a test must not call a model
     try:
         return _selftest_body(bad, real_notify)
     finally:
-        sbx.notify = real_notify
+        sbx.notify, llm_mod._llm_inner = real_notify, real_llm
 
 
 def _selftest_body(bad, real_notify):

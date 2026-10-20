@@ -3,42 +3,63 @@
   "id": "v0",
   "label": "First release",
   "date": "2026-10-05",
-  "chars": 3928,
-  "est_tokens": 982
+  "chars": 2526,
+  "est_tokens": 631
  },
  {
   "id": "v1",
   "label": "+ context pack",
   "date": "2026-10-07",
-  "chars": 15725,
-  "est_tokens": 3931
+  "chars": 14270,
+  "est_tokens": 3567
  },
  {
   "id": "v2",
   "label": "+ scoped testing rule",
   "date": "2026-10-17",
-  "chars": 16187,
-  "est_tokens": 4046
+  "chars": 14732,
+  "est_tokens": 3683
  },
  {
   "id": "v3",
   "label": "+ engineering standard",
   "date": "2026-10-20",
-  "chars": 17560,
-  "est_tokens": 4390
+  "chars": 16105,
+  "est_tokens": 4026
  },
  {
   "id": "v4",
   "label": "+ save-tokens rules, read hints",
   "date": "2026-10-20",
-  "chars": 17980,
-  "est_tokens": 4495
+  "chars": 16525,
+  "est_tokens": 4131
  },
  {
   "id": "v5",
   "label": "+ cache-friendly order (experiment)",
   "date": "2026-10-20",
-  "chars": 17980,
-  "est_tokens": 4495
+  "chars": 16525,
+  "est_tokens": 4131
+ },
+ {
+  "id": "v6",
+  "label": "+ line spans, callers, start state",
+  "date": "2026-10-20",
+  "chars": 18250,
+  "est_tokens": 4562
+ },
+ {
+  "id": "v7",
+  "label": "v6 + cache-friendly order",
+  "date": "2026-10-20",
+  "chars": 18905,
+  "est_tokens": 4726
+ },
+ {
+  "id": "v8",
+  "label": "v6 without spans/callers/start state (batching rule only)",
+  "date": "2026-10-20",
+  "chars": 16726,
+  "est_tokens": 4181
  }
 ]
