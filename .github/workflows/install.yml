@@ -7,6 +7,21 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * 1"          # weekly: catches upstream breakage (images, CLIs, package mirrors)
+  pull_request:
+    paths:                        # changes to the installer get the real fresh-install proof before they merge
+      - install.sh
+      - forge
+      - scripts/install.sh
+      - scripts/update.sh
+      - scripts/uninstall.sh
+      - scripts/vm-baseline-ubuntu.sh
+      - scripts/install-services
+      - .github/workflows/install.yml
+permissions:
+  contents: read
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   fresh-install:
     runs-on: ubuntu-24.04
@@ -17,7 +32,7 @@ jobs:
         run: |
           set -o pipefail
           sudo systemctl start docker || true
-          scripts/install.sh --demo 2>&1 | tee install.log
+          ./forge install --demo 2>&1 | tee install.log
       - name: Summary on failure
         if: failure()
         run: |
@@ -48,6 +63,22 @@ jobs:
           tests/test_runtimes.sh
       - name: The dashboard page in a real DOM (every tab and sheet, no script errors)
         run: tests/test_ui.sh
+      - name: forge url works on the fresh install
+        run: ./forge url
+      - name: Uninstall removes services and containers but keeps the data
+        run: |
+          ./forge uninstall --yes
+          ! systemctl is-active --quiet agent-forge-foreman
+          ! systemctl is-active --quiet agent-forge-web
+          ! docker ps -a --format '{{.Names}}' | grep -E '^(egress-proxy|forgejo|worker-[0-9]+)$'
+          test -f etc/foreman.conf
+          test -d "$HOME/.config/sandbox/secrets"
+      - name: Uninstall --purge deletes the data too
+        run: |
+          ./forge uninstall --purge --yes
+          test ! -f etc/foreman.conf
+          test ! -d "$HOME/.config/sandbox/secrets"
+          test -z "$(docker volume ls --format '{{.Name}}' | grep -E '^(worker_worker-[0-9]+-home|egress_logs|forgejo_forgejo-data)$')"
       - name: Logs on failure
         if: failure()
         run: |

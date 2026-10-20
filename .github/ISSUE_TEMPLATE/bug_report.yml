@@ -1,0 +1,63 @@
+name: Bug report
+description: Something does not work as documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Run `./forge doctor` first - it often names the problem. Do not paste API keys, tokens or the
+        contents of `~/.config/sandbox/secrets`; security problems go through a private advisory (see the issue chooser).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The shortest list of commands that triggers it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `./forge doctor`
+      description: Paste the output (it does not print secrets). Add the tail of `./forge logs` if a service failed.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `./forge --version`, or the commit hash.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Where it runs
+      options:
+        - Ubuntu / Debian VM or server
+        - Other Linux
+        - macOS (VM)
+        - Windows (WSL2 or VM)
+        - Demo container only
+    validations:
+      required: true
+  - type: dropdown
+    id: ai
+    attributes:
+      label: AI provider
+      options:
+        - Claude Code subscription
+        - Gemini CLI
+        - Codex CLI
+        - Anthropic API
+        - OpenAI API
+        - Gemini API
+        - Local model
+        - None yet

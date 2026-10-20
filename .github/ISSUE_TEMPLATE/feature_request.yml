@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement
+title: "[idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How it could work. Alternatives you considered are welcome.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Fit
+      options:
+        - label: I checked ROADMAP.md and existing issues
+          required: true
+        - label: It keeps the safety model (no host access for workers, egress only to allowlisted hosts)
+          required: true

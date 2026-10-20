@@ -1,0 +1,9 @@
+# Everything is reviewed by the maintainer; the safety-critical parts are listed so they stay visible.
+*                                    @MatakLA
+/egress/                             @MatakLA
+/worker/                             @MatakLA
+/bin/lib/sbx.py                      @MatakLA
+/scripts/install.sh                  @MatakLA
+/scripts/uninstall.sh                @MatakLA
+/SECURITY.md                         @MatakLA
+/.github/                            @MatakLA

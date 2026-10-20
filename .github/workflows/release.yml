@@ -1,0 +1,91 @@
+# Push a tag vX.Y.Z (see CONTRIBUTING.md, "Releases") to: check that the tag matches VERSION and CHANGELOG, run the fast checks,
+# publish the demo image to ghcr.io/matakla/agent-forge-demo, and create the GitHub release from the CHANGELOG section.
+name: release
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The tag matches VERSION and the CHANGELOG has a section for it
+        id: v
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$(cat VERSION)" = "$version" ] || { echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($(cat VERSION))"; exit 1; }
+          grep -qE "^## ${version//./\\.}( |$)" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## $version' section"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: make check
+
+  demo-image:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/matakla/agent-forge-demo
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=Agent-Forge demo
+            org.opencontainers.image.description=The Agent-Forge dashboard on invented data - nothing to configure
+            org.opencontainers.image.licenses=Apache-2.0
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: demo/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  github-release:
+    needs: [verify, demo-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes from the CHANGELOG
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## " v "( |$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::empty release notes"; exit 1; }
+          {
+            echo
+            echo "Try it without installing anything: \`docker run --rm -p 127.0.0.1:8171:8171 ghcr.io/matakla/agent-forge-demo:$VERSION\`"
+          } >> notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "Agent-Forge $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
