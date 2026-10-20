@@ -2,8 +2,9 @@
 # vm-baseline-ubuntu.sh — prepares the machine (ideally a dedicated VM) that runs Agent-Forge: updates, base tools,
 # Docker Engine from Docker's signed repository (key checked by fingerprint), log rotation, your user in group docker.
 #
-# Run on that machine (Ubuntu 22.04+):
+# Run on that machine (Ubuntu 22.04+ or Debian 12+):
 #   sudo bash scripts/vm-baseline-ubuntu.sh 2>&1 | tee vm-baseline.log
+# SYSTEM_UPGRADE=0 skips the full system upgrade (scripts/install.sh does: Docker needs only its own packages).
 # Safe to re-run. Takes 3–10 minutes.
 set -Eeuo pipefail
 umask 027
@@ -23,8 +24,12 @@ aptg() { apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Use-Pty=0 "$@"; }
 
 step "System update"
 aptg update -q
-aptg -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade -y -q
-ok "Up to date"
+if [[ ${SYSTEM_UPGRADE:-1} == 1 ]]; then
+  aptg -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade -y -q
+  ok "Up to date"
+else
+  ok "Package lists refreshed (SYSTEM_UPGRADE=0: the installed packages are left alone)"
+fi
 
 step "Base tools"
 aptg install -y -q git jq tmux make unzip ripgrep python3-venv ca-certificates curl gnupg
@@ -43,7 +48,9 @@ for p in docker.io docker-doc docker-compose docker-compose-v2 podman-docker con
   fi
 done
 mkdir -p /etc/apt/keyrings; chmod 0755 /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc.tmp \
+distro="$(. /etc/os-release && echo "$ID")"
+[[ $distro == debian ]] || distro=ubuntu   # Ubuntu and its derivatives (Mint, Pop!_OS ...) use Docker's Ubuntu repository
+curl -fsSL "https://download.docker.com/linux/$distro/gpg" -o /etc/apt/keyrings/docker.asc.tmp \
   || die "Could not download Docker's signing key." "curl -I https://download.docker.com"
 fpr="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc.tmp 2>/dev/null | awk -F: '$1=="fpr" {print $10; exit}')"
 if [[ $fpr != "$DOCKER_KEY_FPR" ]]; then
@@ -58,7 +65,7 @@ ok "Docker key fingerprint verified: $fpr"
 codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
 cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
-URIs: https://download.docker.com/linux/ubuntu
+URIs: https://download.docker.com/linux/$distro
 Suites: $codename
 Components: stable
 Architectures: $(dpkg --print-architecture)
@@ -100,6 +107,5 @@ fi
 cat <<'EOF'
   Next:
     1. Log out and back in (exit, then ssh in again) so the docker group applies:  docker ps  must work without sudo.
-    2. Ask the owner for a snapshot on the host:  ./run vm-snapshot create baseline "after V1"
-    3. Continue with docs/SETUP.md (step 2: Forgejo).
+    2. Continue with  scripts/install.sh  (or ./forge install) - or with the hand-made steps in docs/SETUP.md.
 EOF

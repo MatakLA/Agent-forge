@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Usage: tools/lint        (also: make lint)
+# Static checks that catch real bugs without style churn: shellcheck at warning level over the shell scripts, and pyflakes for
+# undefined names and similar errors (unused imports and variables are deliberately not reported). A tool that is not
+# installed is skipped with a notice; CI installs both.
+set -u
+cd "$(dirname "$0")/.."
+rc=0
+
+SH="$(git ls-files | while read -r f; do
+  case "$f" in
+    *.sh|*.bash) echo "$f" ;;
+    *) [ -f "$f" ] && head -c 40 "$f" 2>/dev/null | head -1 | grep -qE '^#!.*(ba)?sh' && echo "$f" ;;
+  esac
+done | grep -v -E '^(bench/\.work|examples/|demo/)')"
+if command -v shellcheck >/dev/null 2>&1; then
+  # SC2034 (unused variable) is noisy in test scripts that source fixtures; SC1091 (not following sourced files) is expected.
+  # shellcheck disable=SC2086
+  shellcheck -x -S warning -e SC2034,SC1091 $SH || rc=1
+  echo "shellcheck: $(echo "$SH" | wc -l) scripts"
+else
+  echo "shellcheck not installed - skipped (apt install shellcheck)"
+fi
+
+PY="$(git ls-files | while read -r f; do
+  case "$f" in
+    *.py) echo "$f" ;;
+    *) [ -f "$f" ] && head -c 40 "$f" 2>/dev/null | head -1 | grep -qE '^#!.*python' && echo "$f" ;;
+  esac
+done | grep -v -E '^(bench/\.work|examples/)')"
+if python3 -m pyflakes --version >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  out="$(python3 -m pyflakes $PY 2>&1 | grep -v -E 'imported but unused|assigned to but never used|f-string is missing placeholders|redefinition of unused|unable to detect undefined names')"
+  if [ -n "$out" ]; then echo "$out"; rc=1; fi
+  echo "pyflakes: $(echo "$PY" | wc -l) files"
+else
+  echo "pyflakes not installed - skipped (pip install pyflakes)"
+fi
+exit $rc
