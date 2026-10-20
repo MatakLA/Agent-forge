@@ -196,7 +196,7 @@ def review_prompt(t, gate_out, diff):
             "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n{dod}" + goal_context(t) +
             f"\n## Deterministic gate (full test suite in a clean, offline container + static scans)\n```\n{gate_out[-6000:]}\n```\n\n"
             f"## Diff against main\n```diff\n{diff}\n```\n\n"
-            "Quality bar (check it in the diff): minimal code that reuses the repo, no dead or unreachable code, new modules wired into an entry point (or the spec names the wiring task), tests that check behaviour rather than enumerate inputs (a test file much longer than the code it tests is a reason for rework: ask to cut it to the essential cases). The gate's `== QUALITY` lines are facts. "
+            "Quality bar (check it in the diff): minimal code that reuses the repo, no dead or unreachable code, new modules wired into an entry point (or the spec names the wiring task), tests that check behaviour rather than enumerate inputs (a test file much longer than the code it tests is a reason for rework: ask to cut it to the essential cases). The gate's `== QUALITY` lines and its measured warnings (`scope:` = a file outside the allowed list, `weakened:` = a test lost assertions, `duplicate:` = a definition copied from another file, `unused-import:`) are facts: send the work back for scope, weakened and duplicate unless the spec requires it. "
             "Approve when the acceptance criteria are met and nothing is faked; do not demand gold-plating. An EMPTY diff with a passing gate "
             "means the work already reached main earlier - approve with feedback \"no diff: already merged\", never reject. For risk=risky you "
             "may list up to 4 mutations (small exact text replacements in the NEW code that a good test suite must catch). Judge a tester / "
@@ -317,7 +317,9 @@ def worker_spec(t, continuing=False):
             "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
             goal_context(t),
             "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
-            "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n"]
+            "\nChange only these files, plus new tests for them. Another file only when the spec clearly requires it; then say so and why in your "
+            "final reply. Your self-check lists every other changed file, every definition copied from another file (import the existing one: "
+            "`grep -rn \"def name\"` first), tests with fewer assertions than before and far more test lines than code lines.\n"]
     pack, stable = [], []
     cache = str(ctx.C.get("PROMPT_ORDER", "default")) == "cache"
     if variant(t)["pack"]:

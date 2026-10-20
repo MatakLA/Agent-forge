@@ -84,6 +84,15 @@ def team_metrics(ts=None, days=7):
         pass
     done = [t for t in ts if t["status"] == "done"]
     total_reworks = sum(r["reworks"] for r in roles.values())
+    kinds, flags = {}, {}          # why work came back (merge.rework kind) and which measured gate flags were set then; old entries: "unknown"
+    for t in ts:
+        if t["status"] == "cancelled":
+            continue
+        for h in t.get("history", []):
+            if h.get("outcome") == "rework":
+                kinds[h.get("kind") or "unknown"] = kinds.get(h.get("kind") or "unknown", 0) + 1
+                for f in h.get("flags") or []:
+                    flags[f] = flags.get(f, 0) + 1
     try:
         rs = run_stats()
         eff = efficiency(ts, rs)
@@ -93,6 +102,7 @@ def team_metrics(ts=None, days=7):
         eff, weekly = dict(error=str(e)[:200]), []
     return dict(roles=roles, merged_per_day=last, providers=prov, efficiency=eff, weekly=weekly,
                 totals=dict(done=len(done), blocked=sum(1 for t in ts if t["status"] == "blocked"), reworks=total_reworks,
+                            rework_kinds=kinds, rework_flags=flags,
                             first_pass_pct=round(100 * sum(r["first_pass"] for r in roles.values()) / len(done)) if done else None,
                             tokens_per_done=round(sum(tok.get(t["id"], 0) for t in done) / len(done)) if done else None))
 

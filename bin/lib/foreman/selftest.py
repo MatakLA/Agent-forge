@@ -87,7 +87,7 @@ def _selftest_body(bad, real_notify):
     pcts = {"worker-1": 24, "worker-2": 79, "worker-3": 100, "worker-4": 100}
     check("order_by_quota: most quota first, ties by least recently used",
           order_by_quota(list(pcts), pcts.get, {"worker-3": 50, "worker-4": 10}) == ["worker-4", "worker-3", "worker-2", "worker-1"])
-    mts = [dict(id="0001-a", role="backend developer", status="done", history=[dict(outcome="rework"), dict(outcome="done")], diff=dict(added=10, removed=2)),
+    mts = [dict(id="0001-a", role="backend developer", status="done", history=[dict(outcome="rework", kind="tests-own", flags=["scope", "duplicate"]), dict(outcome="done")], diff=dict(added=10, removed=2)),
            dict(id="0002-b", role="Backend Developer", status="done", history=[dict(outcome="done")], diff=dict(added=5, removed=0)),
            dict(id="0003-c", role="tester", status="blocked", history=[dict(outcome="rework"), dict(outcome="blocked")]),
            dict(id="0004-d", role="tester", status="cancelled", history=[])]
@@ -96,6 +96,8 @@ def _selftest_body(bad, real_notify):
           mm["roles"]["backend-developer"]["done"] == 2 and mm["roles"]["backend-developer"]["first_pass_pct"] == 50
           and mm["roles"]["backend-developer"]["lines_done"] == 17 and mm["roles"]["tester"]["tasks"] == 1
           and mm["totals"]["reworks"] == 2 and mm["totals"]["blocked"] == 1)
+    check("team_metrics: rework reasons and the gate flags set at the time are counted (old entries: unknown)",
+          mm["totals"]["rework_kinds"] == {"tests-own": 1, "unknown": 1} and mm["totals"]["rework_flags"] == {"scope": 1, "duplicate": 1})
     check("task_diff rejects ids that are not task ids", task_diff("../../etc/passwd") == "(invalid task id)" and task_diff("x; rm -rf /") == "(invalid task id)")
     # auto_rebase against real git repositories (a local bare repo stands in for the forge)
     old_fd, tmp = ctx.FD, tempfile.mkdtemp(prefix="foreman-rebase-")
