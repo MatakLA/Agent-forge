@@ -13,7 +13,7 @@ from .knowledge import decisions, languages, lessons, role_playbook
 
 # ---------------------------------------------------------------- prompts
 TASK_SCHEMA = """{"tasks": [{"key": "short-unique-key", "title": "...", "role": "<a slug from the role catalogue>", "depends_on": ["key of a task in THIS list"],
-  "files": ["exact repo paths the task may create/modify"], "risk": "routine|risky",
+  "files": ["exact repo paths the task may create/modify"], "read": ["up to 5 other existing repo paths the worker must know the interface of"], "risk": "routine|risky",
   "spec": "markdown: precisely what to build/write - interfaces, data shapes, edge cases, which existing file to follow",
   "acceptance": ["verifiable criterion", "..."]}],
  "goal_acceptance": ["observable outcome that proves the WHOLE goal works, e.g. an end-to-end behaviour", "..."],
@@ -164,6 +164,8 @@ def plan_prompt(g, followup=None):
                f"- Minimal and wired: prefer the smallest design that meets the goal and reuses existing code. Every task that creates a new module either "
                f"wires it into its entry point itself or names the task that does (and that task must exist). Acceptance criteria describe behaviour "
                f"seen at the entry point, not unit-test counts; never ask for exhaustive edge-case or boundary tests - one test per behaviour.\n"
+               f"- Spend the worker's tokens on the work, not on searching: put the exact signatures it must call into the spec and list in `read` up to 5 existing files "
+               f"whose interface it needs (the foreman then hands it their signatures). A file longer than {ctx.C.get('MAX_FILE_LINES', 400)} lines that a task must grow is split into modules first.\n"
                f"- Pick each task's role from the role catalogue; non-code roles (writer, designer, translator, analyst) are welcome when the "
                f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n- Write 2-5 goal_acceptance criteria: observable "
                f"outcomes of the whole goal (not per task). Every task's spec must serve them; the goal is done only when all hold.\n\n{PLAN_EXAMPLE}\n")
@@ -241,7 +243,10 @@ def rules_block(t):
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Backward compatibility: your changes in owned files must not break existing callers or existing tests outside your owned files. If existing tests fail in the merge gate, adjust your implementation in your owned files so existing contracts and shapes continue to work.
 - Test only what you touch: run only the tests relevant to your changed files/domain (e.g. `pytest tests/test_your_module.py` or a targeted check). NEVER run the full repository test suite from the root — the merge gate automatically runs the full test suite in an isolated clean container before merging.
-{STD}- Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
+{STD}- Save tokens (every tool output is sent again with each later step): read a file longer than 300 lines in parts (`grep -n`, `sed -n 'A,Bp'`),
+  never `cat` it whole; do not re-read what the context pack above already shows or what you read earlier; run tests quietly
+  (`pytest -q -x --tb=short 2>&1 | tail -40`) and look at the full output only for a failure; do not `ls -R` or `find` the repo - the pack has the map.
+- Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
 - Languages: this task and your final reply are in {L['task']}; code comments, docstrings and commit messages in {L['docs']}; text the
@@ -262,7 +267,21 @@ def rework_block(t):
         s.append(f"## Rework - attempt {t['attempts'] + 1} of {ctx.C['MAX_REWORK'] + 1}. The reviewer sent your branch back:\n{t['feedback']}\n")
         if t.get("gate_tail"):
             s.append(f"Gate output (tests in a clean container):\n```\n{t['gate_tail'][-3000:]}\n```\n")
+    if s and t.get("attempts"):
+        st = branch_stat(t)
+        if st:
+            s.append(f"What your branch already changes versus main (do not re-run `git diff --stat`):\n```\n{st}\n```\n")
     return "\n".join(s)
+
+
+def branch_stat(t):
+    """`git diff --stat` of the task branch against main from the foreman's clone (refresh_repo fetched all branches); empty when unavailable."""
+    import subprocess
+    try:
+        return subprocess.run(["git", "diff", "--stat", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO, capture_output=True, text=True,
+                              timeout=30).stdout.strip()[-1500:]
+    except Exception:
+        return ""
 
 
 def worker_spec(t, continuing=False):

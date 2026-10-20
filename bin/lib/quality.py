@@ -71,3 +71,19 @@ def test_ratio(numstat_lines):
         elif is_source_path(path):
             code += n
     return tests, code
+
+
+def oversized(repo_dir, paths, limit=400):
+    """[(path, lines)] of the source files in `paths` that are longer than `limit` lines."""
+    out = []
+    for p in paths:
+        if not is_source_path(p):
+            continue
+        try:
+            with open(os.path.join(repo_dir, p), errors="ignore") as f:
+                n = sum(1 for _ in f)
+        except OSError:
+            continue
+        if n > limit:
+            out.append((p, n))
+    return out

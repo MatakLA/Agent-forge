@@ -20,6 +20,20 @@ class Quality(unittest.TestCase):
             subprocess.run("git init -q && git add -A", shell=True, cwd=d, check=True)
             self.assertEqual(quality.unreferenced(d, ["pkg/used.py", "pkg/lonely.py", "pkg/main.py", "web/panel.js"]), ["pkg/lonely.py"])
 
+    def test_oversized_lists_only_long_sources(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "big.py"), "w").write("x = 1\n" * 450)
+            open(os.path.join(d, "small.py"), "w").write("x = 1\n")
+            self.assertEqual(quality.oversized(d, ["big.py", "small.py", "gone.py"], 400), [("big.py", 450)])
+
+    def test_planner_read_field_is_sanitised(self):
+        sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
+        from foreman.util import norm_tasks
+        (_, f, _), = norm_tasks({"tasks": [{"title": "t", "read": ["a/b.py", "../etc/passwd", "/abs", 3] + ["x%d.py" % i for i in range(9)]}]}, 1)
+        self.assertEqual(f["read"][0], "a/b.py")
+        self.assertEqual(len(f["read"]), 5)
+        self.assertNotIn("../etc/passwd", f["read"])
+
 
 if __name__ == "__main__":
     unittest.main()

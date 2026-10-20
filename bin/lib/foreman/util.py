@@ -202,6 +202,7 @@ def norm_tasks(d, start, limit=8):
                       risk="risky" if str(x.get("risk", "")).lower() == "risky" else "routine",
                       files=[f for f in (x.get("files") if isinstance(x.get("files"), list) else [])
                              if isinstance(f, str) and FILES_LINE.match(f) and ".." not in f.split("/") and not f.startswith("/")][:20],
+                      read=[f for f in (x.get("read") if isinstance(x.get("read"), list) else []) if isinstance(f, str) and FILES_LINE.match(f) and ".." not in f.split("/") and not f.startswith("/")][:5],
                       spec=str(x.get("spec") or "")[:20000], acceptance=sanitize_acceptance(x.get("acceptance")))
         out.append((tid, fields, deps))
     return out
