@@ -1,0 +1,8 @@
+[
+ {"id": "v0", "commit": "8a98f47", "date": "2026-10-05", "label": "First release", "env": {}},
+ {"id": "v1", "commit": "3d70778", "date": "2026-10-07", "label": "+ context pack", "env": {}},
+ {"id": "v2", "commit": "c5cc4d0", "date": "2026-10-17", "label": "+ scoped testing rule", "env": {}},
+ {"id": "v3", "commit": "60c8f64", "date": "2026-10-20", "label": "+ engineering standard", "env": {}},
+ {"id": "v4", "commit": "bcf596c", "date": "2026-10-20", "label": "+ save-tokens rules, read hints", "env": {}},
+ {"id": "v5", "commit": "HEAD", "date": "2026-10-20", "label": "+ cache-friendly order (experiment)", "env": {"BENCH_ORDER": "cache"}}
+]
