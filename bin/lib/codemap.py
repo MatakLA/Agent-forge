@@ -8,6 +8,7 @@ It is always generated from the current main, so - unlike hand-written docs - it
 module docstrings the team writes (team rule: every module starts with what it is for, its interface and its invariants)."""
 import ast, os, re
 
+VERSION = 2          # bumped when the entries change shape (2: every interface line ends with its [L12-40] span); the foreman rebuilds a cached map of another version
 SRC_EXT = (".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".sh")
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".pytest_cache", ".mypy_cache"}
 
@@ -39,8 +40,16 @@ def _sig(node, src_lines=None):
         return (src_lines or [""])[node.lineno - 1].strip()[:220] if src_lines else node.name
 
 
+SPAN = re.compile(r"\s*\[L\d+(?:-\d+)?\]$")
+
+
+def span(first, last=None):
+    """` [L12-40]`: where a definition lives, so a reader opens `sed -n '12,40p'` instead of grepping for it."""
+    return f"  [L{first}-{last}]" if last and last > first else f"  [L{first}]"
+
+
 def python_entry(src):
-    """(purpose, [interface lines]) of a Python module."""
+    """(purpose, [interface lines]) of a Python module. Every line ends with the span of its definition."""
     try:
         tree = ast.parse(src)
     except SyntaxError:
@@ -51,17 +60,17 @@ def python_entry(src):
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
             d = _first_line(ast.get_docstring(node))
-            out.append(_sig(node, lines) + (f"  # {d}" if d else ""))
+            out.append(_sig(node, lines) + (f"  # {d}" if d else "") + span(node.lineno, node.end_lineno))
         elif isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
             d = _first_line(ast.get_docstring(node))
-            out.append(_sig(node, lines) + (f"  # {d}" if d else ""))
+            out.append(_sig(node, lines) + (f"  # {d}" if d else "") + span(node.lineno, node.end_lineno))
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and (not sub.name.startswith("_") or sub.name == "__init__"):
                     sd = _first_line(ast.get_docstring(sub))
-                    out.append("    " + _sig(sub, lines) + (f"  # {sd}" if sd else ""))
+                    out.append("    " + _sig(sub, lines) + (f"  # {sd}" if sd else "") + span(sub.lineno, sub.end_lineno))
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
                 and node.targets[0].id.isupper() and not node.targets[0].id.startswith("_"):
-            out.append(lines[node.lineno - 1].strip()[:160])
+            out.append(lines[node.lineno - 1].strip()[:160] + span(node.lineno, node.end_lineno))
     return purpose, out
 
 
@@ -77,7 +86,9 @@ def generic_entry(src):
         s = l.strip().lstrip("/#*!").strip()
         if s and not s.startswith(("usr/bin", "use strict", "-*-")):
             purpose = s[:160]; break
-    out = [re.sub(r"\s*\{\s*$", "", l.strip())[:200] for l in lines if GENERIC_DEF.match(l) and not l.startswith((" ", "\t"))]
+    at = [i for i, l in enumerate(lines, 1) if GENERIC_DEF.match(l) and not l.startswith((" ", "\t"))]
+    ends = [a - 1 for a in at[1:]] + [len(lines)]            # no parser here: a definition is taken to run up to the next one
+    out = [re.sub(r"\s*\{\s*$", "", lines[a - 1].strip())[:200] + span(a, e) for a, e in zip(at, ends)]
     return purpose, out[:40]
 
 
@@ -109,24 +120,28 @@ def build(root, subdir="", max_files=400):
     return res
 
 
-def render(cm, paths=None, with_api=True, max_chars=40000):
-    """Markdown block: one heading line per module (path, size, purpose) and, if with_api, its interface."""
+def render(cm, paths=None, with_api=True, max_chars=40000, with_lines=True, sizes=True):
+    """Markdown block: one heading line per module (path, size, purpose) and, if with_api, its interface. with_lines=False
+    drops the `[L12-40]` spans (the planner does not open files); sizes=False drops the line counts (a stable text that does not
+    change with every edit, so a provider-side prompt cache can keep it)."""
     out, n = [], 0
+    cut = (lambda a: a) if with_lines else (lambda a: SPAN.sub("", a))
     for p in (paths if paths is not None else sorted(cm)):
         e = cm.get(p)
         if not e:
             continue
-        head = f"- `{p}` ({e['lines']} lines){': ' + e['purpose'] if e['purpose'] else ' - NO MODULE DOCSTRING'}"
-        if with_api and e["api"] and e["test"]:
+        head = f"- `{p}`" + (f" ({e['lines']} lines)" if sizes else "") + (': ' + e['purpose'] if e['purpose'] else ' - NO MODULE DOCSTRING')
+        api = [cut(a) for a in e["api"]]
+        if with_api and api and e["test"]:
             # a test file: its helpers/fixtures in full, the test names compactly (new tests should reuse the helpers)
-            helpers = [a for a in e["api"] if not re.match(r"(async )?def test_", a) and not a.startswith("    ")]
-            names = [re.sub(r"^\s*(async )?def (test_\w+).*", r"\2", a) for a in e["api"] if re.match(r"\s*(async )?def test_", a)]
+            helpers = [a for a in api if not re.match(r"(async )?def test_", a) and not a.startswith("    ")]
+            names = [re.sub(r"^\s*(async )?def (test_\w+).*", r"\2", a) for a in api if re.match(r"\s*(async )?def test_", a)]
             s = head + "".join("\n    " + a for a in helpers[:25])
             if names:
                 tl = ", ".join(names)
                 s += f"\n    tests ({len(names)}): " + (tl[:1200] + " …" if len(tl) > 1200 else tl)
         else:
-            s = head + ("\n" + "\n".join("    " + a for a in e["api"][:40]) if with_api and e["api"] and not e["test"] else "")
+            s = head + ("\n" + "\n".join("    " + a for a in api[:40]) if with_api and api and not e["test"] else "")
         if n + len(s) > max_chars:
             s = head                                  # no room for the interface: keep at least the one-line entry
         if n + len(s) > max_chars:
@@ -134,6 +149,21 @@ def render(cm, paths=None, with_api=True, max_chars=40000):
             break
         out.append(s); n += len(s) + 1
     return "\n".join(out)
+
+
+DEF_NAME = re.compile(r"^(?:async\s+def|def|class|function\*?|func|fn)\s+(\w+)|^(?:export\s+)?(?:const|let)\s+(\w+)\s*=|^([A-Z][A-Z0-9_]*)\s*=")
+
+
+def public_names(entry_):
+    """Names of the top-level definitions in a map entry (methods are skipped: `add` or `run` would match everything)."""
+    out = []
+    for a in entry_["api"]:
+        if a.startswith((" ", "\t")):
+            continue
+        m = DEF_NAME.match(SPAN.sub("", a).replace("export ", "", 1).strip())
+        if m:
+            out.append(next(g for g in m.groups() if g))
+    return list(dict.fromkeys(out))
 
 
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w., ]+))", re.M)

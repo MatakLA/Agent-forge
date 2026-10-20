@@ -313,6 +313,19 @@ def watch(cmd, mode):
     return reason, proc.poll()
 
 
+def start_state(br, r):
+    """The prompt's "Start state" block from the output of the branch checkout (see the setup below); the instructions to do it
+    by hand when the checkout failed."""
+    lines = r.stdout.splitlines() if r.returncode == 0 else []
+    if len(lines) < 2 or not re.fullmatch(r"\d+\s+\d+", lines[1].strip()):
+        return (f"## Start state\nThe supervisor could not switch your clone to the task branch. Do it yourself: `git fetch origin`, then "
+                f"`git checkout -B {br} origin/{br}` if `origin/{br}` exists, otherwise `git checkout -b {br} origin/main`.\n")
+    behind, ahead = lines[1].split()
+    commits = "".join(f"\n  {l}" for l in lines[2:])
+    return (f"## Start state (prepared by the supervisor, current - do not re-check it with git)\nBranch `{br}`: {lines[0]}. Versus origin/main: "
+            f"{behind} commit(s) behind, {ahead} ahead." + (f" Commits on the branch, newest first:{commits}" if commits else " No commits of its own yet.") + "\n")
+
+
 # ---- setup + launch
 if not runner:
     # A worker can be left mid rebase/merge from an earlier rework attempt that was killed by a timeout/token-cap
@@ -346,11 +359,21 @@ if not runner:
         open(run + "/stderr.log", "w").write("setup failed (worker clone not clean or not fast-forwardable)\n")
         finish("setup-failed", 90)
     br = m.get("branch") or ""
-    if not runtimes.RUNTIMES.get(RT, {}).get("own_git", True) and sbx.SAFE_ARG.fullmatch(br) and br not in ("main", "master"):
-        # an agent that does not run git itself (aider) starts on its task branch: the earlier attempts' work, or a new branch
-        sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
-           f"if git rev-parse -q --verify origin/{br} >/dev/null; then git checkout -q -B {br} origin/{br}; else git checkout -q -B {br} origin/main; fi")
-    cmd = agent_cmd(sbx.no_nul(open(run + "/prompt.md").read()), m.get("conversation"))   # a rework may continue the worker's own conversation
+    prompt = sbx.no_nul(open(run + "/prompt.md").read())
+    wants_state = sbx.START_MARKER in prompt
+    if sbx.SAFE_ARG.fullmatch(br) and br not in ("main", "master") and (wants_state or not runtimes.RUNTIMES.get(RT, {}).get("own_git", True)):
+        # the agent starts on its task branch (earlier attempts' work, or a new branch from main) and, if the prompt asks for it,
+        # is told where that stands: it then needs no steps for git fetch / checkout / status / log / branch (about 5 % of a run's steps)
+        r = sh("docker", "exec", "-w", sbx.WORKER_CLONE, W, "bash", "-c",
+               f"if git rev-parse -q --verify origin/{br} >/dev/null; then git checkout -q -B {br} origin/{br} && echo 'continues origin/{br}'; "
+               f"else git checkout -q -B {br} origin/main && echo 'new, from origin/main'; fi && "
+               f"git rev-list --left-right --count origin/main...HEAD && git log --format='%h %s' -8 origin/main..HEAD")
+        with open(run + "/setup.log", "a") as f:
+            f.write(f"branch {br}: rc={r.returncode} {r.stdout[-300:]}{r.stderr[-300:]}\n")
+        prompt = prompt.replace(sbx.START_MARKER, start_state(br, r))
+    else:
+        prompt = prompt.replace(sbx.START_MARKER, "")
+    cmd = agent_cmd(prompt, m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]
     cmd = (["docker", "exec", "-i", W] + inner, None)

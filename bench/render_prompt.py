@@ -18,6 +18,10 @@ if os.path.isdir(os.path.join(root, "bin", "lib", "foreman")):
     ctx.REPO = clone
     ctx.C["CONTEXT_PACK"] = os.environ.get("BENCH_PACK", "on")
     ctx.C["PROMPT_ORDER"] = os.environ.get("BENCH_ORDER", "default")
+    if os.environ.get("BENCH_ORIENT"):
+        ctx.C["ORIENT"] = os.environ["BENCH_ORIENT"]
+    if os.environ.get("BENCH_EXTRAS"):
+        ctx.C["PACK_EXTRAS"] = os.environ["BENCH_EXTRAS"]
     try:
         from foreman import repo
         repo.ctx.REPO = clone

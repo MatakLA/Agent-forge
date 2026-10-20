@@ -28,6 +28,26 @@ The foreman appends a section to each task, built from main without any LLM (`bi
 It is capped (`CONTEXT_PACK_CHARS`), because it is part of every later turn too. `ab` gives it to half the tasks (stable per
 task) so the dashboard (Insights → Experiments) can compare quota per merged task and tool calls per run with and without it.
 
+### Orientation without steps (`PACK_EXTRAS`, `ORIENT`)
+What the transcripts show: one tool call per model step, so a run costs (number of steps) x (context resent). About a quarter of
+the `run_command` calls are orientation (`grep`, `find`, `ls`, `git status/log/diff/branch/fetch`) and 92 % of file reads already use
+line ranges, so the waste is not "reading whole files" but the steps that find out *where* something is. Re-reads of a region the
+run already saw are rare (about 7 % fully covered), so a read cache would not pay. Three changes cut orientation steps instead:
+- **Line spans** (`PACK_EXTRAS=on`, default): every definition in the code map ends in `[L12-40]`, so a worker reads just those
+  lines (`sed -n '12,40p' file`) instead of grepping for the definition and reading around it.
+- **Who uses what you change** (`PACK_EXTRAS`): one `git grep` on main for the public names of the task's own files; the pack lists
+  `path:line` of the callers outside the task's files and names that nothing uses ("free to change"). It replaces the grep a
+  worker would run for each name.
+- **Start state** (`ORIENT=on`, default): the supervisor puts the worker's clone on the task branch (earlier attempts' work, or a
+  new branch from main) and writes where it stands into the prompt (behind/ahead of main, the branch's commits). The rules no
+  longer ask for `git fetch` / `checkout` / `status` / `log`. A rework also gets its branch's diff against main in the pack
+  (`PACK_EXTRAS`) instead of having to run `git diff`.
+
+The rules also say that fewer steps beat shorter ones: independent commands go into one `run_command`, all edits of one file into
+one call. `PROMPT_ORDER=cache` (off by default, not yet measured) puts the text that is the same for every task - rules and the
+one-line file list, without sizes or spans so it only changes when a file is added - in front of the task, for the provider's prompt cache.
+Both toggles exist so the benchmark (`bench/`) can compare on and off; turn `ORIENT=off` / `PACK_EXTRAS=off` to get the old prompt.
+
 ## Code documentation that cannot go stale
 The code map is generated from the code on every main commit, so it is always current - unlike hand-written docs, which drift
 and then mislead the agents reading them. Its quality comes from module docstrings: workers are told to start every module with

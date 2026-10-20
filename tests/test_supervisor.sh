@@ -16,6 +16,11 @@ cat > "$T/fake-agy-run" <<'EOF'
 #!/bin/bash
 conv=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--conversation" ] && { j=$((i+1)); conv="${!j}"; }; done
 step() { echo '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","usage":{"total_tokens":1000}}}'; }
+prompt=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "-p" ] && { j=$((i+1)); prompt="${!j}"; }; done
+if [[ "$prompt" == *MARKER-TEST* ]]; then      # ORIENT: the supervisor has already put the clone on the task branch and filled the prompt in
+  printf '%s' "$prompt" > /tmp/prompt-seen; git rev-parse --abbrev-ref HEAD > /tmp/head-seen
+  step; echo '{"event":"result","result":{"status":"SUCCESS","response":"seen"}}'; exit 0
+fi
 if [ -z "$conv" ]; then
   echo '{"event":"init","init":{"conversation_id":"conv-123"}}'
   git checkout -q -b feat/0001-x origin/main
@@ -52,5 +57,25 @@ check "self-check: red, then green after the fix" '[[ "$(python3 -c "import json
 check "the fix resumed the same conversation" '[[ "$(docker exec "$C" cat /tmp/fix-called-with)" == "conv-123" ]]'
 check "the fixed branch was pushed" '[[ "$(docker exec "$C" git -C /tmp/origin.git show feat/0001-x:calc.py | tail -1)" == "    return a + b" ]]'
 check "the test database was not committed" '! docker exec "$C" git -C /tmp/origin.git ls-tree -r --name-only feat/0001-x | grep -q gym.db'
+# ORIENT: a prompt with the start-state marker gets the clone on its task branch plus the state block (rework: the branch exists on origin;
+# new task: it does not; no marker: untouched, as in the run above)
+marker_run() {   # $1 = run number, $2 = branch
+  local id="20260101T00000${1}Z-$C" d="$T/runs/20260101T00000${1}Z-$C"
+  mkdir -p "$d"; printf '# Task MARKER-TEST\n<!-- start-state -->\nEND\n' > "$d/prompt.md"
+  cat > "$d/meta.json" <<J
+{"run_id": "$id", "worker": "$C", "task": "0002-y.md", "test": false, "runner": null, "model": "fake", "project": "",
+ "repo": "sandbox/playground", "branch": "$2", "conversation": "", "variant": "pack-default", "self_check": 0,
+ "limits": {"timeout_min": 30, "token_cap": 1500000}, "quota_before": [], "dispatched": "x"}
+J
+  python3 "$T/bin/run-supervisor" "$d" || true
+}
+docker exec "$C" bash -c 'set -e; git clone -q /tmp/origin.git /tmp/other; cd /tmp/other; git checkout -q -b feat/0002-y origin/main
+  printf "x" > y.txt; git add -A; git -c user.name=o -c user.email=o@o commit -qm "first try"; git push -q origin feat/0002-y'
+marker_run 2 feat/0002-y
+check "marker, rework: clone is on the task branch" '[[ "$(docker exec "$C" cat /tmp/head-seen)" == "feat/0002-y" ]]'
+check "marker, rework: state block says it continues origin, 0 behind / 1 ahead, lists the commit, marker gone" \
+  'docker exec "$C" cat /tmp/prompt-seen | tr "\n" " " | grep -q "Start state (prepared by the supervisor.*continues origin/feat/0002-y.*0 commit(s) behind, 1 ahead.*first try.*END" && ! docker exec "$C" grep -q "start-state -->" /tmp/prompt-seen'
+marker_run 3 feat/0003-z
+check "marker, new task: new branch from origin/main" '[[ "$(docker exec "$C" cat /tmp/head-seen)" == "feat/0003-z" ]] && docker exec "$C" cat /tmp/prompt-seen | grep -q "new, from origin/main.*0 commit(s) behind, 0 ahead"'
 echo "supervisor test: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
 exit $fail

@@ -51,7 +51,7 @@ EDITABLE = {
     "AGY_FALLBACK_MODEL": (MODEL_RE, "project"), "WORKER_MODEL": ("|" + MODEL_RE, "project"), "WORKER_MODEL_RISKY": ("|" + MODEL_RE, "project"),
     "ANTHROPIC_MODEL": ("|" + MODEL_RE, "project"), "OPENAI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"), "GEMINI_MODEL": ("|" + ORCHESTRATOR_MODEL_RE, "project"),
     "OPENAI_API_KEY": ("|" + SECRET_KEY_RE, "project"), "GEMINI_API_KEY": ("|" + SECRET_KEY_RE, "project"),
-    "WORKERS": (r"|worker-\d+(,worker-\d+)*", "project"), "QUALITY_CHECK": (r"off|warn|block", "project"), "PROMPT_ORDER": (r"default|cache", "project"), "MAX_FILE_LINES": (r"[1-9]\d{2,3}", "project"), "TEST_RATIO_MAX": ("1|1\\.[05]|2|2\\.5|3|4|5|8|10", "project"),
+    "WORKERS": (r"|worker-\d+(,worker-\d+)*", "project"), "QUALITY_CHECK": (r"off|warn|block", "project"), "PROMPT_ORDER": (r"default|cache", "project"), "ORIENT": (r"on|off", "project"), "PACK_EXTRAS": (r"on|off", "project"), "MAX_FILE_LINES": (r"[1-9]\d{2,3}", "project"), "TEST_RATIO_MAX": ("1|1\\.[05]|2|2\\.5|3|4|5|8|10", "project"),
     "OWNER_LANG": (LANG_RE, "project"), "TASK_LANG": (LANG_RE, "project"), "DOCS_LANG": (LANG_RE, "project"),
     "PRODUCT_LANG": ("|" + LANG_RE, "project"),
     "AUTOPILOT": (r"[01]", "project"), "AUTO_MERGE": (r"[01]", "project"), "CONTINUE_CONVERSATIONS": (r"[01]", "project"),
