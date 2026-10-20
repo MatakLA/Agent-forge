@@ -1,0 +1,2 @@
+{"version": "v0", "run": "20261020T091122Z-worker-7", "branch": "bench_v0_1792486549", "tokens": 250670, "tool_calls": 21, "read_calls": 9, "duration_s": 1803, "reason": "timeout", "prompt_tokens_est": 995, "quota_week_before": 9.0, "quota_week_after": 9.0, "branch_found": false}
+{"version": "v1", "run": "20261020T094212Z-worker-7", "branch": "bench_v1_1792489305", "tokens": 109888, "tool_calls": 16, "read_calls": 8, "duration_s": 1802, "reason": "timeout", "prompt_tokens_est": 3947, "quota_week_before": 9.0, "quota_week_after": 8.0, "branch_found": false}
