@@ -5,7 +5,7 @@
  {"id": "v3", "commit": "60c8f64", "date": "2026-10-20", "label": "+ engineering standard", "env": {}},
  {"id": "v4", "commit": "bcf596c", "date": "2026-10-20", "label": "+ save-tokens rules, read hints", "env": {}},
  {"id": "v5", "commit": "8b5789b", "date": "2026-10-20", "label": "+ cache-friendly order (experiment)", "env": {"BENCH_ORDER": "cache"}},
- {"id": "v6", "commit": "24a7077", "date": "2026-10-20", "label": "+ line spans, callers, start state", "env": {}},
- {"id": "v7", "commit": "24a7077", "date": "2026-10-20", "label": "v6 + cache-friendly order", "env": {"BENCH_ORDER": "cache"}},
- {"id": "v8", "commit": "24a7077", "date": "2026-10-20", "label": "v6 without spans/callers/start state (batching rule only)", "env": {"BENCH_ORIENT": "off", "BENCH_EXTRAS": "off"}}
+ {"id": "v6", "commit": "3dd5f01", "date": "2026-10-20", "label": "+ line spans, callers, start state", "env": {}},
+ {"id": "v7", "commit": "3dd5f01", "date": "2026-10-20", "label": "v6 + cache-friendly order", "env": {"BENCH_ORDER": "cache"}},
+ {"id": "v8", "commit": "3dd5f01", "date": "2026-10-20", "label": "v6 without spans/callers/start state (batching rule only)", "env": {"BENCH_ORIENT": "off", "BENCH_EXTRAS": "off"}}
 ]

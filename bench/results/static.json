@@ -45,15 +45,15 @@
   "id": "v6",
   "label": "+ line spans, callers, start state",
   "date": "2026-10-20",
-  "chars": 18250,
-  "est_tokens": 4562
+  "chars": 18269,
+  "est_tokens": 4567
  },
  {
   "id": "v7",
   "label": "v6 + cache-friendly order",
   "date": "2026-10-20",
-  "chars": 18905,
-  "est_tokens": 4726
+  "chars": 18924,
+  "est_tokens": 4731
  },
  {
   "id": "v8",
