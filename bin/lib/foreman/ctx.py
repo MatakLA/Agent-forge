@@ -23,7 +23,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             PLAN_PROVIDERS="claude-cli,agy-claude,agy-gemini", REVIEW_PROVIDERS="agy-claude,claude-cli,agy-gemini",
             MAX_REWORK=3, MAX_GOAL_ROUNDS=3, LOOP_SEC=20, DIFF_MAX=60000, AUTO_MERGE=1, LOCAL_TZ="UTC", AUTOPILOT=1, MAX_ACTIVE_GOALS=8,
             ORPHAN_LIMIT=5, ORPHAN_WARN=3,
-            SHARED_FILES="", PROJECT_DIR="", QUALITY_CHECK="warn", MAX_FILE_LINES=400, TEST_RATIO_MAX=1.5, OWNER_LANG="English", TASK_LANG="English", PRODUCT_LANG="", DOCS_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
+            SHARED_FILES="", PROJECT_DIR="", QUALITY_CHECK="warn", PROMPT_ORDER="default", MAX_FILE_LINES=400, TEST_RATIO_MAX=1.5, OWNER_LANG="English", TASK_LANG="English", PRODUCT_LANG="", DOCS_LANG="English", VISION_FILE="docs/vision.md", TASK_TOKEN_BUDGET=600000,
             # this project's worker pool ("" = every worker container); risky tasks may use a stronger worker model
             WORKERS="", WORKER_MODEL="", WORKER_MODEL_RISKY="", CONTINUE_CONVERSATIONS=1, SPLIT_AFTER_CAPS=2, LESSONS_MAX=40,
             # efficiency (docs/EFFICIENCY.md): a context pack in every task (on|off|ab = half the tasks, to measure it), test the

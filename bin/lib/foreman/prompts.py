@@ -290,17 +290,23 @@ def worker_spec(t, continuing=False):
     if continuing:
         return "\n".join([f"# Task {t['id']} - continue (same branch `{t['branch']}`)\n", rework_block(t), rules_block(t)])
     pb = role_playbook(t["role"])
-    s = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `{clone_hint()}`   Goal: {t['goal']}\n",
-         f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n"),
-         "## The task\n" + t["spec"].rstrip() + "\n",
-         (f"## Notes from the owner (where they differ from the spec, they win)\n{t['owner_notes']}\n" if t.get("owner_notes") else ""),
-         "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
-         goal_context(t),
-         "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
-         "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n", rules_block(t), rework_block(t)]
+    role = f"**Your role for this task: {t['role']}.**\n" + (f"\n{pb.strip()}\n" if pb else "Act as that role would, and still do whatever it takes to finish.\n")
+    head = [f"# Task {t['id']} - {t['title']}\n", f"Branch: `{t['branch']}`   Repo clone: `{clone_hint()}`   Goal: {t['goal']}\n"]
+    task = ["## The task\n" + t["spec"].rstrip() + "\n",
+            (f"## Notes from the owner (where they differ from the spec, they win)\n{t['owner_notes']}\n" if t.get("owner_notes") else ""),
+            "## Acceptance criteria\n" + "\n".join(f"- {a}" for a in t.get("acceptance", [])) + "\n",
+            goal_context(t),
+            "## Files\n" + ("\n".join(f"- `{f}`" for f in t.get("files", [])) or "- (as the spec says)") +
+            "\nTouch other files only when the spec clearly requires it, and say so in your final reply.\n"]
+    pack = []
     if variant(t)["pack"]:
         try:
-            s.append(context_pack(t))
+            pack.append(context_pack(t))
         except Exception as e:                  # the pack is an optimisation; a task never fails because of it
             event(f"task {t['id']}: context pack failed: {e}", task=t["id"])
+    if str(ctx.C.get("PROMPT_ORDER", "default")) == "cache":
+        # identical text first (rules, playbook, project pack), what differs per task last: a provider-side prompt cache only helps a shared prefix
+        s = [rules_block(t), role] + pack + head + task + [rework_block(t)]
+    else:
+        s = head + [role] + task + [rules_block(t), rework_block(t)] + pack
     return "\n".join(x for x in s if x)
