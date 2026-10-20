@@ -4,7 +4,7 @@
 # undefined names and similar errors (unused imports and variables are deliberately not reported). A tool that is not
 # installed is skipped with a notice; CI installs both.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 rc=0
 
 SH="$(git ls-files | while read -r f; do
