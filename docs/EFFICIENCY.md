@@ -56,13 +56,20 @@ what it is for, its public interface and its invariants, the gate warns about ne
 orchestrator tokens, better overview).
 
 ## Self-check in the same run (`SELF_CHECK_ROUNDS`)
-When a worker finishes, the supervisor runs the full test suite and the gate's skip/xfail scan in the worker's clone. If it is
+When a worker finishes, the supervisor runs the test suite and the gate's skip/xfail scan in the worker's clone. If it is
 red, the worker gets the output in the **same agy conversation** (it still has the context) and fixes it - instead of the gate
 sending the task back to a new run that has to rebuild that context. The run's token cap and timeout cover all rounds.
 
+A suite that does not finish within 10 minutes (measured on a large Python project: 6315 tests, 654 s on the gate's 1 CPU) used to cost
+every run that full timeout and still check nothing. Now the first such run records "slow" in `runs/self-check-slow[.project].json`
+(valid 7 days, tied to the project's `TEST_CMD`); until it expires the self-check runs only the pytest files the branch added or
+changed plus `test_<module>.py` next to a changed module, which takes seconds. The full suite stays the gate's job.
+
 ## Nothing is lost at the end of a run
 After every run (not only after a token cap) the supervisor commits and pushes whatever the worker left in its clone to the
-task branch, so "branch not pushed" no longer costs a rework. A run that changed nothing pushes nothing.
+task branch, so "branch not pushed" no longer costs a rework. A run that changed nothing pushes nothing. (The commit used to be
+chained to `git add`'s exit code, which is 1 whenever the repository's `.gitignore` lists `.pytest_cache` and the pathspec excludes
+it - so exactly the runs that had run pytest by hand were never saved. Tested in `tests/test_supervisor.sh`.)
 
 ## Smaller tasks before work starts (`MAX_TASK_FILES`)
 The planner is told to keep tasks to at most `MAX_TASK_FILES` files; a task that still owns more is split by the planner
