@@ -28,7 +28,7 @@ spends the same quota the dev team needs for goals. Last updated 2026-10-20. Quo
 ## 3. Needs data, not quota
 
 - `QUALITY_CHECK=block`: count `== QUALITY:` lines in the gate output of a few days of runs under `warn`, then decide.
-  (Today the reviewer already rejects on these warnings: 10 of the last rejections cite the 1.5x test ratio.)
+  (Today the reviewer already rejects on these warnings: 41 of 120 review rejections cite the quality gate / test ratio, 40 cite files outside the allowed list.)
 
 ## Rules while waiting
 
