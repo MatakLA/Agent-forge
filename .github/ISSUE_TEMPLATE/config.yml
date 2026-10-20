@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/MatakLA/Agent-forge/discussions
+    about: Ask how something works, show what you built, or float an idea before it becomes an issue.
+  - name: Report a security problem
+    url: https://github.com/MatakLA/Agent-forge/security/advisories/new
+    about: Private report for vulnerabilities, sandbox escapes and egress bypasses. Please do not open a public issue.

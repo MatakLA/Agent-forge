@@ -17,6 +17,9 @@ on:
       - "scripts/quickstart-e2e-setup.sh"
       - "examples/sample-project/**"
 
+permissions:
+  contents: read
+
 jobs:
   quickstart-e2e:
     runs-on: ubuntu-latest
