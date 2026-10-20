@@ -8,7 +8,7 @@ from .store import event, goals, jload, tasks
 from .pool import workers
 from .stats import run_stats, size_hint, sizes
 from .repo import codemap_main, context_pack, own_files, read_repo, repo_tree, variant
-from .knowledge import decisions, lessons, role_playbook
+from .knowledge import decisions, languages, lessons, role_playbook
 
 
 # ---------------------------------------------------------------- prompts
@@ -172,7 +172,10 @@ def plan_prompt(g, followup=None):
                f"follow-up tasks in the schema below (only what is genuinely missing, parallel where possible) plus \"criteria\". "
                f"\"criteria\" is a list with one entry per goal acceptance criterion, in order: "
                f"{{\"criterion\": \"...\", \"met\": true|false, \"evidence\": \"one short sentence\"}}.\n")
-    return head + ask + f"\nReply with ONLY one JSON object, no prose, in this schema:\n{TASK_SCHEMA}\n"
+    L = languages()
+    return (head + ask + f"\nLanguages: write each task's title, spec and acceptance criteria in {L['task']}; goal_acceptance, the goal "
+            f"summary and criteria evidence in {L['owner']}. Text the product's users will read stays in {L['product']} (say so in the spec).\n"
+            f"\nReply with ONLY one JSON object, no prose, in this schema:\n{TASK_SCHEMA}\n")
 
 
 def review_prompt(t, gate_out, diff):
@@ -195,7 +198,8 @@ def review_prompt(t, gate_out, diff):
             'Reply with ONLY: {"verdict": "approve" | "rework" | "reject", "feedback": "concrete, actionable instructions for the worker '
             '(rework) or a one-line summary (approve)", "mutations": [{"name": "...", "file": "repo/path", "old": "exact existing text", '
             '"new": "replacement"}], "lesson": "only when sending work back: ONE general sentence that would have prevented this mistake in '
-            'ANY future task (not specific to this file), else empty"}\nUse "reject" only when the task itself is wrong/impossible.\n')
+            'ANY future task (not specific to this file), else empty"}\nUse "reject" only when the task itself is wrong/impossible.\n'
+            f"Write the feedback and the lesson in {languages()['task']}.\n")
 
 
 def goal_context(t):
@@ -213,6 +217,7 @@ def rules_block(t):
     pd = ctx.C["PROJECT_DIR"].strip("/")
     agents = f"`{pd}/AGENTS.md`" if pd else "`AGENTS.md`"
     ls = lessons()
+    L = languages()
     return (f"""## How you work (always)
 - Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
   the whole team), do not touch git config.
@@ -226,6 +231,9 @@ def rules_block(t):
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
+- Languages: this task and your final reply are in {L['task']}; code comments, docstrings and commit messages in {L['docs']}; text the
+  product's users read (labels, messages, help) in {L['product']} unless the spec gives the exact wording. Never translate identifiers,
+  file names, JSON keys or flags.
 - Never push `main`, never open a PR.
 - Final reply: what you did, the final test summary line, and anything you could not do and why.
 """ + ("\n## Team lessons (from earlier reworks - avoid repeating them)\n" + "\n".join(f"- {l}" for l in ls) + "\n" if ls else ""))

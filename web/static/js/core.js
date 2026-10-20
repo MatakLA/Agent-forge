@@ -116,19 +116,7 @@ function updateLocalesDropdown() {
   uils.value = currentLang;
 }
 
-const LANG_TO_OWNER = {
-  en: 'English',
-  eng_us: 'English',
-  sk: 'Slovak',
-  sk_qwerty: 'Slovak',
-  de: 'German',
-  cs: 'Czech',
-  fr: 'French',
-  es: 'Spanish',
-  pl: 'Polish'
-};
-
-async function loadLocale(lang, syncBackend = true) {
+async function loadLocale(lang) {
   currentLang = lang;
   store('af-lang', lang);
   try {
@@ -148,13 +136,6 @@ async function loadLocale(lang, syncBackend = true) {
   for (const k in lastHTML) delete lastHTML[k];
   schedule(true);
 
-  if (syncBackend) {
-    const targetOwner = LANG_TO_OWNER[lang] || (lang.startsWith('sk') ? 'Slovak' : (lang.startsWith('en') ? 'English' : ''));
-    if (targetOwner && F && F.owner_lang !== targetOwner) {
-      F.owner_lang = targetOwner;
-      post('/api/settings', {changes: {OWNER_LANG: targetOwner}}).catch(() => {});
-    }
-  }
 }
 
 function cycleLang() {
@@ -416,7 +397,7 @@ function onForeman(m) {
   window._ferr = m.error; foremanFetchedAt = m.fetched_at || 0;
   if (F && F.owner_lang && !store('af-lang')) {
     const defaultCode = (F.owner_lang.toLowerCase().startsWith('slovak') || F.owner_lang.toLowerCase().startsWith('sk')) ? 'sk' : 'en';
-    if (currentLang !== defaultCode) loadLocale(defaultCode, false);
+    if (currentLang !== defaultCode) loadLocale(defaultCode);
   }
   if (F && F.forge && F.forge.setup_needed) maybeSetup();
   schedule();

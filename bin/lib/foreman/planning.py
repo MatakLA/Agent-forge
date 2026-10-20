@@ -11,6 +11,7 @@ from .store import (event, goals, gsave, gstate, jload, jsave, locked, new_goal_
 from .pool import workers
 from .repo import own_files, refresh_repo
 from .llm import llm
+from .knowledge import languages
 from .prompts import TASK_SCHEMA, context_bundle, plan_prompt
 
 
@@ -97,7 +98,7 @@ def step_split(t):
                  f"Its worker was stopped by the per-run token cap {t.get('caps', 0)} times. Work already done may be on branch `{t['branch']}` "
                  f"(the first task you list continues on that branch). ") +
               f"Split the task into 2-3 smaller tasks that together deliver exactly the same spec and acceptance criteria, each well under "
-              f"{ctx.C['TASK_TOKEN_BUDGET']:,} tokens of work and at most {ctx.C['MAX_TASK_FILES']} files, disjoint files where possible.\n"
+              f"{ctx.C['TASK_TOKEN_BUDGET']:,} tokens of work and at most {ctx.C['MAX_TASK_FILES']} files, disjoint files where possible. Write titles, specs and acceptance criteria in {languages()['task']}.\n"
               f"Reply with ONLY one JSON object in this schema:\n{TASK_SCHEMA}\n")
     text, who = llm("plan", prompt, t["id"])
     d = extract_json(text) or {}
