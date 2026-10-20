@@ -1,11 +1,11 @@
 """The foreman's read-only clone of main, the code map (bin/lib/codemap.py) and the per-task context pack and variant."""
 import hashlib, os, threading
 
-import sbx, codemap
+import sbx, codemap, quality
 
 from . import ctx
 from .util import git_auth_env, sh, slugify
-from .store import jload, jsave
+from .store import jload, jsave, tasks
 from .stats import pick_model, routing_table, run_stats
 
 
@@ -68,6 +68,24 @@ def own_files(t):
     """The files a task owns, without shared registries (they do not make a task bigger to understand)."""
     sf = shared_files()
     return [f for f in t.get("files", []) if f not in sf and os.path.basename(f) not in sf]
+
+
+def wiring_report(g):
+    """Prompt text listing the source files this goal's finished tasks own that no other non-test file on main refers to
+    (empty when WIRING_CHECK is off or everything is wired). The planner then has to add wiring tasks or delete the file."""
+    if str(ctx.C.get("QUALITY_CHECK", "warn")) == "off":
+        return ""
+    files = sorted({f for t in tasks() if (t.get("goal") or t.get("goal_id")) == g["id"] and t.get("status") == "done" for f in t.get("files", [])})
+    try:
+        loose = quality.unreferenced(ctx.REPO, files)
+    except Exception:
+        return ""
+    if not loose:
+        return ""
+    return ("\n\n## Deterministic wiring check on main (not an opinion)\nThese files, delivered by this goal's tasks, are not referenced by any "
+            "other non-test file, so nothing uses them: " + ", ".join(f"`{f}`" for f in loose[:20]) + ".\nA goal is NOT done while its deliverable "
+            "is unreachable. Reply with follow-up tasks that wire each file into its entry point (router, index.html, registry, caller) "
+            "and prove it with a test through that entry point - or a task that deletes the file when the goal does not need it.")
 
 
 def context_pack(t):

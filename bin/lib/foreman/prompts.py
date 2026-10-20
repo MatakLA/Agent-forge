@@ -161,6 +161,9 @@ def plan_prompt(g, followup=None):
                f"- Size every task for about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens of agent work (one module plus its tests); split anything larger. "
                f"A task owns at most {ctx.C['MAX_TASK_FILES']} files (shared registries do not count) - tasks spread over more files hit the "
                f"token cap about twice as often, and the foreman splits them before anyone starts.\n"
+               f"- Minimal and wired: prefer the smallest design that meets the goal and reuses existing code. Every task that creates a new module either "
+               f"wires it into its entry point itself or names the task that does (and that task must exist). Acceptance criteria describe behaviour "
+               f"seen at the entry point, not unit-test counts; never ask for exhaustive edge-case or boundary tests - one test per behaviour.\n"
                f"- Pick each task's role from the role catalogue; non-code roles (writer, designer, translator, analyst) are welcome when the "
                f"goal needs text, docs or design.\n- Do not duplicate goals already in progress.\n- Write 2-5 goal_acceptance criteria: observable "
                f"outcomes of the whole goal (not per task). Every task's spec must serve them; the goal is done only when all hold.\n\n{PLAN_EXAMPLE}\n")
@@ -191,6 +194,7 @@ def review_prompt(t, gate_out, diff):
             "\n".join(f"- {a}" for a in t.get("acceptance", [])) + f"\n{dod}" + goal_context(t) +
             f"\n## Deterministic gate (full test suite in a clean, offline container + static scans)\n```\n{gate_out[-6000:]}\n```\n\n"
             f"## Diff against main\n```diff\n{diff}\n```\n\n"
+            "Quality bar (check it in the diff): minimal code that reuses the repo, no dead or unreachable code, new modules wired into an entry point (or the spec names the wiring task), tests that check behaviour rather than enumerate inputs (a test file much longer than the code it tests is a reason for rework: ask to cut it to the essential cases). The gate's `== QUALITY` lines are facts. "
             "Approve when the acceptance criteria are met and nothing is faked; do not demand gold-plating. An EMPTY diff with a passing gate "
             "means the work already reached main earlier - approve with feedback \"no diff: already merged\", never reject. For risk=risky you "
             "may list up to 4 mutations (small exact text replacements in the NEW code that a good test suite must catch). Judge a tester / "
@@ -218,6 +222,15 @@ def rules_block(t):
     agents = f"`{pd}/AGENTS.md`" if pd else "`AGENTS.md`"
     ls = lessons()
     L = languages()
+    STD = (f"""- Engineering standard (the gate measures parts of it):
+  * Logic first: the least code that is correct. Reuse what the repo already has (grep before writing a helper); no layers, options,
+    wrappers or "future" hooks nobody asked for. When you replace something, delete the old version.
+  * Wire it in: new code must be reachable from an entry point (router, index.html, registry, caller) in THIS task, or the spec names the
+    task that wires it. A module nothing uses is unfinished work, not a deliverable.
+  * Tests prove behaviour, not coverage: about as many test lines as code lines, at most {ctx.C['TEST_RATIO_MAX']}x. One test per behaviour;
+    parametrize variants; do NOT enumerate input boundaries, types or permutations of one rule. Prefer one test through the real entry
+    point over many tests of private helpers.
+""")
     return (f"""## How you work (always)
 - Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
   the whole team), do not touch git config.
@@ -228,7 +241,7 @@ def rules_block(t):
 - If `main` moved and your branch conflicts: `git rebase origin/main`, resolve, then `git push --force-with-lease`.
 - Backward compatibility: your changes in owned files must not break existing callers or existing tests outside your owned files. If existing tests fail in the merge gate, adjust your implementation in your owned files so existing contracts and shapes continue to work.
 - Test only what you touch: run only the tests relevant to your changed files/domain (e.g. `pytest tests/test_your_module.py` or a targeted check). NEVER run the full repository test suite from the root — the merge gate automatically runs the full test suite in an isolated clean container before merging.
-- Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
+{STD}- Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
 - Languages: this task and your final reply are in {L['task']}; code comments, docstrings and commit messages in {L['docs']}; text the

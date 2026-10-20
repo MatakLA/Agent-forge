@@ -9,7 +9,7 @@ from .util import _strs, approvals, extract_json, norm_tasks, sanitize_acceptanc
 from .store import (event, goals, gsave, gstate, jload, jsave, locked, new_goal_id, next_task_number, notify, save_goal, save_task,
                     state_tx, tasks)
 from .pool import workers
-from .repo import own_files, refresh_repo
+from .repo import own_files, refresh_repo, wiring_report
 from .llm import llm
 from .knowledge import languages
 from .prompts import TASK_SCHEMA, context_bundle, plan_prompt
@@ -30,6 +30,8 @@ def hold_open_ended(g2, d):
 
 def step_plan(g, followup=None):
     refresh_repo()
+    if followup:
+        followup += wiring_report(g)
     text, who = llm("check" if followup else "plan", plan_prompt(g, followup), g["id"])
     d = extract_json(text)
 

@@ -326,6 +326,8 @@ def step_gate_review_merge(t):
                 return lambda: rework(t, "Gate failed: your branch adds a secret (" + gate.split("== SECRET: the branch adds ", 1)[1].split(" - refused")[0] +
                                          "). Never put keys or tokens into the repository. Remove it from every commit of the branch (rewrite the "
                                          "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate)
+            if "== QUALITY-ONLY" in gate and "== QUALITY: " in gate:
+                return lambda: rework(t, "Gate failed on quality, not on tests: " + gate.split("== QUALITY: ", 1)[1].split("\n", 1)[0].strip(), gate)
             why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
             failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
             owned = set(t.get("files", []))
