@@ -206,7 +206,8 @@ on `main` keeps a pull request open when the token's user is also its author: us
 | what | where |
 |---|---|
 | the foreman (the loop) | `forge logs` = `journalctl -u agent-forge-foreman` |
-| the dashboard | `forge logs web` = `journalctl -u agent-forge-web` |
+| the dashboard (and who changed what in it: every write and refused request, one line each, no secrets; `DASHBOARD_ACCESS_LOG=all` adds reads) | `forge logs web` = `journalctl -u agent-forge-web` |
+| audit trail of owner actions (settings, secrets by name, workers, projects, egress decisions, kill switch) | `runs/ledger.jsonl`, `runs/ALERT` |
 | a further project's foreman | `journalctl -u agent-forge-foreman-<project>` |
 | what the foreman decided, as data | `runs/foreman/events.jsonl` (`runs/projects/<name>/foreman/` for other projects) |
 | one worker run (its transcript and result) | `runs/<timestamp>-<worker>/` |

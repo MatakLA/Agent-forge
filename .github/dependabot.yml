@@ -21,3 +21,35 @@ updates:
     directory: /egress
     schedule:
       interval: monthly
+  - package-ecosystem: npm
+    directory: /worker/agent-clis
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /tests/node/a11y
+    schedule:
+      interval: monthly
+    groups:
+      test-tools:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /tests/node/ui
+    schedule:
+      interval: monthly
+    groups:
+      test-tools:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /tests/node/props
+    schedule:
+      interval: monthly
+    groups:
+      test-tools:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /tools
+    schedule:
+      interval: monthly
+    groups:
+      ci-tools:
+        patterns: ["*"]

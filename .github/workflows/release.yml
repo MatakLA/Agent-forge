@@ -1,8 +1,9 @@
 # Push a tag vX.Y.Z (see CONTRIBUTING.md, "Releases") to: check that the tag matches VERSION and CHANGELOG, run the fast checks,
 # publish the demo image to ghcr.io/matakla/agent-forge-demo with an SBOM and signed build provenance, and create the GitHub release
-# from the CHANGELOG section (with the SBOM attached).
+# from the CHANGELOG section with the source archive, the SBOM and SHA256SUMS attached, each signed keyless with Sigstore
+# (tools/sign-release; NAME.sigstore.json files) and covered by signed build provenance.
 # Run by hand from a branch (workflow_dispatch) it only rehearses: it builds both platforms with SBOM and provenance enabled and
-# pushes, signs and releases nothing.
+# pushes nothing and releases nothing; it signs a throwaway archive to prove that the signing and its check work.
 name: release
 on:
   push:
@@ -83,12 +84,26 @@ jobs:
           push-to-registry: true
           create-storage-record: false
 
+  signing-rehearsal:
+    if: github.ref_type != 'tag'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # keyless signing (Sigstore): the rehearsal signs a throwaway archive of this branch
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - run: tools/sign-release "$(cat VERSION)" "$RUNNER_TEMP/signed"
+
   github-release:
     needs: [verify, demo-image]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write       # create the release and upload its files
+      id-token: write       # keyless signing of those files (Sigstore)
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Release notes from the CHANGELOG
@@ -105,7 +120,8 @@ jobs:
             echo
             echo "Try it without installing anything: \`docker run --rm -p 127.0.0.1:8171:8171 ghcr.io/matakla/agent-forge-demo:$VERSION\`"
             echo
-            echo "Check where the image came from: \`gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:$VERSION --owner MatakLA\` (signed build provenance). The SPDX bill of materials is attached to this release."
+            echo "Check where the image came from: \`gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:$VERSION --owner MatakLA\` (signed build provenance)."
+            echo "The source archive, the SPDX bill of materials and SHA256SUMS are attached, each with a Sigstore signature (\`.sigstore.json\`): see \"What you download\" in SECURITY.md."
           } >> notes.md
       - name: SBOM of the published image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -115,9 +131,20 @@ jobs:
           output-file: agent-forge-demo-sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Source archive, SHA256SUMS and their Sigstore signatures
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: tools/sign-release "$VERSION" signed agent-forge-demo-sbom.spdx.json
+      - name: Signed build provenance of the files (verify with gh attestation verify FILE --owner MatakLA)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            signed/agent-forge-*.tar.gz
+            signed/agent-forge-demo-sbom.spdx.json
+          create-storage-record: false
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "Agent-Forge $GITHUB_REF_NAME" --notes-file notes.md --verify-tag \
-            agent-forge-demo-sbom.spdx.json
+          gh release create "$GITHUB_REF_NAME" --title "Agent-Forge $GITHUB_REF_NAME" --notes-file notes.md --verify-tag signed/*

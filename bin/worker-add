@@ -57,10 +57,12 @@ chmod 600 "$S"/"$U"*
 # every project's organisation has a team "workers" (scripts/forge-bootstrap): join all of them, so the worker can serve any project
 ORGS="$FORGE_ORG"
 if [ -s "$S/forge-admin.token" ]; then
-  ORGS=$(curl -fsS -H @<(auth) "$API/admin/orgs?limit=100" | python3 -c "import json,sys;print(' '.join(o['username'] for o in json.load(sys.stdin)))")
+  ORGS_JSON=$(curl -fsS -H @<(auth) "$API/admin/orgs?limit=100")
+  ORGS=$(python3 -c "import json,sys;print(' '.join(o['username'] for o in json.load(sys.stdin)))" <<<"$ORGS_JSON")
 fi
 for ORG in $ORGS; do
-  TEAM=$(curl -fsS -H @<(auth) "$API/orgs/$ORG/teams" | python3 -c "import json,sys;print(next((t['id'] for t in json.load(sys.stdin) if t['name']=='workers'), ''))")
+  TEAMS_JSON=$(curl -fsS -H @<(auth) "$API/orgs/$ORG/teams")
+  TEAM=$(python3 -c "import json,sys;print(next((t['id'] for t in json.load(sys.stdin) if t['name']=='workers'), ''))" <<<"$TEAMS_JSON")
   [ -n "$TEAM" ] || continue
   curl -fsS -o /dev/null -X PUT -H @<(auth) "$API/teams/$TEAM/members/$U"
   echo "$U is a member of team workers in $ORG"
@@ -88,6 +90,7 @@ elif [ "$HOSTS" != "-" ]; then
 fi
 
 "$ROOT/bin/worker-up" "$N"
+python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; sbx.alert('worker-' + sys.argv[1] + ' added (runtime ' + sys.argv[2] + ')')" "$N" "$RT"
 if [ "$RT" = agy ]; then
   echo "container $U up. Next: log it in once (dashboard → Settings → sign in, or: docker exec -it $U agy-run)"
 else

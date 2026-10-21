@@ -12,7 +12,7 @@ docker run -d --name "$N" --user "$(id -u):$(id -g)" -v "$T/af:/af" -v "$ROOT/to
   -e FORGE_DIR=/af -e BIND_PORT=8171 -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp python:3.12-slim python3 web/server.py >/dev/null
 for i in $(seq 1 40); do docker exec "$N" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8171/healthz')" 2>/dev/null && break; sleep 1; done
 sleep 6
-mkdir -p "$T/js" && cp "$ROOT/tests/a11y_audit.js" "$T/js/t.js"
+mkdir -p "$T/js" && cp "$ROOT/tests/a11y_audit.js" "$T/js/t.js" && cp "$ROOT"/tests/node/a11y/package*.json "$T/js/"
 docker run --rm --network "container:$N" --user "$(id -u):$(id -g)" -e HOME=/tmp -e AF_REPORT="${AF_REPORT:-}" -e AF_CHROME=/usr/bin/chromium-browser \
   -v "$T/js:/t" -w /t --entrypoint sh zenika/alpine-chrome:with-node \
-  -c 'npm i -s --no-audit --no-fund puppeteer-core@23 axe-core@4.10 >/dev/null 2>&1 && node t.js'
+  -c 'npm ci -s --no-audit --no-fund >/dev/null 2>&1 && node t.js'

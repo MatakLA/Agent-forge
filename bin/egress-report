@@ -43,8 +43,7 @@ for flag, fn in (("--baseline-add", egress.ignore_host), ("--allow", egress.allo
             msgs = fn(host)
         except ValueError as e:
             print(json.dumps({"ok": False, "message": str(e)}) if "--json" in a else f"refused: {e}"); sys.exit(2)
-        if flag != "--baseline-add":
-            sbx.alert(f"egress: {'allowed' if flag == '--allow' else 'removed from the allow-list'} {host.lower()} (owner)")
+        sbx.alert(f"egress: {dict(zip(('--baseline-add', '--allow', '--unallow'), ('accepted as known noise', 'allowed', 'removed from the allow-list')))[flag]} {host.lower()} (owner)")
         print(json.dumps({"ok": True, "message": "; ".join(msgs)}) if "--json" in a else "\n".join(msgs)); sys.exit(0)
 
 since = parse_since(a[a.index("--since") + 1]) if "--since" in a else time.time() - 86400

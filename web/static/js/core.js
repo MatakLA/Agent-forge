@@ -19,7 +19,7 @@ const tsloc = s => String(s == null ? '' : s).replace(/\d{4}-\d{2}-\d{2}[T ]\d{2
     : d.toLocaleString([], {day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}); });
 const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.now() / 1000 - (typeof ts === 'number' ? ts : Date.parse(ts) / 1000)));
   return s < 60 ? s + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days'; };
-const dur = s => { s = Math.round(s || 0); return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days'; };
+const dur = s => { s = Number.isFinite(+s) ? Math.max(0, Math.round(+s)) : 0; return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days'; };
 const fmtTok = n => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
 const usd = v => v == null ? '–' : '$' + (v > 0 && v < 1 ? Number(v).toFixed(3) : Number(v).toFixed(2));
 const STATUS = {splitting: 'Splitting', pending: 'Waiting', running: 'Running', gate: 'Checking', review: 'Checking', merging: 'Merging',

@@ -1,0 +1,9 @@
+{
+  "name": "agent-forge-test-props",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test-only: the property-based tests (tests/props.js, run by tests/test_props.sh) install fast-check with npm ci from the lockfile.",
+  "dependencies": {
+    "fast-check": "4.10.2"
+  }
+}

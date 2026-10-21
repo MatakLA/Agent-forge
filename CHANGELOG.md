@@ -3,6 +3,26 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
 alpha software: until 1.0, commands, settings and file formats can change between releases.
 
+## 0.12.2 - 2026-10-21
+
+**Supply chain.** Every release now carries Sigstore signatures (`FILE.sigstore.json`, keyless) for the source archive, the SBOM and
+`SHA256SUMS`, plus signed build provenance of those files; how to check them is in SECURITY.md ("What you download"). The 0.12.1
+files are signed afterwards by the new `sign-release` workflow. `tools/sign-release` does the signing and checks each signature
+again before anything is published; the `release` workflow's rehearsal runs it on a throwaway archive. All installs are pinned and
+hash-checked: the agent CLIs in the API worker image come from a lockfile (`npm ci`), the test tools from lockfiles, the CI tools
+from hash-pinned requirements; Dependabot watches all of them.
+
+**Logging.** The dashboard writes an access log to the journal (`forge logs web`): every write and every refused or failed request, with
+method, path, status and a few plain fields (`action=allow host=pypi.org`); never query strings, cookies, bodies, typed text or
+secret values. `DASHBOARD_ACCESS_LOG=all` adds reads, `=off` silences it. Owner actions that left no trace now do: egress decisions
+(`--baseline-add`, `--allow`, `--unallow`), storing a secret (name only), importing from upstream, adding and removing a worker,
+creating a project all write to the audit trail (`runs/ALERT`, `runs/ledger.jsonl`).
+
+**Fixed.** The duration shown in the dashboard could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
+
+**Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
+against the page's helpers (`esc`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries.
+
 ## 0.12.1 - 2026-10-21
 
 **Fixed.** The dashboard could stop with `renderLive is not defined` when the language file arrived before the last scripts had loaded (the first redraw is now started after all scripts are in). The empty action columns of the egress and run tables have a hidden header text for screen readers.

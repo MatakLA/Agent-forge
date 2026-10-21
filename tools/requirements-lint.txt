@@ -1,0 +1,4 @@
+# Hash-pinned for pip install --require-hashes (see .github/workflows). Dependabot keeps it current.
+pyflakes==4.0.3 \
+    --hash=sha256:330ba92b8c1db2eb0b8f4068f6c58674e2649a99e334769aa50e3e9c5b11c23a \
+    --hash=sha256:94762a3a5a343a79b28754f96c554bce057a592a4896907d73f0369fe824e053

@@ -1,0 +1,10 @@
+{
+  "name": "agent-forge-test-a11y",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test-only: the accessibility audit (tests/test_a11y.sh) installs these with npm ci from the lockfile.",
+  "dependencies": {
+    "axe-core": "4.10.3",
+    "puppeteer-core": "23.11.1"
+  }
+}
