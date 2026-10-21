@@ -98,6 +98,8 @@ class TestWebServer(unittest.TestCase):
         assert not srv.host_allowed(":8171")
         self.assertFalse(srv.host_allowed(":"))
         assert not srv.host_allowed(":")
+        self.assertFalse(srv.host_allowed("127.0.0.1:\u00b2"))
+        self.assertFalse(srv.host_allowed("[::1]:\u00b2"))
 
     def test_host_allowed_empty_and_malformed(self):
         """Invariant: host_allowed rejects empty string, None, whitespace, and suffix attacks."""
@@ -318,6 +320,35 @@ class TestWebServer(unittest.TestCase):
         assert self.calls[-1][0].endswith("bin/foreman answer 1")
         self.assertEqual(self.calls[-1][1], "use PostgreSQL")
         assert self.calls[-1][1] == "use PostgreSQL"
+
+    def test_numbers_are_short_ascii_digits(self):
+        """Invariant: str.isdigit() also accepts '\u00b2' (int() raises on it) and 5000-digit strings (int() refuses them since
+        Python 3.11), so a number from the page is a short run of 0-9 or a 400 - never a request that dies without an answer."""
+        H = {"X-Agent-Forge": "1"}
+        for path, body in (("/api/backlog", {"action": "drop", "n": "\u00b2"}),
+                           ("/api/backlog", {"action": "move", "n": "1", "to": "\u00b2"}),
+                           ("/api/backlog", {"action": "top", "n": "9" * 5000}),
+                           ("/api/answer", {"n": "\u00b2", "answer": "x"}),
+                           ("/api/disk", {"action": "compress", "days": "\u00b2"})):
+            s, _, _ = self.req("POST", path, body, H)
+            self.assertEqual(s, 400, (path, body))
+        s, _, _ = self.req("GET", "/api/login?worker=worker-1&since=%C2%B2")
+        self.assertEqual(s, 400)
+        self.assertEqual(self.calls, [])
+        s, _, _ = self.req("POST", "/api/backlog", {"action": "move", "n": 3, "to": 1}, H)
+        self.assertEqual(s, 200)
+        self.assertTrue(self.calls[-1][0].endswith("bin/foreman backlog move 3 1"))
+
+    def test_odd_request_bodies_count_as_empty(self):
+        """Invariant: a negative Content-Length (read(-1) waits for the client to hang up) and a JSON body that is not an object
+        (a list has no .get) are an empty body - the endpoint answers 'empty goal', it does not hang or drop the connection."""
+        H = {"X-Agent-Forge": "1"}
+        s, _, out = self.req("POST", "/api/goal", None, dict(H, **{"Content-Length": "-1"}))
+        self.assertEqual((s, json.loads(out).get("error")), (400, "empty goal"))
+        for raw in ([1, 2], "text", 7, None):
+            s, _, out = self.req("POST", "/api/goal", raw, H) if raw is not None else self.req("POST", "/api/goal", "null", H)
+            self.assertEqual(s, 400, raw)
+        self.assertEqual(self.calls, [])
 
     def test_secret_whitelist_and_stdin(self):
         """Invariant: Secret values are passed on stdin and secret names are whitelisted."""

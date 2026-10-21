@@ -104,6 +104,12 @@ GOAL_ACTIONS = ("approve", "replan", "pause", "resume", "prioritize", "edit", "c
 CONTROL_ACTIONS = ("autopilot_on", "autopilot_off", "pause", "resume")
 
 
+def num(v):
+    """A plain number of at most 9 digits as an int, else None (str.isdigit() lets superscript digits and 5000 digits through; int() refuses them)."""
+    v = str(v)
+    return int(v) if re.fullmatch(r"[0-9]{1,9}", v) else None
+
+
 def load_static():
     """web/static/ read once at start: {relative path: (bytes, content type)}. Only these files are ever served (no path from the
     request touches the file system). index.html gets a version stamp so a browser fetches changed scripts after an update."""
@@ -137,11 +143,11 @@ def host_allowed(host):
             return False
         name, _, rest = host.partition("]")
         name = name + "]"
-        if rest and (not rest.startswith(":") or not rest[1:].isdigit() or len(rest) == 1):
+        if rest and (not rest.startswith(":") or num(rest[1:]) is None or len(rest) == 1):
             return False
     elif ":" in host:
         name, port = host.rsplit(":", 1)
-        if not port or not port.isdigit():
+        if num(port) is None:
             return False
     else:
         name = host
@@ -324,10 +330,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self):
         try:
-            n = min(int(self.headers.get("Content-Length", "0")), 300000)
-            return json.loads(self.rfile.read(n) or b"{}")
+            n = max(0, min(int(self.headers.get("Content-Length", "0")), 300000))
+            body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return {}
+        return body if isinstance(body, dict) else {}
 
     def _slow(self, key, ttl, compute, q):
         """Answer from the cache (see SLOW); ?fresh=1 - the page's refresh button - waits for a new answer instead."""
@@ -440,20 +447,20 @@ class Handler(BaseHTTPRequestHandler):
             rc, out, err = foreman(pf, cmd, inp=text, timeout=30)
             self._json({"ok": rc == 0, "message": (out or err).strip()[-400:]})
         elif path == "/api/backlog":
-            act, n, to = str(body.get("action", "")), str(body.get("n", "")), str(body.get("to", ""))
-            if act not in ("drop", "move", "top", "edit") or not n.isdigit() or (act == "move" and not to.isdigit()):
+            act, n, to = str(body.get("action", "")), num(body.get("n", "")), num(body.get("to", ""))
+            if act not in ("drop", "move", "top", "edit") or n is None or (act == "move" and to is None):
                 self._json({"error": "action drop|top <n> | move <n> <to> | edit <n> (text)"}, 400); return
             text = str(body.get("text", "")).strip()[:4000]
             if act == "edit" and not text:
                 self._json({"error": "empty text"}, 400); return
-            args = f"backlog {act} {int(n)}" + (f" {int(to)}" if act == "move" else " -" if act == "edit" else "")
+            args = f"backlog {act} {n}" + (f" {to}" if act == "move" else " -" if act == "edit" else "")
             rc, out, err = foreman(pf, args, inp=text if act == "edit" else None, timeout=30)
             self._json({"ok": rc == 0, "message": (err or "").strip()[-300:]})
         elif path == "/api/answer":
-            n = str(body.get("n", ""))
-            if not n.isdigit():
+            n = num(body.get("n", ""))
+            if n is None:
                 self._json({"error": "bad question number"}, 400); return
-            rc, out, err = foreman(pf, f"answer {int(n)}", inp=str(body.get("answer", ""))[:4000], timeout=30)
+            rc, out, err = foreman(pf, f"answer {n}", inp=str(body.get("answer", ""))[:4000], timeout=30)
             self._json({"ok": rc == 0, "message": (out or err).strip()[-300:]})
         elif path == "/api/task":
             # the owner's action on one task: approve / cancel / retry / feedback (text on stdin) / assign / model
@@ -592,9 +599,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(as_json(out, err, rc))
         elif path == "/api/disk":
             act, days = str(body.get("action", "")), str(body.get("days", ""))
-            if act not in ("compress", "transcripts", "docker") or (days and not days.isdigit()):
+            if act not in ("compress", "transcripts", "docker") or (days and num(days) is None):
                 self._json({"error": "action compress | transcripts | docker"}, 400); return
-            rc, out, err = foreman(pf, f"cleanup {act}" + (f" {int(days)}" if days else ""), timeout=900)
+            rc, out, err = foreman(pf, f"cleanup {act}" + (f" {num(days)}" if days else ""), timeout=900)
             self._json(as_json(out, err, rc))
         elif path == "/api/login":
             w, act = str(body.get("worker", "")), str(body.get("action", ""))
@@ -798,10 +805,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/login":
             w = q.get("worker", "")
             since = q.get("since", "")
-            if not re.fullmatch(r"worker-\d+", w) or (since and not since.isdigit()):
+            if not re.fullmatch(r"worker-\d+", w) or (since and num(since) is None):
                 self._json({"error": "bad request"}, 400)
             else:
-                self._json(B.LOGIN.read(w, int(since) if since else None))
+                self._json(B.LOGIN.read(w, num(since)))
         else:
             self.send_response(404)
             self.end_headers()
