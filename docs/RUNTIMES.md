@@ -31,6 +31,12 @@ The dashboard does the same: Settings → Workers → "Add a worker" → pick th
 - `gemini`: **Cost / quota model**: metered (a real USD estimate is shown on the Money page).
 
 
+## Several Antigravity accounts
+
+Running more than one subscription account for one person's work may conflict with the provider's terms. Agent-Forge supports it
+for testing and evaluation; it does not encourage pooling accounts to get around limits. For regular work use API keys (paid per
+token, with the caps in [Money](#money)) or a single subscription. Read the terms of any provider whose CLI you automate.
+
 ## Checking readiness
 
 `bin/doctor` now prints, for every runtime, one of three states:

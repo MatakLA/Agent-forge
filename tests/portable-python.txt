@@ -32,6 +32,7 @@ tests/test_issues_intake_duplicates.py           posix
 tests/test_issues_intake_parsing.py              posix
 tests/test_knowledge_paths.py                    posix
 tests/test_llm_providers_security.py             posix
+tests/test_locales.py                            all
 tests/test_merge_pr.py                           posix
 tests/test_opencode_registries.py                posix
 tests/test_orphan_warning_ui.py                  posix

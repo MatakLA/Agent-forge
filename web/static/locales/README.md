@@ -1,30 +1,32 @@
-# Agent-Forge Localization (i18n)
+# Dashboard translations
 
-This directory contains localization dictionary files for the Agent-Forge web dashboard.
+One JSON file per language, `web/static/locales/<code>.json`, mapping a key to the text shown in the dashboard
+(`"nav.overview": "Overview"`). The file's `lang.name` key is the name shown in the language menu.
 
-## Structure
+| File | Language |
+|---|---|
+| `en.json` | English - the reference; every key exists here |
+| `sk.json` | Slovak |
+| `eng_us.json`, `sk_qwerty.json` | copies of `en` and `sk` that differ only in `lang.name`; they exist to show how a variant is added |
 
-Each language is defined as a JSON file named `<lang_code>.json`:
-- `en.json` / `eng_us.json`: English (default base dictionary)
-- `sk.json`: Slovak / Slovenčina
-- `sk_qwerty.json`: Slovak QWERTY layout / example custom localization
+A key missing from a translation shows the English text built into the page, so a partial translation works and can grow later.
+If a language file does not exist at all, the dashboard falls back to `en.json`.
 
-## Adding a Custom Language (e.g. `sk_qwerty`, `de`, `pl`, `cs`)
+## Add a language
 
-1. Copy `en.json` (or any existing language file) to your new file:
+1. Copy the English file and translate the values (leave the keys, and any `{placeholders}`, as they are):
    ```bash
-   cp web/static/locales/en.json web/static/locales/my_lang.json
+   cp web/static/locales/en.json web/static/locales/de.json
    ```
-2. Edit `web/static/locales/my_lang.json` and translate the values.
-3. Commit and push your new file to Git:
-   ```bash
-   git add web/static/locales/my_lang.json
-   git commit -m "i18n: add my_lang localization"
-   git push origin main
-   ```
+2. Set `lang.name` to the language's own name (`Deutsch`).
+3. Open a pull request with the new file - see [CONTRIBUTING.md](../../../CONTRIBUTING.md). `make check` also checks that your
+   file is valid JSON.
 
-## Activating in Dashboard
+## Use a language
 
-In the Agent-Forge dashboard:
-- **Quick switch**: Click the language button in the top bar (e.g. `EN` / `SK`) to cycle through installed locales.
-- **Custom locale code**: Right-click the language button in the top bar and enter your locale code (e.g. `sk_qwerty` or `my_lang`). The dashboard will fetch `/static/locales/<code_name>.json`, store your preference in browser storage (`localStorage`), and update the entire UI dynamically without requiring a page reload.
+- **Menu:** Settings → language, or the language button in the top bar, lists every file in this directory.
+- **Try a file without installing it:** Settings → language → *Upload locale (.json)*. The file is stored on the dashboard server
+  (the same place as the others) and applied at once.
+- **By code:** *Enter code manually* (or right-click the language button) loads `web/static/locales/<code>.json`.
+
+The choice is remembered in the browser (`localStorage`) and applied without a page reload.

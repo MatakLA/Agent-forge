@@ -23,6 +23,21 @@ A goal has its own page: its plan and tasks, everything that happened to it in o
 the evidence, and all its changes in one diff. Search (`/` or the magnifier in the top bar) covers goals, tasks, events and worker
 transcripts. Tasks, goals and runs have deep links (`#task=...`, `#goal=...`, `#run=...`).
 
+## Screens
+
+Invented demo data; `tools/screenshots.sh` regenerates them.
+
+| | |
+|---|---|
+| ![Overview: what needs you, the team and why idle workers are idle, goals, backlog](img/overview.png) | ![A goal's page: tasks, events, cost, criteria](img/goal.png) |
+| **Overview** - what needs you, the team, goals, backlog | **Goal page** - its tasks, events, cost, acceptance criteria |
+| ![Live transcripts of the workers](img/live.png) | ![Replay of a finished run](img/replay.png) |
+| **Live** - what every worker is doing right now | **Replay** - any finished run, searchable |
+| ![Task sheet: merge or send back, cost, runs, diff](img/task.png) | ![Dependency graph with the critical path](img/graph.png) |
+| **Task** - the actions that fit its state, runs, cost, diff | **Graph** - open work and the critical path |
+| ![Money and quota](img/money.png) | ![Experiments: A/B verdicts](img/experiments.png) |
+| **Money & quota** - spend, caps, when the budget runs out | **Experiments** - A/B results with 95 % intervals |
+
 ## Autopilot and pause
 
 Two switches on the Overview tab, each with a tooltip:

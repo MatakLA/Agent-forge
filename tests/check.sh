@@ -46,6 +46,7 @@ if [ -f tests/test_foreman_pool.py ]; then
   $PY tests/test_foreman_pool.py | grep -q "ALL OK" || { $PY tests/test_foreman_pool.py; exit 1; }
   echo "pool tests: ALL OK"
 fi
+$PY tests/test_locales.py 2>&1 | tail -1 | grep -q '^OK' || { $PY tests/test_locales.py; exit 1; }
 if [ -f tests/test_knowledge_paths.py ]; then
   $PY tests/test_knowledge_paths.py || exit 1
 fi

@@ -8,6 +8,7 @@
   <a href="https://github.com/MatakLA/Agent-forge/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/MatakLA/Agent-forge/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/MatakLA/Agent-forge/actions/workflows/install.yml"><img alt="install" src="https://github.com/MatakLA/Agent-forge/actions/workflows/install.yml/badge.svg"></a>
   <a href="https://github.com/MatakLA/Agent-forge/releases"><img alt="release" src="https://img.shields.io/github/v/release/MatakLA/Agent-forge?include_prereleases"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/MatakLA/Agent-forge"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/MatakLA/Agent-forge/badge"></a>
   <a href="LICENSE"><img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-informational">
   <img alt="dependencies: stdlib only" src="https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen">
@@ -74,13 +75,10 @@ More: [ARCHITECTURE.md](ARCHITECTURE.md) · [SECURITY.md](SECURITY.md) · [docs/
 
 ## What the loop does for you
 
-- **Rebases, reworks, recovers.** Rebases branches itself, sends failures back with the gate output, never loses unpushed work.
-- **Fixes red tests in the same conversation,** before the gate sees the branch.
-- **Spends tokens on work, not on reading** - a code-map context pack per task ([measured](docs/EFFICIENCY.md)).
-- **Learns** lessons from reviews and task costs from history; routes each role to the cheapest model that proved itself.
+- **Rebases, reworks, recovers:** failures go back to the worker with the gate output; unpushed work is never lost, and a crash or reboot resumes where it stopped.
 - **Closes goals on evidence:** observable acceptance criteria, checked one by one.
+- **Spends tokens on work, not on reading** - a code-map context pack per task ([measured](docs/EFFICIENCY.md)) - and routes each role to the cheapest model that proved itself.
 - **Works with your stack:** `TEST_CMD` and `GATE_IMAGE` per project (pytest, `npm test`, `go test ./...`).
-- **Survives crashes and reboots,** and does not blame the worker for Forgejo, Docker or provider outages.
 - **Tells you what matters** through ntfy, Slack, Discord or a webhook.
 
 The long version: [docs/FEATURES.md](docs/FEATURES.md).
@@ -99,10 +97,8 @@ Mix them in one team. A key is stored on the server only (mode 0600) and reaches
 its provider's API host and nothing else, and the gate refuses any branch that adds a key. Which one to choose:
 [docs/CHOOSING-AN-AI.md](docs/CHOOSING-AN-AI.md). Details: [docs/RUNTIMES.md](docs/RUNTIMES.md).
 
-> **Several Antigravity accounts are a testing setup only.** Running more than one subscription account for one person's work may
-> conflict with the provider's terms. Agent-Forge supports it for testing and evaluation; it does not encourage pooling accounts to
-> get around limits. For regular work use API keys (paid per token, with the caps above) or a single subscription. Read the terms
-> of any provider whose CLI you automate.
+> **Several Antigravity accounts are a testing setup only** and may conflict with the provider's terms - for regular work use API
+> keys or a single subscription. [Details](docs/RUNTIMES.md#several-antigravity-accounts).
 
 ## Screenshots
 
@@ -110,35 +106,28 @@ its provider's API host and nothing else, and the gate refuses any branch that a
 |---|---|
 | ![Overview: what needs you, the team and why idle workers are idle, goals, backlog](docs/img/overview.png) | ![A goal's page: tasks, events, cost, criteria](docs/img/goal.png) |
 | **Overview** - what needs you, the team, goals, backlog | **Goal page** - its tasks, events, cost, acceptance criteria |
-| ![Live transcripts of the workers](docs/img/live.png) | ![Replay of a finished run](docs/img/replay.png) |
-| **Live** - what every worker is doing right now | **Replay** - any finished run, searchable |
-| ![Task sheet: merge or send back, cost, runs, diff](docs/img/task.png) | ![Dependency graph with the critical path](docs/img/graph.png) |
-| **Task** - the actions that fit its state, runs, cost, diff | **Graph** - open work and the critical path |
-| ![Money and quota](docs/img/money.png) | ![Experiments: A/B verdicts](docs/img/experiments.png) |
-| **Money & quota** - spend, caps, when the budget runs out | **Experiments** - A/B results with 95 % intervals |
+| ![Live transcripts of the workers](docs/img/live.png) | ![Task sheet: merge or send back, cost, runs, diff](docs/img/task.png) |
+| **Live** - what every worker is doing right now | **Task** - the actions that fit its state, runs, cost, diff |
 
-Invented demo data; `tools/screenshots.sh` regenerates them. More about the dashboard: [docs/DASHBOARD.md](docs/DASHBOARD.md).
+Invented demo data. Eight screens, with what is on each tab: [docs/DASHBOARD.md](docs/DASHBOARD.md#screens).
 
 ## Day to day
 
-Everything is in the dashboard. The same from a shell, with the `forge` command (it is installed to `~/.local/bin` when that
-directory exists, otherwise use `./forge` in the checkout):
+Everything is in the dashboard. The same from a shell, with the `forge` command (installed to `~/.local/bin` when that directory
+exists, otherwise `./forge` in the checkout):
 
 ```bash
 forge goal "Add a CSV export to the expenses module, with tests"
 forge project "Build the app described in docs/vision.md"      # a roadmap of goals in the backlog
 forge status                                                   # goals, tasks, workers, recent events
-forge backlog | questions                                      # waiting goals / questions the planner has for you
-echo "Use PostgreSQL" | forge answer 1                         # becomes a binding decision for later plans
+echo "Use PostgreSQL" | forge answer 1                         # answer a question the planner asked; binding for later plans
 forge pause | resume                                           # stop / resume new steps (running runs finish)
 forge doctor                                                   # checks the whole install, says how to fix what is wrong
-forge logs [foreman|web]                                       # follow a service's log
-forge update | uninstall                                       # see docs/INSTALL.md
 ```
 
-`forge` hands everything it does not know to `bin/foreman`, so every command in `bin/foreman --help` works. The kill switch is
-`bin/killswitch on [--hard] [--all]`. One install runs **several projects** side by side, each with its own orchestrator,
-repository and worker pool.
+`forge` hands everything it does not know to `bin/foreman`, so every command in `bin/foreman --help` works; the kill switch is
+`bin/killswitch on [--hard] [--all]`. More in [docs/QUICKSTART.md](docs/QUICKSTART.md). One install runs **several projects** side
+by side, each with its own orchestrator, repository and worker pool.
 
 ## Documentation
 
