@@ -201,7 +201,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const srRows = [...d.querySelectorAll('.sr[data-open]')];
   check('search: result rows are keyboard reachable',
         srRows.length > 0 && srRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
-  q.value = 'xyznonexistentword'; q.dispatchEvent(new w.Event('input', {bubbles: true})); await sleep(1000);
+  q.value = 'xyznonexistentword'; q.dispatchEvent(new w.Event('input', {bubbles: true}));
+  for (let i = 0; i < 40 && !txt('sheet').includes('No results for'); i++) await sleep(250);
   check('search: explicit empty state for zero matches',
         txt('sheet').includes('No results for'));
   w.openDoc('role:tester'); await sleep(2000);
@@ -409,11 +410,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     check('settings: an unsaved edit survives a change of page', d.getElementById('set-LOCAL_TZ').value === 'Europe/Berlin');
     d.getElementById('discard-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(600);
     check('settings: Discard puts the saved values back and hides the bar', d.getElementById('set-LOCAL_TZ').value === orig && d.getElementById('savebar').hidden);
-    const tz2 = d.getElementById('set-LOCAL_TZ'); tz2.value = 'Mars/Base'; fire(tz2, 'input');
+    const tz2 = d.getElementById('set-LOCAL_TZ'); tz2.value = 'Asia/Tokyo'; fire(tz2, 'input');
     stub(/\/api\/settings/, () => ({ok: false, errors: {LOCAL_TZ: 'unknown time zone'}}));
     d.getElementById('save-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(800);
     check('settings: a refused value is marked at its field, the edit is kept and the bar says why',
-          /unknown time zone/.test(txt('err-LOCAL_TZ')) && d.getElementById('set-LOCAL_TZ').value === 'Mars/Base' && !d.getElementById('savebar').hidden && /Not saved/.test(txt('save-msg')));
+          /unknown time zone/.test(txt('err-LOCAL_TZ')) && d.getElementById('set-LOCAL_TZ').value === 'Asia/Tokyo' && !d.getElementById('savebar').hidden && /Not saved/.test(txt('save-msg')));
     check('settings: only what was changed is sent', calls.length === 1 && JSON.stringify(Object.keys(calls[0].body.changes)) === '["LOCAL_TZ"]');
     unstub(); stub(/\/api\/settings/, () => ({ok: true}));
     d.getElementById('save-settings').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(1500);

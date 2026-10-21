@@ -42,6 +42,7 @@ const store = (k, v) => { try { if (v === undefined) return localStorage.getItem
 let I18N = {};
 let currentLang = store('af-lang') || 'en';
 const t = (k, fb) => (I18N && I18N[k]) || fb || k;
+const tr = t;                                                  // for scopes where a local `t` (a task) shadows t()
 
 function updateStatusObjects() {
   STATUS.splitting = t('status.splitting', 'Splitting');
@@ -173,7 +174,7 @@ function cycleTheme() {
 
 applyTheme(currentTheme);
 loadLocale(currentLang);
-loadLocalesList();
+// loadLocalesList() is started by main.js: its callback redraws, and the later scripts must be loaded first
 
 project = store('af-project') || 'default';
 tab = store('af-tab') || 'overview';

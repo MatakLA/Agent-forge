@@ -1,4 +1,5 @@
 // Start: the first render, a deep link (#task=… / #goal=… / #run=…), the live connection.
+loadLocalesList();
 setTab(tab);
 loadProjects(true).then(() => {
   connect();

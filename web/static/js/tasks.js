@@ -178,16 +178,16 @@ async function loadTaskDetail(id) {
   catch (e) { TD.err = String(e); }
   TD.at = Date.now(); renderTaskSheet();
 }
-function taskActions(t) {
-  const b = (act, label, cls) => '<button class="' + (cls || 'mini') + '" data-ta="' + act + '" data-id="' + esc(t.id) + '">' + label + '</button>';
+function taskActions(task) {
+  const b = (act, label, cls) => '<button class="' + (cls || 'mini') + '" data-ta="' + act + '" data-id="' + esc(task.id) + '">' + label + '</button>';
   const f = (key, label) => '<button class="mini" data-tform="' + key + '">' + label + '</button>';
-  if (t.status === 'approval' && t.awaiting === 'merge') return b('approve', 'Merge', 'primary sm') + f('feedback', 'Send back…');
-  if (t.status === 'approval' && t.awaiting === 'risky') return b('approve', 'Start it', 'primary sm') + b('cancel', 'Cancel');
-  if (t.status === 'approval' && t.awaiting === 'plan') return '<button class="mini" data-open="goal:' + esc(t.goal) + '">Its plan waits for you — open the goal</button>';
-  if (t.status === 'running') return t.cancel_requested ? small('stopping its run…') : b('cancel', 'Stop and cancel');
-  if (t.status === 'blocked') return b('retry', t('btn.retry', 'Retry'), 'primary sm') + '<button class="mini" data-copyreport="' + esc(t.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + t('btn.copy_report', '📋 Copy report for AI') + '</button>' + f('feedback', t('btn.send_back_words', 'Send back with my words…')) + b('cancel', t('btn.cancel', 'Cancel'));
-  if (t.status === 'cancelled') return b('retry', 'Queue it again');
-  if (t.status === 'pending' || t.status === 'splitting') return f('feedback', (t.attempts || (t.history || []).length) ? t('btn.send_back_words', 'Send my words…') : 'Add a note…') +
+  if (task.status === 'approval' && task.awaiting === 'merge') return b('approve', 'Merge', 'primary sm') + f('feedback', 'Send back…');
+  if (task.status === 'approval' && task.awaiting === 'risky') return b('approve', 'Start it', 'primary sm') + b('cancel', 'Cancel');
+  if (task.status === 'approval' && task.awaiting === 'plan') return '<button class="mini" data-open="goal:' + esc(task.goal) + '">Its plan waits for you — open the goal</button>';
+  if (task.status === 'running') return task.cancel_requested ? small('stopping its run…') : b('cancel', 'Stop and cancel');
+  if (task.status === 'blocked') return b('retry', t('btn.retry', 'Retry'), 'primary sm') + '<button class="mini" data-copyreport="' + esc(task.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + t('btn.copy_report', '📋 Copy report for AI') + '</button>' + f('feedback', t('btn.send_back_words', 'Send back with my words…')) + b('cancel', t('btn.cancel', 'Cancel'));
+  if (task.status === 'cancelled') return b('retry', 'Queue it again');
+  if (task.status === 'pending' || task.status === 'splitting') return f('feedback', (task.attempts || (task.history || []).length) ? t('btn.send_back_words', 'Send my words…') : 'Add a note…') +
     f('assign', 'Assign to…') + f('model', 'Model…') + b('cancel', t('btn.cancel', 'Cancel'));
   return '';
 }
@@ -235,10 +235,10 @@ function renderTaskSheet() {
   const html = '<h2>' + esc(t.title || id) + '</h2><div class="sub">' + subMeta + '</div>' +
     whyCard +
     (t.diagnosis ? '<div class="banner warn" style="margin:12px 0;padding:12px 14px;border-radius:8px">' +
-      '<b style="font-size:1.05em">' + esc(t('diag.title', '🤖 Orchestrator Diagnosis:')) + '</b><p style="margin:6px 0 4px 0">' + esc(t.diagnosis.summary || '') + '</p>' +
-      (t.diagnosis.root_cause ? '<div style="margin:4px 0"><b>' + esc(t('diag.root_cause', 'Root cause:')) + '</b> ' + esc(t.diagnosis.root_cause) + '</div>' : '') +
-      (t.diagnosis.suggested_fix ? '<div style="margin:4px 0"><b>' + esc(t('diag.suggested_fix', '💡 Suggested fix:')) + '</b> ' + esc(t.diagnosis.suggested_fix) + '</div>' : '') +
-      '<div style="margin-top:8px"><button type="button" class="mini primary" data-copyreport="' + esc(t.id) + '">' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '</button></div></div>' : '') +
+      '<b style="font-size:1.05em">' + esc(tr('diag.title', '🤖 Orchestrator Diagnosis:')) + '</b><p style="margin:6px 0 4px 0">' + esc(t.diagnosis.summary || '') + '</p>' +
+      (t.diagnosis.root_cause ? '<div style="margin:4px 0"><b>' + esc(tr('diag.root_cause', 'Root cause:')) + '</b> ' + esc(t.diagnosis.root_cause) + '</div>' : '') +
+      (t.diagnosis.suggested_fix ? '<div style="margin:4px 0"><b>' + esc(tr('diag.suggested_fix', '💡 Suggested fix:')) + '</b> ' + esc(t.diagnosis.suggested_fix) + '</div>' : '') +
+      '<div style="margin-top:8px"><button type="button" class="mini primary" data-copyreport="' + esc(t.id) + '">' + esc(tr('btn.copy_report', '📋 Copy report for AI')) + '</button></div></div>' : '') +
     '<div class="btnrow">' + taskActions(t) + '</div>' + taskForm(t) +
     (g ? '<div class="goalref">Goal: <button class="linkbtn" data-open="goal:' + esc(g.id) + '" style="font:inherit;text-align:left">' + esc(g.text.slice(0, 140)) + '</button></div>' : '') +
     (t.status === 'approval' && t.awaiting === 'merge' && t.merge_feedback ? '<h3>The review says</h3><div class="note">' + esc(tsloc(t.merge_feedback)) + '</div>' : '') +
