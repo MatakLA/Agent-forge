@@ -33,6 +33,9 @@ right. Then the next goal starts, from your backlog or your product vision.
 | **Install it** (~20 min) | `curl -fsSL https://raw.githubusercontent.com/MatakLA/Agent-forge/main/install.sh \| bash` | On an Ubuntu 22.04+ machine or VM (4+ vCPU, 8+ GB RAM, 40 GB disk), as a normal user with sudo. |
 | **By hand** | [docs/INSTALL.md](docs/INSTALL.md) | Cloud-init, `git clone` + `./forge install`, update, uninstall, macOS and Windows. |
 
+Want a fixed version instead of `main`? Pin a tag from the [releases](https://github.com/MatakLA/Agent-forge/releases):
+`curl -fsSL https://raw.githubusercontent.com/MatakLA/Agent-forge/vX.Y.Z/install.sh | FORGE_REF=vX.Y.Z bash`.
+
 After the install, open the dashboard through an SSH tunnel (`forge url` prints the command), add a worker, give it a goal. A
 first goal on a sample project, step by step: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
@@ -151,7 +154,7 @@ All of it, grouped: [docs/README.md](docs/README.md). `make check` runs the test
 - **Questions and ideas:** [GitHub Discussions](https://github.com/MatakLA/Agent-forge/discussions)
 - **Bugs and feature requests:** [Issues](https://github.com/MatakLA/Agent-forge/issues) (there are forms for both)
 - **Contribute:** [CONTRIBUTING.md](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Support](SUPPORT.md)
-- **Security problems:** [SECURITY.md](SECURITY.md) - please do not open a public issue.
+- **Security problems:** [report privately](https://github.com/MatakLA/Agent-forge/security/advisories/new) - see [SECURITY.md](SECURITY.md); please do not open a public issue.
 
 ## License
 

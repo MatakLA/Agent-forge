@@ -92,4 +92,13 @@ quota stops, token caps, timeouts and stops by the kill switch itself neither co
   purpose. Run nothing else on that port.
 
 ## Reporting a vulnerability
-Open a private security advisory on the repository, or contact the maintainer directly. Please do not open a public issue.
+Please do not open a public issue. Report it privately:
+**[open a private security advisory](https://github.com/MatakLA/Agent-forge/security/advisories/new)** (GitHub keeps it visible
+only to you and the maintainer until a fix is out).
+
+Useful in a report: the version (`cat VERSION`), what you did, what you expected and what happened, and - for an escape from the
+sandbox or the egress allow-list - the smallest task or config that shows it. Agent-Forge is maintained in spare time, so there
+is no guaranteed response time; a report is acknowledged as soon as it is seen, and a fix goes out as a patch release with the
+reporter credited (unless you prefer not).
+
+Supported versions: the latest release and `main`.

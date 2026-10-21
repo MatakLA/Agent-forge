@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use Agent-Forge in your work, please cite it like this."
+title: "Agent-Forge"
+abstract: "A self-hosted AI dev team: a foreman, sandboxed workers, an egress allow-list and a test and review gate that turn goals into merged pull requests while you are away."
+type: software
+authors:
+  - name: "MatakLA"
+repository-code: "https://github.com/MatakLA/Agent-forge"
+url: "https://github.com/MatakLA/Agent-forge"
+license: Apache-2.0
+keywords:
+  - ai-agents
+  - autonomous-agents
+  - sandbox
+  - self-hosted
+  - developer-tools

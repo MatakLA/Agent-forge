@@ -5,6 +5,10 @@ alpha software: until 1.0, commands, settings and file formats can change betwee
 
 ## Unreleased
 
+**Repository.** CodeQL code scanning (`.github/workflows/codeql.yml`: Python, JavaScript, workflows); every GitHub Action is
+pinned to a commit SHA (Dependabot keeps them current); `CITATION.cff`; the security policy links the private advisory form;
+a social preview image (`docs/img/social-preview.png`); removed `tools/publish-snapshot`.
+
 ## 0.12.0 - 2026-10-21
 
 ### Added
@@ -240,7 +244,7 @@ the Live tab shows only running runs and those finished in the last minutes; API
 
 **Proof for newcomers.** Screenshots and a tour GIF from invented demo data (`tools/screenshots.sh`, `tools/demo_state.py`),
 a CI workflow that installs everything on a fresh VM and runs the integration tests (`.github/workflows/install.yml`),
-`ROADMAP.md`, `tools/publish-snapshot` (publishes the tree as one commit without private history).
+`ROADMAP.md`.
 
 **Security.** The gate refuses branches that add API keys, tokens or private keys (was: a warning for some patterns).
 `bin/worker-add` no longer passes the Forgejo admin token on curl's command line.

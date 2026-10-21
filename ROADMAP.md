@@ -43,7 +43,6 @@ Still open, roughly by value:
 - Translations, if the community wants them (strings in separate files, not in code).
 
 ## Maintainers: release checklist
-- [ ] New public repository; `tools/publish-snapshot "Agent-Forge x.y.z"` then `git push <public> public:main` (no private
-      history, no private e-mail).
-- [ ] The `install` workflow green on GitHub (a fresh VM installs it end to end, incl. tests/test_ui.sh).
-- [ ] Screenshots current (`tools/screenshots.sh`), CHANGELOG and VERSION updated, a GitHub release with notes.
+- [ ] `make check` and `tests/test_ui.sh` green; the `ci`, `codeql` and `install` workflows green on `main`.
+- [ ] Screenshots current (`tools/screenshots.sh`), CHANGELOG and VERSION updated.
+- [ ] Tag `vX.Y.Z` - the release workflow publishes the demo image and the GitHub release (steps: [CONTRIBUTING.md](CONTRIBUTING.md#releases)).
