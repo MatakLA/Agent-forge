@@ -558,7 +558,7 @@ function pageProject() {
       field('OWNER_LANG', sel('OWNER_LANG', LANG_OPTIONS)) + field('TASK_LANG', sel('TASK_LANG', LANG_OPTIONS)) +
       field('PRODUCT_LANG', sel('PRODUCT_LANG', [['', 'same as my language']].concat(LANG_OPTIONS))) + field('DOCS_LANG', sel('DOCS_LANG', LANG_OPTIONS)) +
       field('LOCAL_TZ', '<div style="display:flex;gap:6px;align-items:center">' + sel('LOCAL_TZ', TZ_OPTIONS) + '<button type="button" class="mini" id="detect-tz" title="Set to browser timezone">Detect</button></div>')) +
-    card(t('settings.appearance_title', 'Dashboard appearance & language'),
+    card(th('settings.appearance_title', 'Dashboard appearance & language'),
       rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),
         '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
         '<select id="ui-lang-sel" aria-labelledby="row-ui-lang-l" style="min-width:180px">' +
@@ -579,7 +579,7 @@ function pageProject() {
         '<select id="ui-theme-sel" aria-labelledby="row-ui-theme-l" style="min-width:180px">' +
         [['auto', 'Auto (system default)'], ['light', 'Light mode'], ['dark', 'Dark mode']].map(([m, n]) => '<option value="' + esc(m) + '"' + (currentTheme === m ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
         '</select>'),
-      t('settings.appearance_desc', 'Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.')) +
+      th('settings.appearance_desc', 'Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.')) +
     card('Files', field('PROJECT_DIR', txt('PROJECT_DIR')) + field('VISION_FILE', txt('VISION_FILE', 'docs/vision.md')) + field('SHARED_FILES', txt('SHARED_FILES')),
       'Paths inside the repository.') +
     card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q')) + field('GATE_IMAGE', txt('GATE_IMAGE')),

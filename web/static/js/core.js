@@ -8,6 +8,10 @@ window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() ==
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+// text with every case-insensitive hit of q in <mark>; hits are found in the raw text and each piece is escaped on its own
+// (finding them in the escaped text let "lt" match inside &lt; and never matched a query that contains & < > " or ')
+const hilite = (s, q) => { s = String(s == null ? '' : s); q = String(q == null ? '' : q); if (!q) return esc(s);
+  return s.split(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i')).map((p, i) => i % 2 ? '<mark>' + esc(p) + '</mark>' : esc(p)).join(''); };
 const toDate = ts => typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
 const tfmt = ts => { const d = toDate(ts); return isNaN(d) ? '' : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); };
 const dfmt = ts => { const d = toDate(ts); if (isNaN(d)) return ''; const today = new Date().toDateString() === d.toDateString();
@@ -43,6 +47,7 @@ let I18N = {};
 let currentLang = store('af-lang') || 'en';
 const t = (k, fb) => (I18N && I18N[k]) || fb || k;
 const tr = t;                                                  // for scopes where a local `t` (a task) shadows t()
+const th = (k, fb) => esc(t(k, fb));                           // t() for text that is put into an HTML string: a dictionary is text, never markup
 
 function updateStatusObjects() {
   STATUS.splitting = t('status.splitting', 'Splitting');
@@ -386,7 +391,7 @@ function pills() {
 function stats() {
   if (!F) return '';
   const t_stat = F.today || {}, ts = F.tasks || [], gs = F.goals || [], n = (...s) => ts.filter(x => s.includes(x.status)).length;
-  const box = (v, lab, cls, go) => '<div class="stat' + (cls ? ' ' + cls : '') + '"' + (go ? ' data-go="' + go + '"' : '') + '><b>' + v + '</b><span>' + lab + '</span></div>';
+  const box = (v, lab, cls, go) => '<div class="stat' + (cls ? ' ' + cls : '') + '"' + (go ? ' data-go="' + go + '"' : '') + '><b>' + v + '</b><span>' + esc(lab) + '</span></div>';
   const mine = inboxItems().length, blocked = n('blocked');
   const waitingTasks = ts.filter(x => ['pending', 'splitting'].includes(x.status));
   const pausedCount = waitingTasks.filter(x => gs.some(g => g.id === x.goal && (g.paused || g.status === 'paused'))).length;

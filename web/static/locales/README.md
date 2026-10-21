@@ -1,7 +1,8 @@
 # Dashboard translations
 
 One JSON file per language, `web/static/locales/<code>.json`, mapping a key to the text shown in the dashboard
-(`"nav.overview": "Overview"`). The file's `lang.name` key is the name shown in the language menu.
+(`"nav.overview": "Overview"`). The file's `lang.name` key is the name shown in the language menu. Values are plain text: the
+dashboard shows `<`, `>` and `&` as typed and never treats them as markup.
 
 | File | Language |
 |---|---|
