@@ -11,7 +11,7 @@ live_before=$(live_state)
 PYSCRIPTS="bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api
   bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set
   bin/issues-intake scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py"
-SHSCRIPTS="bin/worker-add bin/worker-remove bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/update.sh scripts/uninstall.sh install.sh forge tests/test_forge_cli.sh tests/test_install_flow.sh tools/lint scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
+SHSCRIPTS="bin/worker-add bin/worker-remove bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/update.sh scripts/uninstall.sh install.sh forge tests/test_forge_cli.sh tests/test_install_flow.sh tests/test_egress_up_modes.sh tools/lint scripts/vm-baseline-ubuntu.sh tests/test_ui.sh
   tools/fake-docker egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_review_branch.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo tests/test_install_security.sh tests/test_install_smoke.sh tests/test_demo_mode.sh tests/test_worker_remove.sh
   scripts/pick-ai.sh tests/test_pick_ai.sh"
 for f in $PYSCRIPTS bin/lib/*.py bin/lib/foreman/*.py web/dashboard/*.py tests/*.py; do
@@ -145,6 +145,7 @@ fi
 if [ -f tests/test_forge_cli.sh ]; then
   bash tests/test_forge_cli.sh | tail -1 | grep -q "ALL OK" || { bash tests/test_forge_cli.sh; exit 1; }
 fi
+gate bash tests/test_egress_up_modes.sh
 if [ -f tests/test_install_flow.sh ]; then
   bash tests/test_install_flow.sh | tail -1 | grep -q "ALL OK" || { bash tests/test_install_flow.sh; exit 1; }
 fi

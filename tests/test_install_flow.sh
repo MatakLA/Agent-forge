@@ -47,6 +47,12 @@ echo "systemctl $*" >> "$STUB_CALLS"
 case "$1" in is-active) exit 3 ;; esac
 exit 0
 EOF
+# group membership follows the stubbed docker group (a CI runner's user is already in the real docker group)
+cat > "$T/stub/id" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = -nG ]; then printf 'tester'; [ ! -e "$STUB_GROUP" ] || printf ' docker'; echo; exit 0; fi
+exec /usr/bin/id "$@"
+EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stub/apt-get"
 chmod +x "$T/stub/"*
 

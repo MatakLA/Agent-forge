@@ -72,7 +72,7 @@ echo "$U=$RT" >> "$ROOT/etc/workers.conf.tmp"; mv "$ROOT/etc/workers.conf.tmp" "
 if [ "$ENDPOINT" != "-" ]; then
   python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import egress; print('\n'.join(egress.set_endpoint(sys.argv[1])))" "$ENDPOINT"
 elif [ "$HOSTS" != "-" ]; then
-  L="$ROOT/egress/allowlist.local.txt"; touch "$L"; changed=0
+  L="$ROOT/egress/allowlist.local.txt"; touch "$L"; chmod 644 "$L"; changed=0
   for h in ${HOSTS//,/ }; do grep -qx "$h" "$L" || { printf '# runtime %s (bin/worker-add)\n%s\n' "$RT" "$h" >> "$L"; changed=1; }; done
   if [ "$changed" = 1 ] && docker inspect egress-proxy >/dev/null 2>&1; then
     if docker exec egress-proxy sh -c 'test -r /etc/squid/allowlist.local.txt'; then
