@@ -33,6 +33,8 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install from scratch, as a user would
         run: |
           set -o pipefail
@@ -45,15 +47,17 @@ jobs:
           cat install.log || true
           ERR_MSG=$(tail -n 15 install.log 2>/dev/null | tr '\n' ' ' || echo "install failed")
           echo "::error file=scripts/install.sh::$ERR_MSG"
-          echo "### ❌ Install Workflow Failed" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 80 install.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### ❌ Install Workflow Failed"
+            echo '```'
+            tail -n 80 install.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: The services run and answer
         run: |
           systemctl is-active agent-forge-foreman agent-forge-web
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8171/healthz && break; sleep 2; done
-          for i in $(seq 1 30); do [ -f runs/foreman/live.json ] && break; sleep 2; done
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8171/healthz && break; sleep 2; done
+          for _ in $(seq 1 30); do [ -f runs/foreman/live.json ] && break; sleep 2; done
           python3 bin/foreman status
       - name: A worker container can be created (it stays logged out - no accounts in CI)
         run: |
@@ -91,9 +95,11 @@ jobs:
       - name: Uninstall removes services and containers but keeps the data
         run: |
           ./forge uninstall --yes
-          ! systemctl is-active --quiet agent-forge-foreman
-          ! systemctl is-active --quiet agent-forge-web
-          ! docker ps -a --format '{{.Names}}' | grep -E '^(egress-proxy|forgejo|worker-[0-9]+)$'
+          for unit in agent-forge-foreman agent-forge-web; do
+            if systemctl is-active --quiet "$unit"; then echo "::error::$unit is still running after the uninstall"; exit 1; fi
+          done
+          left="$(docker ps -a --format '{{.Names}}' | grep -E '^(egress-proxy|forgejo|worker-[0-9]+)$' || true)"
+          if [ -n "$left" ]; then echo "::error::containers left after the uninstall: $left"; exit 1; fi
           test -f etc/foreman.conf
           test -d "$HOME/.config/sandbox/secrets"
       - name: Uninstall --purge deletes the data too

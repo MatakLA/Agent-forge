@@ -21,14 +21,17 @@ jobs:
     permissions:
       contents: write       # upload the files to the existing release
       id-token: write       # keyless signing (Sigstore)
-      attestations: write
+      attestations: write   # store the signed build provenance
     env:
       TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: refs/tags/${{ inputs.tag }}
           path: src
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -39,8 +42,9 @@ jobs:
           gh release view "$TAG" >/dev/null
       - name: Sign the release files
         run: |
+          shopt -s nullglob          # a release without files (v0.12.0) has nothing in existing/
           mkdir existing
-          gh release download "$TAG" --dir existing
+          if [ "$(gh release view "$TAG" --json assets --jq '.assets | length')" -gt 0 ]; then gh release download "$TAG" --dir existing; fi
           # what this step makes again, and the old signatures
           rm -f existing/SHA256SUMS existing/agent-forge-*.tar.gz existing/*.sigstore.json
           SRC_DIR=src tools/sign-release "${TAG#v}" signed existing/*

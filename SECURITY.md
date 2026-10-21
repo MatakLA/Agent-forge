@@ -107,7 +107,7 @@ quota stops, token caps, timeouts and stops by the kill switch itself neither co
   a test-only dependency; the runtime stays on the standard library) at the helpers the dashboard uses to display text, durations
   and money, and checks properties that must hold for any input (no markup survives escaping, no negative durations). It already
   found one bug, fixed in 0.12.2.
-- **Scorecard.** The [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/MatakLA/Agent-forge) workflow scores these
+- **Scorecard.** The [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/MatakLA/Agent-forge) workflow scores these
   practices weekly; the result is public and includes the weak spots (for example, one maintainer means little independent review).
 - **Installer.** `install.sh` clones this repository and runs `scripts/install.sh`; read both before piping anything to a shell.
   `FORGE_REF=vX.Y.Z` pins a release.

@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
@@ -31,6 +33,8 @@ jobs:
         python-version: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -56,13 +60,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Build the demo image and ask it for its health
         run: |
           docker build -f demo/Dockerfile -t agent-forge-demo:ci .
           docker run -d --name demo -p 127.0.0.1:8171:8171 agent-forge-demo:ci
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8171/healthz && break; sleep 2; done
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8171/healthz && break; sleep 2; done
           # the first status poll takes a few seconds; the demo must then show goals, not an error
-          for i in $(seq 1 15); do curl -fsS http://127.0.0.1:8171/api/status | grep -q '"foreman": {' && break; sleep 2; done
+          for _ in $(seq 1 15); do curl -fsS http://127.0.0.1:8171/api/status | grep -q '"foreman": {' && break; sleep 2; done
           curl -fsS -o "$RUNNER_TEMP/status.json" http://127.0.0.1:8171/api/status
           python3 -c '
           import json, sys

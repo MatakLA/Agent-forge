@@ -20,7 +20,7 @@ jobs:
       security-events: write   # upload the SARIF result to code scanning
       id-token: write          # publish the result (needed for the badge)
       contents: read
-      actions: read
+      actions: read            # list the workflow runs (the CI checks)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
