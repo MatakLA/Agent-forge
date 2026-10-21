@@ -144,7 +144,7 @@ repository and worker pool.
 
 **Start:** [Install](docs/INSTALL.md) · [Quickstart](docs/QUICKSTART.md) · [FAQ](docs/FAQ.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 **Use:** [Features](docs/FEATURES.md) · [Dashboard](docs/DASHBOARD.md) · [Workers and keys](docs/RUNTIMES.md) · [GitHub / GitLab](docs/UPSTREAM.md) · [Roles](docs/ROLES.md)
-**Inside:** [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Efficiency](docs/EFFICIENCY.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
+**Inside:** [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Efficiency](docs/EFFICIENCY.md) · [Field report](docs/FIELD-REPORT.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 All of it, grouped: [docs/README.md](docs/README.md). `make check` runs the tests that need nothing (no Docker, no model calls);
 `make test` adds the integration tests against a fake model API.

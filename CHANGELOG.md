@@ -11,6 +11,8 @@ errors and status; WCAG 2.1 AA contrast in light and dark (new colour tokens), v
 `prefers-reduced-motion` and `forced-colors` support, reflow at 320 px. New `tests/test_a11y.sh` runs axe-core and the keyboard
 checks in headless Chrome (27 views x 2 themes, 0 violations) and is part of the `install` workflow.
 
+**Documentation.** `docs/FIELD-REPORT.md` and `docs/field-report-data.json`: a field report from one self-hosted install (221 merged tasks in five days on this repository, a randomised context-pack comparison on two projects, a before/after for the 0.9.0 efficiency features), with the bad numbers, the incidents and what is still unmeasured.
+
 **Repository.** CodeQL code scanning (`.github/workflows/codeql.yml`: Python, JavaScript, workflows); every GitHub Action is
 pinned to a commit SHA (Dependabot keeps them current); `CITATION.cff`; the security policy links the private advisory form;
 a social preview image (`docs/img/social-preview.png`); removed `tools/publish-snapshot`.

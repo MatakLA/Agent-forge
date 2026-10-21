@@ -1,0 +1,740 @@
+{
+ "report": "docs/FIELD-REPORT.md",
+ "generated": "2026-10-21",
+ "method": "Aggregates from the files one self-hosted Agent-Forge install keeps (runs/ledger.jsonl, each project's tasks/*.json with their history, events.jsonl, run-stats.json and llm.jsonl), computed read-only in one pass on 2026-10-21 with no model calls. 'Merged' means the gate was green and an automated reviewer approved; it does not mean a human read the diff or that the change is correct. First pass = merged with no rework entry in the task history. Rates carry Wilson 95 % intervals; differences of rates use Newcombe intervals; differences of means and medians use bootstrap 95 % intervals (5,000 resamples) and two-sided permutation tests (5,000 permutations, 10,000 for the first-pass rate), with no correction for the many comparisons. Quota is the change in the 'weekly' percentage of one account read from the provider's usage screen before and after a run, summed over a task's runs; it is read in whole percent points and includes whatever else used that account at the same time. Tokens are the sum the worker runtime reported per run. Tasks inside one goal are not independent, so the intervals are probably too narrow. Rework causes are assigned by keyword matching on the feedback text and are approximate.",
+ "sample": {
+  "installs": 1,
+  "operators": 1,
+  "worker_model": "gemini-3.8-flash-high (all runs with a model recorded)",
+  "worker_runtime": "Antigravity (agy)",
+  "reviewers_planners": [
+   "Claude Code CLI",
+   "Claude through Antigravity"
+  ],
+  "projects": [
+   "agent-forge",
+   "one private application project"
+  ]
+ },
+ "agent_forge_project": {
+  "window": {
+   "first_task_created": "2026-10-11T14:33:58Z",
+   "last_merge": "2026-10-16T14:43:04Z"
+  },
+  "tasks": {
+   "total": 290,
+   "merged": 221,
+   "cancelled": 69,
+   "blocked_at_least_once": 33,
+   "blocked_then_merged": 11,
+   "blocked_then_cancelled": 22
+  },
+  "goals": {
+   "done": 40,
+   "cancelled": 1
+  },
+  "merged_per_day": {
+   "2026-10-11": 39,
+   "2026-10-12": 53,
+   "2026-10-13": 53,
+   "2026-10-14": 39,
+   "2026-10-15": 26,
+   "2026-10-16": 11
+  },
+  "first_pass": {
+   "k": 129,
+   "n": 221,
+   "pct": 58,
+   "ci95": [
+    52,
+    65
+   ]
+  },
+  "reworks_on_merged_tasks": {
+   "total": 198,
+   "per_merged": 0.9,
+   "distribution": {
+    "0": 129,
+    "1": 52,
+    "2": 15,
+    "3": 11,
+    "4": 14
+   }
+  },
+  "reworks_on_cancelled_tasks": 78,
+  "rework_causes_on_merged_tasks": {
+   "review: acceptance criterion not met": 49,
+   "review: gate test-counter warning": 32,
+   "merge conflict": 32,
+   "review: out of scope / allowed files": 30,
+   "mutation survived": 28,
+   "branch not pushed": 9,
+   "secret in branch (gate)": 7,
+   "review: other": 6,
+   "tests fail in clean container": 5
+  },
+  "review_rejections_by_reviewer": {
+   "agy-claude": 41,
+   "claude-cli": 76
+  },
+  "approvals_by": {
+   "agy-claude": 71,
+   "claude-cli": 148,
+   "orchestrator": 2
+  },
+  "hours_created_to_merged": {
+   "n": 221,
+   "median": 2.3,
+   "p90": 11.7,
+   "mean": 4.4
+  },
+  "minutes_last_dispatch_to_merged": {
+   "n": 221,
+   "median": 12.5,
+   "p90": 29.7,
+   "mean": 16.3
+  },
+  "minutes_run_end_to_verdict": {
+   "n": 537,
+   "median": 1.7,
+   "p90": 5.7,
+   "mean": 5.9
+  },
+  "lines_changed_per_merged_task": {
+   "n": 221,
+   "median": 183,
+   "p90": 593.0,
+   "mean": 261.7,
+   "total": 57827
+  },
+  "ledger": {
+   "records": 1852,
+   "by_reason": {
+    "orphaned": 957,
+    "ok": 471,
+    "setup-failed": 349,
+    "failed": 37,
+    "timeout": 36,
+    "killswitch": 1,
+    "quota": 1
+   },
+   "executed_records": 576,
+   "zero_token_records": 1276,
+   "never_started": 1255,
+   "never_started_by_reason": {
+    "setup-failed": 329,
+    "orphaned": 926
+   },
+   "executed_by_reason": {
+    "ok": 471,
+    "failed": 36,
+    "timeout": 36,
+    "orphaned": 31,
+    "killswitch": 1,
+    "quota": 1
+   },
+   "ok_share_of_executed": {
+    "k": 471,
+    "n": 576,
+    "pct": 82,
+    "ci95": [
+     78,
+     85
+    ]
+   }
+  },
+  "per_executed_run": {
+   "tokens": {
+    "n": 576,
+    "median": 329870.0,
+    "p90": 580185.0,
+    "mean": 353548.5
+   },
+   "tool_calls": {
+    "n": 576,
+    "median": 58.0,
+    "p90": 102.5,
+    "mean": 60.9
+   },
+   "minutes": {
+    "n": 576,
+    "median": 9.9,
+    "p90": 26.1,
+    "mean": 11.6
+   }
+  },
+  "per_merged_task": {
+   "tokens": {
+    "n": 221,
+    "median": 445427,
+    "p90": 1428000.0,
+    "mean": 710380.5
+   },
+   "executed_runs": {
+    "n": 221,
+    "median": 1,
+    "p90": 4.0,
+    "mean": 2.1
+   },
+   "quota_pct_of_weekly": {
+    "n": 221,
+    "mean": 1.89,
+    "ci": [
+     1.23,
+     2.55
+    ],
+    "median": 1.0
+   }
+  },
+  "tokens": {
+   "total": 203643919,
+   "on_merged_tasks_pct": 77,
+   "on_cancelled_tasks_pct": 23
+  },
+  "self_check": {
+   "runs": 449,
+   "green_first": 446,
+   "fixed": 1,
+   "still_red": 2
+  },
+  "egress": {
+   "alarms": 4,
+   "runs_with_alarm": 3,
+   "dispatches_refused_for_unacknowledged_alarm": 4
+  },
+  "orchestrator_calls": {
+   "by_kind": {
+    "next": {
+     "calls": 29,
+     "failed": 0,
+     "secs_median": 8.1
+    },
+    "plan": {
+     "calls": 74,
+     "failed": 9,
+     "secs_median": 124.4
+    },
+    "review": {
+     "calls": 582,
+     "failed": 80,
+     "secs_median": 35.5
+    },
+    "check": {
+     "calls": 67,
+     "failed": 1,
+     "secs_median": 36.2
+    }
+   },
+   "by_provider": {
+    "claude-cli": {
+     "calls": 465,
+     "failed": 15
+    },
+    "agy-claude": {
+     "calls": 287,
+     "failed": 75
+    }
+   },
+   "list_price_usd_total": 72.87,
+   "list_price_usd_per_merged_task": 0.33
+  },
+  "event_counts": {
+   "foreman_started": 28,
+   "clone_not_clean": 349,
+   "dispatch_refused": 66,
+   "dispatch_refused_busy": 55,
+   "auto_rebase": 186,
+   "lesson_learned": 194,
+   "wip_autosaved": 9,
+   "goal_closed": 40,
+   "antigravity_out_of_quota": 13,
+   "quota_low_wait": 56,
+   "orphan_requeue": 957,
+   "dispatch_refused_quota_unreadable": 25,
+   "kill_switch_idle": 3,
+   "orchestrator_call_failed": 14,
+   "dispatch_refused_egress": 4,
+   "antigravity_eligibility": 9,
+   "forgejo_busy": 9,
+   "antigravity_auth_failed": 53
+  }
+ },
+ "incidents": {
+  "orphan_requeue_loop": {
+   "records": 957,
+   "tasks": 9,
+   "worst_task_requeues": 717,
+   "worst_task_span": "2026-10-11T23:23Z to 2026-10-12T20:13Z",
+   "per_day": {
+    "2026-10-11": 50,
+    "2026-10-12": 888,
+    "2026-10-13": 1,
+    "2026-10-14": 17,
+    "2026-10-15": 1
+   },
+   "detector_merged": "2026-10-12T21:07Z",
+   "records_after_detector": 19
+  },
+  "dirty_clone_loop": {
+   "records": 349,
+   "tasks": 14,
+   "worst_two_tasks": [
+    175,
+    117
+   ],
+   "per_day": {
+    "2026-10-11": 339,
+    "2026-10-12": 2,
+    "2026-10-13": 3,
+    "2026-10-14": 2,
+    "2026-10-15": 2,
+    "2026-10-16": 1
+   },
+   "window_of_burst": "2026-10-11T14:35Z to 2026-10-11T17:20Z"
+  }
+ },
+ "pack_ab": {
+  "assignment": "stable hash of the task id (CONTEXT_PACK=ab), about half of the tasks each",
+  "agent_forge_project": {
+   "first_pass": {
+    "pack": {
+     "first_pass": 72,
+     "merged": 116,
+     "first_pass_pct": 62,
+     "first_pass_ci": [
+      53,
+      70
+     ]
+    },
+    "no_pack": {
+     "first_pass": 57,
+     "merged": 105,
+     "first_pass_pct": 54,
+     "first_pass_ci": [
+      45,
+      63
+     ]
+    },
+    "difference_pp_ci95": [
+     -5,
+     20
+    ],
+    "permutation_p": 0.275
+   },
+   "metrics": {
+    "reworks_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 0.89,
+     "mean_no_pack": 0.9,
+     "median_pack": 0.0,
+     "median_no_pack": 0,
+     "mean_difference_ci95": [
+      -0.46,
+      0.41
+     ],
+     "median_difference_ci95": [
+      -1.0,
+      0.0
+     ],
+     "permutation_p_mean": 0.971,
+     "permutation_p_median": 1.0
+    },
+    "tokens_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 649902.29,
+     "mean_no_pack": 777194.5,
+     "median_pack": 406351.5,
+     "median_no_pack": 559080,
+     "mean_difference_ci95": [
+      -304277.54,
+      55953.17
+     ],
+     "median_difference_ci95": [
+      -292949.0,
+      -16228.0
+     ],
+     "permutation_p_mean": 0.174,
+     "permutation_p_median": 0.016
+    },
+    "quota_pct_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 1.35,
+     "mean_no_pack": 2.48,
+     "median_pack": 1.0,
+     "median_no_pack": 1.0,
+     "mean_difference_ci95": [
+      -2.7,
+      0.03
+     ],
+     "median_difference_ci95": [
+      0.0,
+      0.0
+     ],
+     "permutation_p_mean": 0.079,
+     "permutation_p_median": 1.0
+    },
+    "executed_runs_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 1.95,
+     "mean_no_pack": 2.01,
+     "median_pack": 1.0,
+     "median_no_pack": 1,
+     "mean_difference_ci95": [
+      -0.56,
+      0.43
+     ],
+     "median_difference_ci95": [
+      -1.0,
+      0.0
+     ],
+     "permutation_p_mean": 0.829,
+     "permutation_p_median": 1.0
+    },
+    "tool_calls_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 114.55,
+     "mean_no_pack": 127.63,
+     "median_pack": 72.0,
+     "median_no_pack": 86,
+     "mean_difference_ci95": [
+      -44.45,
+      17.98
+     ],
+     "median_difference_ci95": [
+      -34.0,
+      1.5
+     ],
+     "permutation_p_mean": 0.427,
+     "permutation_p_median": 0.054
+    },
+    "lines_changed_per_merged": {
+     "n_pack": 116,
+     "n_no_pack": 105,
+     "mean_pack": 259.45,
+     "mean_no_pack": 264.1,
+     "median_pack": 180.0,
+     "median_no_pack": 185,
+     "mean_difference_ci95": [
+      -90.81,
+      75.73
+     ],
+     "median_difference_ci95": [
+      -89.0,
+      61.0
+     ],
+     "permutation_p_mean": 0.907,
+     "permutation_p_median": 0.856
+    }
+   }
+  },
+  "private_application_project_after_2026_10_10": {
+   "first_pass": {
+    "pack": {
+     "first_pass": 147,
+     "merged": 205,
+     "first_pass_pct": 72,
+     "first_pass_ci": [
+      65,
+      77
+     ]
+    },
+    "no_pack": {
+     "first_pass": 117,
+     "merged": 193,
+     "first_pass_pct": 61,
+     "first_pass_ci": [
+      54,
+      67
+     ]
+    },
+    "difference_pp_ci95": [
+     2,
+     20
+    ],
+    "permutation_p": 0.02
+   },
+   "metrics": {
+    "reworks_per_merged": {
+     "n_pack": 205,
+     "n_no_pack": 193,
+     "mean_pack": 0.44,
+     "mean_no_pack": 0.64,
+     "median_pack": 0,
+     "median_no_pack": 0,
+     "mean_difference_ci95": [
+      -0.4,
+      -0.01
+     ],
+     "median_difference_ci95": [
+      0,
+      0
+     ],
+     "permutation_p_mean": 0.038,
+     "permutation_p_median": 1.0
+    },
+    "tokens_per_merged": {
+     "n_pack": 205,
+     "n_no_pack": 193,
+     "mean_pack": 544950.27,
+     "mean_no_pack": 653970.9,
+     "median_pack": 434978,
+     "median_no_pack": 518924,
+     "mean_difference_ci95": [
+      -197526.98,
+      -21187.86
+     ],
+     "median_difference_ci95": [
+      -134194,
+      -8421
+     ],
+     "permutation_p_mean": 0.013,
+     "permutation_p_median": 0.006
+    },
+    "quota_pct_per_merged": {
+     "n_pack": 203,
+     "n_no_pack": 193,
+     "mean_pack": 1.29,
+     "mean_no_pack": 1.55,
+     "median_pack": 1.0,
+     "median_no_pack": 1.0,
+     "mean_difference_ci95": [
+      -0.49,
+      -0.03
+     ],
+     "median_difference_ci95": [
+      0.0,
+      0.0
+     ],
+     "permutation_p_mean": 0.024,
+     "permutation_p_median": 1.0
+    },
+    "executed_runs_per_merged": {
+     "n_pack": 205,
+     "n_no_pack": 193,
+     "mean_pack": 1.45,
+     "mean_no_pack": 1.69,
+     "median_pack": 1,
+     "median_no_pack": 1,
+     "mean_difference_ci95": [
+      -0.45,
+      -0.03
+     ],
+     "median_difference_ci95": [
+      0,
+      0
+     ],
+     "permutation_p_mean": 0.026,
+     "permutation_p_median": 1.0
+    },
+    "tool_calls_per_merged": {
+     "n_pack": 205,
+     "n_no_pack": 193,
+     "mean_pack": 101.21,
+     "mean_no_pack": 122.04,
+     "median_pack": 83,
+     "median_no_pack": 96,
+     "mean_difference_ci95": [
+      -34.58,
+      -7.24
+     ],
+     "median_difference_ci95": [
+      -28,
+      -4
+     ],
+     "permutation_p_mean": 0.003,
+     "permutation_p_median": 0.006
+    },
+    "lines_changed_per_merged": {
+     "n_pack": 205,
+     "n_no_pack": 193,
+     "mean_pack": 641.07,
+     "mean_no_pack": 678.75,
+     "median_pack": 586,
+     "median_no_pack": 601,
+     "mean_difference_ci95": [
+      -141.55,
+      61.07
+     ],
+     "median_difference_ci95": [
+      -124,
+      145
+     ],
+     "permutation_p_mean": 0.473,
+     "permutation_p_median": 0.897
+    }
+   }
+  }
+ },
+ "before_after_private_application_project": {
+  "cut": "2026-10-07T17:53Z (the 0.9.0 efficiency features went live together; no task merged between 2026-10-05T08:45Z and 2026-10-10T14:54Z)",
+  "before": {
+   "merged": 164,
+   "first_pass": 110,
+   "first_pass_pct": 67,
+   "first_pass_ci95": [
+    60,
+    74
+   ],
+   "reworks_per_merged": 0.62,
+   "executed_runs": 383,
+   "minutes_last_dispatch_to_merged_median": 15.6,
+   "tokens_per_merged_task": {
+    "mean": 1526026,
+    "median": 1077552
+   },
+   "quota_pct_per_merged_task_mean": 1.77,
+   "executed_runs_per_merged_task_mean": 1.68,
+   "tool_calls_per_merged_task_median": 76.5,
+   "median_tokens_per_executed_run": 959880,
+   "median_minutes_per_executed_run": 12.2,
+   "stops": {
+    "ok": 252,
+    "token_cap": 85,
+    "failed": 25,
+    "timeout": 13,
+    "killswitch": 8
+   },
+   "rework_causes": {
+    "merge conflict": 33,
+    "branch not pushed": 26,
+    "review": 19,
+    "mutation survived": 13,
+    "tests fail in clean container": 11
+   }
+  },
+  "after": {
+   "merged": 398,
+   "first_pass": 264,
+   "first_pass_pct": 66,
+   "first_pass_ci95": [
+    62,
+    71
+   ],
+   "reworks_per_merged": 0.54,
+   "executed_runs": 935,
+   "minutes_last_dispatch_to_merged_median": 35.1,
+   "tokens_per_merged_task": {
+    "mean": 597817,
+    "median": 466025
+   },
+   "quota_pct_per_merged_task_mean": 1.41,
+   "executed_runs_per_merged_task_mean": 1.57,
+   "tool_calls_per_merged_task_median": 89,
+   "median_tokens_per_executed_run": 346266,
+   "median_minutes_per_executed_run": 25.8,
+   "stops": {
+    "ok": 603,
+    "timeout": 275,
+    "failed": 45,
+    "killswitch": 9,
+    "token_cap": 2,
+    "quota": 1
+   },
+   "rework_causes": {
+    "tests fail in clean container": 80,
+    "review": 66,
+    "branch not pushed": 45,
+    "merge conflict": 12,
+    "mutation survived": 10
+   }
+  },
+  "differences_after_minus_before": {
+   "tokens_per_merged_mean_ci95": [
+    -1134438,
+    -727740
+   ],
+   "tokens_per_merged_median_ci95": [
+    -883187,
+    -477477
+   ],
+   "quota_pct_mean_ci95": [
+    -0.63,
+    -0.09
+   ],
+   "executed_runs_per_merged_mean_ci95": [
+    -0.32,
+    0.09
+   ],
+   "tool_calls_per_merged_median_ci95": [
+    -0.5,
+    21.0
+   ]
+  },
+  "stop_share_of_executed_runs": {
+   "token_cap": {
+    "before": 22.2,
+    "after": 0.2,
+    "before_ci95": [
+     18,
+     27
+    ],
+    "after_ci95": [
+     0,
+     1
+    ]
+   },
+   "timeout": {
+    "before": 3.4,
+    "after": 29.4,
+    "before_ci95": [
+     2,
+     6
+    ],
+    "after_ci95": [
+     27,
+     32
+    ]
+   },
+   "ok": {
+    "before": 65.8,
+    "after": 64.5,
+    "before_ci95": [
+     61,
+     70
+    ],
+    "after_ci95": [
+     61,
+     67
+    ]
+   }
+  },
+  "configured_limits": {
+   "run_timeout_min": 30,
+   "run_token_cap": 1500000,
+   "unchanged_since": "2026-09-26"
+  },
+  "day_of_2026_10_20": {
+   "merged": 69,
+   "first_pass": 26,
+   "first_pass_pct": 38,
+   "first_pass_ci95": [
+    27,
+    49
+   ],
+   "clean_container_reworks": 35
+  },
+  "after_quality_checks_2026_10_20T19_13Z": {
+   "merged": 2,
+   "note": "too few to say anything"
+  }
+ },
+ "effect_unmeasured": [
+  "scripted quality checks (live 2026-10-20T19:13Z; 2 tasks merged since)",
+  "orientation changes: line spans, callers block, start state (from 2026-10-20; only a benchmark exists, see bench/)",
+  "salvage always commits (from 2026-10-20)",
+  "self-check in the same conversation (it fired a fix round 5 times in 1,019 recorded runs)",
+  "model routing",
+  "PROMPT_ORDER=cache (off)"
+ ],
+ "does_not_show": [
+  "that it works on another install, another model family, another language or another operator",
+  "a comparison with a human team or a single agent without the loop",
+  "that merged changes are correct or maintainable (merged = gate green + automated review)",
+  "money cost (subscriptions; only list-price figures for orchestrator calls)"
+ ]
+}

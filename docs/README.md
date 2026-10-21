@@ -42,5 +42,6 @@ Start with the [project README](../README.md) for what Agent-Forge is. Everythin
 | [Security](../SECURITY.md) | see the isolation layers, the honest limits and how to report a vulnerability |
 | [Security audit](../SECURITY-AUDIT.md) | read the findings and fixes per component |
 | [Efficiency](EFFICIENCY.md) | see how tokens are saved, with measurements |
+| [Field report](FIELD-REPORT.md) | real numbers from one install: what merged, what went wrong, what is still unmeasured |
 | [Ideas](IDEAS.md) | browse proposals that are not planned yet |
 | [Contributing](../CONTRIBUTING.md) | set up a dev checkout, run the tests, send a change |
