@@ -39,8 +39,8 @@ Still open, roughly by value:
 - A command palette (Ctrl+K): new goal, jump to a task, kill switch (search already opens with `/`).
 - Side-by-side diffs with syntax highlighting; a comment on a diff line goes back to the worker with the line.
 - Multi-user: sign-in, roles (viewer / operator / admin), an audit log of who changed what.
-- Accessibility pass (keyboard navigation, ARIA labels, contrast) and a light/dark switch (now: the system's setting).
-- Translations, if the community wants them (strings in separate files, not in code).
+- Accessibility pass (keyboard navigation, ARIA labels, contrast). The theme switch (auto / light / dark) is there.
+- More translations: the dashboard reads its texts from `web/static/locales/` (English and Slovak so far); a new language is one JSON file.
 
 ## Maintainers: release checklist
 - [ ] `make check` and `tests/test_ui.sh` green; the `ci`, `codeql` and `install` workflows green on `main`.
