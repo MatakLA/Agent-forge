@@ -285,7 +285,7 @@ A runtime is an agent CLI that can run unattended in a container, take a prompt,
    (prompt on stdin if the CLI allows), and its event stream in `scan()` - tokens without cache reads, tool calls, the
    conversation id for resuming, a final result with status and cost. No machine-readable output? Wrap it like
    `worker/af-aider-events` does.
-2. `worker/Dockerfile.api`: install it pinned (version and checksum); `worker/af-agent`: put the key into its environment and
+2. `worker/Dockerfile.api`: install it pinned (an npm CLI goes into `worker/agent-clis/package.json` and its lockfile; anything else by version and checksum); `worker/af-agent`: put the key into its environment and
    switch off update checks, telemetry and anything else that calls home.
 3. `tests/fixtures/fake-model-api.js` answers its API; add it to `tests/test_runtimes.sh` - the logging proxy shows every host
    it tries to reach. Then `web/dashboard/live.py` renders its events and `bin/worker-add` accepts the name.
@@ -294,6 +294,8 @@ Not included, and why: Cursor CLI (its backend hosts are not documented, so the 
 OpenHands (it brings its own sandbox runtime). Contributions that solve that are welcome.
 
 ## Versions
-`worker/Dockerfile.api` pins Node.js (SHA-256 checked), the three CLIs, uv (hash-checked) and Aider. To upgrade: change the versions, rebuild
-(`docker compose -f worker/docker-compose.api.yml build`), run `tests/test_runtimes.sh`, then `bin/worker-up N` for each
-API worker.
+`worker/Dockerfile.api` pins Node.js (SHA-256 checked), uv (hash-checked) and Aider; the three CLIs are pinned by
+`worker/agent-clis/package-lock.json` and installed with `npm ci`, which refuses any tarball whose hash differs. To upgrade a CLI:
+change its version in `worker/agent-clis/package.json`, run `npm install --package-lock-only` in that directory (Dependabot does the
+same every month), rebuild (`docker compose -f worker/docker-compose.api.yml build`), run `tests/test_runtimes.sh`, then
+`bin/worker-up N` for each API worker.

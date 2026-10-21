@@ -6,7 +6,7 @@ PY := python3
 PYSCRIPTS := bin/foreman bin/dispatch bin/run-supervisor bin/review-branch bin/killswitch bin/open-pr bin/merge-pr bin/forgejo-api \
              bin/doctor bin/status bin/report bin/egress-report bin/audit-rotate bin/wait-run bin/verify-token-refresh bin/upstream bin/secret-set \
              scripts/forge-bootstrap web/server.py worker/af-aider-events tests/fixtures/logging-proxy.py
-SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/update.sh scripts/uninstall.sh install.sh forge tests/test_forge_cli.sh tests/test_install_flow.sh tools/lint scripts/vm-baseline-ubuntu.sh tests/test_ui.sh tests/test_a11y.sh tools/fake-docker \
+SHSCRIPTS := bin/worker-add bin/worker-up bin/egress-up scripts/install-services scripts/install.sh scripts/update.sh scripts/uninstall.sh install.sh forge tests/test_forge_cli.sh tests/test_install_flow.sh tools/lint tools/sign-release scripts/vm-baseline-ubuntu.sh tests/test_ui.sh tests/test_a11y.sh tests/test_props.sh tools/fake-docker \
              egress/entrypoint.sh worker/entrypoint.sh worker/agy-run worker/af-agent tests/test_supervisor.sh tests/test_runtimes.sh tests/test_egress_security.sh worker/git-credential-forgejo
 
 .PHONY: check test lint doctor

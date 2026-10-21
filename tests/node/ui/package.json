@@ -1,0 +1,9 @@
+{
+  "name": "agent-forge-test-ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test-only: the dashboard smoke test (tests/test_ui.sh) installs this with npm ci from the lockfile.",
+  "dependencies": {
+    "jsdom": "25.0.1"
+  }
+}

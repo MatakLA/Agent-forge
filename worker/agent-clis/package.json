@@ -1,0 +1,11 @@
+{
+  "name": "agent-forge-worker-clis",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The agent CLIs of the API-runtime worker image, installed with npm ci from the lockfile (every tarball is checked against its hash).",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.293",
+    "@google/gemini-cli": "0.63.0",
+    "@openai/codex": "0.161.0"
+  }
+}

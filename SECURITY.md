@@ -48,6 +48,11 @@ never `funnel`, never a public reverse proxy). Built-in protections:
 - **Optional sign-in**: `DASHBOARD_TOKEN` (HttpOnly, SameSite=Strict cookie). Use it whenever more than you can reach the port.
 - Values are validated server-side against a fixed list of keys and formats; owner text (goals, answers) reaches `bin/foreman`
   on stdin, never in a command line.
+- **Access log**: every write and every refused or failed request is one line in the journal (`forge logs web`): time, client
+  address, method, path, status and a few short plain fields of the request (`action=allow host=pypi.org`). Never logged: the
+  query string (the sign-in token travels there), cookies, request bodies, typed text, secret values (a secret shows only its
+  name). `DASHBOARD_ACCESS_LOG=all` adds the reads, `=off` silences it. Changes that matter (settings, secrets, workers, projects,
+  imports, egress decisions) also land in the audit trail (`runs/ledger.jsonl` and `runs/ALERT`) with the name, never the value.
 
 ### The orchestrator cannot be steered by the code it reviews
 Review and planning calls are fresh sessions **without tools** (`claude -p --tools ""`; agy without
@@ -85,8 +90,23 @@ quota stops, token caps, timeouts and stops by the kill switch itself neither co
   commit (never from a laptop), with a base image pinned by digest, an SPDX bill of materials stored with the image and signed
   build provenance (Sigstore, via GitHub). Check that an image really came from this repository's workflow:
   `gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:X.Y.Z --owner MatakLA`. The same SBOM is attached to the GitHub release.
+- **Release files.** Each release carries the source archive `agent-forge-X.Y.Z.tar.gz` (built from the tagged commit, the same bytes
+  every time), the SBOM and `SHA256SUMS`, and next to every one of them a Sigstore signature `FILE.sigstore.json` (keyless: the
+  signature, the short-lived certificate of the workflow run and the public transparency-log entry, no private key to steal or lose).
+  Check a file: `cosign verify-blob --bundle FILE.sigstore.json --certificate-identity-regexp '^https://github\.com/MatakLA/Agent-forge/\.github/workflows/(release|sign-release)\.yml@refs/(tags/v[0-9.]+|heads/main)$' --certificate-oidc-issuer https://token.actions.githubusercontent.com FILE`,
+  or `gh attestation verify FILE --owner MatakLA` (signed build provenance). What this proves: the file was produced by this
+  repository's workflow, not by someone with a stolen password. It does not prove the code is bug-free.
+- **Dependencies.** Everything the build installs is pinned to an exact version and checked against a hash: the three agent CLIs
+  in the worker image (`worker/agent-clis/package-lock.json`, `npm ci`), the test tools (`tests/node/*/package-lock.json`), the CI
+  Python tools (`tools/requirements-*.txt`, `pip --require-hashes`), Node.js and uv by SHA-256, base images by digest and Actions by
+  commit. Dependabot proposes updates monthly. One base image, `sandbox-worker`, is built locally from `worker/Dockerfile` and cannot be pinned
+  by digest; it is rebuilt from the pinned sources above.
 - **Actions.** Every GitHub Action the repository uses is pinned to a commit SHA; Dependabot proposes updates monthly. CI jobs
   get read-only tokens unless a job needs more (the release and code-scanning jobs say why).
+- **Tests that look for the unexpected.** Besides the fixed tests, `tests/props.js` throws thousands of generated inputs (fast-check,
+  a test-only dependency; the runtime stays on the standard library) at the helpers the dashboard uses to display text, durations
+  and money, and checks properties that must hold for any input (no markup survives escaping, no negative durations). It already
+  found one bug, fixed in 0.12.2.
 - **Scorecard.** The [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/MatakLA/Agent-forge) workflow scores these
   practices weekly; the result is public and includes the weak spots (for example, one maintainer means little independent review).
 - **Installer.** `install.sh` clones this repository and runs `scripts/install.sh`; read both before piping anything to a shell.

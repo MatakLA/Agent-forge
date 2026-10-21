@@ -1,14 +1,14 @@
 # ==============================================================================
 # Worker image for the API runtimes (claude / codex / gemini / compat / aider) - the agy worker image plus Node.js with three agent
-# CLIs, and Aider, all pinned to exact versions. Same user, same locked-down container; the API key is a read-only file mount used
-# only by /usr/local/bin/af-agent. Built by bin/worker-up the first time a worker with an API runtime is created.
+# CLIs, and Aider, all pinned to exact versions: the CLIs by agent-clis/package-lock.json (npm ci checks every tarball against its
+# hash), Node.js and uv by SHA-256. Same user, same locked-down container; the API key is a read-only file mount used only by
+# /usr/local/bin/af-agent. Built by bin/worker-up the first time a worker with an API runtime is created.
 # Versions were checked against a fake API server (event formats, resume, network hosts): see docs/RUNTIMES.md.
 # ==============================================================================
+# The base is built locally by bin/worker-up from worker/Dockerfile (never pulled from a registry), so there is no digest to pin;
+# everything this file adds is pinned and hash-checked.
 FROM sandbox-worker:1.2.11
 
-ARG CLAUDE_CODE_VERSION=2.1.293
-ARG CODEX_VERSION=0.161.0
-ARG GEMINI_CLI_VERSION=0.63.0
 # Node.js from nodejs.org over HTTPS, pinned and SHA-256 verified (no apt: reproducible, and works where port 80 is closed).
 # One hash per CPU architecture (x86-64 and arm64, e.g. an Ubuntu VM on Apple silicon).
 ARG NODE_VERSION=22.23.3
@@ -30,9 +30,10 @@ RUN case "$(dpkg --print-architecture)" in \
  && echo "${node_sha}  /tmp/node.tar.gz" | sha256sum -c - \
  && mkdir -p /opt/node && tar -xzf /tmp/node.tar.gz -C /opt/node --strip-components=1 && rm /tmp/node.tar.gz \
  && ln -s /opt/node/bin/node /usr/local/bin/node && ln -s /opt/node/bin/npm /usr/local/bin/npm \
- && HOME=/tmp/build npm install -g --prefix /opt/node --no-fund --no-audit --omit=dev \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
- && for b in claude codex gemini; do ln -s "/opt/node/bin/$b" "/usr/local/bin/$b"; done \
+ && mkdir -p /opt/agent-clis
+COPY agent-clis/package.json agent-clis/package-lock.json /opt/agent-clis/
+RUN cd /opt/agent-clis && HOME=/tmp/build npm ci --no-fund --no-audit --omit=dev \
+ && for b in claude codex gemini; do ln -s "/opt/agent-clis/node_modules/.bin/$b" "/usr/local/bin/$b"; done \
  && HOME=/tmp/build claude --version && HOME=/tmp/build codex --version && HOME=/tmp/build gemini --version \
  && rm -rf /tmp/build \
  # nothing root-owned may end up in the worker's HOME (it is copied into each new HOME volume): the CLIs write their state there

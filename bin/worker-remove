@@ -56,4 +56,5 @@ if [ -f "$ROOT/etc/workers.conf" ]; then
   grep -v "^$U=" "$ROOT/etc/workers.conf" > "$ROOT/etc/workers.conf.tmp" || true
   mv "$ROOT/etc/workers.conf.tmp" "$ROOT/etc/workers.conf"
 fi
+python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; sbx.alert(sys.argv[1] + ' removed')" "$U"
 echo "$U removed"

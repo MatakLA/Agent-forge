@@ -43,6 +43,7 @@ class TestSecretSetCredentialHandling(unittest.TestCase):
 
             env = os.environ.copy()
             env["HOME"] = td
+            env.update(SANDBOX_TEST="1", SANDBOX_RUNS_DIR=os.path.join(td, "runs"))   # the audit line must not land in this checkout
             secrets_dir = os.path.join(td, ".config", "sandbox", "secrets")
             env["SANDBOX_SECRETS"] = secrets_dir
             os.makedirs(secrets_dir, mode=0o700, exist_ok=True)
@@ -84,6 +85,7 @@ class TestSecretSetCredentialHandling(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             env = os.environ.copy()
             env["HOME"] = td
+            env.update(SANDBOX_TEST="1", SANDBOX_RUNS_DIR=os.path.join(td, "runs"))   # the audit line must not land in this checkout
             secret_value = "super-confidential-token-do-not-leak-12345"
             cmd = [os.environ.get("PY", "python3"), os.path.join(ROOT, "bin", "secret-set"), "openai.key"]
             proc = subprocess.run(
@@ -101,6 +103,9 @@ class TestSecretSetCredentialHandling(unittest.TestCase):
             self.assertIn("stored openai.key", proc.stdout)
             self.assertNotIn(secret_value, proc.stdout, "Secret value was printed to stdout!")
             self.assertNotIn(secret_value, proc.stderr, "Secret value was printed to stderr!")
+            audit = open(os.path.join(td, "runs", "ALERT")).read()
+            self.assertIn("secret openai.key stored", audit, "storing a secret must leave an audit line (the name only)")
+            self.assertNotIn(secret_value, audit, "Secret value reached the audit log!")
         assert proc_ret == 0
         assert has_confirmation is True
         assert leaked_in_stdout is False
@@ -114,6 +119,7 @@ class TestSecretSetCredentialHandling(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             env = os.environ.copy()
             env["HOME"] = td
+            env.update(SANDBOX_TEST="1", SANDBOX_RUNS_DIR=os.path.join(td, "runs"))   # the audit line must not land in this checkout
             invalid_secret = "token with spaces"
             cmd = [os.environ.get("PY", "python3"), os.path.join(ROOT, "bin", "secret-set"), "gemini.key"]
             proc = subprocess.run(

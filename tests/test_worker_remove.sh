@@ -43,6 +43,7 @@ check "the container and its home volume are removed" "grep -qx 'rm -f worker-2'
 check "the Forgejo user is deleted by name, and without --purge (its pull requests stay)" "grep -qx 'exec forgejo forgejo admin user delete --username worker-2' $FAKE_LOG"
 check "its token, password and keyring are gone" "[ ! -e $T/secrets/worker-2.token ] && [ ! -e $T/secrets/worker-2.password ] && [ ! -e $T/secrets/worker-2-keyring ]"
 check "its workers.conf line is gone" "! grep -q '^worker-2=' $A/etc/workers.conf"
+check "the removal is in the audit log (runs/ALERT)" "grep -q ' worker-2 removed\$' $T/runs/ALERT"
 check "the other worker keeps everything" "[ -f $T/secrets/worker-1.token ] && [ -f $T/secrets/worker-1-keyring ] && grep -q '^worker-1=' $A/etc/workers.conf && grep -q worker-1 $T/users && ! grep -q 'rm -f worker-1' $FAKE_LOG"
 
 : > "$FAKE_LOG"

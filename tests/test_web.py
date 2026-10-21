@@ -12,9 +12,11 @@ Invariants:
 - Control actions (autopilot on/off, pause/resume) and project names are validated before executing foreman commands, with round-trip distinct argv enforcement.
 - Control actions and payload shape in web/server.py match web/static/js/overview.js exactly.
 """
+import contextlib
 import glob
 import http.client
 import importlib.util
+import io
 import json
 import os
 import re
@@ -1477,6 +1479,55 @@ class TestWebServer(unittest.TestCase):
         self.assertIsNone(srv.B.LOGIN._url("nothing", 80))
         self.assertEqual(srv.B.LOGIN.write("worker-1", "AAAA").get("error"), "no running login session")
         self.assertEqual(srv.B.LOGIN.resize("worker-1", 100, 30).get("error"), "no running login session")
+
+    def test_access_log_records_writes_without_secrets(self):
+        """Every write leaves one line in the journal, with a few plain fields - never the secret value, the query string,
+        the sign-in token or typed text; reads are quiet unless DASHBOARD_ACCESS_LOG=all; refused requests are always logged."""
+        H = {"X-Agent-Forge": "1"}
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.req("POST", "/api/secret", {"name": "anthropic.key", "value": "sk-ant-TOPSECRET"}, H)
+            self.req("POST", "/api/secret", {"name": "sk-ant-TOPSECRET2", "value": "x"}, H)
+            self.req("POST", "/api/egress", {"action": "allow", "host": "pypi.org"}, H)
+            self.req("POST", "/api/settings", {"changes": {"WORKER_N": "2", "bad key": "1"}}, H)
+            self.req("POST", "/api/ask", {"question": "what is my password hunter2?"}, H)
+            self.req("GET", "/api/status?token=s3cret")
+            self.req("GET", "/api/status?token=wrong", headers={"Cookie": ""})
+            self.req("POST", "/api/egress", {"action": "allow", "host": "pypi.org"}, {"Cookie": ""})
+        log = buf.getvalue()
+        lines = log.splitlines()
+        self.assertTrue(all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ dashboard \S+ (GET|POST) /\S* \d{3}( .*)?", l) for l in lines), lines)
+        self.assertTrue(any(" POST /api/secret 200 name=anthropic.key" in l for l in lines), lines)
+        self.assertTrue(any(" POST /api/egress 200 action=allow host=pypi.org" in l for l in lines), lines)
+        self.assertTrue(any(" POST /api/settings " in l and l.endswith("keys=WORKER_N") for l in lines), lines)
+        self.assertTrue(any(" POST /api/ask 200" in l for l in lines), lines)
+        self.assertTrue(any(" GET /api/status 401" in l for l in lines), lines)
+        self.assertTrue(any(" POST /api/egress 401" in l for l in lines), lines)
+        self.assertFalse(any(" GET /api/status 200" in l for l in lines), lines)
+        for needle in ("TOPSECRET", "hunter2", "s3cret", "wrong", "?token", "bad key"):
+            self.assertNotIn(needle, log)
+        old, srv.ACCESS_LOG = srv.ACCESS_LOG, "all"
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                self.req("GET", "/api/status?token=s3cret")
+            self.assertIn(" GET /api/status 200", buf.getvalue())
+            self.assertNotIn("s3cret", buf.getvalue())
+            srv.ACCESS_LOG = "off"
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                self.req("POST", "/api/egress", {"action": "allow", "host": "pypi.org"}, H)
+            self.assertEqual(buf.getvalue(), "")
+        finally:
+            srv.ACCESS_LOG = old
+
+    def test_audit_detail_keeps_only_plain_fields(self):
+        self.assertEqual(srv.audit_detail("/api/x", {"action": "add", "text": "free text", "value": "v", "worker": "worker-3"}),
+                         "action=add worker=worker-3")
+        self.assertEqual(srv.audit_detail("/api/x", {"action": "a\nb", "host": "x" * 200, "n": True}), "")
+        self.assertEqual(srv.audit_detail("/api/secret", {"name": "gemini.key", "value": "v"}), "name=gemini.key")
+        self.assertEqual(srv.audit_detail("/api/secret", {"name": "not-a-known-secret"}), "")
+        self.assertEqual(srv.audit_detail("/api/x", None), "")
 
 
 class TestForgeDirDefault(unittest.TestCase):

@@ -375,6 +375,7 @@ SHARED_FILES=
     for src, dst in (("etc/team-rules.example.md", "team-rules.md"), ("docs/vision.example.md", "vision.md")):
         if os.path.exists(os.path.join(ctx.ROOT, src)) and not os.path.exists(os.path.join(d, dst)):
             open(os.path.join(d, dst), "w").write(open(os.path.join(ctx.ROOT, src)).read())
+    sbx.alert(f"project {name} created (repo {repo})")
     print(f"""created projects/{name}/ (project.conf, team-rules.md, vision.md)
 next:
   1. edit projects/{name}/vision.md and team-rules.md

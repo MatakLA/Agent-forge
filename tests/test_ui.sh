@@ -11,6 +11,6 @@ docker run -d --name "$N" --user "$(id -u):$(id -g)" -v "$T/af:/af" -v "$ROOT/to
   -e FORGE_DIR=/af -e BIND_PORT=8171 -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp python:3.12-slim python3 web/server.py >/dev/null
 for i in $(seq 1 40); do docker exec "$N" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8171/healthz')" 2>/dev/null && break; sleep 1; done
 sleep 6
-mkdir -p "$T/js" && cp "$ROOT/tests/ui_smoke.js" "$T/js/t.js"
+mkdir -p "$T/js" && cp "$ROOT/tests/ui_smoke.js" "$T/js/t.js" && cp "$ROOT"/tests/node/ui/package*.json "$T/js/"
 docker run --rm --network "container:$N" --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$T/js:/t" -w /t node:22-alpine \
-  sh -c 'npm i -s --no-audit --no-fund jsdom@25 >/dev/null 2>&1 && node t.js'
+  sh -c 'npm ci -s --no-audit --no-fund >/dev/null 2>&1 && node t.js'

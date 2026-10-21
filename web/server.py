@@ -66,6 +66,34 @@ def download_file(path):
 SEC_HEADERS = {"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                                           "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}
+SECRET_NAMES = ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token", "notify.token")
+
+# ---- access log, one line per request on stderr (the journal: `forge logs web`). Default: every write (POST) and every refused or
+# failed request; DASHBOARD_ACCESS_LOG=all adds the reads, =off silences it. Never logged: the query string (the sign-in token
+# travels there), cookies, request bodies, typed text, secret values. A write shows only a few short, plain fields of its body.
+ACCESS_LOG = os.environ.get("DASHBOARD_ACCESS_LOG", "writes").strip().lower()
+_AUDIT_KEYS = ("action", "kind", "fix", "runtime", "worker", "host", "name", "code", "project", "id", "mode", "target", "to", "n")
+_AUDIT_VALUE = re.compile(r"[A-Za-z0-9_.:@/-]{1,80}")
+
+
+def audit_detail(path, body):
+    """The non-secret summary of a write that goes into the access log: `action=allow host=example.org`."""
+    if not isinstance(body, dict):
+        return ""
+    out = []
+    for k in _AUDIT_KEYS:
+        v = body.get(k)
+        if not isinstance(v, (str, int)) or isinstance(v, bool) or not _AUDIT_VALUE.fullmatch(str(v)):
+            continue
+        if path == "/api/secret" and k == "name" and v not in SECRET_NAMES:
+            continue
+        out.append(f"{k}={v}")
+    ch = body.get("changes")
+    if path == "/api/settings" and isinstance(ch, dict):
+        out.append("keys=" + ",".join(k for k in list(ch)[:20] if isinstance(k, str) and re.fullmatch(r"[A-Z0-9_]{1,60}", k)))
+    return " ".join(out)
+
+
 TASK_ID = re.compile(r"\d{4}-[\w-]{1,60}")
 GOAL_ID = re.compile(r"G\d{8}-\d{6}(-[\w-]{1,30})?")
 DOC_NAME = re.compile(r"vision|team-rules|decisions|lessons|role:[a-z][a-z0-9-]{1,40}")
@@ -209,6 +237,25 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def log_request(self, code="-", size="-"):
+        if ACCESS_LOG == "off":
+            return
+        try:
+            status = int(code)
+        except (TypeError, ValueError):
+            status = 0
+        if not (ACCESS_LOG == "all" or self.command not in ("GET", "HEAD") or status >= 400):
+            return
+        path = re.sub(r"[^\x21-\x7e]", "?", (self.path or "").split("?")[0])[:120]
+        if DASHBOARD_TOKEN:
+            path = path.replace(DASHBOARD_TOKEN, "[REDACTED]")
+        detail, self._audit = getattr(self, "_audit", ""), ""        # a kept-alive connection reuses this object
+        try:
+            print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} dashboard {self.client_address[0]} {self.command} {path} {status}"
+                  + (f" {detail}" if detail else ""), file=sys.stderr, flush=True)
+        except OSError:
+            pass
+
     def end_headers(self):
         for k, v in SEC_HEADERS.items():
             self.send_header(k, v)
@@ -311,6 +358,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "bad project"}, 400); return
         penv = f"FORGE_PROJECT={proj} " if pf else ""
         path = self.path.split("?")[0]
+        self._audit = audit_detail(path, body)
         if path == "/api/ask":
             q = str(body.get("question", "")).strip()[:4000]
             if not q:
@@ -493,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/secret":
             # an API key or forge token typed by the owner: goes to bin/secret-set on stdin, never into a command line or a log
             name, value = str(body.get("name", "")), str(body.get("value", "")).strip()
-            if name not in ("anthropic.key", "openai.key", "gemini.key", "compat.key", "github.token", "gitlab.token", "notify.token") or not value:
+            if name not in SECRET_NAMES or not value:
                 self._json({"error": "unknown secret name or empty value"}, 400); return
             rc, out, err = B.ssh_run_full(f"cd {B.FORGE_DIR} && bin/secret-set {name}", timeout=30, inp=value)
             self._json({"ok": rc == 0, "message": (out or err).strip()[-200:]})

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Usage: tools/sign-release VERSION OUTDIR [FILE...]      (run by the release workflows; needs cosign and `id-token: write`)
+# Builds the source archive agent-forge-VERSION.tar.gz from the commit checked out in $SRC_DIR (default: here), lists it and the extra
+# files in SHA256SUMS, signs every one of them keyless with Sigstore (NAME.sigstore.json, a bundle with the signature, the short-lived
+# certificate and the transparency-log entry) and checks each signature again against the identity of the running workflow.
+# Everything lands in OUTDIR. Anyone can repeat the check, see SECURITY.md ("What you download").
+set -euo pipefail
+[ $# -ge 2 ] || { sed -n 2p "$0"; exit 2; }
+VERSION="$1"; OUT="$2"; shift 2
+SRC_DIR="${SRC_DIR:-.}"
+ISSUER="https://token.actions.githubusercontent.com"
+IDENTITY="https://github.com/${GITHUB_WORKFLOW_REF:?run this inside a GitHub Actions job}"
+mkdir -p "$OUT"
+ARCHIVE="agent-forge-$VERSION.tar.gz"
+# gzip -n: no name or time in the header, so the same commit always gives the same archive
+git -C "$SRC_DIR" archive --format=tar --prefix="agent-forge-$VERSION/" HEAD | gzip -n -9 > "$OUT/$ARCHIVE"
+FILES=("$ARCHIVE")
+for f in "$@"; do cp "$f" "$OUT/"; FILES+=("$(basename "$f")"); done
+cd "$OUT"
+sha256sum "${FILES[@]}" > SHA256SUMS
+FILES+=(SHA256SUMS)
+for f in "${FILES[@]}"; do
+  cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+  cosign verify-blob --bundle "$f.sigstore.json" --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$f"
+done
+ls -l

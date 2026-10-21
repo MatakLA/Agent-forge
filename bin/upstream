@@ -75,6 +75,7 @@ if a[0] == "import":
         r = upstream.sync_main(up, fd, force=True)
     finally:
         protected = protect_main()
+    sbx.alert(f"upstream: imported {cfg['kind']} {cfg['repo']} ({cfg['branch']}) into Forgejo's main ({r})" + (" with --force" if "--force" in a else ""))
     print(f"✔ imported {cfg['kind']} {cfg['repo']} ({cfg['branch']}) into Forgejo's main ({r}); "
           + ("main protected again (only the orchestrator pushes/merges)" if protected else "✘ could not restore main's protection - run scripts/forge-bootstrap"))
     sys.exit(0 if protected else 2)
