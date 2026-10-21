@@ -4,6 +4,8 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -11,24 +13,34 @@ updates:
     directory: /demo
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   - package-ecosystem: docker
     directory: /worker
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     ignore:
       - dependency-name: sandbox-worker   # built locally by Dockerfile, not published to any registry
   - package-ecosystem: docker
     directory: /egress
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   - package-ecosystem: npm
     directory: /worker/agent-clis
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   - package-ecosystem: npm
     directory: /tests/node/a11y
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       test-tools:
         patterns: ["*"]
@@ -36,6 +48,8 @@ updates:
     directory: /tests/node/ui
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       test-tools:
         patterns: ["*"]
@@ -43,6 +57,8 @@ updates:
     directory: /tests/node/props
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       test-tools:
         patterns: ["*"]
@@ -50,6 +66,8 @@ updates:
     directory: /tools
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       ci-tools:
         patterns: ["*"]
