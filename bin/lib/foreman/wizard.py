@@ -31,6 +31,21 @@ except ImportError:
         from foreman import readiness
 
 
+def _no_worker_image(instead: str) -> str:
+    """Next steps for a runtime that is registered (readiness, cost, egress) but that bin/worker-add refuses (runtimes.CREATABLE)."""
+    return f"This runtime has no worker image yet, so bin/worker-add cannot create it (docs/RUNTIMES.md). {instead}"
+
+
+def _own_server(port: int) -> str:
+    return (f"The same server works through the generic runtimes: start it so Docker can reach it (its LAN address, not only 127.0.0.1), set "
+            f"COMPAT_BASE_URL=http://<address>:{port}/v1 in etc/limits.conf and add worker: bin/worker-add 1 --runtime aider "
+            f"(or compat if it speaks the OpenAI Responses API)")
+
+
+_PROVIDER_API = ("If the provider offers an OpenAI-compatible chat-completions API, set COMPAT_BASE_URL to it in etc/limits.conf, "
+                 "store the key with bin/secret-set compat.key and add worker: bin/worker-add 1 --runtime aider")
+
+
 NEXT_STEPS: dict[str, str] = {
     # 16 worker runtimes from readiness.runtime_items()
     "agy": "Log in to your Google Antigravity account and add worker with: bin/worker-add 1",
@@ -39,16 +54,16 @@ NEXT_STEPS: dict[str, str] = {
     "gemini": "Set Gemini API key with bin/secret-set gemini.key and add worker: bin/worker-add 1 --runtime gemini",
     "compat": "Configure COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime compat",
     "aider": "Configure COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime aider",
-    "opencode": "Configure COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime opencode",
-    "goose": "Configure COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime goose",
-    "qwen-code": "Set Alibaba DashScope key with bin/secret-set qwen.key and add worker: bin/worker-add 1 --runtime qwen-code",
-    "anthropic-compat": "Configure COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime anthropic-compat",
-    "mistral-vibe": "Set Mistral API key with bin/secret-set mistral.key and add worker: bin/worker-add 1 --runtime mistral-vibe",
-    "copilot": "Log in via GitHub Copilot CLI and add worker: bin/worker-add 1 --runtime copilot",
-    "ollama": "Start Ollama locally, set COMPAT_BASE_URL=http://127.0.0.1:11434/v1, and add worker: bin/worker-add 1 --runtime ollama",
-    "vllm": "Start vLLM locally, set COMPAT_BASE_URL=http://127.0.0.1:8000/v1, and add worker: bin/worker-add 1 --runtime vllm",
-    "lmstudio": "Start LM Studio locally, set COMPAT_BASE_URL=http://127.0.0.1:1234/v1, and add worker: bin/worker-add 1 --runtime lmstudio",
-    "llamacpp": "Start llama-server locally, set COMPAT_BASE_URL=http://127.0.0.1:8080/v1, and add worker: bin/worker-add 1 --runtime llamacpp",
+    "opencode": _no_worker_image("For a model server of your own set COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime aider"),
+    "goose": _no_worker_image("For a model server of your own set COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime aider"),
+    "qwen-code": _no_worker_image(_PROVIDER_API),
+    "anthropic-compat": _no_worker_image("For a model server of your own with an OpenAI-compatible API set COMPAT_BASE_URL in etc/limits.conf and add worker: bin/worker-add 1 --runtime aider"),
+    "mistral-vibe": _no_worker_image(_PROVIDER_API),
+    "copilot": _no_worker_image("Pick another runtime from the ranking above"),
+    "ollama": _no_worker_image(_own_server(11434)),
+    "vllm": _no_worker_image(_own_server(8000)),
+    "lmstudio": _no_worker_image(_own_server(1234)),
+    "llamacpp": _no_worker_image(_own_server(8080)),
 
     # 6 orchestrator providers from readiness.provider_items()
     "claude-cli": "Install Claude Code CLI on host (claude /login) and set PLAN_PROVIDERS=claude-cli in etc/foreman.conf",
