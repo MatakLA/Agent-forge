@@ -239,7 +239,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const boardCols = [...d.querySelectorAll('#t-tasks .col')];
   check('tasks: board header task count matches rendered cards for each column',
         boardCols.length > 0 && boardCols.every(col => {
-          const m = (col.querySelector('h4 .muted') || {}).textContent || '';
+          const m = (col.querySelector('h3 .muted') || {}).textContent || '';
           const rendered = col.querySelectorAll('.card').length;
           const num = parseInt(m.split(' ')[0], 10);
           return num === rendered;

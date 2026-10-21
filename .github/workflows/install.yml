@@ -70,6 +70,8 @@ jobs:
           tests/test_runtimes.sh
       - name: The dashboard page in a real DOM (every tab and sheet, no script errors)
         run: tests/test_ui.sh
+      - name: Dashboard accessibility - axe-core in headless Chromium (light and dark), keyboard, focus, reduced motion, reflow
+        run: tests/test_a11y.sh
       - name: forge url works on the fresh install
         run: ./forge url
       - name: Uninstall removes services and containers but keeps the data

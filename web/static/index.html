@@ -6,17 +6,18 @@
 <link rel="stylesheet" href="/static/app.css?v={{V}}">
 </head>
 <body>
+<a class="skip" href="#main" data-i18n="a11y.skip">Skip to content</a>
 <header>
   <div class="top">
     <h1>Agent-Forge</h1>
     <select id="proj" class="projsel" style="display:none" aria-label="project"></select>
     <span id="pills"></span>
-    <button class="iconbtn" id="theme-btn" title="Theme: auto (click to toggle)" aria-label="theme">◐</button>
-    <button class="iconbtn" id="lang-btn" title="Language: EN (click to switch to SK)" aria-label="language" style="font-size:11px;font-weight:700">EN</button>
+    <button class="iconbtn" id="theme-btn" title="Theme: auto (click to toggle)" aria-label="Theme: auto (click to change)">◐</button>
+    <button class="iconbtn" id="lang-btn" title="Language: EN (click to switch to SK)" aria-label="Language: EN (click to change)" style="font-size:11px;font-weight:700">EN</button>
     <button class="iconbtn" id="search-open" title="Search goals, tasks, events and transcripts (/)" aria-label="search">⌕</button>
   </div>
-  <div id="jserr" class="banner bad" style="display:none"></div>
-  <div id="resume-result" class="banner" style="display:none"></div>
+  <div id="jserr" class="banner bad" style="display:none" role="alert"></div>
+  <div id="resume-result" class="banner" style="display:none" role="status"></div>
   <div class="stats" id="stats"></div>
   <nav id="nav" aria-label="sections">
     <button data-t="overview"><span data-i18n="nav.overview">Overview</span> <span class="cnt hot" id="c-inbox" hidden></span></button>
@@ -28,8 +29,9 @@
     <button data-t="settings"><span data-i18n="nav.settings">Settings</span></button>
   </nav>
 </header>
-<main>
+<main id="main" tabindex="-1">
   <section id="t-overview">
+    <h2 class="sr-only" data-i18n="nav.overview">Overview</h2>
     <div id="inbox"></div>
     <div id="onboarding"></div>
     <div class="ask newgoal">
@@ -47,60 +49,68 @@
     </details>
   </section>
   <section id="t-tasks">
-    <div class="seg" id="tasks-seg"><button data-v="board" data-i18n="sub.board">Board</button><button data-v="graph" data-i18n="sub.graph">Graph</button></div>
+    <h2 class="sr-only" data-i18n="nav.tasks">Tasks</h2>
+    <div class="seg" id="tasks-seg" role="group" aria-label="Tasks view"><button data-v="board" data-i18n="sub.board">Board</button><button data-v="graph" data-i18n="sub.graph">Graph</button></div>
     <div id="tasks-view"></div>
   </section>
   <section id="t-live">
+    <h2 class="sr-only" data-i18n="nav.live">Live</h2>
     <div class="livebar"><span class="muted small" id="live-note"></span><button class="mini" id="runs-open" data-i18n="btn.finished_runs">Finished runs…</button></div>
     <div id="grid" class="grid"></div>
   </section>
-  <section id="t-timeline"><div id="timeline"></div></section>
+  <section id="t-timeline">
+    <h2 class="sr-only" data-i18n="nav.timeline">Timeline</h2><div id="timeline"></div></section>
   <section id="t-insights">
-    <div class="seg" id="insights-seg"><button data-v="team" data-i18n="sub.team">Team</button><button data-v="money" data-i18n="sub.money">Money &amp; quota</button><button data-v="experiments" data-i18n="sub.experiments">Experiments</button></div>
+    <h2 class="sr-only" data-i18n="nav.insights">Insights</h2>
+    <div class="seg" id="insights-seg" role="group" aria-label="Insights view"><button data-v="team" data-i18n="sub.team">Team</button><button data-v="money" data-i18n="sub.money">Money &amp; quota</button><button data-v="experiments" data-i18n="sub.experiments">Experiments</button></div>
     <div id="insights"></div>
   </section>
   <section id="t-system">
-    <div class="seg" id="system-seg"><button data-v="health" data-i18n="sub.health">Health</button><button data-v="egress" data-i18n="sub.egress">Egress</button><button data-v="disk" data-i18n="sub.disk">Disk</button><button data-v="activity" data-i18n="sub.activity">Activity</button></div>
+    <h2 class="sr-only" data-i18n="nav.system">System</h2>
+    <div class="seg" id="system-seg" role="group" aria-label="System view"><button data-v="health" data-i18n="sub.health">Health</button><button data-v="egress" data-i18n="sub.egress">Egress</button><button data-v="disk" data-i18n="sub.disk">Disk</button><button data-v="activity" data-i18n="sub.activity">Activity</button></div>
     <div id="system"></div>
   </section>
   <section id="t-settings">
-    <div class="seg" id="settings-seg"><button data-v="workers" data-i18n="sub.workers">Workers</button><button data-v="runtimes" data-i18n="sub.runtimes">Runtimes</button><button data-v="models" data-i18n="sub.models">Models</button><button data-v="project" data-i18n="sub.project">Project</button><button data-v="money" data-i18n="sub.money">Money</button><button data-v="knowledge" data-i18n="sub.knowledge">Knowledge</button><button data-v="limits" data-i18n="sub.limits">Limits</button><button data-v="advanced" data-i18n="sub.advanced">Advanced</button></div>
+    <h2 class="sr-only" data-i18n="nav.settings">Settings</h2>
+    <div class="seg" id="settings-seg" role="group" aria-label="Settings page"><button data-v="workers" data-i18n="sub.workers">Workers</button><button data-v="runtimes" data-i18n="sub.runtimes">Runtimes</button><button data-v="models" data-i18n="sub.models">Models</button><button data-v="project" data-i18n="sub.project">Project</button><button data-v="money" data-i18n="sub.money">Money</button><button data-v="knowledge" data-i18n="sub.knowledge">Knowledge</button><button data-v="limits" data-i18n="sub.limits">Limits</button><button data-v="advanced" data-i18n="sub.advanced">Advanced</button></div>
     <div id="settings"></div>
     <div id="savebar" hidden role="status"><span id="save-count"></span><span id="save-msg" class="muted"></span><span class="grow"></span><button type="button" class="mini ghost" id="discard-settings" data-i18n="btn.discard">Discard</button><button type="button" class="primary sm" id="save-settings" data-i18n="btn.save_changes">Save changes</button></div>
   </section>
 </main>
 
 <!-- one sheet for task / goal / run replay / document / search; the dialogs below are separate because they hold a running process -->
-<div class="detail" id="detail"><div class="sheet" id="sheet"></div></div>
-<div class="detail" id="login"><div class="sheet"><button class="close" id="login-close" data-i18n="btn.close">Close</button><h2 id="login-title" data-i18n="head.signin">Sign-in</h2>
+<div class="detail" id="detail"><div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Details" tabindex="-1"></div></div>
+<div class="detail" id="login"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="login-title" tabindex="-1"><button class="close" id="login-close" data-i18n="btn.close">Close</button><h2 id="login-title" data-i18n="head.signin">Sign-in</h2>
   <div class="muted small" style="margin:6px 0">A real terminal of the worker: click into it and type. Open the sign-in link, choose the Google account meant for this
   worker, paste the code it shows into the terminal (Ctrl+Shift+V) and press Enter; accept agy's questions with Tab / Enter. When agy shows its prompt, you are signed in:
   press <b>Done</b> below.</div>
   <div id="login-url" style="font-size:13px;margin:6px 0"></div>
   <div id="login-term" class="term-box"></div>
   <div class="btnrow"><button class="primary" id="login-done">Done — check the sign-in and close</button></div></div></div>
-<div class="detail" id="newproj"><div class="sheet"><button class="close" id="np-close" data-i18n="btn.close">Close</button><h2 data-i18n="head.new_project">New project</h2>
+<div class="detail" id="newproj"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="np-title" tabindex="-1"><button class="close" id="np-close" data-i18n="btn.close">Close</button><h2 id="np-title" data-i18n="head.new_project">New project</h2>
   <div class="muted small" style="margin:6px 0">Creates a project with its own orchestrator, a repository on Forgejo and a group of workers.
   Each worker should belong to one project only.</div>
   <div id="np-form">
-  <div class="setrow"><label>Name (lowercase letters, dashes)</label><div><input type="text" id="np-name" placeholder="e.g. shop"><div class="seterr" id="np-e-name"></div></div></div>
-  <div class="setrow"><label>Repository (organisation/repository)</label><div><input type="text" id="np-repo" placeholder="e.g. acme/shop"><div class="seterr" id="np-e-repo"></div></div></div>
-  <div class="setrow"><label>Language the team uses with you</label><div><input type="text" id="np-lang" value="English"><div class="seterr" id="np-e-lang"></div></div></div>
-  <div class="setrow"><label>Vision — what the project should do (the autopilot plans from it)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
+  <div class="setrow"><label for="np-name">Name (lowercase letters, dashes)</label><div><input type="text" id="np-name" placeholder="e.g. shop"><div class="seterr" id="np-e-name"></div></div></div>
+  <div class="setrow"><label for="np-repo">Repository (organisation/repository)</label><div><input type="text" id="np-repo" placeholder="e.g. acme/shop"><div class="seterr" id="np-e-repo"></div></div></div>
+  <div class="setrow"><label for="np-lang">Language the team uses with you</label><div><input type="text" id="np-lang" value="English"><div class="seterr" id="np-e-lang"></div></div></div>
+  <div class="setrow"><label for="np-vision">Vision — what the project should do (the autopilot plans from it)</label><textarea id="np-vision" rows="6" class="npta"></textarea></div>
   <div class="setrow"><label>Workers for this project</label><div><div id="np-workers" class="muted">loading…</div><div class="seterr" id="np-e-workers"></div></div></div>
   <div class="btnrow"><button class="primary" id="np-create">Create project</button></div></div>
   <pre id="np-log" class="term" style="display:none"></pre></div></div>
-<div class="detail" id="setup"><div class="sheet"><button class="close" id="su-close" data-i18n="btn.close">Close</button><h2>Where does this project's code live?</h2>
+<div class="detail" id="setup"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="su-title" tabindex="-1"><button class="close" id="su-close" data-i18n="btn.close">Close</button><h2 id="su-title">Where does this project's code live?</h2>
   <div class="muted small" style="margin:6px 0">Workers always work on the internal Forgejo inside their sandbox. If the project's home is on GitHub
   or GitLab, the orchestrator opens and merges pull requests there and takes main from there. Workers never reach GitHub/GitLab.</div>
   <div id="su-form">
+  <div role="radiogroup" aria-label="Where the project lives">
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="forgejo"> Internal Forgejo only</label>
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="github"> GitHub</label>
   <label class="chk" style="display:flex"><input type="radio" name="su-kind" value="gitlab"> GitLab</label>
+  </div>
   <div id="su-up">
-  <div class="setrow"><label>Server</label><div><input type="text" id="su-url" placeholder="https://github.com"><div class="seterr" id="su-e-url"></div></div></div>
-  <div class="setrow"><label>Repository (owner/repository)</label><div><input type="text" id="su-repo" placeholder="e.g. acme/shop"><div class="seterr" id="su-e-repo"></div></div></div>
-  <div class="setrow"><label>Token (empty = keep the stored one)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
+  <div class="setrow"><label for="su-url">Server</label><div><input type="text" id="su-url" placeholder="https://github.com"><div class="seterr" id="su-e-url"></div></div></div>
+  <div class="setrow"><label for="su-repo">Repository (owner/repository)</label><div><input type="text" id="su-repo" placeholder="e.g. acme/shop"><div class="seterr" id="su-e-repo"></div></div></div>
+  <div class="setrow"><label for="su-token">Token (empty = keep the stored one)</label><div><input type="password" id="su-token" autocomplete="off"><div class="seterr" id="su-e-token"></div>
     <div class="muted small" id="su-help" style="margin-top:4px"></div></div></div>
   <div class="setrow" id="su-force-row" style="display:none"><label>The internal repository already has commits</label><div><label class="chk"><input type="checkbox" id="su-force">
     replace them with the content from GitHub/GitLab</label></div></div>

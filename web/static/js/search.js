@@ -5,7 +5,7 @@
 
 const SR = {q: '', res: null, err: null, busy: false, timer: null, seq: 0};
 function openSearch() {
-  openSheet('search', 'search', '<h2>Search</h2><input type="search" id="sr-q" class="bigsearch" placeholder="words from a goal, a task, an event or a worker\'s transcript" value="' +
+  openSheet('search', 'search', '<h2>Search</h2><input type="search" id="sr-q" class="bigsearch" aria-label="Search" placeholder="words from a goal, a task, an event or a worker\'s transcript" value="' +
     esc(SR.q) + '"><div id="sr-res">' + searchResults() + '</div>');
   setTimeout(() => { const i = $('sr-q'); if (i) { i.focus(); i.select(); } }, 30);
 }

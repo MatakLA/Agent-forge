@@ -78,7 +78,7 @@ function boardHtml() {
     if (k === 'stop') items = items.slice().sort((a, b) => (a.status === 'blocked' ? 0 : 1) - (b.status === 'blocked' ? 0 : 1) || (b.updated || '').localeCompare(a.updated || ''));
     const total = items.length, shown = k === 'done' || k === 'stop' ? items.slice(0, 15) : items;
     const countStr = total > shown.length ? shown.length + ' of ' + total : String(shown.length);
-    return '<div class="col"><h4>' + lab + '<span class="muted">' + countStr + '</span></h4>' + (shown.map(t => {
+    return '<div class="col"><h3>' + lab + '<span class="muted">' + countStr + '</span></h3>' + (shown.map(t => {
       const deps = (t.depends_on || []).filter(d => !ts.find(x => x.id === d && x.status === 'done'));
       const ww = whyWaiting(t);
       const waitBadge = (ww && k === 'wait') ? (ww.code === 'paused' ? ' <span class="badge warn" title="' + esc(ww.detail) + '">⏸ goal paused</span>' :

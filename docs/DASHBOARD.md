@@ -34,7 +34,7 @@ Two switches on the Overview tab, each with a tooltip:
 ## Themes
 
 The theme button (`◐`) in the top bar cycles through **Auto** (follows the system setting), **Light** (`☀`) and **Dark** (`☾`). The
-choice is kept in the browser.
+choice is kept in the browser. Text and controls meet WCAG 2.1 AA contrast in both themes.
 
 ## Languages
 
@@ -51,7 +51,20 @@ Slovak (`sk`, `sk_qwerty`). To add a language:
 More in [web/static/locales/README.md](../web/static/locales/README.md). The interface is not complete in every language; a
 missing key falls back to English.
 
-## Keyboard
+## Keyboard and accessibility
 
-`/` opens the search. Dialogs and the System tab's fixes are ordinary buttons, so Tab and Enter work. If something is not reachable
-without a mouse, please report it as a bug.
+The dashboard is meant to be usable without a mouse and with a screen reader.
+
+- **Skip link.** The first Tab stop is "Skip to content"; it jumps past the top bar to the main area.
+- **Search.** `/` opens the search, `Esc` closes it.
+- **Dialogs and sheets.** Opening one moves focus into it, Tab and Shift+Tab stay inside, `Esc` closes it and focus returns to the
+  control that opened it. Everything behind an open dialog is inert, so a screen reader does not wander off.
+- **Landmarks and names.** The page has a header, navigation and main region; every control has an accessible name (also in
+  Slovak); the current tab and the pressed toggles are announced; errors and status messages are live regions.
+- **Focus.** A visible focus ring on every control, in both themes. Links in running text are underlined, not only coloured.
+- **Motion.** With "reduce motion" set in your system, animations and transitions (pulsing status dots, the live timeline) are switched off.
+- **Zoom and small screens.** The layout reflows at 320 px wide with no horizontal scrolling; forced-colours mode is respected.
+
+`tests/test_a11y.sh` checks all of this in real headless Chrome with [axe-core](https://github.com/dequelabs/axe-core) (every view
+in light and dark, plus keyboard, focus, reduced-motion and reflow checks) and runs in CI. If something is not reachable without a
+mouse, please [report it](https://github.com/MatakLA/Agent-forge/issues/new/choose) as a bug.

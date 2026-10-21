@@ -216,7 +216,7 @@ function timelineHtml() {
       const open = r.run_id && r.end ? 'run:' + r.run_id : 'task:' + String(r.task).replace(/\.md$/, '');
       svg += '<g data-open="' + esc(open) + '" role="button" tabindex="0" focusable="true" aria-label="' + tip + '"><title>' + tip + '</title><rect class="run" x="' + x(s0) + '" y="' + (y + 5) + '" width="' + Math.max(2, x(e0) - x(s0)) +
         '" height="' + (lane - 10) + '" rx="3" fill="' + (RUNCOL[r.reason] || 'var(--idle)') + '"' +
-        (r.reason === 'running' ? ' opacity=".8"><animate attributeName="opacity" values=".5;1;.5" dur="2s" repeatCount="indefinite"/></rect>' : '/>') + '</g>';
+        (r.reason === 'running' ? ' opacity=".8">' + (reducedMotion() ? '' : '<animate attributeName="opacity" values=".5;1;.5" dur="2s" repeatCount="indefinite"/>') + '</rect>' : '/>') + '</g>';
     }
     util[w] = Math.round(100 * busy / span);
   });

@@ -39,7 +39,7 @@ Still open, roughly by value:
 - A command palette (Ctrl+K): new goal, jump to a task, kill switch (search already opens with `/`).
 - Side-by-side diffs with syntax highlighting; a comment on a diff line goes back to the worker with the line.
 - Multi-user: sign-in, roles (viewer / operator / admin), an audit log of who changed what.
-- Accessibility pass (keyboard navigation, ARIA labels, contrast). The theme switch (auto / light / dark) is there.
+- Accessibility: a screen-reader walk-through with real assistive technology (NVDA, VoiceOver); the automated axe-core and keyboard checks are in CI.
 - More translations: the dashboard reads its texts from `web/static/locales/` (English and Slovak so far); a new language is one JSON file.
 
 ## Maintainers: release checklist

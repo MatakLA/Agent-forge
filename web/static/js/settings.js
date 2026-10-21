@@ -274,7 +274,7 @@ const field = (k, inner, help) => { const h = help === undefined ? HELP[k] : hel
     '<div class="setctl">' + inner + '<div class="seterr" id="err-' + k + '">' + esc(ERRS[k] || '') + '</div></div></div>'; };
 const card = (title, body, intro) => '<div class="setcard"><h3>' + title + '</h3>' + (intro ? '<div class="muted small intro">' + intro + '</div>' : '') + body + '</div>';
 const det = (id, title, body, hint) => '<details class="setdet" id="' + id + '"' + (SX.open.has(id) ? ' open' : '') + '><summary>' + esc(title) + (hint ? ' <span class="muted small">' + esc(hint) + '</span>' : '') + '</summary>' + body + '</details>';
-const rowAct = (id, label, body) => '<div class="setrow" id="' + id + '"><label>' + esc(label) + '</label><div class="setctl">' + body + '</div></div>';
+const rowAct = (id, label, body) => '<div class="setrow" id="' + id + '"><label id="' + id + '-l">' + esc(label) + '</label><div class="setctl">' + body + '</div></div>';
 const rtName = k => RTNAME[k] || ((S && S.runtimes && S.runtimes[k] && S.runtimes[k].label) || k);
 const failed = what => '<div class="empty bad">Could not load ' + what + ': ' + esc((S && S.error) || window._ferr || 'no answer') + ' <button type="button" class="mini" data-retry>Try again</button></div>';
 
@@ -561,7 +561,7 @@ function pageProject() {
     card(t('settings.appearance_title', 'Dashboard appearance & language'),
       rowAct('row-ui-lang', t('settings.ui_lang', 'Dashboard UI language'),
         '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-        '<select id="ui-lang-sel" style="min-width:180px">' +
+        '<select id="ui-lang-sel" aria-labelledby="row-ui-lang-l" style="min-width:180px">' +
         (LOCALES_LIST.length ? LOCALES_LIST : [
           {code: 'en', name: 'English'},
           {code: 'sk', name: 'Slovenčina'},
@@ -576,7 +576,7 @@ function pageProject() {
         '<button type="button" class="mini" id="upload-locale-btn" title="Upload a custom JSON dictionary file">Upload .json…</button>' +
         '</div>') +
       rowAct('row-ui-theme', t('settings.ui_theme', 'Color theme'),
-        '<select id="ui-theme-sel" style="min-width:180px">' +
+        '<select id="ui-theme-sel" aria-labelledby="row-ui-theme-l" style="min-width:180px">' +
         [['auto', 'Auto (system default)'], ['light', 'Light mode'], ['dark', 'Dark mode']].map(([m, n]) => '<option value="' + esc(m) + '"' + (currentTheme === m ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
         '</select>'),
       t('settings.appearance_desc', 'Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.')) +

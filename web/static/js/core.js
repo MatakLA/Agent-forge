@@ -82,7 +82,9 @@ function applyI18n() {
   if (lb) {
     lb.textContent = currentLang.toUpperCase().slice(0, 4);
     lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for options)';
+    lb.setAttribute('aria-label', 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to change)');
   }
+  document.documentElement.lang = currentLang.slice(0, 2);
   updateLocalesDropdown();
 }
 
@@ -162,6 +164,7 @@ function applyTheme(theme) {
   if (tb) {
     tb.textContent = THEME_ICONS[theme] || '◐';
     tb.title = t('theme.' + theme, 'Theme: ' + theme) + ' (click to toggle)';
+    tb.setAttribute('aria-label', t('theme.' + theme, 'Theme: ' + theme) + ' (click to change)');
   }
   const uits = $('ui-theme-sel');
   if (uits && uits.value !== currentTheme) uits.value = currentTheme;
@@ -202,7 +205,7 @@ const post = async (url, body) => { try { return await (await fetch(url, {method
 
 // ---- toasts: short confirmations and errors of actions, at the bottom of the screen
 function toast(msg, bad) {
-  const el = document.createElement('div'); el.className = 'toast' + (bad ? ' bad' : ''); el.textContent = msg;
+  const el = document.createElement('div'); el.className = 'toast' + (bad ? ' bad' : ''); el.textContent = msg; if (bad) el.setAttribute('role', 'alert');
   $('toasts').appendChild(el);
   setTimeout(() => el.classList.add('out'), bad ? 6500 : 3500); setTimeout(() => el.remove(), bad ? 7000 : 4000);
 }
@@ -291,16 +294,16 @@ function setTab(t) {
   tab = TABS.includes(t) ? t : 'overview';
   for (const k in lastHTML) delete lastHTML[k];
   store('af-tab', tab);
-  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  document.querySelectorAll('nav button').forEach(b => { b.classList.toggle('on', b.dataset.t === tab); if (b.dataset.t === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === 't-' + tab));
   document.querySelectorAll('.seg').forEach(seg => { const g = seg.id.replace('-seg', '');
-    seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === SUB[g])); });
+    seg.querySelectorAll('button').forEach(b => { b.classList.toggle('on', b.dataset.v === SUB[g]); b.setAttribute('aria-pressed', String(b.dataset.v === SUB[g])); }); });
   syncHash();
   render(true);
 }
 function setSub(group, v) {
   SUB[group] = v; store('af-sub', JSON.stringify(SUB));
-  document.querySelectorAll('#' + group + '-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  document.querySelectorAll('#' + group + '-seg button').forEach(b => { b.classList.toggle('on', b.dataset.v === v); b.setAttribute('aria-pressed', String(b.dataset.v === v)); });
   for (const k in lastHTML) delete lastHTML[k];
   render(true);
 }
@@ -314,16 +317,24 @@ function openSheet(kind, id, html, wide) {
   SHEET.kind = kind; SHEET.id = id;
   const s = $('sheet'); s.className = 'sheet' + (wide ? ' wide' : '');
   s.dataset.html = sheetHTML(html || '<div class="empty">loading…</div>'); s.innerHTML = s.dataset.html;
+  nameSheet(s);
   $('detail').classList.add('on'); s.scrollTop = 0;
   syncHash();
+}
+function nameSheet(s) {
+  const h = s.querySelector('h2');
+  if (h) { h.id = 'sheet-title'; s.setAttribute('aria-labelledby', 'sheet-title'); s.removeAttribute('aria-label'); }
+  else { s.removeAttribute('aria-labelledby'); s.setAttribute('aria-label', 'Details'); }
 }
 function setSheet(kind, id, html) {
   if (SHEET.kind !== kind || SHEET.id !== id) return;          // the owner opened something else meanwhile
   const s = $('sheet'), next = sheetHTML(html);
   if (s.dataset.html === next) return;
   if (s.contains(document.activeElement) && typing(document.activeElement)) return;   // never under the owner's fingers
-  const keep = s.scrollTop;
+  const keep = s.scrollTop, hadFocus = s.contains(document.activeElement);
   s.dataset.html = next; s.innerHTML = next; s.scrollTop = keep;
+  nameSheet(s);
+  if (hadFocus && !s.contains(document.activeElement)) s.focus({preventScroll: true});
 }
 function closeSheet() {
   SHEET.kind = SHEET.id = null; $('detail').classList.remove('on'); $('sheet').dataset.html = ''; syncHash();
@@ -492,6 +503,39 @@ function resetProjectState() { projectResets.forEach(f => f()); }
 function showJsError(msg) { const el = $('jserr'); if (el) { el.style.display = 'block'; el.textContent = 'Page error: ' + msg; } }
 window.addEventListener('error', e => showJsError((e.message || 'unknown') + ' (' + String(e.filename || '').split('/').pop().split('?')[0] + ':' + (e.lineno || '?') + ')'));
 window.addEventListener('unhandledrejection', e => showJsError(String(e.reason && e.reason.message || e.reason)));
+// ---- dialogs (the sheet and the three process dialogs): they are toggled by a class on .detail, so one observer handles all
+const reducedMotion = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+const DIALOGS = ['detail', 'login', 'newproj', 'setup'].map($).filter(Boolean);
+let dialogOpener = null;
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+const openDialog = () => DIALOGS.find(d => d.classList.contains('on'));
+const dialogFocusables = d => [...d.querySelectorAll(FOCUSABLE)].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+function dialogsChanged() {
+  const d = openDialog();
+  for (const el of document.querySelectorAll('body > header, body > main, body > .skip')) { if (d) el.setAttribute('inert', ''); else el.removeAttribute('inert'); }
+  if (d) {
+    if (!dialogOpener) dialogOpener = document.activeElement;
+    const box = d.querySelector('.sheet');
+    setTimeout(() => { if (box.contains(document.activeElement)) return; const f = dialogFocusables(box).find(e => !e.classList.contains('close')) || box; f.focus({preventScroll: true}); }, 30);
+  } else if (!d && dialogOpener) {
+    const back = dialogOpener; dialogOpener = null;
+    (document.body.contains(back) && back !== document.body ? back : $('main')).focus({preventScroll: true});
+  }
+}
+DIALOGS.forEach(d => new MutationObserver(dialogsChanged).observe(d, {attributes: true, attributeFilter: ['class']}));
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const d = openDialog(); if (!d) return;
+  const box = d.querySelector('.sheet'), list = dialogFocusables(box);
+  if (!list.length) { e.preventDefault(); box.focus(); return; }
+  const first = list[0], last = list[list.length - 1];
+  if (!box.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && (document.activeElement === first || document.activeElement === box)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+const skip = document.querySelector('.skip');
+if (skip) skip.addEventListener('click', e => { e.preventDefault(); $('main').focus(); });
+
 // keyboard: / opens search, Esc closes the sheet
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SHEET.kind) { closeSheet(); return; }
