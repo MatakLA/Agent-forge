@@ -3,7 +3,9 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
 alpha software: until 1.0, commands, settings and file formats can change between releases.
 
-## Unreleased
+## 0.12.1 - 2026-10-21
+
+**Fixed.** The dashboard could stop with `renderLive is not defined` when the language file arrived before the last scripts had loaded (the first redraw is now started after all scripts are in). The empty action columns of the egress and run tables have a hidden header text for screen readers.
 
 **Accessibility** (fixes #5). Keyboard and screen-reader pass over the dashboard: skip link, landmarks and accessible names, dialogs
 with focus trap / `Esc` / focus return / inert background, `aria-current` and `aria-pressed` on tabs and toggles, live regions for
