@@ -1511,6 +1511,23 @@ class TestWebServer(unittest.TestCase):
         self.assertEqual(srv.B.LOGIN.write("worker-1", "AAAA").get("error"), "no running login session")
         self.assertEqual(srv.B.LOGIN.resize("worker-1", 100, 30).get("error"), "no running login session")
 
+    def test_new_project_workers_must_be_a_list_of_worker_names(self):
+        """`workers` that is not a list (a number, an object, a string) is a validation error in the reply, not an exception."""
+        H = {"X-Agent-Forge": "1"}
+        for odd in (5, 1.5, True, {"worker-1": 1}, "worker-1", ["worker-1", 2], ["x"]):
+            s, _, b = self.req("POST", "/api/projects", {"action": "create", "name": "demo-proj", "repo": "acme/shop", "workers": odd}, H)
+            self.assertEqual(s, 200, (odd, b))
+            self.assertIn("workers", json.loads(b).get("errors", {}), (odd, b))
+
+    def test_login_terminal_size_survives_odd_numbers(self):
+        """A terminal size no int() can take (infinity, nan, a list, 5000 digits) falls back to the defaults: the answer is a
+        normal JSON reply, not a request dropped by an exception in the handler."""
+        H = {"X-Agent-Forge": "1"}
+        for odd in (float("inf"), float("-inf"), float("nan"), [1], {"a": 1}, "9" * 5000, "x", None):
+            s, _, b = self.req("POST", "/api/login", {"worker": "worker-1", "action": "size", "cols": odd, "rows": odd}, H)
+            self.assertEqual(s, 200, (odd, b))
+            self.assertEqual(json.loads(b).get("error"), "no running login session", (odd, b))
+
     def test_access_log_records_writes_without_secrets(self):
         """Every write leaves one line in the journal, with a few plain fields - never the secret value, the query string,
         the sign-in token or typed text; reads are quiet unless DASHBOARD_ACCESS_LOG=all; refused requests are always logged."""
@@ -1570,6 +1587,31 @@ class TestForgeDirDefault(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(os.path.realpath(out.stdout.strip()), os.path.realpath(ROOT))
         self.assertTrue(os.path.isfile(os.path.join(out.stdout.strip(), "bin", "foreman")))
+
+
+class TestLiveDiscovery(unittest.TestCase):
+    def test_discover_workers_ignores_directories_that_are_not_dispatch_runs(self):
+        """A worker name read from a run directory ends up in `docker exec` and `tail -F` commands, so only bin/dispatch's own
+        <timestamp>-worker-<N> names may pass; anything else in runs/ is skipped."""
+        listing = "\n".join([
+            "20261020T101010Z-worker-2/ 5",             # finished 5 s ago: still shown
+            "20261020T101011Z-worker-3/ -1",            # running
+            "20261020T101012Z-worker-4/ 100000",        # finished long ago: known, but no live pane
+            "20261020T101013Z-x$(id)/ -1",
+            "20261020T101014Z-worker-5;id/ -1",
+            "20261020T101015Z-worker-6`id`/ -1",
+            "20261020T101016Z-worker-7|id/ -1",
+            "20261020T101017Z-worker-\u00b2/ -1",
+            "0001-wordcount/ -1",
+        ])
+        orig = srv.L.ssh_run
+        srv.L.ssh_run = lambda cmd, timeout=None: listing
+        try:
+            latest, seen = srv.L.discover_workers()
+        finally:
+            srv.L.ssh_run = orig
+        self.assertEqual(seen, {"worker-2", "worker-3", "worker-4"})
+        self.assertEqual(sorted(latest), ["worker-2", "worker-3"])
 
 
 if __name__ == "__main__":

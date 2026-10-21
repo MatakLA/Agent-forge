@@ -420,7 +420,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "unknown action"}, 400); return
             name, repo = str(body.get("name", "")).strip(), str(body.get("repo", "")).strip()
             lang = str(body.get("lang", "English")).strip() or "English"
-            ws = [str(w) for w in body.get("workers") or []]
+            raw_ws = body.get("workers") or []
+            ws = [str(w) for w in raw_ws] if isinstance(raw_ws, list) else None
             errs = {}
             if not B.PROJECT_RE.fullmatch(name) or name == "default":
                 errs["name"] = "lowercase letters, digits and dashes (not 'default')"
@@ -428,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                 errs["name"] = "the project already exists"
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}/[A-Za-z0-9_.-]{1,60}", repo):
                 errs["repo"] = "organisation/repository, e.g. acme/shop"
-            if not all(re.fullmatch(r"worker-\d+", w) for w in ws):
+            if ws is None or not all(re.fullmatch(r"worker-\d+", w) for w in ws):
                 errs["workers"] = "invalid worker"
             if not re.fullmatch(r"[A-Za-z][A-Za-z ()-]{0,30}", lang):
                 errs["lang"] = "a language name, e.g. English"
@@ -817,7 +818,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dims(body):
         try:
             return {"cols": int(body.get("cols", 120)), "rows": int(body.get("rows", 32))}
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):      # OverflowError: JSON 1e999 is infinity
             return {"cols": 120, "rows": 32}
 
     def _stream(self, proj):

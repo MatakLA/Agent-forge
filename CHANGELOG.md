@@ -22,7 +22,9 @@ creating a project all write to the audit trail (`runs/ALERT`, `runs/ledger.json
 **Fixed.** The duration shown in the dashboard could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
 The dashboard server dropped the request, without an answer, when a backlog position, question number, `days` or `since` held a character
 that `str.isdigit()` accepts and `int()` refuses (`²`, or 5000 digits); it now answers 400. A negative `Content-Length` no longer makes a write
-wait for the client to hang up, and a request body that is not a JSON object counts as empty. The uninstall step of the `install` workflow
+wait for the client to hang up, and a request body that is not a JSON object counts as empty. An infinite terminal size (`1e999`) or a
+`workers` field that is not a list no longer drops the request either, and a worker name read from a run directory is only used in a
+shell command when it matches the `<timestamp>-worker-N` form that `bin/dispatch` creates. The uninstall step of the `install` workflow
 now really fails when a service or container is left behind (a `!` in front of a command never stopped a `bash -e` step). `sign-release`
 copes with a release that has no files, such as v0.12.0.
 `forge pick-ai` and the runtime docs told you to run `bin/worker-add N --runtime ollama` (and `vllm`, `lmstudio`, `llamacpp`, `opencode`, `goose`,
