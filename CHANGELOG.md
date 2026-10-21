@@ -5,6 +5,8 @@ alpha software: until 1.0, commands, settings and file formats can change betwee
 
 ## Unreleased
 
+## 0.12.0 - 2026-10-21
+
 ### Added
 
 - **`forge` command.** One entry point: `forge install`, `demo`, `update`, `uninstall`, `doctor`, `logs`, `url`, `version`. Every
