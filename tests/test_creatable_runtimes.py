@@ -66,6 +66,12 @@ class TestWorkerAdd(unittest.TestCase):
         self.assertIsNotNone(m, "the runtime check in bin/worker-add moved")
         self.assertEqual(set(m.group(1).split("|")), set(runtimes.CREATABLE))
 
+    def test_dashboard_adds_exactly_the_creatable_runtimes(self):
+        with open(os.path.join(ROOT, "web", "server.py"), encoding="utf-8") as f:
+            m = re.search(r'act == "add" and rt in \(([^)]*)\)', f.read())
+        self.assertIsNotNone(m, "the runtime check of POST /api/workers in web/server.py moved")
+        self.assertEqual(set(re.findall(r'"([a-z-]+)"', m.group(1))), set(runtimes.CREATABLE))
+
     def test_its_own_hints_name_creatable_runtimes_only(self):
         for name in runtime_args(self.text):
             self.assertIn(name, runtimes.CREATABLE, f"bin/worker-add itself suggests --runtime {name}")

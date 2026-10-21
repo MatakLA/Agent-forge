@@ -290,13 +290,14 @@ def discover_orchestrator():
     return sid, out, running, tail_argv
 
 
-RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z-(.+)$")   # bin/dispatch's own naming: <UTC timestamp>-<worker-name>
+RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z-(worker-\d+)$")   # bin/dispatch's own naming: <UTC timestamp>-<worker-name>
 
 
 def discover_workers():
     """Latest run directory per worker under ~/sandbox/runs/, and the full set of worker names ever seen.
     Older, differently-named directories (e.g. task-numbered dirs from early V4 runs like 0001-wordcount) are
-    not dispatch runs and are skipped — matched strictly against bin/dispatch's own <timestamp>-<worker> format."""
+    not dispatch runs and are skipped — matched strictly against bin/dispatch's own <timestamp>-worker-<N> format, so a
+    worker name taken from a directory name is safe to put into a shell command."""
     # newest 200 run directories with the age of their "finished" marker (-1 = still running) in one call
     out = ssh_run(f"cd {FORGE_DIR}/runs 2>/dev/null && now=$(date +%s) && ls -1dt */ 2>/dev/null | head -200 | while read d; do "
                   f"f=-1; [ -e \"$d/finished\" ] && f=$(( now - $(stat -c %Y \"$d/finished\") )); echo \"$d $f\"; done")
