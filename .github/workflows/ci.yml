@@ -41,6 +41,7 @@ jobs:
       - name: Step summary on failure
         if: failure()
         run: |
+          echo "::error title=make check failed::$(grep -vE '^[.s]*$' check.log | tail -n 12 | tr '\n' '|')"
           {
             echo "### make check failed (Python ${{ matrix.python-version }})"
             echo '```'

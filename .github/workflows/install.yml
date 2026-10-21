@@ -53,7 +53,14 @@ jobs:
       - name: A worker container can be created (it stays logged out - no accounts in CI)
         run: bin/worker-add 1
       - name: Health check (exit 1 = warnings only, e.g. no notifications configured)
-        run: python3 bin/doctor --quick || [ $? -eq 1 ]
+        run: |
+          rc=0
+          python3 bin/doctor --quick > doctor.log 2>&1 || rc=$?
+          cat doctor.log
+          if [ "$rc" -ge 2 ]; then
+            echo "::error title=bin/doctor reported problems::$(grep -E '✘' doctor.log | head -n 8 | tr '\n' '|')"
+          fi
+          [ "$rc" -le 1 ]
       - name: Supervisor integration test (a fake agent in the real worker image)
         run: tests/test_supervisor.sh
       - name: API runtimes - the real Claude Code, Codex and Gemini CLIs against a fake model API
