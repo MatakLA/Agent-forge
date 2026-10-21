@@ -5,7 +5,7 @@
 # - D-Bus & gnome-keyring for headless agy sessions (tokens live in the keyring)
 # - Antigravity CLI (agy), pinned by version + SHA-512; it serves Gemini, Claude and GPT-OSS models from the worker's own account
 # ==============================================================================
-FROM ubuntu@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+FROM ubuntu@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 ARG AGY_VERSION=1.2.11
 ARG AGY_URL=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.11-6016716732497920/linux-x64/cli_linux_x64.tar.gz
