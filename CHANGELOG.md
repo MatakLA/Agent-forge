@@ -21,6 +21,12 @@ checks in headless Chrome (27 views x 2 themes, 0 violations) and is part of the
 pinned to a commit SHA (Dependabot keeps them current); `CITATION.cff`; the security policy links the private advisory form;
 a social preview image (`docs/img/social-preview.png`); removed `tools/publish-snapshot`.
 
+**Documentation and quality.** Shorter README (the long material moved to `docs/`), `SECURITY-AUDIT.md` rewritten as a dated
+security review log, dashboard screenshots in `docs/DASHBOARD.md`, a section on several Antigravity accounts in `docs/RUNTIMES.md`.
+New `coverage` workflow measures how much Python code `make check` executes (child processes included) and feeds a README badge
+(63 % at the time of writing; the Docker-bound parts are covered by `install`, not by this number). New `tests/test_locales.py`
+keeps every dashboard translation complete. OpenSSF Scorecard badge in the README.
+
 ## 0.12.0 - 2026-10-21
 
 ### Added

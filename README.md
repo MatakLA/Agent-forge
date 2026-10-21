@@ -9,6 +9,7 @@
   <a href="https://github.com/MatakLA/Agent-forge/actions/workflows/install.yml"><img alt="install" src="https://github.com/MatakLA/Agent-forge/actions/workflows/install.yml/badge.svg"></a>
   <a href="https://github.com/MatakLA/Agent-forge/releases"><img alt="release" src="https://img.shields.io/github/v/release/MatakLA/Agent-forge?include_prereleases"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/MatakLA/Agent-forge"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/MatakLA/Agent-forge/badge"></a>
+  <a href=".github/workflows/coverage.yml"><img alt="python line coverage of make check" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMatakLA%2FAgent-forge%2Fbadges%2Fcoverage.json"></a>
   <a href="LICENSE"><img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-informational">
   <img alt="dependencies: stdlib only" src="https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen">

@@ -20,6 +20,7 @@ make check          # about a minute; no Docker, no model calls, no network
 `make check` (`bash tests/check.sh`) is what CI runs: syntax checks of every script, the foreman self-test, and the unit and
 shell tests with fake Docker and fake model APIs. It needs Python 3.10+ and bash. If `node` is installed, the dashboard
 JavaScript and the issue-intake tests run too.
+The `coverage` workflow reports how much Python this executes (badge in the README); new code should come with a test that reaches it.
 
 Heavier tests need Docker and are run by the nightly/weekly workflows; run them on a throw-away VM, not on a machine you care
 about:
