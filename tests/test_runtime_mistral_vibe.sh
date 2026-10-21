@@ -270,13 +270,13 @@ print(json.dumps(parsed))
 ")
 
 check "mistral-vibe scan(): tokens counts processed tokens excluding cache (1500 - 200 = 1300)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] == 1300, f\"expected 1300 tokens, got {r[\"tokens\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] == 1300, \"expected 1300 tokens, got %s\" % r[\"tokens\"]" "$RUN_JSON"'
 
 check "mistral-vibe scan(): tools count increments on tool_use" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, f\"expected tools=1, got {r[\"tools\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, \"expected tools=1, got %s\" % r[\"tools\"]" "$RUN_JSON"'
 
 check "mistral-vibe scan(): conversation_id parsed from session event" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_mistral_vibe_test_01\", f\"got {r[\"conversation_id\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_mistral_vibe_test_01\", \"got %s\" % r[\"conversation_id\"]" "$RUN_JSON"'
 
 check "mistral-vibe scan(): result status is SUCCESS" \
   'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$RUN_JSON"'
@@ -303,7 +303,7 @@ print(json.dumps(parsed))
 ")
 
 check "mistral-vibe scan(): result event cost_usd computed accurately from prices formula" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] == 0.0039, f\"got {r[\"result\"][\"cost_usd\"]}\"" "$RESULT_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] == 0.0039, \"got %s\" % r[\"result\"][\"cost_usd\"]" "$RESULT_JSON"'
 
 # 7. Rework / resume existing conversation session
 REWORK_JSON=$(python3 -c "
@@ -415,7 +415,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}, \"usage\": {\"input_tokens\": 500, \"output_tokens\": 150, \"cached_tokens\": 50}})
 ]
 r = runtimes.scan(\"mistral-vibe\", stream)
-assert r[\"tokens\"] == 600, f\"expected 600, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 600, \"expected 600, got %s\" % r[\"tokens\"]
 "'
 
 check "mistral-vibe scan(): token calculation boundary when cached > total" \
@@ -427,7 +427,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}, \"usage\": {\"total_tokens\": 100, \"cached\": 200}})
 ]
 r = runtimes.scan(\"mistral-vibe\", stream)
-assert r[\"tokens\"] == 0, f\"expected 0, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 0, \"expected 0, got %s\" % r[\"tokens\"]
 "'
 
 check "mistral-vibe scan(): token calculation remains None when usage missing" \
@@ -439,7 +439,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}})
 ]
 r = runtimes.scan(\"mistral-vibe\", stream)
-assert r[\"tokens\"] is None, f\"expected None, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] is None, \"expected None, got %s\" % r[\"tokens\"]
 "'
 
 check "mistral-vibe scan(): alternative session ID field names (sessionId, thread_id, conversation_id, part-nested)" \
@@ -449,7 +449,7 @@ sys.path.insert(0, \"$ROOT/bin/lib\")
 import runtimes
 for field, val in [(\"sessionId\", \"sid_1\"), (\"thread_id\", \"sid_2\"), (\"conversation_id\", \"sid_3\"), (\"session\", \"sid_4\")]:
     r = runtimes.scan(\"mistral-vibe\", [json.dumps({field: val})])
-    assert r[\"conversation_id\"] == val, f\"failed for {field}: expected {val}, got {r[\"conversation_id\"]}\"
+    assert r[\"conversation_id\"] == val, \"failed for %s: expected %s, got %s\" % (field, val, r[\"conversation_id\"])
 
 r_part = runtimes.scan(\"mistral-vibe\", [json.dumps({\"part\": {\"sessionId\": \"sid_nested\"}})])
 assert r_part[\"conversation_id\"] == \"sid_nested\"
@@ -484,7 +484,7 @@ stream = [
     json.dumps({\"tool\": \"grep\"})
 ]
 r = runtimes.scan(\"mistral-vibe\", stream)
-assert r[\"tools\"] == 8, f\"expected tools=8, got {r[\"tools\"]}\"
+assert r[\"tools\"] == 8, \"expected tools=8, got %s\" % r[\"tools\"]
 "'
 
 check "mistral-vibe scan(): response text truncation to last 4000 chars and unicode preservation" \

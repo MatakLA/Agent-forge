@@ -412,7 +412,7 @@ import runtimes
 rt = sys.argv[2]
 for field, val in [(\"id\", \"id_01\"), (\"conversation_id\", \"cid_02\"), (\"session_id\", \"sid_03\"), (\"sessionId\", \"sid_04\"), (\"thread_id\", \"tid_05\")]:
     r = runtimes.scan(rt, [json.dumps({field: val, \"choices\": [{\"finish_reason\": \"stop\"}]})])
-    assert r[\"conversation_id\"] == val, f\"failed for {field}={val}, got {r[\"conversation_id\"]}\"
+    assert r[\"conversation_id\"] == val, \"failed for %s=%s, got %s\" % (field, val, r[\"conversation_id\"])
 ' \"$ROOT\" \"$rt\""
 
   check "$rt scan(): tool calls from choices and diff blocks increment tools" "python3 -c '
@@ -427,7 +427,7 @@ events = [
     json.dumps({\"choices\": [{\"finish_reason\": \"stop\"}]})
 ]
 r = runtimes.scan(sys.argv[2], events)
-assert r[\"tools\"] == 5, f\"expected tools=5, got {r[\"tools\"]}\"
+assert r[\"tools\"] == 5, \"expected tools=5, got %s\" % r[\"tools\"]
 ' \"$ROOT\" \"$rt\""
 
   check "$rt scan(): response text truncation to last 4000 chars and unicode preservation" "python3 -c '

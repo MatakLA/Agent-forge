@@ -406,14 +406,14 @@ check "anthropic-compat scan(): sums input_tokens (1000) and output_tokens (42) 
   'python3 -c "
 import json, sys
 r = json.loads(sys.argv[1])
-assert r[\"tokens\"] == 1042, f\"expected 1042 tokens, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 1042, \"expected 1042 tokens, got %s\" % r[\"tokens\"]
 assert r[\"result\"][\"usage\"][\"input_tokens\"] == 1000
 assert r[\"result\"][\"usage\"][\"output_tokens\"] == 42
 assert r[\"tokens\"] == r[\"result\"][\"usage\"][\"input_tokens\"] + r[\"result\"][\"usage\"][\"output_tokens\"]
 " "$RUN_JSON"'
 
 check "anthropic-compat scan(): tools count increments on tool_use (tools >= 1)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] >= 1, f\"tools was {r[\"tools\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] >= 1, \"tools was %s\" % r[\"tools\"]" "$RUN_JSON"'
 
 check "anthropic-compat scan(): conversation_id is extracted from message" \
   'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] is not None and len(r[\"conversation_id\"]) > 0" "$RUN_JSON"'
@@ -456,7 +456,7 @@ check "anthropic-compat rework: command() preserves session and scan() extracts 
   'python3 -c "
 import json, sys
 r = json.loads(sys.argv[1])
-assert r[\"conversation_id\"] == \"$CONV_REWORK\", f\"expected $CONV_REWORK, got {r[\"conversation_id\"]}\"
+assert r[\"conversation_id\"] == \"$CONV_REWORK\", \"expected $CONV_REWORK, got %s\" % r[\"conversation_id\"]
 " "$REWORK_JSON"'
 
 # 8. Drive error path against fake server via stub
@@ -502,7 +502,7 @@ check "anthropic-compat live stub: non-streaming response sums tokens (1050) and
   'python3 -c "
 import json, sys
 r = json.loads(sys.argv[1])
-assert r[\"tokens\"] == 1050, f\"expected 1050, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 1050, \"expected 1050, got %s\" % r[\"tokens\"]
 assert r[\"result\"] is not None
 assert r[\"result\"][\"status\"] == \"SUCCESS\"
 assert \"Done: wrote hello.txt.\" in r[\"result\"][\"response\"]

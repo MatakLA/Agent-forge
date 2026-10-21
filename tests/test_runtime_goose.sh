@@ -285,13 +285,13 @@ print(json.dumps(out))
 ")
 
 check "goose scan(): tokens is None (honest unknown cost model)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] is None, f\"tokens must be None, got {r[\"tokens\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] is None, \"tokens must be None, got %s\" % r[\"tokens\"]" "$RUN_JSON"'
 
 check "goose scan(): tools count is non-zero (tools >= 1)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] >= 1, f\"tools count was {r[\"tools\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] >= 1, \"tools count was %s\" % r[\"tools\"]" "$RUN_JSON"'
 
 check "goose scan(): conversation_id is None" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] is None, f\"conversation_id was {r[\"conversation_id\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] is None, \"conversation_id was %s\" % r[\"conversation_id\"]" "$RUN_JSON"'
 
 check "goose scan(): result is a string containing task output" \
   'python3 -c "

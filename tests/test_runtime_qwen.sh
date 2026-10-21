@@ -243,13 +243,13 @@ print(json.dumps(parsed))
 ")
 
 check "qwen-code scan(): tokens counts processed tokens excluding cache (1500 - 200 = 1300)" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] == 1300, f\"expected 1300 tokens, got {r[\"tokens\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tokens\"] == 1300, \"expected 1300 tokens, got %s\" % r[\"tokens\"]" "$RUN_JSON"'
 
 check "qwen-code scan(): tools count increments on tool_use" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, f\"expected tools=1, got {r[\"tools\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, \"expected tools=1, got %s\" % r[\"tools\"]" "$RUN_JSON"'
 
 check "qwen-code scan(): conversation_id parsed from init event" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_qwen_test_01\", f\"got {r[\"conversation_id\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_qwen_test_01\", \"got %s\" % r[\"conversation_id\"]" "$RUN_JSON"'
 
 check "qwen-code scan(): result status is SUCCESS" \
   'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$RUN_JSON"'
@@ -258,7 +258,7 @@ check "qwen-code scan(): response text extracted from assistant message" \
   'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"response\"] == \"Completed task successfully.\"" "$RUN_JSON"'
 
 check "qwen-code scan(): cost_usd computed accurately from prices formula" \
-  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] == 0.00244, f\"got {r[\"result\"][\"cost_usd\"]}\"" "$RUN_JSON"'
+  'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"cost_usd\"] == 0.00244, \"got %s\" % r[\"result\"][\"cost_usd\"]" "$RUN_JSON"'
 
 # 6. Rework / resume existing conversation session
 REWORK_JSON=$(python3 -c "
@@ -370,7 +370,7 @@ stream = [
     json.dumps({\"type\": \"result\", \"status\": \"success\", \"stats\": {\"input_tokens\": 500, \"output_tokens\": 150, \"cached_tokens\": 50}})
 ]
 r = runtimes.scan(\"qwen-code\", stream)
-assert r[\"tokens\"] == 600, f\"expected 600, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 600, \"expected 600, got %s\" % r[\"tokens\"]
 "'
 
 check "qwen-code scan(): token calculation boundary when cached > total" \
@@ -382,7 +382,7 @@ stream = [
     json.dumps({\"type\": \"result\", \"status\": \"success\", \"stats\": {\"total_tokens\": 100, \"cached\": 200}})
 ]
 r = runtimes.scan(\"qwen-code\", stream)
-assert r[\"tokens\"] == 0, f\"expected 0, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 0, \"expected 0, got %s\" % r[\"tokens\"]
 "'
 
 check "qwen-code scan(): alternative session ID field names (sessionId, thread_id, conversation_id)" \
@@ -392,7 +392,7 @@ sys.path.insert(0, \"$ROOT/bin/lib\")
 import runtimes
 for field, val in [(\"sessionId\", \"sid_1\"), (\"thread_id\", \"sid_2\"), (\"conversation_id\", \"sid_3\")]:
     r = runtimes.scan(\"qwen-code\", [json.dumps({field: val})])
-    assert r[\"conversation_id\"] == val, f\"failed for {field}: expected {val}, got {r[\"conversation_id\"]}\"
+    assert r[\"conversation_id\"] == val, \"failed for %s: expected %s, got %s\" % (field, val, r[\"conversation_id\"])
 "'
 
 check "qwen-code scan(): duplicate session IDs preserve first occurrence" \
@@ -419,7 +419,7 @@ stream = [
     json.dumps({\"type\": \"tool\"})
 ]
 r = runtimes.scan(\"qwen-code\", stream)
-assert r[\"tools\"] == 3, f\"expected tools=3, got {r[\"tools\"]}\"
+assert r[\"tools\"] == 3, \"expected tools=3, got %s\" % r[\"tools\"]
 "'
 
 check "qwen-code scan(): response text truncation to last 4000 chars" \

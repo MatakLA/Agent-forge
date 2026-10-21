@@ -208,10 +208,10 @@ print(json.dumps(parsed))
 ")
 
   check "copilot scan(): tools count increments on tool event (tools == 1)" \
-    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, f\"expected tools=1, got {r[\"tools\"]}\"" "$RUN_JSON"'
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"tools\"] == 1, \"expected tools=1, got %s\" % r[\"tools\"]" "$RUN_JSON"'
 
   check "copilot scan(): conversation_id parsed from start event" \
-    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_test_01\", f\"got {r[\"conversation_id\"]}\"" "$RUN_JSON"'
+    'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"conversation_id\"] == \"ses_copilot_test_01\", \"got %s\" % r[\"conversation_id\"]" "$RUN_JSON"'
 
   check "copilot scan(): result status is SUCCESS" \
     'python3 -c "import json, sys; r=json.loads(sys.argv[1]); assert r[\"result\"][\"status\"] == \"SUCCESS\"" "$RUN_JSON"'
@@ -323,7 +323,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}, \"usage\": {\"total_tokens\": 1500, \"cached_tokens\": 200}})
 ]
 r = runtimes.scan(\"copilot\", stream)
-assert r[\"tokens\"] == 1300, f\"expected 1300, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 1300, \"expected 1300, got %s\" % r[\"tokens\"]
 "'
 
 check "copilot scan(): token calculation when total_tokens missing from usage" \
@@ -335,7 +335,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}, \"usage\": {\"input_tokens\": 500, \"output_tokens\": 150, \"cached_tokens\": 50}})
 ]
 r = runtimes.scan(\"copilot\", stream)
-assert r[\"tokens\"] == 600, f\"expected 600, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 600, \"expected 600, got %s\" % r[\"tokens\"]
 "'
 
 check "copilot scan(): token calculation boundary when cached > total" \
@@ -347,7 +347,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}, \"usage\": {\"total_tokens\": 100, \"cached\": 200}})
 ]
 r = runtimes.scan(\"copilot\", stream)
-assert r[\"tokens\"] == 0, f\"expected 0, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] == 0, \"expected 0, got %s\" % r[\"tokens\"]
 "'
 
 check "copilot scan(): token calculation remains None when usage missing" \
@@ -359,7 +359,7 @@ stream = [
     json.dumps({\"type\": \"step_finish\", \"part\": {\"reason\": \"stop\"}})
 ]
 r = runtimes.scan(\"copilot\", stream)
-assert r[\"tokens\"] is None, f\"expected None, got {r[\"tokens\"]}\"
+assert r[\"tokens\"] is None, \"expected None, got %s\" % r[\"tokens\"]
 "'
 
 check "copilot scan(): alternative session ID field names (sessionID, sessionId, thread_id, conversation_id, part-nested)" \
@@ -369,7 +369,7 @@ sys.path.insert(0, \"$ROOT/bin/lib\")
 import runtimes
 for field, val in [(\"sessionID\", \"sid_1\"), (\"sessionId\", \"sid_2\"), (\"thread_id\", \"sid_3\"), (\"conversation_id\", \"sid_4\"), (\"session\", \"sid_5\")]:
     r = runtimes.scan(\"copilot\", [json.dumps({field: val})])
-    assert r[\"conversation_id\"] == val, f\"failed for {field}: expected {val}, got {r[\"conversation_id\"]}\"
+    assert r[\"conversation_id\"] == val, \"failed for %s: expected %s, got %s\" % (field, val, r[\"conversation_id\"])
 
 r_part = runtimes.scan(\"copilot\", [json.dumps({\"part\": {\"sessionID\": \"sid_nested\"}})])
 assert r_part[\"conversation_id\"] == \"sid_nested\"
@@ -404,7 +404,7 @@ stream = [
     json.dumps({\"tool\": \"grep\"})
 ]
 r = runtimes.scan(\"copilot\", stream)
-assert r[\"tools\"] == 8, f\"expected tools=8, got {r[\"tools\"]}\"
+assert r[\"tools\"] == 8, \"expected tools=8, got %s\" % r[\"tools\"]
 "'
 
 check "copilot scan(): response text truncation to last 4000 chars and unicode preservation" \
