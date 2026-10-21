@@ -15,7 +15,7 @@ checks in headless Chrome (27 views x 2 themes, 0 violations) and is part of the
 
 **Supply chain.** The demo image is built with an SPDX SBOM and signed build provenance (`gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:X.Y.Z --owner MatakLA`), its base image is pinned by digest, and the SBOM is attached to each GitHub release; the `release` workflow can be run by hand as a rehearsal that publishes nothing. New `scorecard` workflow (OpenSSF Scorecard, weekly).
 
-**CI.** The fresh-install proof now runs on Ubuntu 22.04 and 24.04. New `portability` workflow runs the pure-Python tests that pass on macOS and Windows from `tests/portable-python.txt` (`tests/run_portable.py`); the real install still needs Linux.
+**CI.** The fresh-install proof now runs on Ubuntu 22.04, 24.04 and 24.04 arm64 (the API-runtime worker image downloads the matching, checksum-pinned Node.js and uv for the CPU; `agy` workers stay x86-64 only and `bin/worker-add` refuses them elsewhere). New `portability` workflow runs the pure-Python tests that pass on macOS and Windows from `tests/portable-python.txt` (`tests/run_portable.py`); the real install still needs Linux.
 
 **Repository.** CodeQL code scanning (`.github/workflows/codeql.yml`: Python, JavaScript, workflows); every GitHub Action is
 pinned to a commit SHA (Dependabot keeps them current); `CITATION.cff`; the security policy links the private advisory form;

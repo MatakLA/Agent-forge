@@ -15,6 +15,10 @@ set -euo pipefail
 N="${1:?usage: worker-add N [--runtime agy|claude|codex|gemini|compat|aider]}"; [[ "$N" =~ ^[0-9]+$ ]] || { echo "N must be a number" >&2; exit 2; }
 RT=agy; [ "${2:-}" = "--runtime" ] && RT="${3:?runtime}"
 [[ "$RT" =~ ^(agy|claude|codex|gemini|compat|aider)$ ]] || { echo "runtime must be agy, claude, codex, gemini, compat or aider" >&2; exit 2; }
+if [ "$RT" = agy ] && [ "$(uname -m)" != x86_64 ]; then
+  echo "agy workers need an x86-64 machine: the pinned Antigravity CLI (worker/Dockerfile) is the linux-x64 build." >&2
+  echo "On $(uname -m) use an API runtime: bin/worker-add $N --runtime claude|codex|gemini|compat|aider" >&2; exit 1
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 U="worker-$N"; S="${SANDBOX_SECRETS:-$HOME/.config/sandbox/secrets}"
 read -r FORGE_URL FORGE_ORG < <(python3 -c "import sys; sys.path.insert(0, '$ROOT/bin/lib'); import sbx; print(sbx.FORGE_URL, sbx.FORGE_ORG)")

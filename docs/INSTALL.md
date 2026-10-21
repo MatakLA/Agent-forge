@@ -197,6 +197,10 @@ done. `--yes` skips the questions (for scripts).
   fine; the demo image is multi-arch.
 - **Real install:** needs Linux with systemd. On a Mac or a Windows PC, run an Ubuntu VM (Multipass, UTM, VirtualBox, Hyper-V, ...)
   and follow B inside it. A VM is the recommended setup anyway. WSL1 and containers without systemd do not work.
+- **arm64 (for example an Ubuntu VM on Apple silicon):** the install is tested on Ubuntu 24.04 arm64 in CI, with the API
+  runtimes (`claude`, `codex`, `gemini`, `compat`, `aider`). The Antigravity runtime (`agy`) is x86-64 only, because the pinned
+  Antigravity CLI is the `linux-x64` build; `bin/worker-add` says so and stops. On a Mac, install an arm64 Ubuntu VM and use API keys
+  or your own model server.
 
 ## What can go wrong
 
