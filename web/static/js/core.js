@@ -176,8 +176,7 @@ function cycleTheme() {
 }
 
 applyTheme(currentTheme);
-loadLocale(currentLang);
-// loadLocalesList() is started by main.js: its callback redraws, and the later scripts must be loaded first
+// loadLocale() and loadLocalesList() are started by main.js: both redraw when they finish, and the later scripts must be loaded first
 
 project = store('af-project') || 'default';
 tab = store('af-tab') || 'overview';

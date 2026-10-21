@@ -56,7 +56,16 @@ jobs:
           for i in $(seq 1 30); do [ -f runs/foreman/live.json ] && break; sleep 2; done
           python3 bin/foreman status
       - name: A worker container can be created (it stays logged out - no accounts in CI)
-        run: bin/worker-add 1
+        run: |
+          if [ "$(uname -m)" = x86_64 ]; then
+            bin/worker-add 1
+          else
+            # agy workers are x86-64 only (bin/worker-add refuses them): build the agy worker image anyway - the supervisor test
+            # below runs a fake agent in it - and create a worker with an API runtime
+            docker compose -f worker/docker-compose.yml build
+            printf none | bin/secret-set anthropic.key
+            bin/worker-add 1 --runtime claude
+          fi
       - name: Health check (exit 1 = warnings only, e.g. no notifications configured)
         run: |
           rc=0
