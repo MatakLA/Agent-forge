@@ -1,6 +1,7 @@
 // Property-based tests (fast-check) of the dashboard's pure helpers in web/static/js/core.js: esc() is what keeps owner-supplied
-// and model-supplied text from becoming markup, hilite() marks the search hits without breaking that, dur() / fmtTok() / usd() /
-// ago() print the numbers on the cost and time views, tsloc() rewrites timestamps inside a text. A failing run prints its seed
+// and model-supplied text from becoming markup, hilite() marks the search hits without breaking that, ext() makes a link only of
+// an http(s) address, dur() / fmtTok() / usd() / ago() print the numbers on the cost and time views, tsloc() rewrites timestamps
+// inside a text. A failing run prints its seed
 // and the smallest counter-example.
 // tests/test_props.sh runs this against the real file; AF_CORE_JS points at another copy, FC_RUNS sets the cases per property.
 'use strict';
@@ -16,7 +17,7 @@ const from = src.indexOf('const esc = '), to = src.indexOf('const STATUS = ');
 assert.ok(from >= 0 && to > from, 'core.js: the helper block (from "const esc" up to "const STATUS") moved - update tests/props.js');
 const ctx = vm.createContext({});
 vm.runInContext(src.slice(from, to), ctx);
-const {esc, hilite, tsloc, ago, dur, fmtTok, usd} = vm.runInContext('({esc, hilite, tsloc, ago, dur, fmtTok, usd})', ctx);
+const {esc, ext, hilite, tsloc, ago, dur, fmtTok, usd} = vm.runInContext('({esc, ext, hilite, tsloc, ago, dur, fmtTok, usd})', ctx);
 
 const runs = Number(process.env.FC_RUNS) || 1000;
 let failed = 0;
@@ -93,6 +94,20 @@ assert.equal(hilite('a < b', 'lt'), 'a &lt; b');                                
 assert.equal(hilite("x && y, don't", "&&"), "x <mark>&amp;&amp;</mark> y, don&#39;t");
 assert.equal(hilite('Foo.bar (foo+bar)', 'foo.bar'), '<mark>Foo.bar</mark> (foo+bar)');
 console.log('ok   hilite: examples');
+
+const webAddr = /^\s*https?:\/\//i;
+prop('ext: an address that is not http(s) is never a link', fc.tuple(text, fc.constantFrom('javascript:', ' JaVaScRiPt:', '\t\njavascript:', 'data:', 'vbscript:', '//', '')),
+  ([s, scheme]) => webAddr.test(scheme + s) || ext(scheme + s, 'L') === 'L');
+prop('ext: an http(s) address stays inside its attribute, whatever it contains', text, s => {
+  const u = ('https://' + s).trim(), m = /^<a href="([^"<>]*)" target="_blank" rel="noopener">L<\/a>$/.exec(ext(u, 'L'));
+  return !!m && unesc(m[1]) === u;
+});
+assert.equal(ext('javascript:alert(1)', '#7'), '#7');
+assert.equal(ext('JAVASCRIPT:alert(1)//https://x', '#7'), '#7');
+assert.equal(ext('//evil.example/x', '#7'), '#7');
+assert.equal(ext(null, '#7'), '#7');
+assert.equal(ext('https://github.com/o/r/pull/7?a=1&b="2"', '#7'), '<a href="https://github.com/o/r/pull/7?a=1&amp;b=&quot;2&quot;" target="_blank" rel="noopener">#7</a>');
+console.log('ok   ext: examples');
 
 if (failed) { console.log(failed + ' property test(s) FAILED'); process.exit(1); }
 console.log('property tests: ALL OK');

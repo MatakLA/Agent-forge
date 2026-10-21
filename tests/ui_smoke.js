@@ -510,6 +510,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     check('translations are text: a dictionary of elements shows up as text everywhere (' + where.join(', ') + ')', !where.length);
   }
 
+  // a link that comes with the data opens a web page or is not a link at all (esc() alone lets a javascript: address through)
+  {
+    w.eval(`window._F1 = F; F = Object.assign({}, F, {
+      goals: [{id: 'G20260101-000002', text: 'a goal with pull requests', status: 'running'}].concat(F.goals || []),
+      tasks: [{id: '9200-bad', goal: 'G20260101-000002', title: 'bad link', role: 'developer', status: 'done', pr: 7, pr_url: 'javascript:alert(1)'},
+        {id: '9201-ok', goal: 'G20260101-000002', title: 'good link', role: 'developer', status: 'done', pr: 8, pr_url: 'https://example.com/o/r/pull/8'}].concat(F.tasks || [])});`);
+    const bad = () => [...d.querySelectorAll('a[href]')].filter(a => /^\s*(javascript|data|vbscript):/i.test(a.getAttribute('href'))).length;
+    const good = () => !!d.querySelector('a[href="https://example.com/o/r/pull/8"]');
+    w.eval("GD.id = 'G20260101-000002'; GD.data = null; SHEET.kind = 'goal'; SHEET.id = GD.id; renderGoalSheet();");
+    const goalBad = bad(), goalGood = good();
+    w.eval("TD.id = '9200-bad'; TD.data = null; SHEET.kind = 'task'; SHEET.id = '9200-bad'; renderTaskSheet();");
+    const taskBad = bad();
+    w.eval("TD.id = '9201-ok'; TD.data = null; SHEET.id = '9201-ok'; renderTaskSheet();");
+    const taskGood = good();
+    w.eval("SHEET.kind = null; SHEET.id = null; closeSheet(); F = window._F1; render(true);");
+    check('links: a pull request address is a link only when it is http(s) (goal sheet: ' + goalBad + ' script links, https link ' + goalGood +
+          '; task sheet: ' + taskBad + ' script links, https link ' + taskGood + ')', !goalBad && goalGood && !taskBad && taskGood);
+  }
+
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
   console.log('ui tests: ' + (failed || errors.length ? 'FAILED' : 'ALL OK'));
   w.close(); process.exit(failed || errors.length ? 1 : 0);

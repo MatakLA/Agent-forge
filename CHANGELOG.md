@@ -31,14 +31,15 @@ copes with a release that has no files, such as v0.12.0. The search page marked 
 and every piece is escaped on its own. A dictionary is text: the button labels of the "Needs you" cards and the task sheet, the stat boxes,
 the status word of a goal and the Appearance card were put into the page as HTML, so a dictionary uploaded in Settings could carry markup
 (and the `<name>` in the Appearance help was swallowed as a tag); they are escaped now, and a new UI test fills every key with an
-element and fails when one shows up on any tab, sub-view, sheet or card.
+element and fails when one shows up on any tab, sub-view, sheet or card. The pull request links on the goal and task sheets only appear for
+an `http(s)` address (escaping keeps a value inside its attribute but lets `javascript:` through); anything else shows as plain `#7`.
 `forge pick-ai` and the runtime docs told you to run `bin/worker-add N --runtime ollama` (and `vllm`, `lmstudio`, `llamacpp`, `opencode`, `goose`,
 `qwen-code`, `anthropic-compat`, `copilot`, `mistral-vibe`), which `bin/worker-add` refuses because no worker image ships those CLIs. The next steps
 and the docs now say so and point to `compat` or `aider` for a model server of your own; they also show a LAN address for `COMPAT_BASE_URL`, since
 `127.0.0.1` inside a worker container is the container itself. A new test fails when any file names such a runtime after `--runtime`.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
-against the page's helpers (`esc`, `hilite`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries.
+against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries.
 
 ## 0.12.1 - 2026-10-21
 
