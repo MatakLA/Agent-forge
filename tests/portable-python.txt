@@ -1,0 +1,55 @@
+# Pure-Python tests that pass outside Linux. `tests/run_portable.py` runs this list on the macOS and Windows runners (portability workflow).
+# `all` = macOS and Windows; `posix` = macOS only (the foreman needs fcntl, so most of it cannot run on native Windows - use WSL2).
+# Not listed on purpose (fail on macOS today): test_install_smoke.py (Linux installer), test_issues_intake_malformed.py (slow shell test),
+# test_sbx_security.py (a NUL-byte check behaves differently). To see what a platform can do: python tests/run_portable.py --all
+
+bin/foreman --selftest                           posix
+tests/test_anthropic_compat_registry.py          all
+tests/test_cache.py                              all
+tests/test_cost_model_reporting.py               posix
+tests/test_credentials.py                        posix
+tests/test_dashboard_backend.py                  posix
+tests/test_demo_mode.py                          posix
+tests/test_docs_links.py                         all
+tests/test_doctor_egress_hosts.py                posix
+tests/test_doctor_providers.py                   posix
+tests/test_doctor_readiness.py                   posix
+tests/test_egress_logs.py                        posix
+tests/test_egress_runtime_hosts.py               posix
+tests/test_fake_model_api_providers.py           posix
+tests/test_foreman_languages.py                  posix
+tests/test_foreman_llm.py                        posix
+tests/test_foreman_loop.py                       posix
+tests/test_foreman_merge.py                      posix
+tests/test_foreman_pool.py                       posix
+tests/test_foreman_prompts.py                    posix
+tests/test_foreman_readiness.py                  posix
+tests/test_foreman_settings.py                   posix
+tests/test_foreman_store.py                      posix
+tests/test_goose_registry.py                     all
+tests/test_issues_intake.py                      all
+tests/test_issues_intake_duplicates.py           posix
+tests/test_issues_intake_parsing.py              posix
+tests/test_knowledge_paths.py                    posix
+tests/test_llm_providers_security.py             posix
+tests/test_merge_pr.py                           posix
+tests/test_opencode_registries.py                posix
+tests/test_orphan_warning_ui.py                  posix
+tests/test_provider_egress_hosts.py              posix
+tests/test_quality.py                            posix
+tests/test_quickstart_budget.py                  all
+tests/test_quickstart_e2e.py                     all
+tests/test_runtime_anthropic_compat.py           posix
+tests/test_runtime_copilot.py                    posix
+tests/test_runtime_cost_model.py                 all
+tests/test_runtime_goose.py                      posix
+tests/test_runtime_local_compat.py               posix
+tests/test_runtime_mistral_vibe.py               posix
+tests/test_runtime_opencode.py                   posix
+tests/test_runtime_qwen.py                       posix
+tests/test_settings_conf_audit.py                posix
+tests/test_settings_egress_validation.py         posix
+tests/test_settings_providers.py                 posix
+tests/test_upstream.py                           posix
+tests/test_web.py                                posix
+tests/test_wizard.py                             posix

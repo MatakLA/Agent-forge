@@ -79,6 +79,19 @@ After every run the supervisor pushes what the worker left on its task branch - 
 raised a HIGH egress alarm has nothing pushed, and the kill switch trips. Kill-switch counting is about misbehaviour only:
 quota stops, token caps, timeouts and stops by the kill switch itself neither count nor reset the `CONSEC_FAIL_TRIP` streak.
 
+## What you download
+
+- **Demo image.** Every release image `ghcr.io/matakla/agent-forge-demo:X.Y.Z` is built by the `release` workflow from the tagged
+  commit (never from a laptop), with a base image pinned by digest, an SPDX bill of materials stored with the image and signed
+  build provenance (Sigstore, via GitHub). Check that an image really came from this repository's workflow:
+  `gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:X.Y.Z --owner MatakLA`. The same SBOM is attached to the GitHub release.
+- **Actions.** Every GitHub Action the repository uses is pinned to a commit SHA; Dependabot proposes updates monthly. CI jobs
+  get read-only tokens unless a job needs more (the release and code-scanning jobs say why).
+- **Scorecard.** The [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/MatakLA/Agent-forge) workflow scores these
+  practices weekly; the result is public and includes the weak spots (for example, one maintainer means little independent review).
+- **Installer.** `install.sh` clones this repository and runs `scripts/install.sh`; read both before piping anything to a shell.
+  `FORGE_REF=vX.Y.Z` pins a release.
+
 ## Honest limits
 - Worker accounts share the `workers` team: a worker can push to (or delete) another worker's task branch. The gate checks
   that commits come from worker bots, not which one.

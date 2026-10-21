@@ -13,6 +13,10 @@ checks in headless Chrome (27 views x 2 themes, 0 violations) and is part of the
 
 **Documentation.** `docs/FIELD-REPORT.md` and `docs/field-report-data.json`: a field report from one self-hosted install (221 merged tasks in five days on this repository, a randomised context-pack comparison on two projects, a before/after for the 0.9.0 efficiency features), with the bad numbers, the incidents and what is still unmeasured.
 
+**Supply chain.** The demo image is built with an SPDX SBOM and signed build provenance (`gh attestation verify oci://ghcr.io/matakla/agent-forge-demo:X.Y.Z --owner MatakLA`), its base image is pinned by digest, and the SBOM is attached to each GitHub release; the `release` workflow can be run by hand as a rehearsal that publishes nothing. New `scorecard` workflow (OpenSSF Scorecard, weekly).
+
+**CI.** The fresh-install proof now runs on Ubuntu 22.04 and 24.04. New `portability` workflow runs the pure-Python tests that pass on macOS and Windows from `tests/portable-python.txt` (`tests/run_portable.py`); the real install still needs Linux.
+
 **Repository.** CodeQL code scanning (`.github/workflows/codeql.yml`: Python, JavaScript, workflows); every GitHub Action is
 pinned to a commit SHA (Dependabot keeps them current); `CITATION.cff`; the security policy links the private advisory form;
 a social preview image (`docs/img/social-preview.png`); removed `tools/publish-snapshot`.

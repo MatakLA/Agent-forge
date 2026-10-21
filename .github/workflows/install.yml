@@ -24,8 +24,13 @@ concurrency:
   cancel-in-progress: true
 jobs:
   fresh-install:
-    runs-on: ubuntu-24.04
+    name: fresh install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install from scratch, as a user would

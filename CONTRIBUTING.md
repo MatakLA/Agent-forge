@@ -79,6 +79,8 @@ Maintainers cut a release like this:
 2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 
 The release workflow then refuses a tag that does not match `VERSION`, runs the checks, publishes the demo image
-`ghcr.io/matakla/agent-forge-demo` (`:X.Y.Z`, `:X.Y`, `:latest`) and creates the GitHub release from that CHANGELOG section.
+`ghcr.io/matakla/agent-forge-demo` (`:X.Y.Z`, `:X.Y`, `:latest`) with an SBOM and signed build provenance, and creates the GitHub
+release from that CHANGELOG section with the SBOM attached. To rehearse the image build without publishing anything, run the
+`release` workflow by hand on a branch (Actions → release → Run workflow): it builds both platforms and pushes nothing.
 `./forge update` follows `main`, not the tags: tags are for people who want a fixed version (`FORGE_REF=vX.Y.Z` with the
 installer).

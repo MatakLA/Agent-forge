@@ -4,7 +4,7 @@
 # Python standard library only; no node, no worker image, no docker-in-docker,
 # and no egress proxy service.
 # ==============================================================================
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 
 ENV DEMO_MODE=1 \
     BIND_PORT=8171 \
