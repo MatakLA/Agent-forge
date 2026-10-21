@@ -201,6 +201,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const srRows = [...d.querySelectorAll('.sr[data-open]')];
   check('search: result rows are keyboard reachable',
         srRows.length > 0 && srRows.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  const srMarks = [...d.querySelectorAll('#sr-res mark')];
+  check('search: the hits are highlighted, and nothing but the hit',
+        srMarks.length > 0 && srMarks.every(m => m.textContent.toLowerCase() === 'due'));
   q.value = 'xyznonexistentword'; q.dispatchEvent(new w.Event('input', {bubbles: true}));
   for (let i = 0; i < 40 && !txt('sheet').includes('No results for'); i++) await sleep(250);
   check('search: explicit empty state for zero matches',
@@ -474,6 +477,37 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     }
     check('settings: every control is reachable by keyboard and has a label (' + bad.slice(0, 6).join(', ') + ')', !bad.length);
     await sgo('workers');
+  }
+
+  // translations are plain text, never markup: with a dictionary whose every value is an element, no element may appear anywhere
+  // (a custom dictionary can be uploaded in Settings, and one that came from somebody else must not be able to run script)
+  {
+    const probe = '<i class="xss-probe">x</i>', where = [];
+    let last = 0;
+    const seen = what => { const n = d.querySelectorAll('.xss-probe').length; if (n > last) where.push(what + ' +' + (n - last)); last = n; };
+    w.eval("window._I0 = I18N; I18N = new Proxy({}, {get: (o, k) => typeof k === 'string' && k !== 'lang.name' ? " + JSON.stringify(probe) + " : undefined}); updateStatusObjects(); applyI18n();");
+    for (const tb of w.eval('TABS')) {
+      w.setTab(tb); await sleep(700); seen(tb);
+      for (const v of [...d.querySelectorAll('#t-' + tb + ' .seg button')].map(b => b.dataset.v)) { w.setSub(tb, v); await sleep(600); seen(tb + '/' + v); }
+    }
+    // everything that waits for the owner, and the sheets of a goal and of a task in each state, in one synchronous step each
+    w.eval(`window._F0 = F; F = Object.assign({}, F, {
+      goals: [{id: 'G20260101-000001', text: 'a goal that waits', status: 'approval', notes: 'a note', rounds: 1}].concat(F.goals || []),
+      tasks: [{id: '9001-plan', goal: 'G20260101-000001', title: 'a', role: 'developer', status: 'approval', awaiting: 'plan', risk: 'risky'},
+        {id: '9002-merge', goal: 'G1', title: 'b', role: 'developer', status: 'approval', awaiting: 'merge', diff: {added: 1, removed: 2}, merge_feedback: 'f'},
+        {id: '9003-risky', goal: 'G1', title: 'c', role: 'developer', status: 'approval', awaiting: 'risky', spec: 's'},
+        {id: '9004-blocked', goal: 'G1', title: 'd', role: 'developer', status: 'blocked', diagnosis: {summary: 's', root_cause: 'r', suggested_fix: 'f'}},
+        {id: '9005-blocked', goal: 'G1', title: 'e', role: 'developer', status: 'blocked', blocked_why: 'w'}].concat(F.tasks || []),
+      owner_questions: ['a question?'], killswitch: {reason: 'egress alarm: x', scope: 'project'}});`);
+    w.setTab('overview'); w.eval('render(true)'); seen('overview with everything waiting');
+    w.eval("GD.id = 'G20260101-000001'; GD.data = null; SHEET.kind = 'goal'; SHEET.id = GD.id; renderGoalSheet();"); seen('goal sheet');
+    for (const [st, aw] of [['approval', 'merge'], ['approval', 'risky'], ['approval', 'plan'], ['running', ''], ['blocked', ''], ['cancelled', ''], ['pending', ''], ['splitting', '']]) {
+      w.eval("TD.id = '9100-x'; TD.data = {task: {id: '9100-x', goal: 'G20260101-000001', title: 'x', role: 'developer', status: '" + st + "', awaiting: '" + aw +
+             "', diagnosis: {summary: 's', root_cause: 'r', suggested_fix: 'f'}}}; SHEET.kind = 'task'; SHEET.id = '9100-x'; renderTaskSheet();");
+      seen('task sheet ' + st + ' ' + aw);
+    }
+    w.eval("SHEET.kind = null; SHEET.id = null; closeSheet(); F = window._F0; I18N = window._I0; updateStatusObjects(); applyI18n(); render(true);");
+    check('translations are text: a dictionary of elements shows up as text everywhere (' + where.join(', ') + ')', !where.length);
   }
 
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');

@@ -16,7 +16,6 @@ function searchResults() {
   if (SR.err) return '<div class="empty bad">Search error: ' + esc(SR.err) + '</div>';
   if (!SR.res || !SR.res.length) return '<div class="empty">No results for “' + esc(q) + '”.</div>';
   const groups = [['goal', 'Goals'], ['task', 'Tasks'], ['event', 'Events'], ['run', 'Transcripts']];
-  const mark = s => esc(s).replace(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>');
   const html = groups.map(([k, title]) => {
     const xs = SR.res.filter(r => r.kind === k);
     if (!xs.length) return '';
@@ -24,7 +23,7 @@ function searchResults() {
       const open = k === 'goal' ? 'goal:' + r.id : k === 'task' ? 'task:' + r.id : k === 'run' ? 'run:' + r.run_id : r.task ? 'task:' + r.task : r.goal ? 'goal:' + r.goal : '';
       const headText = k === 'goal' || k === 'task' ? (r.title + ' (' + (STATUS[r.status] || r.status) + ')') : k === 'run' ? (r.worker + ' · ' + r.task) : dfmt(r.at);
       const head = k === 'goal' || k === 'task' ? esc(r.title) + ' ' + chip(r.status) : k === 'run' ? esc(r.worker) + ' · ' + esc(r.task) + ' · ' + esc(dfmt(r.at)) : esc(dfmt(r.at));
-      return '<div class="sr"' + (open ? ' data-open="' + esc(open) + '" role="button" tabindex="0" aria-label="' + esc(headText) + '"' : '') + '><div class="sr-h">' + head + '</div><div class="muted small">' + mark(r.snippet || '') + '</div></div>';
+      return '<div class="sr"' + (open ? ' data-open="' + esc(open) + '" role="button" tabindex="0" aria-label="' + esc(headText) + '"' : '') + '><div class="sr-h">' + head + '</div><div class="muted small">' + hilite(r.snippet || '', q) + '</div></div>';
     }).join('');
   }).join('');
   return html || '<div class="empty">No results for “' + esc(q) + '”.</div>';

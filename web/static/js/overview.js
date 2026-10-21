@@ -24,30 +24,30 @@ function fbForm(key, placeholder, sendLabel) {
 function inboxHtml() {
   if (!F) return window._ferr ? '<div class="banner bad">Failed to load overview data: ' + esc(window._ferr) + '</div>' : '';
   const items = inboxItems();
-  if (!items.length) return '<h3>' + t('head.needs_you', 'Needs you') + '</h3><div class="empty">' + t('msg.nothing_needs_you', 'Nothing needs your approval right now.') + '</div>';
+  if (!items.length) return '<h3>' + th('head.needs_you', 'Needs you') + '</h3><div class="empty">' + th('msg.nothing_needs_you', 'Nothing needs your approval right now.') + '</div>';
   const card = (cls, head, body, btns, form) => '<div class="inbox-item ' + cls + '"><div class="ib-head">' + head + '</div>' + (body ? '<div class="ib-body">' + body + '</div>' : '') +
     '<div class="btnrow">' + btns + '</div>' + (form || '') + '</div>';
-  const open = (kind, id, label) => '<button class="mini" data-open="' + kind + ':' + esc(id) + '">' + (label || t('btn.open', 'Open')) + '</button>';
+  const open = (kind, id, label) => '<button class="mini" data-open="' + kind + ':' + esc(id) + '">' + (label || th('btn.open', 'Open')) + '</button>';
   const html = items.map(it => {
     if (it.kind === 'plan') {
       const list = it.tasks.slice(0, 6).map(t_task => '<li>' + esc(t_task.title) + ' ' + roleTag(t_task.role) + (t_task.risk === 'risky' ? ' <span class="badge warn">risky</span>' : '') + '</li>').join('') +
         (it.tasks.length > 6 ? '<li class="muted">… ' + (it.tasks.length - 6) + ' more</li>' : '');
       return card('plan', '<span class="badge">plan</span> ' + esc(it.goal.text.slice(0, 160)), '<ul class="ib-list">' + list + '</ul>' + (it.goal.notes ? small(esc(it.goal.notes)) : ''),
-        '<button class="primary sm" data-ga="approve" data-id="' + esc(it.goal.id) + '">' + t('btn.approve_plan', 'Approve the plan') + '</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">' + t('btn.change_it', 'Change it…') + '</button>' + open('goal', it.goal.id),
+        '<button class="primary sm" data-ga="approve" data-id="' + esc(it.goal.id) + '">' + th('btn.approve_plan', 'Approve the plan') + '</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">' + th('btn.change_it', 'Change it…') + '</button>' + open('goal', it.goal.id),
         fbForm(it.key, 'What should the planner do differently? (it plans again with your note)', 'Plan again'));
     }
     if (it.kind === 'merge') {
       const t_task = it.task;
-      return card('merge', '<span class="badge ok">' + t('status.merge_ready', 'ready to merge') + '</span> ' + esc(t_task.title) + ' ' + small(esc(t_task.id)),
+      return card('merge', '<span class="badge ok">' + th('status.merge_ready', 'ready to merge') + '</span> ' + esc(t_task.title) + ' ' + small(esc(t_task.id)),
         (t_task.merge_feedback ? esc(t_task.merge_feedback) + ' ' : '') + (t_task.diff ? '<span class="plus">+' + t_task.diff.added + '</span> <span class="minus">−' + t_task.diff.removed + '</span>' : ''),
-        '<button class="primary sm" data-ta="approve" data-id="' + esc(t_task.id) + '">' + t('btn.approve_merge', 'Approve merge') + '</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">' + t('btn.send_back', 'Send back…') + '</button>' + open('task', t_task.id, 'Diff & details'),
+        '<button class="primary sm" data-ta="approve" data-id="' + esc(t_task.id) + '">' + th('btn.approve_merge', 'Approve merge') + '</button><button class="mini" data-fbtoggle="' + esc(it.key) + '">' + th('btn.send_back', 'Send back…') + '</button>' + open('task', t_task.id, 'Diff & details'),
         fbForm(it.key, 'What should the worker change?', 'Send back'));
     }
     if (it.kind === 'risky') {
       const t_task = it.task;
       const sp = String(t_task.spec || '').replace(/\s+/g, ' ');
       return card('risky', '<span class="badge warn">risky task</span> ' + esc(t_task.title) + ' ' + roleTag(t_task.role), esc(sp.slice(0, 220)) + (sp.length > 220 ? '…' : ''),
-        '<button class="primary sm" data-ta="approve" data-id="' + esc(t_task.id) + '">' + t('btn.approve_task', 'Approve task') + '</button><button class="mini" data-ta="cancel" data-id="' + esc(t_task.id) + '">' + t('btn.cancel', 'Cancel') + '</button>' + open('task', t_task.id));
+        '<button class="primary sm" data-ta="approve" data-id="' + esc(t_task.id) + '">' + th('btn.approve_task', 'Approve task') + '</button><button class="mini" data-ta="cancel" data-id="' + esc(t_task.id) + '">' + th('btn.cancel', 'Cancel') + '</button>' + open('task', t_task.id));
     }
     if (it.kind === 'egress')
       return card('blocked', '<span class="badge bad">stopped</span> A worker tried to reach a host that is not allowed', esc(it.reason),
@@ -61,13 +61,13 @@ function inboxHtml() {
     const diag = t_task.diagnosis;
     const whyText = diag ? (diag.summary + (diag.suggested_fix ? '\n\n' + t('diag.suggested_fix', '💡 Suggested fix:') + ' ' + diag.suggested_fix : '')) : String(t_task.blocked_why || '');
     return card('blocked', '<span class="badge bad">' + esc(STATUS.blocked || 'blocked') + '</span> ' + esc(t_task.title) + ' ' + small(esc(t_task.id)), esc(whyText.slice(0, 360)),
-      '<button class="primary sm" data-ta="retry" data-id="' + esc(t_task.id) + '">' + t('btn.retry', 'Retry') + '</button>' +
-      '<button type="button" class="mini" data-copyreport="' + esc(t_task.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + t('btn.copy_report', '📋 Copy report for AI') + '</button>' +
-      '<button class="mini" data-fbtoggle="' + esc(it.key) + '">' + t('btn.send_back_words', 'Send back with my words…') + '</button>' +
-      open('task', t_task.id) + '<button class="mini ghost" data-ta="cancel" data-id="' + esc(t_task.id) + '">' + t('btn.cancel', 'Cancel') + '</button>',
+      '<button class="primary sm" data-ta="retry" data-id="' + esc(t_task.id) + '">' + th('btn.retry', 'Retry') + '</button>' +
+      '<button type="button" class="mini" data-copyreport="' + esc(t_task.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + th('btn.copy_report', '📋 Copy report for AI') + '</button>' +
+      '<button class="mini" data-fbtoggle="' + esc(it.key) + '">' + th('btn.send_back_words', 'Send back with my words…') + '</button>' +
+      open('task', t_task.id) + '<button class="mini ghost" data-ta="cancel" data-id="' + esc(t_task.id) + '">' + th('btn.cancel', 'Cancel') + '</button>',
       fbForm(it.key, 'What should the worker do differently?', 'Send back'));
   }).join('');
-  return '<h3 class="hot">' + t('head.needs_you', 'Needs you') + ' (' + items.length + ')</h3><div class="inbox">' + html + '</div>';
+  return '<h3 class="hot">' + th('head.needs_you', 'Needs you') + ' (' + items.length + ')</h3><div class="inbox">' + html + '</div>';
 }
 
 // ---- the first steps of a new install (until done or dismissed)

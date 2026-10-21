@@ -179,13 +179,13 @@ async function loadTaskDetail(id) {
   TD.at = Date.now(); renderTaskSheet();
 }
 function taskActions(task) {
-  const b = (act, label, cls) => '<button class="' + (cls || 'mini') + '" data-ta="' + act + '" data-id="' + esc(task.id) + '">' + label + '</button>';
-  const f = (key, label) => '<button class="mini" data-tform="' + key + '">' + label + '</button>';
+  const b = (act, label, cls) => '<button class="' + (cls || 'mini') + '" data-ta="' + act + '" data-id="' + esc(task.id) + '">' + esc(label) + '</button>';
+  const f = (key, label) => '<button class="mini" data-tform="' + key + '">' + esc(label) + '</button>';
   if (task.status === 'approval' && task.awaiting === 'merge') return b('approve', 'Merge', 'primary sm') + f('feedback', 'Send back…');
   if (task.status === 'approval' && task.awaiting === 'risky') return b('approve', 'Start it', 'primary sm') + b('cancel', 'Cancel');
   if (task.status === 'approval' && task.awaiting === 'plan') return '<button class="mini" data-open="goal:' + esc(task.goal) + '">Its plan waits for you — open the goal</button>';
   if (task.status === 'running') return task.cancel_requested ? small('stopping its run…') : b('cancel', 'Stop and cancel');
-  if (task.status === 'blocked') return b('retry', t('btn.retry', 'Retry'), 'primary sm') + '<button class="mini" data-copyreport="' + esc(task.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + t('btn.copy_report', '📋 Copy report for AI') + '</button>' + f('feedback', t('btn.send_back_words', 'Send back with my words…')) + b('cancel', t('btn.cancel', 'Cancel'));
+  if (task.status === 'blocked') return b('retry', t('btn.retry', 'Retry'), 'primary sm') + '<button class="mini" data-copyreport="' + esc(task.id) + '" title="' + esc(t('btn.copy_report', '📋 Copy report for AI')) + '">' + th('btn.copy_report', '📋 Copy report for AI') + '</button>' + f('feedback', t('btn.send_back_words', 'Send back with my words…')) + b('cancel', t('btn.cancel', 'Cancel'));
   if (task.status === 'cancelled') return b('retry', 'Queue it again');
   if (task.status === 'pending' || task.status === 'splitting') return f('feedback', (task.attempts || (task.history || []).length) ? t('btn.send_back_words', 'Send my words…') : 'Add a note…') +
     f('assign', 'Assign to…') + f('model', 'Model…') + b('cancel', t('btn.cancel', 'Cancel'));

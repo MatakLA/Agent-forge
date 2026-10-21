@@ -59,7 +59,7 @@ function renderGoalSheet() {
     const head = dd !== day ? '<div class="evday">' + esc(dd) + '</div>' : ''; day = dd;
     return head + '<div class="ev2"><span class="ico">' + evIcon(e.msg || '') + '</span><time>' + esc(tfmt(e.at)) + '</time><span>' +
       esc(tsloc(e.msg || '')).replace(/\b(\d{4}-[\w-]+)\b/, m => ts.some(t => t.id === m) ? '<button class="linkbtn" data-open="task:' + m + '" style="font:inherit;padding:0">' + m + '</button>' : m) + '</span></div>'; }).join('');
-  const html = '<h2>' + esc(g.text) + '</h2><div class="sub">' + [GSTATUS[g.status] || g.status, g.paused ? '<b class="warn">paused</b>' : '', g.priority ? '<b>first</b>' : '',
+  const html = '<h2>' + esc(g.text) + '</h2><div class="sub">' + [esc(GSTATUS[g.status] || g.status), g.paused ? '<b class="warn">paused</b>' : '', g.priority ? '<b>first</b>' : '',
       'created ' + esc(dfmt(g.created)), g.finished ? 'finished ' + esc(dfmt(g.finished)) : '', g.rounds > 1 ? 'round ' + g.rounds : '', g.source && g.source !== 'owner' ? esc(g.source) : '']
       .filter(Boolean).join(' · ') + '</div><div class="btnrow">' + goalActions(g) + '</div>' + goalForm(g) +
     (g.owner_notes ? '<div class="note">Your notes: ' + esc(tsloc(g.owner_notes)) + '</div>' : '') +

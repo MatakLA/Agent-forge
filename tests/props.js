@@ -1,6 +1,7 @@
 // Property-based tests (fast-check) of the dashboard's pure helpers in web/static/js/core.js: esc() is what keeps owner-supplied
-// and model-supplied text from becoming markup, dur() / fmtTok() / usd() / ago() print the numbers on the cost and time views,
-// tsloc() rewrites timestamps inside a text. A failing run prints its seed and the smallest counter-example.
+// and model-supplied text from becoming markup, hilite() marks the search hits without breaking that, dur() / fmtTok() / usd() /
+// ago() print the numbers on the cost and time views, tsloc() rewrites timestamps inside a text. A failing run prints its seed
+// and the smallest counter-example.
 // tests/test_props.sh runs this against the real file; AF_CORE_JS points at another copy, FC_RUNS sets the cases per property.
 'use strict';
 const fc = require('fast-check');
@@ -15,7 +16,7 @@ const from = src.indexOf('const esc = '), to = src.indexOf('const STATUS = ');
 assert.ok(from >= 0 && to > from, 'core.js: the helper block (from "const esc" up to "const STATUS") moved - update tests/props.js');
 const ctx = vm.createContext({});
 vm.runInContext(src.slice(from, to), ctx);
-const {esc, tsloc, ago, dur, fmtTok, usd} = vm.runInContext('({esc, tsloc, ago, dur, fmtTok, usd})', ctx);
+const {esc, hilite, tsloc, ago, dur, fmtTok, usd} = vm.runInContext('({esc, hilite, tsloc, ago, dur, fmtTok, usd})', ctx);
 
 const runs = Number(process.env.FC_RUNS) || 1000;
 let failed = 0;
@@ -78,6 +79,20 @@ prop('tsloc: a UTC timestamp is replaced, the text around it stays', fc.tuple(wo
     const iso = d.toISOString().replace(/\.\d+Z$/, 'Z'), out = tsloc(a + iso + b);
     return out.startsWith(a) && out.endsWith(b) && !out.includes(iso) && out.length > a.length + b.length;
   });
+
+const marks = /<\/?mark>/g;
+const query = fc.stringMatching(/^[A-Za-z0-9 .*+?^${}()|\[\]\\<>&"'-]{2,6}$/);
+prop('hilite: without its mark tags the result is exactly the escaped text', fc.tuple(text, query), ([s, q]) => hilite(s, q).replace(marks, '') === esc(s));
+prop('hilite: no markup character survives except the mark tags', fc.tuple(text, query), ([s, q]) => !/[<>"']/.test(hilite(s, q).replace(marks, '')));
+prop('hilite: whatever is marked is the query, in any case', fc.tuple(text, query), ([s, q]) =>
+  [...hilite(s, q).matchAll(/<mark>(.*?)<\/mark>/g)].every(m => unesc(m[1]).toLowerCase() === q.toLowerCase()));
+prop('hilite: every hit of the query is marked, once', fc.tuple(fc.stringMatching(/^[A-Za-z0-9 <>&"'-]{0,12}$/), query),
+  ([s, q]) => (hilite(s, q).match(/<mark>/g) || []).length === s.toLowerCase().split(q.toLowerCase()).length - 1);
+prop('hilite: no query, no marks', fc.tuple(text, fc.constantFrom('', null, undefined)), ([s, q]) => hilite(s, q) === esc(s));
+assert.equal(hilite('a < b', 'lt'), 'a &lt; b');                                  // the old highlighter wrote a &<mark>lt</mark>; b
+assert.equal(hilite("x && y, don't", "&&"), "x <mark>&amp;&amp;</mark> y, don&#39;t");
+assert.equal(hilite('Foo.bar (foo+bar)', 'foo.bar'), '<mark>Foo.bar</mark> (foo+bar)');
+console.log('ok   hilite: examples');
 
 if (failed) { console.log(failed + ' property test(s) FAILED'); process.exit(1); }
 console.log('property tests: ALL OK');
