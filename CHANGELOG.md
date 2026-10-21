@@ -10,7 +10,8 @@ alpha software: until 1.0, commands, settings and file formats can change betwee
 files are signed afterwards by the new `sign-release` workflow. `tools/sign-release` does the signing and checks each signature
 again before anything is published; the `release` workflow's rehearsal runs it on a throwaway archive. All installs are pinned and
 hash-checked: the agent CLIs in the API worker image come from a lockfile (`npm ci`), the test tools from lockfiles, the CI tools
-from hash-pinned requirements; Dependabot watches all of them.
+from hash-pinned requirements; Dependabot watches all of them and waits seven days after a new release before it proposes it. The
+workflows' checkouts keep no git token (`persist-credentials: false`).
 
 **Logging.** The dashboard writes an access log to the journal (`forge logs web`): every write and every refused or failed request, with
 method, path, status and a few plain fields (`action=allow host=pypi.org`); never query strings, cookies, bodies, typed text or
@@ -19,6 +20,15 @@ secret values. `DASHBOARD_ACCESS_LOG=all` adds reads, `=off` silences it. Owner 
 creating a project all write to the audit trail (`runs/ALERT`, `runs/ledger.jsonl`).
 
 **Fixed.** The duration shown in the dashboard could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
+The dashboard server dropped the request, without an answer, when a backlog position, question number, `days` or `since` held a character
+that `str.isdigit()` accepts and `int()` refuses (`²`, or 5000 digits); it now answers 400. A negative `Content-Length` no longer makes a write
+wait for the client to hang up, and a request body that is not a JSON object counts as empty. The uninstall step of the `install` workflow
+now really fails when a service or container is left behind (a `!` in front of a command never stopped a `bash -e` step). `sign-release`
+copes with a release that has no files, such as v0.12.0.
+`forge pick-ai` and the runtime docs told you to run `bin/worker-add N --runtime ollama` (and `vllm`, `lmstudio`, `llamacpp`, `opencode`, `goose`,
+`qwen-code`, `anthropic-compat`, `copilot`, `mistral-vibe`), which `bin/worker-add` refuses because no worker image ships those CLIs. The next steps
+and the docs now say so and point to `compat` or `aider` for a model server of your own; they also show a LAN address for `COMPAT_BASE_URL`, since
+`127.0.0.1` inside a worker container is the container itself. A new test fails when any file names such a runtime after `--runtime`.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries.
