@@ -8,6 +8,9 @@ window.fetch = (u, o) => { o = o || {}; if ((o.method || 'GET').toUpperCase() ==
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+// a link to an address that came with the data: esc() keeps the value inside the attribute but does not stop a javascript: address,
+// so only http(s) addresses become links and anything else is shown as the plain label
+const ext = (u, html) => { u = String(u == null ? '' : u).trim(); return /^https?:\/\//i.test(u) ? '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + html + '</a>' : html; };
 // text with every case-insensitive hit of q in <mark>; hits are found in the raw text and each piece is escaped on its own
 // (finding them in the escaped text let "lt" match inside &lt; and never matched a query that contains & < > " or ')
 const hilite = (s, q) => { s = String(s == null ? '' : s); q = String(q == null ? '' : q); if (!q) return esc(s);

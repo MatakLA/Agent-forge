@@ -219,7 +219,7 @@ function renderTaskSheet() {
   const g = F && (F.goals || []).find(x => x.id === t.goal), tot = d ? d.totals : null, orch = d ? d.orchestrator : null;
   const hist = (t.history || []).slice().reverse().map(h => '<div class="hist"><b>' + esc(dfmt(h.at)) + ' · ' + esc(h.outcome) + '</b>' + (h.reviewer ? ' (' + esc(h.reviewer) + ')' : '') +
     '<br>' + esc(tsloc(h.feedback || h.why || h.what || h.note || '')) + '</div>').join('');
-  const prLink = t.pr_url ? '<a href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">PR #' + esc(t.pr || '') + '</a>' : t.pr ? 'PR #' + esc(t.pr) : '';
+  const prLink = t.pr_url || t.pr ? ext(t.pr_url, 'PR #' + esc(t.pr || '')) : '';
   const est = (d && d.estimate) || t.estimate;
   const subMeta = [esc(id), roleTag(t.role || ''), chip(t.status), t.worker ? esc(t.worker) : '',
       t.runtime && t.runtime !== 'agy' ? esc(RTNAME[t.runtime] || t.runtime) : '', prLink, t.risk === 'risky' ? '<span class="badge warn">risky</span>' : '',
