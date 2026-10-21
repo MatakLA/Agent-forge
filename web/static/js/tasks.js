@@ -205,7 +205,7 @@ function taskForm(t) {
 }
 function runsTable(runs) {
   if (!runs.length) return small('No finished run yet.');
-  return '<div class="tablewrap"><table class="m"><tr><th>when</th><th>worker</th><th>model</th><th>outcome</th><th class="num">tokens</th><th class="num">cost / quota</th><th class="num">time</th><th></th></tr>' +
+  return '<div class="tablewrap"><table class="m"><tr><th>when</th><th>worker</th><th>model</th><th>outcome</th><th class="num">tokens</th><th class="num">cost / quota</th><th class="num">time</th><th><span class="sr-only">details</span></th></tr>' +
     runs.map(r => '<tr><td>' + esc(dfmt(r.at)) + '</td><td>' + esc(r.worker) + '</td><td>' + esc(r.runtime !== 'agy' ? (RTNAME[r.runtime] || r.runtime) : (r.model || '')) + '</td><td>' +
       esc(r.reason) + '</td><td class="num">' + fmtTok(r.tokens) + '</td><td class="num">' + (r.cost_usd ? usd(r.cost_usd) : r.week != null ? r.week + ' % quota' : '–') +
       '</td><td class="num">' + dur(r.duration_s) + '</td><td><button class="linkbtn" data-open="run:' + esc(r.run_id) + '">replay</button></td></tr>').join('') + '</table></div>';

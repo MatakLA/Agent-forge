@@ -81,12 +81,12 @@ function egressHtml() {
   if (al.length && !byEgress) html += '<div class="note">' + al.length + ' unacknowledged alarm(s) - they block new runs. Decide about the hosts below, then ' +
     '<button class="primary sm" data-egress-ack>acknowledge</button></div>';
   html += '<h3' + (Object.keys(who).length ? ' class="bad"' : '') + '>Blocked (' + blocked.length + ')</h3>' + (blocked.length ? '<div class="tablewrap"><table class="m"><tr><th>host</th><th>tried by</th>' +
-    '<th class="num">times</th><th>state</th><th></th></tr>' + blocked.map(([h, n]) => '<tr><td class="mono">' + esc(h) + '</td><td>' + esc([...(who[h] || [])].join(', ') || '–') +
+    '<th class="num">times</th><th>state</th><th><span class="sr-only">actions</span></th></tr>' + blocked.map(([h, n]) => '<tr><td class="mono">' + esc(h) + '</td><td>' + esc([...(who[h] || [])].join(', ') || '–') +
       '</td><td class="num">' + n + '</td><td>' + (who[h] ? '<span class="badge bad">alarm</span>' : base.has(h) ? '<span class="badge">ignored</span>' : '<span class="badge">acknowledged</span>') +
       '</td><td class="right">' + act('allow', h, 'Allow') + (base.has(h) ? '' : ' ' + act('ignore', h, 'Ignore')) + '</td></tr>').join('') + '</table></div>' +
     small('Allow = the workers may send anything to that host from now on (exact name, all its paths). Ignore = it stays blocked and stops raising alarms - the safer choice for telemetry and update checks.')
     : '<div class="note ok">Nothing was blocked.</div>');
-  html += '<h3>Allowed (' + Object.keys(allowed).length + ')</h3>' + (Object.keys(allowed).length ? '<div class="tablewrap"><table class="m"><tr><th>host</th><th class="num">tunnels (24 h)</th><th></th></tr>' +
+  html += '<h3>Allowed (' + Object.keys(allowed).length + ')</h3>' + (Object.keys(allowed).length ? '<div class="tablewrap"><table class="m"><tr><th>host</th><th class="num">tunnels (24 h)</th><th><span class="sr-only">actions</span></th></tr>' +
     Object.entries(allowed).sort((x, y) => y[1] - x[1]).map(([h, n]) => '<tr><td class="mono">' + esc(h) + (local.has(h) ? ' <span class="badge">added by you</span>' : '') + '</td><td class="num">' + n +
       '</td><td class="right">' + (local.has(h) ? act('unallow', h, 'Remove') : '') + '</td></tr>').join('') + '</table></div>'
     : '<div class="note ok">No allowed egress connections recorded in the last 24 h.</div>') +
