@@ -131,7 +131,7 @@ only to you and the maintainer until a fix is out).
 
 Useful in a report: the version (`cat VERSION`), what you did, what you expected and what happened, and - for an escape from the
 sandbox or the egress allow-list - the smallest task or config that shows it. Agent-Forge is maintained in spare time, so there
-is no guaranteed response time; a report is acknowledged as soon as it is seen, and a fix goes out as a patch release with the
-reporter credited (unless you prefer not).
+is no guaranteed response time. The aim: an initial reply within 14 days, and a fix (or a clear statement why not) within 90 days;
+the fix goes out as a patch release with the reporter credited (unless you prefer not).
 
 Supported versions: the latest release and `main`.
