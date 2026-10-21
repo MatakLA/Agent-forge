@@ -187,6 +187,9 @@ fi
 if [ -f tests/test_docs_links.py ]; then
   $PY tests/test_docs_links.py 2>&1 | tail -1 | grep -q "^OK" || { $PY tests/test_docs_links.py; exit 1; }
 fi
+if [ -f tests/test_creatable_runtimes.py ]; then
+  $PY tests/test_creatable_runtimes.py || exit 1
+fi
 for t in tests/test_cost_model_reporting.py \
          tests/test_dashboard_backend.py \
          tests/test_doctor_egress_hosts.py \
