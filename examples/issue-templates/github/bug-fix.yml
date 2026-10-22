@@ -3,7 +3,7 @@
 # Grounding in bin/issues-intake:
 # - Label matching: bin/issues-intake polls upstream issues with label 'agent-forge' (default: --label agent-forge).
 #   The 'agent-forge' label is read and required by bin/issues-intake.
-#   The 'bug' label is a human-only hint for maintainer triage; bin/issues-intake does not inspect or filter on it.
+#   The 'bug' label is not a filter; bin/issues-intake maps it to the role 'tester' and records that role on the goal.
 # - Goal generation: bin/issues-intake does not parse or extract individual body section names.
 #   It strips HTML tags (<[^>]+>), concatenates "{clean_title}\n\n{clean_body}", truncates the total string
 #   to 4000 characters, and passes it directly to `bin/foreman goal -` via stdin.
@@ -16,7 +16,7 @@ title: "[Bug]: "
 labels:
   # Read by bin/issues-intake (default issue filter label):
   - "agent-forge"
-  # Human-only hint (triage label ignored by bin/issues-intake):
+  # Triage label (not a filter); bin/issues-intake maps it to the role 'tester':
   - "bug"
 body:
   - type: textarea

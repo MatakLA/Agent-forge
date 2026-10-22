@@ -36,14 +36,13 @@ When invoked, `bin/issues-intake` performs the following steps:
 The `bin/issues-intake` script applies specific filtering and text processing:
 
 - **Label filtering:** The script queries issues filtered by a single label specified by `--label` (which defaults to `agent-forge`). Only open issues with this label are fetched from GitHub or GitLab.
-- **Secondary labels:** Labels such as `bug`, `feature`, `documentation`, or `security-audit` are not inspected, filtered, or parsed by `bin/issues-intake`. They serve strictly as human-facing labels for repository maintainers and issue triage.
-- **Goal kinds and roles:** The intake script does not categorize issues into kinds (e.g., bug fix, new feature, security audit, doc update) and does not assign roles (e.g., backend developer, technical writer, security tester). The code treats all fetched issues identically.
+- **Triage labels and roles:** Four labels are mapped to a role (the table under *Offline Test Coverage*): `bug` to `tester`, `docs` to `technical-writer`, `security` to `security-tester` and `feature` to `backend-developer`. The first one found on the issue is passed to `bin/foreman --role`, which records it as `role` on the goal. They are not filters: an issue without them is queued the same way, and any other label (`documentation`, `security-audit`, ...) is ignored. The role is a note kept with the goal; the planner still picks every task's role from the role catalogue.
 - **Goal text generation:** For each qualifying issue, `bin/issues-intake` builds the goal string using the following rules:
   1. Strips HTML tags matching the pattern `<[^>]+>`.
   2. Combines the cleaned title and cleaned body with two newlines: `"{clean_title}\n\n{clean_body}"`. If the body is empty, it uses the cleaned title alone.
   3. Truncates the combined string to at most 4000 characters.
-  4. Passes the resulting text directly over standard input to `bin/foreman [--project NAME] goal -`.
-- **Role assignment in Foreman:** Any task decomposition, role selection, and acceptance criteria generation happen downstream inside Foreman when its orchestrator LLM plans the goal, not during intake.
+  4. Passes the resulting text directly over standard input to `bin/foreman [--project NAME] [--role ROLE] goal -`.
+- **Planning in Foreman:** Task decomposition, each task's role and the acceptance criteria happen downstream inside Foreman when its orchestrator LLM plans the goal, not during intake.
 
 ### Fallback and Edge Cases
 
@@ -71,16 +70,16 @@ Consider an issue filed on GitHub or GitLab:
 
 ### What `bin/issues-intake` Does
 
-1. **Fetches the issue:** The issue matches the `agent-forge` label filter and is retrieved. The `bug` label is ignored.
+1. **Fetches the issue:** The issue matches the `agent-forge` label filter and is retrieved. The `bug` label is not a filter; it only selects the role `tester` in step 4.
 2. **Cleans and combines text:** HTML tags are stripped, and the title and body are combined with two newlines.
-3. **Queues the goal:** The script executes `bin/foreman goal -` and streams the following exact string via standard input:
+3. **Queues the goal:** The script executes `bin/foreman --role tester goal -` and streams the following exact string via standard input:
    ```text
    [Bug]: Session cookie expires prematurely on dashboard refresh
 
    Reloading the dashboard terminates the user session even when the token is valid.
    Expected: Refreshing the page preserves login state until token expiry.
    ```
-4. **Kind and role:** `bin/issues-intake` does not assign a kind or role. It submits the unclassified goal text directly to Foreman. Foreman's planning step later analyzes the text to determine the required tasks and roles (such as a backend developer or tester).
+4. **Role:** the `bug` label maps to the role `tester`, which Foreman records on the goal. The goal text itself is unclassified: Foreman's planning step analyzes it to determine the required tasks and the role of each (such as a backend developer or tester).
 5. **Records completion:** The issue ID is appended to `runs/foreman/issues-intake.json` to prevent re-processing.
 
 ## Templates

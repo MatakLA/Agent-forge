@@ -57,6 +57,14 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
   figure used to put `Infinity` in the ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day.
 - The check a worker runs before it finishes crashed on a test file that is not UTF-8 (or on a suite that prints such bytes), and since
   its own crashes count as a pass it silently did not run; it now reads them with replacement characters and still scans them for skips.
+- A line in the audit trail (`runs/ALERT`) could be forged: the foreman writes a blocked task's reason there, and that reason can hold test output
+  or a reviewer's reply, so a line break in it started a line of its own with any date and text (`... KILLSWITCH OFF`) that `bin/status` and
+  `bin/report` then showed as an alert. Every record is now exactly one line: line breaks, control characters (so terminal escape
+  sequences too) and bidirectional overrides become a space, and a character that cannot be encoded no longer makes the write raise.
+- `bin/audit-rotate`, the only way the audit logs may shrink, named an archive file after the first seven characters of every `runs/ALERT`
+  line, dated or not: the rest of a multi-line alert went to files such as `ALERT.  File ` and a `/` among those characters made the
+  rotation fail every time. A line without a date now moves with the line before it, a ledger line without a usable date stays, the
+  archive files are only ever `NAME.YYYY-MM`, and bytes are copied exactly (no `\r` or U+2028 turned into a line break).
 
 **Fixed: the dashboard.**
 
@@ -114,13 +122,17 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
 - `forge update` said "nothing is half-way: run forge update again" when it failed after the checkout had moved (a failed image build,
   no sudo), and the next run answered "already up to date" without rebuilding or restarting anything. It now says what happened, and
   the next `forge update` finishes the steps that did not run (it keeps the starting point in `.git/forge-update-from` until they all have).
+- `docs/ISSUE-TEMPLATES.md` and the example issue templates said that `bin/issues-intake` ignores every label but `agent-forge`. It maps
+  `bug`, `docs`, `security` and `feature` to a role and hands it to `bin/foreman --role`; the planner still chooses each task's role, so
+  today the role is only recorded on the goal. The documentation templates carry `docs` (the mapped label) instead of `documentation`.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`, `parseHash`). New tests for the access log and the audit entries,
 and for the gate's verdicts: `tests/test_review_branch_failclosed.py` runs the real gate against a fake Docker, the foreman's side is in
 `tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there, in `tests/test_quality.py` and, for the worker's own check (run without Docker), in `tests/test_self_check.py`.
 `tests/test_hostile_bytes.py` feeds bytes that are not UTF-8, and event lines of every JSON shape (with `NaN`, `Infinity` and `1e999`), to the
-real run supervisor (against a fake Docker), `bin/status`, the stream scanner of every runtime, the token total and the mutation check's script,
+real run supervisor (against a fake Docker), `bin/status`, the stream scanner of every runtime, the token total, the mutation check's script,
+`sbx.alert` and `bin/audit-rotate`,
 and checks that every text-mode `subprocess` call in `bin/` and `web/` says what happens to such a byte.
 
 ## 0.12.1 - 2026-10-21
