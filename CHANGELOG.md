@@ -51,12 +51,14 @@ the foreman queues the task again (four times at most, then it waits for the own
 exactly as long, so it cut the gate off from outside and read that as a pass). The same fix keeps `git` output that is not UTF-8
 (file names, Latin-1 text) from stalling a task in a loop, and the automatic rebase of shared files (`SHARED_FILES`) merges line by line
 on the raw bytes: a binary file is a conflict for the worker instead of being replaced by an empty one. A mutation check that returned no result
-is stated in the pull request ("not verified") and shown as a warning.
+is stated in the pull request ("not verified") and shown as a warning. The check a worker runs before it finishes crashed on a test file
+that is not UTF-8 (or on a suite that prints such bytes), and since its own crashes count as a pass it silently did not run; it now reads
+them with replacement characters and still scans them for skips.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,
 and for the gate's verdicts: `tests/test_review_branch_failclosed.py` runs the real gate against a fake Docker, the foreman's side is in
-`tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there and in `tests/test_quality.py`.
+`tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there, in `tests/test_quality.py` and, for the worker's own check (run without Docker), in `tests/test_self_check.py`.
 
 ## 0.12.1 - 2026-10-21
 
