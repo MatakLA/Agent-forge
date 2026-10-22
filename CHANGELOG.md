@@ -19,6 +19,12 @@ secret values. `DASHBOARD_ACCESS_LOG=all` adds reads, `=off` silences it. Owner 
 (`--baseline-add`, `--allow`, `--unallow`), storing a secret (name only), importing from upstream, adding and removing a worker,
 creating a project all write to the audit trail (`runs/ALERT`, `runs/ledger.jsonl`).
 
+**Security.** When a worker asked for `CONNECT 203.0.113.7:443`, the egress proxy looked up the name that address claims to have (its reverse DNS
+record) and let the connection through when that name was on the allowlist. The record is chosen by whoever owns the address, so any server could
+be given the name of an allowed host and then be reached from a worker. The domain rules now compare the name in the request only (`dstdomain -n`):
+an IP address is refused unless it is listed itself, names behave as before. `forge update` recreates the proxy; a hand-made setup needs
+`bin/egress-up`. A new test fails when a domain rule lacks the option.
+
 **Fixed.** The duration shown in the dashboard could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
 The dashboard server dropped the request, without an answer, when a backlog position, question number, `days` or `since` held a character
 that `str.isdigit()` accepts and `int()` refuses (`²`, or 5000 digits); it now answers 400. A negative `Content-Length` no longer makes a write

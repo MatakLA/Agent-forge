@@ -166,5 +166,18 @@ check "egress: enforces umask 027" \
 check "egress: detects root execution and fails if target proxy user does not exist" \
   '! PATH="$MOCK_ROOT_BIN:$PATH" PROXY_USER="nonexistent_proxy_user_99" SQUID_CONF_DIR="$ROOT/egress" bash "$EGRESS_ENTRY" >/dev/null 2>&1'
 
+# ==============================================================================
+# 8. egress/squid.*.conf: the allowlist compares the name in the request only
+# ==============================================================================
+# Without -n squid reverse-resolves an IP-literal target and matches its PTR record against the list, and the owner of an
+# address chooses that record: CONNECT 203.0.113.7:443 would pass whenever 203.0.113.7 is "named" like an allowed host.
+for conf in "$ROOT"/egress/squid.*.conf; do
+  cname="$(basename "$conf")"
+  check "egress: $cname has a dstdomain allowlist" \
+    'grep -qE "^acl[[:space:]]+[^[:space:]]+[[:space:]]+dstdomain[[:space:]]" "$conf"'
+  check "egress: $cname does not reverse-resolve IP targets (every dstdomain / dstdom_regex ACL has -n)" \
+    '! grep -E "^acl[[:space:]]+[^[:space:]]+[[:space:]]+dstdom(ain|_regex)[[:space:]]" "$conf" | grep -qvE "[[:space:]]-n([[:space:]]|$)"'
+done
+
 echo "egress security tests: $([ $fail = 0 ] && echo ALL OK || echo FAILED)"
 exit $fail
