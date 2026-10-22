@@ -49,7 +49,7 @@ function renderGoalSheet() {
     '<div class="muted small">' + esc((liveT(t.id).spec || '').slice(0, 260)) + '</div></div>').join('') : '';
   const tasksT = ts.length ? '<div class="tablewrap"><table class="m click"><tr><th>task</th><th>role</th><th>status</th><th>worker</th><th class="num">reworks</th><th class="num">lines</th><th>PR</th></tr>' +
     ts.map(t => { const lt = Object.assign({}, t, liveT(t.id));
-      return '<tr data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Open task ' + esc(t.id) + '"><td><span class="mono small">' + esc(t.id) + '</span><br>' + esc(lt.title) + '</td><td>' + roleTag(lt.role) + '</td><td>' + chip(lt.status) +
+      return '<tr data-open="task:' + esc(t.id) + '" role="button" tabindex="0"><td><span class="mono small">' + esc(t.id) + '</span><br>' + esc(lt.title) + '</td><td>' + roleTag(lt.role) + '</td><td>' + chip(lt.status) +
         '</td><td>' + esc(lt.worker || '') + '</td><td class="num">' + (t.reworks || 0) + '</td><td class="num">' + (lt.diff ? '<span class="plus" title="added">+' + lt.diff.added + '</span> <span class="minus" title="removed">−' + lt.diff.removed + '</span>' : '–') +
         '</td><td>' + (lt.pr_url || lt.pr ? ext(lt.pr_url, '#' + esc(lt.pr)) : '') + '</td></tr>'; }).join('') + '</table></div>' : '<div class="empty">No tasks yet — the planner creates tasks when the goal is planned.</div>';
   let day = '';

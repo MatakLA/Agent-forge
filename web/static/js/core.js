@@ -91,9 +91,10 @@ function applyI18n() {
   });
   const lb = $('lang-btn');
   if (lb) {
-    lb.textContent = currentLang.toUpperCase().slice(0, 4);
+    const code = currentLang.toUpperCase().slice(0, 4);
+    lb.textContent = code;
     lb.title = 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to switch, right-click for options)';
-    lb.setAttribute('aria-label', 'Language: ' + (I18N['lang.name'] || currentLang) + ' (click to change)');
+    lb.setAttribute('aria-label', 'Language: ' + code + ' (' + (I18N['lang.name'] || currentLang) + ', click to change)');
   }
   document.documentElement.lang = currentLang.slice(0, 2);
   updateLocalesDropdown();

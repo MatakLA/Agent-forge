@@ -150,7 +150,7 @@ function moneyInsights() {
   const monthHtml = rtTbl + tbl('By project (USD)', m.by_project) + tbl('By model (this project, USD)', m.by_model);
   if (monthHtml) h += '<h3>This month</h3><div class="cols3">' + monthHtml + '</div>';
   if ((m.top_tasks || []).length) h += '<h3>Most expensive tasks this month</h3><div class="tablewrap"><table class="m click"><tr><th>task</th><th class="num">cost (USD)</th></tr>' + m.top_tasks.map(t => '<tr data-open="task:' + esc(t.task) +
-    '" tabindex="0" role="button" aria-label="Open task ' + esc(t.task) + '"><td>' + esc(t.task) + '</td><td class="num">' + usd(t.usd) + ' USD</td></tr>').join('') + '</table></div>';
+    '" tabindex="0" role="button"><td>' + esc(t.task) + '</td><td class="num">' + usd(t.usd) + ' USD</td></tr>').join('') + '</table></div>';
   return h + quotaHtml(m);
 }
 

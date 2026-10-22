@@ -96,7 +96,7 @@ async function keyboardChecks(page) {
 }
 
 (async () => {
-  const browser = await puppeteer.launch({executablePath: process.env.AF_CHROME || '/usr/bin/chromium-browser', headless: 'new',
+  const browser = await puppeteer.launch({executablePath: process.env.AF_CHROME || '/usr/bin/chromium-browser', headless: true,
     args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']});
   const page = await browser.newPage();
   await page.setViewport({width: 1280, height: 900});

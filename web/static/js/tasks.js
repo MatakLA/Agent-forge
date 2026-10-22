@@ -85,8 +85,8 @@ function boardHtml() {
         ww.code === 'file_conflict' ? ' <span class="badge" title="' + esc(ww.detail) + '">⚡ ' + esc(ww.short) + '</span>' :
         ww.code === 'ready' ? ' <span class="badge ok" title="' + esc(ww.detail) + '">▶ ready</span>' :
         ' <span class="badge" title="' + esc(ww.detail) + '">' + esc(ww.short) + '</span>') : '';
-      return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" role="button" tabindex="0" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(STATUS[t.status] || t.status) + ')">' +
-        '<div class="id">' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
+      return '<div class="card s-' + esc(t.status) + '" data-open="task:' + esc(t.id) + '" role="button" tabindex="0">' +
+        '<div class="id"><span class="sr-only">' + esc(STATUS[t.status] || t.status) + ': </span>' + esc(t.id) + (t.status === 'approval' ? ' <span class="badge hot">needs you</span>' : '') +
         (t.pin_worker ? ' <span class="badge" title="assigned by you">→ ' + esc(t.pin_worker) + '</span>' : '') +
         (t.orphan_warning ? ' ' + orphanBadge(t) : '') + '</div><div class="t">' + esc(t.title) + '</div><div class="m">' +
         roleTag(t.role) + (t.worker && k !== 'wait' ? '<span>' + esc(t.worker) + '</span>' : '') +
@@ -136,11 +136,11 @@ function dagSvg(nodes, crit) {
     const strokeCol = isPaused ? 'var(--warn)' : (NODECOL[t.status] || 'var(--idle)');
     const dashArr = isPaused ? ' stroke-dasharray="4,3"' : '';
     const statusText = isPaused ? '⏸ Paused (goal)' : (ww && ww.code === 'file_conflict' ? '⚡ ' + ww.graphLabel : (STATUS[t.status] || t.status));
-    svg += '<g data-open="task:' + esc(t.id) + '" role="button" tabindex="0" focusable="true" aria-label="Task ' + esc(t.id) + ': ' + esc(t.title) + ' (' + esc(statusText) + ')">' +
-      '<title>' + esc(t.title) + ' · ' + esc(t.role) + (ww ? ' · ' + esc(ww.detail) : ' · ' + esc(STATUS[t.status] || t.status)) + '</title><rect x="' + p.x + '" y="' + p.y +
+    svg += '<g data-open="task:' + esc(t.id) + '" role="button" tabindex="0" focusable="true">' +
+      '<title>' + esc(t.id) + ': ' + esc(t.title) + ' · ' + esc(t.role) + (ww ? ' · ' + esc(ww.detail) : ' · ' + esc(STATUS[t.status] || t.status)) + '</title><rect x="' + p.x + '" y="' + p.y +
       '" width="' + BW + '" height="' + BH + '" rx="7" fill="var(--card2)" stroke="' + strokeCol + '" stroke-width="' + (hot ? 3 : 1.8) + '"' + dashArr +
       (t.status === 'done' ? ' opacity=".55"' : '') + '/><text x="' + (p.x + 8) + '" y="' + (p.y + 15) + '">' + esc(t.id.slice(0, 24)) + '</text><text x="' + (p.x + 8) + '" y="' + (p.y + 29) +
-      '" class="sub">' + esc((statusText + ' · ' + t.title)).slice(0, 27) + '</text></g>'; });
+      '" class="sub">' + esc((statusText + ' · ' + t.title).slice(0, 27)) + '</text></g>'; });
   return svg + '</svg>';
 }
 function graphHtml() {
