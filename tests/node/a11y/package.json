@@ -4,7 +4,7 @@
   "private": true,
   "description": "Test-only: the accessibility audit (tests/test_a11y.sh) installs these with npm ci from the lockfile.",
   "dependencies": {
-    "axe-core": "4.10.3",
-    "puppeteer-core": "23.11.1"
+    "axe-core": "4.14.0",
+    "puppeteer-core": "25.14.0"
   }
 }
