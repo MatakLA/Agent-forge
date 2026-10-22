@@ -25,49 +25,66 @@ be given the name of an allowed host and then be reached from a worker. The doma
 an IP address is refused unless it is listed itself, names behave as before. `forge update` recreates the proxy; a hand-made setup needs
 `bin/egress-up`. A new test fails when a domain rule lacks the option.
 
-**Fixed.** The duration shown in the dashboard could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
-The dashboard server dropped the request, without an answer, when a backlog position, question number, `days` or `since` held a character
-that `str.isdigit()` accepts and `int()` refuses (`²`, or 5000 digits); it now answers 400. A negative `Content-Length` no longer makes a write
-wait for the client to hang up, and a request body that is not a JSON object counts as empty. An infinite terminal size (`1e999`) or a
-`workers` field that is not a list no longer drops the request either, and a worker name read from a run directory is only used in a
-shell command when it matches the `<timestamp>-worker-N` form that `bin/dispatch` creates. The uninstall step of the `install` workflow
-now really fails when a service or container is left behind (a `!` in front of a command never stopped a `bash -e` step). `sign-release`
-copes with a release that has no files, such as v0.12.0. The search page marked its hits inside the already escaped text, so a query like
-`lt` broke the `&lt;` of a result and a query with `&`, `<`, `>`, `"` or `'` was never highlighted; each hit is now found in the plain text
-and every piece is escaped on its own. A dictionary is text: the button labels of the "Needs you" cards and the task sheet, the stat boxes,
-the status word of a goal and the Appearance card were put into the page as HTML, so a dictionary uploaded in Settings could carry markup
-(and the `<name>` in the Appearance help was swallowed as a tag); they are escaped now, and a new UI test fills every key with an
-element and fails when one shows up on any tab, sub-view, sheet or card. The pull request links on the goal and task sheets only appear for
-an `http(s)` address (escaping keeps a value inside its attribute but lets `javascript:` through); anything else shows as plain `#7`.
-`forge pick-ai` and the runtime docs told you to run `bin/worker-add N --runtime ollama` (and `vllm`, `lmstudio`, `llamacpp`, `opencode`, `goose`,
-`qwen-code`, `anthropic-compat`, `copilot`, `mistral-vibe`), which `bin/worker-add` refuses because no worker image ships those CLIs. The next steps
-and the docs now say so and point to `compat` or `aider` for a model server of your own; they also show a LAN address for `COMPAT_BASE_URL`, since
-`127.0.0.1` inside a worker container is the container itself. A new test fails when any file names such a runtime after `--runtime`.
-The merge gate (`bin/review-branch`) treated every crash as a pass: an uncaught exception ends a Python script with exit code 1, which the
-foreman reads as "warnings, merge anyway". A deleted or syntactically broken test file, a missing Docker, a diff with bytes that are not
-UTF-8, or a test run that hangs could therefore end in a merge that no test had judged. It now exits with 3 ("the gate itself broke") and
-the foreman queues the task again (four times at most, then it waits for the owner); a hanging suite is cut off by the gate's own
-`GATE_TIMEOUT` (default 1500 s) and goes back to the worker with that reason, because the foreman now waits longer than the gate does (it used to wait
-exactly as long, so it cut the gate off from outside and read that as a pass). The same fix keeps `git` output that is not UTF-8
-(file names, Latin-1 text) from stalling a task in a loop, and the automatic rebase of shared files (`SHARED_FILES`) merges line by line
-on the raw bytes: a binary file is a conflict for the worker instead of being replaced by an empty one. A mutation check that returned no result
-is stated in the pull request ("not verified") and shown as a warning. The check a worker runs before it finishes crashed on a test file
-that is not UTF-8 (or on a suite that prints such bytes), and since its own crashes count as a pass it silently did not run; it now reads
-them with replacement characters and still scans them for skips.
-A worker could stop all dispatching for 24 hours with one request: the egress proxy logs some request bytes raw, and a byte that is not
-UTF-8 made the host's reading of that log raise in the preflight of `bin/dispatch` (and in `bin/status`, `bin/doctor` and the dashboard) until
-the line was a day old; such bytes are now replaced when the log is read. The same goes for the other places where the host reads text that a
-worker or its repository can influence: the run supervisor (the docker calls and the agent's stderr), `bin/status`, `bin/doctor`, the dashboard,
-the token total of a run, `git` output and the output of the mutation check's container no longer crash on a byte that is not UTF-8, so a run
-still ends with its exit code and its result. `bin/status` also no longer crashes on a fresh install (it called `bin/guard-log`, which is not
-part of this repository). The mutation check now reports a mutant it could not set up as `ERROR` instead of stopping, and a check that ended
-early is a warning that says how far it got ("stopped after 3 of 7 mutants"); it used to read as a pass for the mutants it never ran. A
-conversation id taken from a worker's last run that `bin/dispatch` refuses (characters outside the allowed set) used to send its task back to
-the queue and put every free worker on a 30-minute cooldown, again and again; the task now starts a new conversation. The agent's event stream
-(`stream.jsonl`) is read defensively everywhere: a line of any JSON shape is skipped instead of crashing the supervisor, which left the run
-orphaned, and `NaN`, `Infinity` or a number beyond the float range (`1e999`) count as 0 tokens; one such figure used to put `Infinity` in the
-ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day. A review whose `mutations` was `null`, a number or a list
-with entries that are not text raised in the foreman's review step, which is retried every tick and paid for the same review again; such entries are skipped.
+**Fixed: the merge gate and the foreman.**
+
+- The merge gate (`bin/review-branch`) treated every crash as a pass: an uncaught exception ends a Python script with exit code 1, which
+  the foreman reads as "warnings, merge anyway". A deleted or syntactically broken test file, a missing Docker, a diff with bytes that are
+  not UTF-8, or a test run that hangs could therefore end in a merge that no test had judged. It now exits with 3 ("the gate itself
+  broke") and the foreman queues the task again (four times at most, then it waits for the owner). A hanging suite is cut off by the
+  gate's own `GATE_TIMEOUT` (default 1500 s) and goes back to the worker with that reason, because the foreman now waits longer than the
+  gate does (it used to wait exactly as long, so it cut the gate off from outside and read that as a pass).
+- `git` output that is not UTF-8 (file names, Latin-1 text) no longer stalls a task in a loop, and the automatic rebase of shared files
+  (`SHARED_FILES`) merges line by line on the raw bytes: a binary file is a conflict for the worker instead of being replaced by an
+  empty one.
+- A mutation check that returned no result is stated in the pull request ("not verified") and shown as a warning. A mutant it could not
+  set up is reported as `ERROR` instead of stopping the check, and a check that ended early is a warning that says how far it got
+  ("stopped after 3 of 7 mutants"); it used to read as a pass for the mutants it never ran.
+- A conversation id taken from a worker's last run that `bin/dispatch` refuses (characters outside the allowed set) used to send its
+  task back to the queue and put every free worker on a 30-minute cooldown, again and again; the task now starts a new conversation.
+- A review whose `mutations` was `null`, a number or a list with entries that are not text raised in the foreman's review step, which is
+  retried every tick and paid for the same review again; such entries are skipped.
+
+**Fixed: input a worker can influence.**
+
+- A worker could stop all dispatching for 24 hours with one request: the egress proxy logs some request bytes raw, and a byte that is not
+  UTF-8 made the host's reading of that log raise in the preflight of `bin/dispatch` (and in `bin/status`, `bin/doctor` and the dashboard)
+  until the line was a day old. Such bytes are now replaced when the log is read.
+- The same goes for the other places where the host reads text that a worker or its repository can influence: the run supervisor (the
+  docker calls and the agent's stderr), `bin/status`, `bin/doctor`, the dashboard, the token total of a run, `git` output and the output
+  of the mutation check's container no longer crash on a byte that is not UTF-8, so a run still ends with its exit code and its result.
+- The agent's event stream (`stream.jsonl`) is read defensively everywhere: a line of any JSON shape is skipped instead of crashing the
+  supervisor, which left the run orphaned, and `NaN`, `Infinity` or a number beyond the float range (`1e999`) count as 0 tokens; one such
+  figure used to put `Infinity` in the ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day.
+- The check a worker runs before it finishes crashed on a test file that is not UTF-8 (or on a suite that prints such bytes), and since
+  its own crashes count as a pass it silently did not run; it now reads them with replacement characters and still scans them for skips.
+
+**Fixed: the dashboard.**
+
+- The duration could read "-1 s" (or garbage) for a tiny negative or non-numeric value; found by the new property tests.
+- The server dropped the request, without an answer, when a backlog position, question number, `days` or `since` held a character that
+  `str.isdigit()` accepts and `int()` refuses (`²`, or 5000 digits); it now answers 400. A negative `Content-Length` no longer makes a
+  write wait for the client to hang up, a request body that is not a JSON object counts as empty, and an infinite terminal size (`1e999`)
+  or a `workers` field that is not a list no longer drops the request either. A worker name read from a run directory is only used in a
+  shell command when it matches the `<timestamp>-worker-N` form that `bin/dispatch` creates.
+- The search page marked its hits inside the already escaped text, so a query like `lt` broke the `&lt;` of a result and a query with
+  `&`, `<`, `>`, `"` or `'` was never highlighted; each hit is now found in the plain text and every piece is escaped on its own.
+- A dictionary is text: the button labels of the "Needs you" cards and the task sheet, the stat boxes, the status word of a goal and the
+  Appearance card were put into the page as HTML, so a dictionary uploaded in Settings could carry markup (and the `<name>` in the
+  Appearance help was swallowed as a tag). They are escaped now, and a new UI test fills every key with an element and fails when one
+  shows up on any tab, sub-view, sheet or card.
+- The pull request links on the goal and task sheets only appear for an `http(s)` address (escaping keeps a value inside its attribute
+  but lets `javascript:` through); anything else shows as plain `#7`.
+
+**Fixed: commands, docs and CI.**
+
+- `bin/status` no longer crashes on a fresh install (it called `bin/guard-log`, which is not part of this repository).
+- `forge pick-ai` and the runtime docs told you to run `bin/worker-add N --runtime ollama` (and `vllm`, `lmstudio`, `llamacpp`,
+  `opencode`, `goose`, `qwen-code`, `anthropic-compat`, `copilot`, `mistral-vibe`), which `bin/worker-add` refuses because no worker
+  image ships those CLIs. The next steps and the docs now say so and point to `compat` or `aider` for a model server of your own; they
+  also show a LAN address for `COMPAT_BASE_URL`, since `127.0.0.1` inside a worker container is the container itself. A new test fails
+  when any file names such a runtime after `--runtime`.
+- The uninstall step of the `install` workflow now really fails when a service or container is left behind (a `!` in front of a command
+  never stopped a `bash -e` step). `sign-release` copes with a release that has no files, such as v0.12.0.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,
