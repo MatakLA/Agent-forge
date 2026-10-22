@@ -138,7 +138,8 @@ def approvals():
 # ---------------------------------------------------------------- shell helpers
 def sh(args, timeout=600, cwd=None, inp=None, env=None):
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=inp,
+        # output that is not UTF-8 (a Latin-1 CSV in a diff) shows as U+FFFD; strict decoding raised, and the step then failed on every tick
+        r = subprocess.run(args, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd, input=inp,
                            env=dict(os.environ, **env) if env else None)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:

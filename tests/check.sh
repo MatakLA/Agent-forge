@@ -28,6 +28,7 @@ $PY bin/foreman --selftest | tail -1 | grep -q "ALL OK" || { $PY bin/foreman --s
 gate $PY tests/test_web.py
 gate $PY tests/test_upstream.py
 gate $PY tests/test_merge_pr.py
+gate $PY tests/test_review_branch_failclosed.py
 if [ -f tests/test_foreman_loop.py ]; then
   gate $PY tests/test_foreman_loop.py
 fi

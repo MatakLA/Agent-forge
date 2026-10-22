@@ -37,9 +37,20 @@ an `http(s)` address (escaping keeps a value inside its attribute but lets `java
 `qwen-code`, `anthropic-compat`, `copilot`, `mistral-vibe`), which `bin/worker-add` refuses because no worker image ships those CLIs. The next steps
 and the docs now say so and point to `compat` or `aider` for a model server of your own; they also show a LAN address for `COMPAT_BASE_URL`, since
 `127.0.0.1` inside a worker container is the container itself. A new test fails when any file names such a runtime after `--runtime`.
+The merge gate (`bin/review-branch`) treated every crash as a pass: an uncaught exception ends a Python script with exit code 1, which the
+foreman reads as "warnings, merge anyway". A deleted or syntactically broken test file, a missing Docker, a diff with bytes that are not
+UTF-8, or a test run that hangs could therefore end in a merge that no test had judged. It now exits with 3 ("the gate itself broke") and
+the foreman queues the task again (four times at most, then it waits for the owner); a hanging suite is cut off by the gate's own
+`GATE_TIMEOUT` (default 1500 s) and goes back to the worker with that reason, because the foreman now waits longer than the gate does (it used to wait
+exactly as long, so it cut the gate off from outside and read that as a pass). The same fix keeps `git` output that is not UTF-8
+(file names, Latin-1 text) from stalling a task in a loop, and the automatic rebase of shared files (`SHARED_FILES`) merges line by line
+on the raw bytes: a binary file is a conflict for the worker instead of being replaced by an empty one. A mutation check that returned no result
+is stated in the pull request ("not verified") and shown as a warning.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
-against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries.
+against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,
+and for the gate's verdicts: `tests/test_review_branch_failclosed.py` runs the real gate against a fake Docker, the foreman's side is in
+`tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there and in `tests/test_quality.py`.
 
 ## 0.12.1 - 2026-10-21
 

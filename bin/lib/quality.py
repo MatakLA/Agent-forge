@@ -35,7 +35,7 @@ def reference_pattern(path):
 
 def _tracked(repo_dir):
     import subprocess
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=repo_dir, capture_output=True, text=True).stdout
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace").stdout
     return [p for p in out.split("\0") if p]
 
 
@@ -194,7 +194,7 @@ def top_level_defs(text, path):
 
 def _git(repo_dir, *args):
     import subprocess
-    return subprocess.run(["git", *args], cwd=repo_dir, capture_output=True, text=True).stdout
+    return subprocess.run(["git", *args], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace").stdout
 
 
 def duplicate_defs(repo_dir, changed, base=None, limit=8):

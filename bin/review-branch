@@ -10,8 +10,22 @@ Read-only review of a worker branch (fetch with the read-only monitoring token, 
   5. --mutations: SPEC.json = [{"name":..., "file":"pkg/cli.py", "old":"exact text", "new":"replacement"}, ...]; each mutant must make the tests fail
   6. --diff prints the full diff
 Prints "== FLAGS: a,b" (the kinds of warnings) just before the warnings list.
-Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed."""
-import ast, json, os, re, shutil, subprocess, sys, tempfile
+Exit: 0 clean, 1 warnings or surviving mutants (review by hand), 2 tests fail / fetch failed, 3 the gate itself broke (no verdict - never a pass)."""
+import ast, json, os, re, shutil, subprocess, sys, tempfile, traceback
+
+
+def _broke(kind, exc, tb):
+    # Python ends an uncaught exception with exit 1, the same as "warnings" - which the foreman lets through. A gate that breaks gives no verdict.
+    try:
+        sys.stdout.flush()
+        print(f"\n== GATE ERROR: the gate itself broke ({kind.__name__}: {str(exc)[:200]}) - no verdict, NOT a pass".encode("utf-8", "replace").decode(), flush=True)
+        traceback.print_exception(kind, exc, tb)
+        sys.stderr.flush()
+    finally:
+        os._exit(3)
+
+
+sys.excepthook = _broke
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import sbx, quality
 a = sys.argv[1:]
@@ -38,7 +52,8 @@ def W(flag, text):
 
 
 def sh(*c, cwd=None, timeout=300):
-    return subprocess.run(list(c), capture_output=True, text=True, cwd=cwd, timeout=timeout)
+    # a diff or a test's output can hold bytes that are not UTF-8 (a Latin-1 CSV): they are shown as U+FFFD, never a crash
+    return subprocess.run(list(c), capture_output=True, encoding="utf-8", errors="replace", cwd=cwd, timeout=timeout)
 
 
 # the token goes to git through the environment, never argv (argv is world-readable in /proc/*/cmdline)
@@ -83,14 +98,24 @@ try:
     if secrets:
         print("\n== SECRET: the branch adds " + ", ".join(secrets) + " - refused. Remove it from the branch's history.")
     # test-quality scan
-    tests = [p.split("\t")[-1] for p in ns if re.search(r"(^|/)test_.*\.py$", p.split("\t")[-1])]
+    tests = [p.split("\t")[-1] for p in ns if p[:1] != "D" and re.search(r"(^|/)test_.*\.py$", p.split("\t")[-1])]      # a deleted test file has nothing to scan
     ntests = 0
     for t in tests:
-        src = open(os.path.join(repo, t)).read()
+        try:
+            with open(os.path.join(repo, t), errors="replace") as fh:
+                src = fh.read()
+        except OSError as e:
+            W("unreadable", f"{t}: cannot be read ({type(e).__name__})")
+            continue
         for pat in (r"pytest\.mark\.skip", r"pytest\.skip\(", r"xfail", r"importorskip", r"assert True\b", r"skipif"):
             if re.search(pat, src):
                 W("skip-marker", f"{t}: contains '{pat}'")
-        for node in ast.walk(ast.parse(src)):
+        try:
+            tree = ast.parse(src)
+        except (SyntaxError, ValueError) as e:
+            W("unparsable", f"{t}: is not valid Python ({type(e).__name__}) - the test run shows the error")
+            continue
+        for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 ntests += 1
                 has = any(isinstance(n, (ast.Assert,)) or (isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("raises", "fail")) for n in ast.walk(node))
@@ -101,9 +126,9 @@ try:
         st, path = l.split("\t", 1)[0], l.split("\t")[-1]
         if st.startswith("A") and path.endswith(".py") and not re.search(r"(^|/)(test_[^/]*|conftest)\.py$", path):
             try:
-                if not ast.get_docstring(ast.parse(open(os.path.join(repo, path)).read())):
+                if not ast.get_docstring(ast.parse(open(os.path.join(repo, path), errors="replace").read())):
                     W("no-docstring", f"{path}: new module without a module docstring (purpose, interface, invariants)")
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, ValueError):
                 pass
     # test economy and wiring (QUALITY_CHECK=off|warn|block, TEST_RATIO_MAX lines of tests per line of code)
     pc = sbx.project_conf()
@@ -180,7 +205,11 @@ try:
         except subprocess.TimeoutExpired:
             print(f"\n== fast pass, {len(ftargets)} test file(s): timed out - running the whole suite")
     if t is None:
-        t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=gate_timeout)
+        try:
+            t = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "sh", IMAGE, "-c", TEST_CMD, timeout=gate_timeout)
+        except subprocess.TimeoutExpired:
+            # not caught, this ended the gate with exit 1 (= warnings) and the branch went on to the review untested
+            t = subprocess.CompletedProcess([], 124, "", f"TIMEOUT: the test suite did not finish within {gate_timeout} s (GATE_TIMEOUT) - a test hangs or the suite is too slow")
     print(f"\n== {'whole suite NOT run (fast pass is red)' if fast_red else 'full test suite'} in a fresh container (`{TEST_CMD}`): "
           + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0 or bool(secrets) or (bool(quality_msg) and qmode == "block")
@@ -209,17 +238,24 @@ for m in spec:
     print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
 ''')
         json.dump(spec, open(os.path.join(tmp, "spec.json"), "w"))
-        m = drun("-e", "HOME=/tmp", "-e", f"TEST_CMD={TEST_CMD}", "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro",
-               "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro", "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
+        try:
+            m = drun("-e", "HOME=/tmp", "-e", f"TEST_CMD={TEST_CMD}", "-v", f"{repo}:/src:ro", "-v", f"{runner}:/mutate.py:ro",
+                     "-v", f"{os.path.join(tmp, 'spec.json')}:/spec.json:ro", "--entrypoint", "python3", IMAGE, "/mutate.py", timeout=900)
+        except subprocess.TimeoutExpired:
+            m = subprocess.CompletedProcess([], 124, "", "the mutation check did not finish within 900 s")
         print(f"\n== mutation check ({len(spec)} mutants)")
+        seen = 0
         for l in m.stdout.splitlines():
             try:
                 d = json.loads(l)
             except Exception:
                 continue
+            seen += 1
             print(f"  {d['result']:9} {d['name']}  {d.get('tail', d.get('note', ''))}")
             if d["result"] != "KILLED":
                 surv += 1
+        if not seen:
+            W("mutants", f"the mutation check gave no result (exit {m.returncode}): {(m.stderr.strip().splitlines() or ['no output'])[-1][:160]} - not verified")
         if surv:
             W("mutants", f"{surv} mutant(s) survived or had a bad spec - check whether they are equivalent")
     if "--diff" in a:

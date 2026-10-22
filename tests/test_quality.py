@@ -134,6 +134,21 @@ diff --git a/web/x.test.mjs b/web/x.test.mjs
         self.assertEqual(got, ["tests/test_new.py", "tests/test_calc.py", "tests/test_user.py"])      # main is an entry stem; conftest never; other does not import calc
         self.assertEqual(quality.test_targets(d, [("M", "pkg/calc.py")], limit=1), ["tests/test_calc.py"])
 
+    def test_file_names_that_are_not_utf8_do_not_break_the_checks(self):
+        d = self._repo({"tools/app_activity.py": '"""A."""\n' + self.HELPER, "tools/other.py": '"""O."""\nX = 1\n'})
+        try:
+            for name in (b"tracked-caf\xe9.py", b"untracked-na\xefve.py"):          # Latin-1 names, as an archive made on Windows leaves them
+                with open(os.path.join(os.fsencode(d), name), "wb") as f:
+                    f.write(b"# caf\xe9\nX = 1\n")
+        except OSError:
+            self.skipTest("this file system refuses names that are not UTF-8")
+        subprocess.run([b"git", b"add", b"--", b"tracked-caf\xe9.py"], cwd=d, check=True)
+        open(os.path.join(d, "tools/app_gym.py"), "w").write('"""G."""\n' + self.HELPER)
+        got = quality.duplicate_defs(d, [("A", "tools/app_gym.py")], base="HEAD")
+        self.assertEqual([(p, n, o) for p, n, o, _ in got], [("tools/app_gym.py", "eu_offset_hours", "tools/app_activity.py")])
+        self.assertEqual(quality.unreferenced(d, ["tools/other.py"]), ["tools/other.py"])
+        self.assertEqual(len(quality._all_files(d)), 5)
+
     def test_planner_read_field_is_sanitised(self):
         sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
         from foreman.util import norm_tasks

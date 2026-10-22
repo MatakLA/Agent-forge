@@ -85,8 +85,15 @@ list is unrestricted. All checks follow `QUALITY_CHECK` (`off` switches them off
 `pytest ...` `TEST_CMD` (`GATE_FAST=0` disables it in the gate). Editing an existing file no longer produces a warning by itself
 (it used to, on every modified file, and discouraged reuse); only deleted/moved files do.
 
-Every rework now stores **why** it happened (`kind`: conflict, secret, quality, tests-own, tests-existing, not-pushed, review,
-mutation) and the gate's `== FLAGS:` at that moment in the task's `history`; `team_metrics().totals` counts them
+`review-branch` answers with an exit code the foreman acts on: 0 clean, 1 warnings or surviving mutants (the review and the merge still
+follow), 2 tests fail (back to the worker; a Docker or fetch problem is queued again instead), **3 the gate itself broke** - no verdict, so
+never a pass: the task is queued again, four times at most, then it waits for the owner. The full-suite run has its own limit,
+`GATE_TIMEOUT` (seconds, default 1500, set in the foreman's environment); a suite that hangs goes back to the worker as `tests-timeout`.
+The foreman waits that limit plus 20 minutes for the whole gate. A mutation check that returns no result is not counted as a pass
+either: the merge goes on, and the pull request says "not verified".
+
+Every rework now stores **why** it happened (`kind`: conflict, secret, quality, tests-own, tests-existing, tests-timeout, not-pushed,
+review, mutation) and the gate's `== FLAGS:` at that moment in the task's `history`; `team_metrics().totals` counts them
 (`rework_kinds`, `rework_flags`) - so the next rule is built from numbers, not impressions.
 
 ## Nothing is lost at the end of a run

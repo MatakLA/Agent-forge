@@ -2,9 +2,9 @@
 merge (internal Forgejo PR, or a GitHub/GitLab pull/merge request); rework / block / finish.
 Public interface: auto_rebase, requeue_gate, step_gate_review_merge, do_merge, step_owner_merge, step_upstream_merge.
 Invariants: rebase conflict aborts cleanly without leaving rebase state; blocked tasks are never silently merged;
-stuck merging tasks route back to gate; PHASE tracking is purged on error or step resolution;
-gate output and review feedback never enter subprocess argv."""
-import json, os, re, threading, time
+stuck merging tasks route back to gate; PHASE tracking is purged on error or step resolution; a gate run that gives no
+verdict (it crashed, timed out or could not start) is never a pass - the gate is run again; gate output and review feedback never enter subprocess argv."""
+import json, os, re, subprocess, threading, time
 
 import sbx
 
@@ -22,6 +22,17 @@ UNION_EXT = (".jsonl", ".md", ".txt", ".csv")
 
 
 REBASE_LOCK = threading.Lock()
+
+
+def gate_budget(extra=0):
+    """Seconds the foreman waits for `review-branch`: the gate's own limit for the test run (GATE_TIMEOUT, default 1500) plus the clone,
+    the fast pass (up to 600) and the checks around them. Any shorter and a hanging suite is cut off from outside, so the gate never
+    gets to report it; `extra` is for the mutation container (900)."""
+    try:
+        run = int(os.environ.get("GATE_TIMEOUT", "1500"))
+    except ValueError:
+        run = 1500
+    return run + 1200 + extra
 
 
 def auto_rebase(branch):
@@ -61,13 +72,18 @@ def _auto_rebase(branch):
                 return "conflict"
             for f in conflicted:
                 parts = []
-                for st in (2, 1, 3):           # ours, base, theirs
-                    r = g("show", f":{st}:{f}")
+                for st in (2, 1, 3):           # ours, base, theirs (bytes: a file that is not UTF-8 must come out exactly as it went in)
+                    r = subprocess.run(["git", "show", f":{st}:{f}"], cwd=d, capture_output=True, timeout=120)
                     tmp = os.path.join(ctx.FD, f".union-{st}")
-                    open(tmp, "w").write(r[1] if r[0] == 0 else "")
+                    with open(tmp, "wb") as fh:
+                        fh.write(r.stdout if r.returncode == 0 else b"")
                     parts.append(tmp)
-                out = sh(["git", "merge-file", "--union", "-p", *parts], cwd=d)[1]
-                open(os.path.join(d, f), "w").write(out)
+                merged = subprocess.run(["git", "merge-file", "--union", "-p", *parts], cwd=d, capture_output=True, timeout=120)
+                if merged.returncode != 0:         # binary content or any other error: the output is empty, and an empty file must not replace the real one
+                    g("rebase", "--abort")
+                    return "conflict"
+                with open(os.path.join(d, f), "wb") as fh:
+                    fh.write(merged.stdout)
                 g("add", f)
             rc = g(*who, "-c", "core.editor=true", "rebase", "--continue", timeout=300)[0]
         if rc != 0:
@@ -121,7 +137,7 @@ def requeue_gate(t, why):
     # Invariant: the 4-round cap blocks after exactly 4 rounds (not 3 or 5), per task budget.
     if t["regates"] >= 4:
         save_task(t)
-        return block(t, f"approved but could not be merged after {t['regates']} tries (last: {why})")
+        return block(t, f"could not be merged after {t['regates']} tries (last: {why})")
     t["status"] = "gate"
     t["not_before"] = time.time() + 30 * t["regates"]
     save_task(t)
@@ -314,9 +330,14 @@ def step_gate_review_merge(t):
             event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
         PHASE[t["id"]] = "tests in a clean container"
         refresh_repo()
-        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=1500,
+        rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=gate_budget(),
                           env={"GATE_ALLOWED_FILES": ",".join(f for f in t.get("files", []) if "," not in str(f))})
         gate = (out + err)[-8000:]
+        if rc not in (0, 1, 2):
+            # 3 = the gate broke itself, 124 = this limit ran out, 127 = it could not start, negative = it was killed: there is no verdict,
+            # and no verdict is not a pass (a crash used to end with exit 1 = warnings, and the branch went on to the review and the merge)
+            last = next((l.strip() for l in reversed(gate.splitlines()) if l.strip()), "no output")
+            return lambda: requeue_gate(t, f"the gate gave no verdict (exit {rc}): {last[:160]}")
         if rc == 2:
             # infrastructure trouble is not the worker's fault and must not burn one of its attempts
             if "could not fetch the branch" in gate and sh(["git", "ls-remote", "--heads", "origin"], cwd=ctx.REPO, timeout=60,
@@ -330,6 +351,10 @@ def step_gate_review_merge(t):
                                          "branch, e.g. `git rebase -i` and drop or edit the commit), then `git push --force-with-lease`.", gate, kind="secret")
             if "== QUALITY-ONLY" in gate and "== QUALITY: " in gate:
                 return lambda: rework(t, "Gate failed on quality, not on tests: " + gate.split("== QUALITY: ", 1)[1].split("\n", 1)[0].strip(), gate, kind="quality")
+            if "TIMEOUT: the test suite did not finish" in gate:
+                limit_line = gate.split("TIMEOUT: ", 1)[1].split("\n", 1)[0].strip()
+                return lambda: rework(t, f"Gate failed: {limit_line}. Find the test that hangs (or the slow part of the suite), fix that and push again; "
+                                         "do not skip or delete tests to get under the limit.", gate, kind="tests-timeout")
             why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
             failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
             owned = set(t.get("files", []))
@@ -385,10 +410,18 @@ def step_gate_review_merge(t):
             spec = os.path.join(ctx.FD, "mutations", t["id"] + ".json")
             jsave(spec, muts)
             PHASE[t["id"]] = f"mutation tests ({len(muts)})"
-            rc2, out2, _ = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"], "--mutations", spec], timeout=1500)
-            surv = [l.strip() for l in out2.splitlines() if l.strip().startswith(("SURVIVED", "BAD-SPEC"))]
+            rc2, out2, _ = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"], "--mutations", spec], timeout=gate_budget(900))
+            if rc2 == 2:
+                # the gate ran again for this check and the tests failed (or the branch could not be fetched) the second time: a flaky test or
+                # infrastructure, and a red run is not merged
+                return lambda: requeue_gate(t, "the gate failed when it ran again for the mutation check (flaky test or infrastructure)")
+            results = [l.strip() for l in out2.splitlines() if l.strip().startswith(("KILLED", "SURVIVED", "BAD-SPEC"))]
+            if not results:
+                # crashed, timed out or never started: the tests did pass, so the merge goes on, but the PR text says the check did not happen
+                fb = (fb + " " if fb else "") + f"[the mutation check gave no result (exit {rc2}) - not verified]"
+            surv = [l for l in results if l.startswith(("SURVIVED", "BAD-SPEC"))]
             t2 = jload(os.path.join(ctx.FD, "tasks", t["id"] + ".json")) or t
-            t2["mutations"] = [l.strip() for l in out2.splitlines() if l.strip().startswith(("KILLED", "SURVIVED", "BAD-SPEC"))][:8]
+            t2["mutations"] = results[:8]
             save_task(t2)
             if any(l.startswith("SURVIVED") for l in surv):
                 return lambda: rework(t, "Your tests do not catch these deliberate bugs in your code (mutation check); add tests that fail for "
@@ -575,7 +608,7 @@ def rework(t, feedback, gate_tail, count=True, kind=""):
         return
     if count:
         t["attempts"] += 1
-    # kind = why it came back (conflict, secret, quality, tests-own, tests-existing, not-pushed, review, mutation); flags = the gate's measured
+    # kind = why it came back (conflict, secret, quality, tests-own, tests-existing, tests-timeout, not-pushed, review, mutation); flags = the gate's measured
     # warnings at that moment (scope, weakened, duplicate, ratio, ...): what to build the next self-check rule from
     fl = re.search(r"^== FLAGS: ([\w,-]+)$", gate_tail or "", re.M)
     t["history"].append(dict(at=sbx.now(), outcome="rework", feedback=feedback[:1500], kind=kind, flags=fl.group(1).split(",") if fl else []))
