@@ -3,7 +3,7 @@ Agent-Forge issue template: Security Audit (GitLab Issue Template)
 
 Labels to apply by hand:
 - agent-forge: REQUIRED. bin/issues-intake polls issues matching label 'agent-forge' by default.
-- security: OPTIONAL. Triage label, not a filter; bin/issues-intake maps it to the role 'security-tester' and records that role on the goal.
+- security: OPTIONAL. Triage label for people, not a filter and not read by bin/issues-intake.
 
 Title recommendation:
 Prefix the issue title with '[Security Audit]: ' (e.g., '[Security Audit]: Audit argv handling in bin/dispatch').

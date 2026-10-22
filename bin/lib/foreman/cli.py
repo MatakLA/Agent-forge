@@ -64,11 +64,6 @@ from .selftest import selftest
 
 def main():
     a = sys.argv[1:]
-    role = ""
-    if "--role" in a:
-        i = a.index("--role")
-        role = a[i + 1] if i + 1 < len(a) else ""
-        del a[i:i + 2]
     if a[:1] == ["--selftest"]:
         sys.exit(selftest())
     if a[:1] == ["--version"]:
@@ -133,8 +128,6 @@ def main():
         with locked():
             gid = new_goal_id()
             g_dict = dict(id=gid, text=a[1].strip()[:4000], status="new", created=sbx.now())
-            if role:
-                g_dict["role"] = role
             save_goal(g_dict)
         event(f"goal {gid} queued: {a[1].strip()[:200]}", goal=gid)
         print(f"queued {gid}; the foreman plans it within ~{int(ctx.C['LOOP_SEC'])} s (bin/foreman status)")

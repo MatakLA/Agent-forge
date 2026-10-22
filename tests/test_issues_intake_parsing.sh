@@ -7,7 +7,7 @@
 # - Runs intake step once against temporary offline runs directory.
 # - Asserts exactly one goal exists per eligible issue matching the label filter (agent-forge).
 # - Asserts created goals have status 'new', stripped HTML in text, and clean content.
-# - Reads each goal artifact from disk and asserts goal['role'] == mapping[label] from bin/issues-intake's LABEL_TO_ROLE.
+# - Reads each goal artifact from disk and asserts that no goal carries a role: issue labels are not read.
 # - Guaranteed cleanup of the fixture server on exit under all termination paths via trap.
 
 set -euo pipefail
@@ -115,12 +115,11 @@ if [ ! -f "$SEEN_FILE" ]; then
   exit 1
 fi
 
-# Verify created goals, goal content, HTML stripping, seen tracking, role mapping, and role playbooks
+# Verify created goals, goal content, HTML stripping, seen tracking and that no goal carries a role
 python3 -c '
-import glob, importlib.machinery, importlib.util, json, os, sys
+import glob, json, os, sys
 
-root_dir = sys.argv[1]
-runs_dir = sys.argv[2]
+runs_dir = sys.argv[1]
 
 # 1. Load seen file and verify tracked IDs
 seen_file = os.path.join(runs_dir, "foreman", "issues-intake.json")
@@ -201,49 +200,11 @@ for exp in expected_issues:
             sys.stderr.write(f"FAIL: required text {req!r} missing from goal text\n")
             sys.exit(1)
 
-# 3. Read real mapping table from bin/issues-intake and compare directly against goal role fields
-intake_path = os.path.join(root_dir, "bin", "issues-intake")
-loader = importlib.machinery.SourceFileLoader("issues_intake", intake_path)
-spec = importlib.util.spec_from_loader("issues_intake", loader)
-issues_intake_mod = importlib.util.module_from_spec(spec)
-loader.exec_module(issues_intake_mod)
-
-if not hasattr(issues_intake_mod, "LABEL_TO_ROLE"):
-    sys.stderr.write("FAIL: bin/issues-intake does not expose LABEL_TO_ROLE mapping table\n")
-    sys.exit(1)
-
-mapping = issues_intake_mod.LABEL_TO_ROLE
-
-# Verify expected roles differ across at least 3 distinct labels
-distinct_roles = {mapping.get("bug"), mapping.get("docs"), mapping.get("security"), mapping.get("feature")}
-if len(distinct_roles) < 3:
-    sys.stderr.write(f"FAIL: expected roles must differ across at least 3 distinct labels: got {distinct_roles}\n")
-    sys.exit(1)
-
-# Direct comparison of actual goal role field read off disk against mapping[label]
-goal_bug = next(g for g in loaded_goals if "Fix session cookie expiration bug" in g.get("text", ""))
-goal_docs = next(g for g in loaded_goals if "Update documentation for custom providers" in g.get("text", ""))
-goal_sec = next(g for g in loaded_goals if "Perform security audit on egress firewall" in g.get("text", ""))
-goal_feat = next(g for g in loaded_goals if "Add token count metric in status" in g.get("text", ""))
-
-for name, goal_obj, expected_role in [
-    ("bug", goal_bug, mapping.get("bug")),
-    ("docs", goal_docs, mapping.get("docs")),
-    ("security", goal_sec, mapping.get("security")),
-    ("feature", goal_feat, mapping.get("feature")),
-]:
-    actual_role = goal_obj.get("role")
-    if actual_role != expected_role:
-        sys.stderr.write(f"FAIL: goal for {name} label role mismatch: got {actual_role!r}, expected {expected_role!r} (from mapping[{name!r}])\n")
+# 3. Labels are not read: whatever label the issue had (bug, docs, security, feature, none), the goal carries no role
+for goal in loaded_goals:
+    if "role" in goal:
+        sys.stderr.write("FAIL: a goal carries the role %r; issue labels must not set one\n" % (goal["role"],))
         sys.exit(1)
+' "$TMP_RUNS" || exit 1
 
-# 4. Verify each documented role playbook exists in roles/
-documented_roles = ["tester", "technical-writer", "security-tester", "backend-developer"]
-for r in documented_roles:
-    playbook_file = os.path.join(root_dir, "roles", f"{r}.md")
-    if not os.path.isfile(playbook_file):
-        sys.stderr.write(f"FAIL: playbook {playbook_file} not found\n")
-        sys.exit(1)
-' "$ROOT" "$TMP_RUNS" || exit 1
-
-echo "ok: parsing e2e test passed (port bound to 0, exactly 5 goals created, HTML stripped, role mapping verified, valid playbooks)"
+echo "ok: parsing e2e test passed (port bound to 0, exactly 5 goals created, HTML stripped, no role on any goal)"

@@ -32,24 +32,6 @@ HTML_TAG_RE = re.compile(r'<[^>]+>')
 CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 MAX_TITLE_LEN = 10000
 
-LABEL_TO_ROLE = {
-    "bug": "tester",
-    "docs": "technical-writer",
-    "security": "security-tester",
-    "feature": "backend-developer",
-}
-
-
-def get_issue_role(issue):
-    """Determine foreman role based on issue labels matching LABEL_TO_ROLE mapping."""
-    labels = issue.get("labels") or []
-    for lbl in labels:
-        name = lbl if isinstance(lbl, str) else (lbl.get("name") or lbl.get("title") or "")
-        if name in LABEL_TO_ROLE:
-            return LABEL_TO_ROLE[name]
-    return None
-
-
 def load_kv(path):
     """Load key-value pairs from a config file using sbx.py's parsing pattern."""
     out = {}
@@ -280,13 +262,10 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
             print(f"[dry-run] Would queue issue #{issue.get('number', issue_id)} ({issue_id}): {title}\n{goal}\n")
             continue
 
-        # Call bin/foreman [--project NAME] [--role ROLE] goal - with goal on stdin
+        # Call bin/foreman [--project NAME] goal - with goal on stdin
         cmd = [foreman_bin]
         if project:
             cmd.extend(["--project", project])
-        role = get_issue_role(issue)
-        if role:
-            cmd.extend(["--role", role])
         cmd.extend(["goal", "-"])
 
         r = subprocess.run(cmd, input=goal, text=True, errors="replace", capture_output=True)

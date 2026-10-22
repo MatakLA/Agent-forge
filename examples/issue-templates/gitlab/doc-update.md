@@ -3,7 +3,7 @@ Agent-Forge issue template: Documentation Update (GitLab Issue Template)
 
 Labels to apply by hand:
 - agent-forge: REQUIRED. bin/issues-intake polls issues matching label 'agent-forge' by default.
-- docs: OPTIONAL. Triage label, not a filter; bin/issues-intake maps it to the role 'technical-writer' and records that role on the goal.
+- docs: OPTIONAL. Triage label for people, not a filter and not read by bin/issues-intake.
 
 Title recommendation:
 Prefix the issue title with '[Doc]: ' (e.g., '[Doc]: Fix configuration path in docs/SETUP.md').

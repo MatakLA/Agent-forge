@@ -3,7 +3,7 @@ Agent-Forge issue template: New Feature (GitLab Issue Template)
 
 Labels to apply by hand:
 - agent-forge: REQUIRED. bin/issues-intake polls issues matching label 'agent-forge' by default.
-- feature: OPTIONAL. Triage label, not a filter; bin/issues-intake maps it to the role 'backend-developer' and records that role on the goal.
+- feature: OPTIONAL. Triage label for people, not a filter and not read by bin/issues-intake.
 
 Title recommendation:
 Prefix the issue title with '[Feature]: ' (e.g., '[Feature]: Add JSON output flag to bin/status').

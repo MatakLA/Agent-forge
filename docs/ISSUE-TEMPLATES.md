@@ -31,17 +31,17 @@ When invoked, `bin/issues-intake` performs the following steps:
 4. Reads the record of already processed issues from `runs/[projects/<name>/]foreman/issues-intake.json`.
 5. Iterates through the returned issues, queuing each new issue as a Foreman goal and recording its ID to prevent duplicate intake.
 
-### Labels and Mapping to Goal Kinds and Roles
+### Labels
 
 The `bin/issues-intake` script applies specific filtering and text processing:
 
 - **Label filtering:** The script queries issues filtered by a single label specified by `--label` (which defaults to `agent-forge`). Only open issues with this label are fetched from GitHub or GitLab.
-- **Triage labels and roles:** Four labels are mapped to a role (the table under *Offline Test Coverage*): `bug` to `tester`, `docs` to `technical-writer`, `security` to `security-tester` and `feature` to `backend-developer`. The first one found on the issue is passed to `bin/foreman --role`, which records it as `role` on the goal. They are not filters: an issue without them is queued the same way, and any other label (`documentation`, `security-audit`, ...) is ignored. The role is a note kept with the goal; the planner still picks every task's role from the role catalogue.
+- **Category labels are not read:** `bug`, `docs`, `security`, `feature` and every other label except the one in `--label` change nothing: an issue is queued the same way with or without them, so they are free triage labels that help people sort the issue list. The planner picks every task's role from the goal text and the role catalogue.
 - **Goal text generation:** For each qualifying issue, `bin/issues-intake` builds the goal string using the following rules:
   1. Strips HTML tags matching the pattern `<[^>]+>`.
   2. Combines the cleaned title and cleaned body with two newlines: `"{clean_title}\n\n{clean_body}"`. If the body is empty, it uses the cleaned title alone.
   3. Truncates the combined string to at most 4000 characters.
-  4. Passes the resulting text directly over standard input to `bin/foreman [--project NAME] [--role ROLE] goal -`.
+  4. Passes the resulting text directly over standard input to `bin/foreman [--project NAME] goal -`.
 - **Planning in Foreman:** Task decomposition, each task's role and the acceptance criteria happen downstream inside Foreman when its orchestrator LLM plans the goal, not during intake.
 
 ### Fallback and Edge Cases
@@ -70,16 +70,16 @@ Consider an issue filed on GitHub or GitLab:
 
 ### What `bin/issues-intake` Does
 
-1. **Fetches the issue:** The issue matches the `agent-forge` label filter and is retrieved. The `bug` label is not a filter; it only selects the role `tester` in step 4.
+1. **Fetches the issue:** The issue matches the `agent-forge` label filter and is retrieved. The `bug` label is neither a filter nor read by the script; it only helps people sort the issue list.
 2. **Cleans and combines text:** HTML tags are stripped, and the title and body are combined with two newlines.
-3. **Queues the goal:** The script executes `bin/foreman --role tester goal -` and streams the following exact string via standard input:
+3. **Queues the goal:** The script executes `bin/foreman goal -` and streams the following exact string via standard input:
    ```text
    [Bug]: Session cookie expires prematurely on dashboard refresh
 
    Reloading the dashboard terminates the user session even when the token is valid.
    Expected: Refreshing the page preserves login state until token expiry.
    ```
-4. **Role:** the `bug` label maps to the role `tester`, which Foreman records on the goal. The goal text itself is unclassified: Foreman's planning step analyzes it to determine the required tasks and the role of each (such as a backend developer or tester).
+4. **Planning:** The goal text is not classified by the intake: Foreman's planning step analyzes it to determine the required tasks and the role of each (such as a backend developer or tester).
 5. **Records completion:** The issue ID is appended to `runs/foreman/issues-intake.json` to prevent re-processing.
 
 ## Templates
@@ -118,11 +118,11 @@ The template library provides GitHub Issue Forms (YAML) and GitLab Issue Templat
    - On GitHub, repositories configured with Issue Forms display these templates in the issue creation menu, automatically attaching the `agent-forge` label.
    - On GitLab (or when copying markdown manually into an issue description), copy the template contents into your issue description.
 3. **Fill in the fields:** Complete the questions or sections with clear, concrete steps and expected outcomes. Keep total text under 4000 characters and avoid HTML tags.
-4. **Apply labels by hand on GitLab:** GitLab does not carry labels through issue description forms. You must apply the `agent-forge` label (and optionally the category label named in the template's comment, such as `bug` or `feature`) by hand when submitting the issue.
+4. **Apply labels by hand on GitLab:** GitLab does not carry labels through issue description forms. You must apply the `agent-forge` label (and optionally the category label named in the template's comment, such as `bug` or `feature`, which only helps people sort the issue list) by hand when submitting the issue.
 
 ## Offline Test Coverage
 
-Contributors and operators can verify the issue intake pipeline end-to-end without network access or real API credentials using offline integration tests. These tests spin up local fake forge API fixtures to validate issue parsing, label-to-role mapping, duplicate prevention, and malformed payload handling.
+Contributors and operators can verify the issue intake pipeline end-to-end without network access or real API credentials using offline integration tests. These tests spin up local fake forge API fixtures to validate issue parsing, duplicate prevention, and malformed payload handling.
 
 ### Prerequisites
 
@@ -134,21 +134,12 @@ Contributors and operators can verify the issue intake pipeline end-to-end witho
 
 Execute each test script directly from the repository root:
 
-1. **Issue parsing into goals and label-to-role mapping:**
+1. **Issue parsing into goals:**
    ```bash
    bash tests/test_issues_intake_parsing.sh
    ```
-   - **How issues become goals:** `tests/test_issues_intake_parsing.sh` exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api-github.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible GitHub issue via `bin/foreman goal -`, with the role taken from the real label-to-role mapping.
-   - **Exact label-to-role mapping:** Proves that issues are associated with specific roles based on their triage labels per the exact label-to-role mapping table:
-
-     | Issue Label | Mapped Goal Role | Role Playbook | Description |
-     |---|---|---|---|
-     | `bug` | `tester` | `roles/tester.md` | Reproduction, regression testing, and verification |
-     | `docs` | `technical-writer` | `roles/technical-writer.md` | Guides, reference docs, and walkthroughs |
-     | `security` | `security-tester` | `roles/security-tester.md` | Security audits, boundary checks, and egress rules |
-     | `feature` | `backend-developer` | `roles/backend-developer.md` | New capabilities, business logic, and API endpoints |
-
-     The test verifies each mapped role corresponds to an existing playbook in `roles/` and that distinct labels map to distinct roles.
+   - **How issues become goals:** `tests/test_issues_intake_parsing.sh` exercises `bin/issues-intake` against a fake GitHub API fixture (`tests/fixtures/fake-forge-api-github.js`). Proves that `bin/issues-intake` polls issues matching `--label` (default: `agent-forge`), strips HTML tags from titles and bodies, truncates goal text to 4000 characters, and creates exactly one goal per eligible GitHub issue via `bin/foreman goal -`.
+   - **Labels are not read:** Proves that the triage labels (`bug`, `docs`, `security`, `feature`, another one, or none) change nothing about the queued goal and that no goal carries a `role`.
 
 2. **Duplicate issue detection:**
    ```bash
