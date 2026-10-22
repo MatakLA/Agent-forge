@@ -4,7 +4,9 @@ title: "Agent-Forge"
 abstract: "A self-hosted AI dev team: a foreman, sandboxed workers, an egress allow-list and a test and review gate that turn goals into merged pull requests while you are away."
 type: software
 authors:
-  - name: "MatakLA"
+  - family-names: "Senaj"
+    given-names: "Matúš"
+    alias: "MatakLA"
 repository-code: "https://github.com/MatakLA/Agent-forge"
 url: "https://github.com/MatakLA/Agent-forge"
 license: Apache-2.0
