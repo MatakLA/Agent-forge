@@ -33,8 +33,8 @@ function fixButton(id) {
   if (!id) return '';
   if (FIXES[id]) return '<button class="mini" data-fix="' + esc(id) + '" aria-label="' + esc(FIXES[id]) + '">' + FIXES[id] + '</button>';
   if (/^worker-up:\d+$/.test(id)) return '<button class="mini" data-fix="' + esc(id) + '" aria-label="Start worker-' + esc(id.split(':')[1]) + '">Start worker-' + esc(id.split(':')[1]) + '</button>';
-  if (/^login:worker-\d+$/.test(id)) return '<button class="mini" data-login="' + esc(id.slice(6)) + '" aria-label="Sign in worker ' + esc(id.slice(6)) + '">Sign it in</button>';
-  if (/^(settings|key):/.test(id)) return '<button class="mini" data-goset="' + esc(id) + '" aria-label="Open setting ' + esc(id) + '">Open the setting</button>';
+  if (/^login:worker-\d+$/.test(id)) return '<button class="mini" data-login="' + esc(id.slice(6)) + '" aria-label="Sign it in (' + esc(id.slice(6)) + ')">Sign it in</button>';
+  if (/^(settings|key):/.test(id)) return '<button class="mini" data-goset="' + esc(id) + '" aria-label="Open the setting (' + esc(id) + ')">Open the setting</button>';
   return '';
 }
 function healthHtml() {

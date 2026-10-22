@@ -156,7 +156,7 @@ document.addEventListener('input', e => { if (e.target.id === 'rp-q') { RD.q = e
 function openRuns() {
   const runs = ((F && F.timeline) || []).filter(r => r.end && r.run_id).sort((a, b) => b.end - a.end);
   openSheet('runs', 'runs', '<h2>Finished runs, last 24 hours</h2>' + (runs.length ? '<div class="tablewrap"><table class="m click"><tr><th>ended</th><th>worker</th><th>task</th>' +
-    '<th>outcome</th><th class="num">tokens</th><th class="num">time</th></tr>' + runs.map(r => '<tr data-open="run:' + esc(r.run_id) + '" role="button" tabindex="0" aria-label="Run ' + esc(r.run_id) + ' · ' + esc(r.worker) + ' · ' + esc(r.task) + ' (' + esc(r.reason) + ')"><td>' + esc(tfmt(r.end)) + '</td><td>' +
+    '<th>outcome</th><th class="num">tokens</th><th class="num">time</th></tr>' + runs.map(r => '<tr data-open="run:' + esc(r.run_id) + '" role="button" tabindex="0"><td>' + esc(tfmt(r.end)) + '</td><td>' +
     esc(r.worker) + '</td><td>' + esc(r.task) + '</td><td>' + esc(r.reason) + '</td><td class="num">' + fmtTok(r.tokens) + '</td><td class="num">' + dur(r.end - r.start) + '</td></tr>').join('') +
     '</table></div><div class="muted small">Older runs: search for words from their transcript (⌕).</div>' : '<div class="empty">No finished runs in the last 24 hours.</div>'));
 }

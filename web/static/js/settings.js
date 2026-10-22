@@ -618,7 +618,7 @@ function pageKnowledge() {
   if (!L) return '<div class="empty">loading…</div>';
   if (!Array.isArray(L)) return '<div class="empty bad">Could not load the documents: ' + esc(L.error || 'not available') + ' <button type="button" class="mini" data-docsreload>Try again</button></div>';
   const main = L.filter(d => !d.name.startsWith('role:')), roles = L.filter(d => d.name.startsWith('role:'));
-  return card('What the team knows', main.length ? main.map(d => '<div class="docrow" data-doc="' + esc(d.name) + '" role="button" tabindex="0" aria-label="' + esc(d.title) + '"><b>' + esc(d.title) + '</b> ' + small(esc(d.about)) +
+  return card('What the team knows', main.length ? main.map(d => '<div class="docrow" data-doc="' + esc(d.name) + '" role="button" tabindex="0"><b>' + esc(d.title) + '</b> ' + small(esc(d.about)) +
       (d.exists ? '' : ' <span class="badge">empty</span>') + '</div>').join('') : '<div class="empty">No documents yet.</div>', 'Every plan, review and task reads these. Write them like a briefing for a new colleague.') +
     card('Roles (' + roles.length + ')', '<div class="btnrow"><button type="button" class="primary sm" id="new-role">+ New role</button></div>' +
       (roles.length ? '<div class="roles">' + roles.map(d => '<button type="button" class="rolebtn" data-doc="' + esc(d.name) + '" title="' + esc(d.about || '') + '">' + esc(d.title) +
