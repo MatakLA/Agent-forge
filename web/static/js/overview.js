@@ -351,8 +351,8 @@ document.addEventListener('click', async e => {
   }
   const ta = e.target.closest('[data-ta]'); if (ta) { ta.disabled = true; await taskAction(ta.dataset.id, ta.dataset.ta); ta.disabled = false; return; }
   const ga = e.target.closest('[data-ga]'); if (ga) { ga.disabled = true; await goalAction(ga.dataset.id, ga.dataset.ga); ga.disabled = false; return; }
-  const op = e.target.closest('[data-open]');
-  if (op) { const [kind, id] = op.dataset.open.split(/:(.*)/s); if (kind === 'task') openTask(id); else if (kind === 'goal') openGoal(id); else if (kind === 'run') openRun(id); return; }
+  const op = e.target.closest('[data-open]'), inner = op && e.target.closest('a[href], button, input, select, textarea');
+  if (op && !(inner && inner !== op && op.contains(inner))) { const [kind, id] = op.dataset.open.split(/:(.*)/s); if (kind === 'task') openTask(id); else if (kind === 'goal') openGoal(id); else if (kind === 'run') openRun(id); return; }
   const gm = e.target.closest('[data-gmenu]');
   if (gm) { OPEN_MENU.id = OPEN_MENU.id === gm.dataset.gmenu ? null : gm.dataset.gmenu; schedule(true); return; }
   if (OPEN_MENU.id && !e.target.closest('.menu')) { OPEN_MENU.id = null; schedule(true); }
@@ -399,9 +399,6 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (OPEN_MENU.id) { OPEN_MENU.id = null; schedule(true); return; }
     if (BL_EDIT !== null) { BL_EDIT = null; delete lastHTML['backlog']; schedule(true); return; }
-  }
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) {
-    e.preventDefault(); e.target.click(); return;
   }
   if (e.target.id === 'bl-edit-text' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     const btn = document.querySelector('[data-bledit-save]');

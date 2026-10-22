@@ -153,6 +153,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('overview: all interactive elements are buttons reachable by keyboard',
         overAct.length > 0 && overAct.every(el => el.tagName === 'BUTTON' || (el.getAttribute('role') === 'button' && el.tabIndex >= 0)));
   const click = sel => { const el = d.querySelector(sel); if (!el) { errors.push('no element ' + sel); return false; } el.dispatchEvent(new w.MouseEvent('click', {bubbles: true})); return true; };
+  // Enter / Space / a click on a control: its sheet opens once (one load), and no page error follows (an SVG bar has no click())
+  const fetched = [], pageFetch = w.fetch;
+  w.fetch = (u, o) => { fetched.push(String(u)); return pageFetch(u, o); };
+  const press = (el, key) => { el.focus(); el.dispatchEvent(new w.KeyboardEvent('keydown', {key, bubbles: true, cancelable: true})); };
+  const clickEl = el => el.dispatchEvent(new w.MouseEvent('click', {bubbles: true}));
+  const openOnce = async (name, kind, api, fire) => {
+    const e0 = errors.length, n0 = fetched.filter(u => u.includes(api)).length, b0 = txt('jserr');
+    fire(); await sleep(400);
+    const loads = fetched.filter(u => u.includes(api)).length - n0, got = w.eval('SHEET.kind');
+    const ok = got === kind && loads === 1 && txt('jserr') === b0 && errors.length === e0;
+    check(name, ok);
+    if (!ok) console.log('     sheet=' + got + ' loads=' + loads + ' banner=' + txt('jserr') + ' errors=' + errors.slice(e0).join(' | '));
+    w.closeSheet();
+  };
+  const openBy = (name, el, fire) => { const kind = el.dataset.open.split(':')[0]; return openOnce(name, kind, '/api/' + kind + '?', fire); };
   for (const t of ['tasks', 'live', 'timeline', 'insights', 'system', 'settings', 'overview']) {
     click('nav button[data-t="' + t + '"]'); await sleep(700);
     const segs = d.querySelectorAll('#t-' + t + ' .seg button');
@@ -208,6 +223,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   for (let i = 0; i < 40 && !txt('sheet').includes('No results for'); i++) await sleep(250);
   check('search: explicit empty state for zero matches',
         txt('sheet').includes('No results for'));
+  {
+    const find = async () => { w.openSearch(); const f = d.getElementById('sr-q'); f.value = 'due'; f.dispatchEvent(new w.Event('input', {bubbles: true}));
+      for (let i = 0; i < 40 && !d.querySelector('.sr[data-open]'); i++) await sleep(250); return d.querySelector('.sr[data-open]'); };
+    let row = await find();
+    if (row) await openBy('search: Enter on a result opens it once', row, () => press(row, 'Enter'));
+    row = await find();
+    if (row) await openBy('search: a click on a result opens it once', row, () => clickEl(row));
+  }
   w.openDoc('role:tester'); await sleep(2000);
   check('document editor opens', !!d.getElementById('doc-text'));
   w.closeSheet();
@@ -235,10 +258,32 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         tlBars.length === 0 || tlBars.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
   check('timeline: time axis labelled with time zone',
         txt('timeline').includes('Timezone') || !!d.querySelector('.tl .tz'));
+  if (tlBars.length) {
+    await openBy('timeline: Enter on a bar opens it once, with no page error', tlBars[0], () => press(tlBars[0], 'Enter'));
+    await openBy('timeline: Space on a bar opens it once, with no page error', tlBars[0], () => press(tlBars[0], ' '));
+  }
   w.eval("SUB.tasks = 'board'"); w.setTab('tasks'); await sleep(800);
   const taskCards = [...d.querySelectorAll('#t-tasks .card')];
   check('tasks: board cards are keyboard reachable',
         taskCards.length > 0 && taskCards.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  if (taskCards.length) {
+    await openBy('tasks: Enter on a board card opens it once', taskCards[0], () => press(taskCards[0], 'Enter'));
+    await openBy('tasks: a click on a board card opens it once', taskCards[0], () => clickEl(taskCards[0]));
+  }
+  {
+    const holder = d.createElement('div');
+    holder.innerHTML = '<table><tr data-open="task:0001-x" role="button" tabindex="0"><td><a href="https://example.test/pr/1" id="kb-link">#1</a> <button id="kb-btn">retry</button></td></tr></table>';
+    d.body.appendChild(holder);
+    const keyOn = id => { const el = d.getElementById(id), ev = new w.KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}); el.focus(); el.dispatchEvent(ev); return ev.defaultPrevented; };
+    const kept = !keyOn('kb-link') && !keyOn('kb-btn');
+    check('a link or button inside a clickable row keeps its own Enter', kept && w.eval('SHEET.kind') !== 'task');
+    d.getElementById('kb-link').addEventListener('click', ev => ev.preventDefault());
+    const kind0 = w.eval('SHEET.kind'), t0 = fetched.filter(u => u.includes('/api/task?')).length;
+    d.getElementById('kb-link').dispatchEvent(new w.MouseEvent('click', {bubbles: true, cancelable: true})); clickEl(d.getElementById('kb-btn')); await sleep(300);
+    check('a click on a link or button inside a clickable row stays with it',
+          w.eval('SHEET.kind') === kind0 && fetched.filter(u => u.includes('/api/task?')).length === t0);
+    holder.remove();
+  }
   const boardCols = [...d.querySelectorAll('#t-tasks .col')];
   check('tasks: board header task count matches rendered cards for each column',
         boardCols.length > 0 && boardCols.every(col => {
@@ -252,6 +297,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const graphNodes = [...d.querySelectorAll('.dag g[data-open]')];
   check('tasks: graph nodes are keyboard reachable',
         graphNodes.length > 0 && graphNodes.every(el => el.getAttribute('role') === 'button' && el.tabIndex === 0));
+  if (graphNodes.length) await openBy('tasks: Enter on a graph node opens it once, with no page error', graphNodes[0], () => press(graphNodes[0], 'Enter'));
   w.eval(`
     window._origFTasks = F.tasks;
     F.tasks = [];
@@ -347,6 +393,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     !!fixBtn && fixBtn.tagName === 'BUTTON' && !!fixBtn.getAttribute('aria-label'));
   check('system: collapsible checks panel exists with summary',
     !!d.getElementById('all-checks') && !!d.querySelector('#all-checks summary'));
+  {
+    const det = d.getElementById('all-checks'), sm = det && det.querySelector('summary'), e0 = errors.length, b0 = txt('jserr');
+    if (sm) {
+      const was = det.open;
+      press(sm, 'Enter'); const afterEnter = det.open;
+      press(sm, ' ');
+      check('system: Enter opens and Space closes "All checks" (once each)', afterEnter === !was && det.open === was && txt('jserr') === b0 && errors.length === e0);
+    }
+  }
   // drawing the page starts the load itself, so "nothing yet" shows as "Checking the install…" (never a blank pane)
   w.eval(`SYS.health = null; SYS.err.health = null; SYS.healthBusy = true; renderSystem(true);`);
   check('system: health view shows an explicit state (not a blank pane) while there is no answer yet',
@@ -398,9 +453,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     check('settings / workers: Remove posts the removal of that worker', calls.length === 1 && calls[0].body.action === 'remove' && calls[0].body.worker === victim);
     unstub();
 
+    stub(/\/api\/killswitch/, () => ({error: 'bad project'}));
+    await w.killswitch('on');
+    check('settings / workers: a refusal without a step list is shown under the kill switch', calls.length === 1 && /bad project/.test(txt('resume-result')));
+    d.getElementById('resume-result').style.display = 'none';
+    unstub();
+
     // knowledge: a new role can be added; an existing name is refused
     await sgo('knowledge'); await sleep(900);
     check('settings / knowledge: there is a button to add a role', !!d.getElementById('new-role'));
+    const docRow = d.querySelector('#settings .docrow[data-doc]');
+    if (docRow) await openOnce('settings / knowledge: Enter on a document row opens it once', 'doc', '/api/doc?', () => press(docRow, 'Enter'));
     d.getElementById('new-role').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(400);
     const nm = d.getElementById('nr-name'), ms = d.getElementById('nr-mission');
     nm.value = 'tester'; ms.value = 'x'; d.getElementById('nr-create').dispatchEvent(new w.MouseEvent('click', {bubbles: true})); await sleep(300);

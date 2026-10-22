@@ -308,7 +308,7 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && !typing(e.target)) {
-    const op = e.target.closest('[data-open]');
+    const op = e.target.matches('[data-open]') && e.target;
     if (op) {
       e.preventDefault();
       const [kind, id] = op.dataset.open.split(/:(.*)/s);
@@ -317,7 +317,7 @@ document.addEventListener('keydown', e => {
       else if (kind === 'run') openRun(id);
       return;
     }
-    const btn = e.target.closest('[role="button"]');
+    const btn = e.target.matches('[role="button"]') && e.target;
     if (btn) {
       e.preventDefault();
       if (typeof btn.click === 'function') btn.click();
