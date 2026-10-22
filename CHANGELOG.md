@@ -3,7 +3,7 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
 alpha software: until 1.0, commands, settings and file formats can change between releases.
 
-## 0.12.2 - 2026-10-21
+## 0.12.2 - 2026-10-22
 
 **Supply chain.** Every release now carries Sigstore signatures (`FILE.sigstore.json`, keyless) for the source archive, the SBOM and
 `SHA256SUMS`, plus signed build provenance of those files; how to check them is in SECURITY.md ("What you download"). The 0.12.1
