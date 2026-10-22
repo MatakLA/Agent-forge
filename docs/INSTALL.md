@@ -170,7 +170,8 @@ forge update            # fast-forward, rebuild what changed, restart the servic
 `forge update` only fast-forwards the checkout; it never merges and never discards your work. It refuses to run when tracked files
 are edited or the checkout has commits that are not upstream, and says what to do. Before anything changes, the new version must
 pass its own self-test in a scratch worktree. Then it rebuilds only what the update touched (worker image, egress proxy,
-Forgejo), re-installs and restarts the services, and runs `forge doctor --quick`. Running worker runs keep going. Your
+Forgejo), re-installs and restarts the services, and runs `forge doctor --quick`. If it stops after the checkout has moved (an
+image build that fails, no sudo), fix the cause and run `forge update` again: it finishes the steps that did not run. Running worker runs keep going. Your
 configuration (`etc/*.conf`, `projects/`), the secrets directory, Forgejo's data and your workers are not touched. If `etc/*.example.*`
 gained settings, they show up in the dashboard; compare with your `etc/*.conf` if you want the new defaults.
 See the [CHANGELOG](../CHANGELOG.md) for what changed.

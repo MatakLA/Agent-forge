@@ -95,6 +95,9 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
 - When the dashboard could not read the container list (the ssh link to the devbox was down, or Docker answered nothing) it picked
   `worker-1` for the new worker, and `bin/worker-add 1` on a worker that exists rewrites its runtime and recreates its container. It now
   stops with "could not list the containers" and adds nothing.
+- Another tab or the phone could keep showing the old health, egress, disk or settings for up to two minutes after something was changed:
+  the cache was emptied before the write ran, so a read that happened while the write was still going was cached again. It is emptied
+  after the write, and an answer that was being computed when the cache was emptied is no longer stored.
 
 **Fixed: commands, docs and CI.**
 
@@ -108,6 +111,9 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
   Goose (it would run in the worker container), so that check is gone; the runtime's readiness is still checked under Readiness.
 - The uninstall step of the `install` workflow now really fails when a service or container is left behind (a `!` in front of a command
   never stopped a `bash -e` step). `sign-release` copes with a release that has no files, such as v0.12.0.
+- `forge update` said "nothing is half-way: run forge update again" when it failed after the checkout had moved (a failed image build,
+  no sudo), and the next run answered "already up to date" without rebuilding or restarting anything. It now says what happened, and
+  the next `forge update` finishes the steps that did not run (it keeps the starting point in `.git/forge-update-from` until they all have).
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`, `parseHash`). New tests for the access log and the audit entries,

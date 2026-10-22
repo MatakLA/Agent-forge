@@ -1577,6 +1577,35 @@ class TestWebServer(unittest.TestCase):
         self.assertEqual(srv.audit_detail("/api/secret", {"name": "not-a-known-secret"}), "")
         self.assertEqual(srv.audit_detail("/api/x", None), "")
 
+    def test_a_read_that_ran_during_a_write_is_not_served_after_it(self):
+        """The slow-read cache is emptied once the write is over: a value computed while the write was still running is older
+        than its result, and the next reader (another tab reads without ?fresh=1) must not get it."""
+        old_ssh = srv.B.ssh_run_full
+
+        def while_writing(cmd, timeout=30, inp=None):
+            srv.SLOW.get("probe", 60, lambda: {"v": "from before the write ended"})
+            return 0, "ok", ""
+        srv.SLOW.drop()
+        try:
+            srv.B.ssh_run_full = while_writing
+            s, _, _ = self.req("POST", "/api/settings", {"changes": {"WORKER_N": "2"}}, {"X-Agent-Forge": "1"})
+            self.assertEqual(s, 200)
+        finally:
+            srv.B.ssh_run_full = old_ssh
+        val, _ = srv.SLOW.get("probe", 60, lambda: {"v": "after"})
+        self.assertEqual(val, {"v": "after"})
+        srv.SLOW.drop()
+
+    def test_a_refused_write_leaves_the_cache_alone(self):
+        srv.SLOW.drop()
+        srv.SLOW.get("probe", 60, lambda: {"v": "kept"})
+        s, _, _ = self.req("POST", "/api/settings", {"changes": {"WORKER_N": "2"}})
+        self.assertEqual(s, 403)
+        val, _ = srv.SLOW.get("probe", 60, lambda: {"v": "recomputed"})
+        self.assertEqual(val, {"v": "kept"})
+        self.assertEqual(self.calls, [])
+        srv.SLOW.drop()
+
 
 class TestForgeDirDefault(unittest.TestCase):
     def test_default_forge_dir_is_the_repository_root(self):

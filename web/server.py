@@ -357,7 +357,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Demo mode: read-only"}, 403)
             return
         body = self._body()
-        SLOW.drop()             # whatever the owner just changed, the next read must see it
+        try:
+            self._post(body)
+        finally:
+            SLOW.drop()         # after the write, so a read that started while it ran is not kept
+
+    def _post(self, body):
         proj = str(body.get("project", "default"))
         try:
             pf = B.pflag(proj)
@@ -486,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                 rc, out, err = foreman(pf, f"goal {gid} {act}", timeout=30)
             self._json(as_json(out, err, rc))
         elif path == "/api/control":
-            # Project name is validated in the shared do_POST preamble via B.pflag(proj) (invalid name -> 400).
+            # Project name is validated in the shared _post preamble via B.pflag(proj) (invalid name -> 400).
             act = str(body.get("action", ""))
             if act not in CONTROL_ACTIONS:
                 self._json({"ok": False, "message": "unknown action"}, 400); return
