@@ -9,7 +9,7 @@ Invariants: crash recovery prevents double merges/PRs; 4-round regate cap blocks
 at exactly 4 rounds; external upstream merges are detected; non-union shared files conflict;
 gate output and review feedback containing NUL or ANSI control chars never crash subprocess argv.
 """
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bin"))
@@ -17,7 +17,9 @@ sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 import sbx
 from unittest.mock import patch
-from foreman import ctx, merge, store
+from foreman import ctx, merge, store, util
+
+REAL_AUTO_REBASE = merge.auto_rebase          # some tests below replace merge.auto_rebase and never put it back
 
 # Smoke import check: ensures modules are loaded cleanly without silent failure
 for _mod in (sbx, ctx, merge, store):
@@ -928,6 +930,179 @@ class TestForemanMerge(unittest.TestCase):
         self.assertIn("embedded null byte", sh_err_msg)
         assert "embedded null byte" in sh_err_msg
 
+
+    # ---------------------------------------------------------------- a gate that gives no verdict is never a pass
+    def new_task(self, tid, **fields):
+        t = dict(id=tid, history=[], status="gate", branch=f"feat/{tid}", role="backend-developer", goal="G1", title="gate verdict",
+                 attempts=0, spec="s", acceptance=[], **fields)
+        merge.save_task(t)
+        return t
+
+    def run_gate_step(self, t, gate, verdict='{"verdict": "approve"}'):
+        """Run step_gate_review_merge once with every outside call stubbed. `gate(cmd, kw)` answers `review-branch` as (rc, out, err).
+        Returns (the task afterwards, what happened: gate commands, reviews, opened PRs, the PR text)."""
+        seen = dict(gate=[], reviews=0, prs=[], pr_text="")
+
+        def stub_sh(cmd, *a, **kw):
+            if "review-branch" in cmd[0]:
+                seen["gate"].append(list(cmd))
+                return gate(cmd, kw)
+            if "diff" in cmd:
+                return (0, "+code\n", "")
+            if "open-pr" in cmd[0]:
+                seen["prs"].append(cmd[1])
+                seen["pr_text"] = open(cmd[3]).read()
+                return (0, "opened PR #50\n", "")
+            return (0, "", "")
+
+        def stub_llm(kind, *a, **kw):
+            if kind == "review":
+                seen["reviews"] += 1
+                return (verdict, "lead")
+            return ("{}", "lead")
+
+        ctx.C["AUTO_MERGE"] = 1
+        with patch.object(merge, "sh", stub_sh), patch.object(merge, "llm", stub_llm), patch.object(merge, "auto_rebase", lambda b: "uptodate"), \
+             patch.object(merge, "already_merged_pr", lambda b: None), patch.object(merge, "refresh_repo", lambda: None), \
+             patch.object(merge, "upstream_obj", lambda: None), patch.object(merge, "total_lines_after_merge", lambda files: 25):
+            merge.step_gate_review_merge(t)()
+        return merge.live_task(t), seen
+
+    def test_a_gate_that_gives_no_verdict_is_requeued_never_reviewed_or_merged(self):
+        for rc in (3, 124, 127, -9):          # 3 the gate broke, 124 the foreman's limit ran out, 127 it could not start, -9 it was killed
+            with self.subTest(rc=rc):
+                gate = lambda cmd, kw, rc=rc: (rc, "== review of feat/x against main\nTraceback (most recent call last):\nValueError: boom\n", "")
+                after, seen = self.run_gate_step(self.new_task(f"0051-noverdict{abs(rc)}"), gate)
+                self.assertEqual((after["status"], after["regates"]), ("gate", 1))
+                self.assertIn(f"the gate gave no verdict (exit {rc}): ValueError: boom", after["history"][-1]["why"])
+                self.assertEqual(after["attempts"], 0, "the worker is not at fault")
+                self.assertGreater(after["not_before"], time.time())
+                self.assertEqual((seen["reviews"], seen["prs"]), (0, []))
+
+    def test_a_gate_that_keeps_breaking_ends_with_the_owner_not_with_a_merge(self):
+        t = self.new_task("0052-keeps-breaking")
+        broke = lambda cmd, kw: (3, "== GATE ERROR: the gate itself broke (FileNotFoundError: docker) - no verdict, NOT a pass\n", "")
+        for _ in range(4):
+            after, seen = self.run_gate_step(t, broke)
+            self.assertEqual((seen["reviews"], seen["prs"]), (0, []))
+        self.assertEqual(after["status"], "blocked")
+        self.assertIn("could not be merged after 4 tries (last: the gate gave no verdict (exit 3)", after["blocked_why"])
+        self.assertEqual(after["attempts"], 0)
+
+    def test_warnings_alone_still_reach_the_review_and_the_merge(self):
+        gate = lambda cmd, kw: (1, "gate tests passed\n== FLAGS: scope\n== warnings:\n  ! scope: b.py\n", "")
+        after, seen = self.run_gate_step(self.new_task("0053-warnings"), gate)
+        self.assertEqual((after["status"], seen["reviews"], seen["prs"]), ("done", 1, ["feat/0053-warnings"]))
+
+    def test_a_suite_that_never_finishes_goes_back_to_the_worker_as_a_timeout(self):
+        marker = "TIMEOUT: the test suite did not finish within 1500 s (GATE_TIMEOUT) - a test hangs or the suite is too slow"
+        gate = lambda cmd, kw: (2, f"== full test suite in a fresh container (`python3 -m pytest -q`): {marker}\n{marker}\n", "")
+        after, seen = self.run_gate_step(self.new_task("0054-hang"), gate)
+        self.assertEqual((after["status"], after["attempts"], seen["reviews"], seen["prs"]), ("pending", 1, 0, []))
+        last = [h for h in after["history"] if h.get("outcome") == "rework"][-1]
+        self.assertEqual(last["kind"], "tests-timeout")
+        self.assertIn("did not finish within 1500 s (GATE_TIMEOUT)", last["feedback"])
+        self.assertIn("do not skip or delete tests", last["feedback"])
+
+    def test_a_docker_problem_is_requeued_without_costing_the_worker_an_attempt(self):
+        gate = lambda cmd, kw: (2, "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n", "")
+        after, seen = self.run_gate_step(self.new_task("0055-docker"), gate)
+        self.assertEqual((after["status"], after["regates"], after["attempts"], seen["reviews"]), ("gate", 1, 0, 0))
+        self.assertIn("Docker problem", after["history"][-1]["why"])
+
+    MUTATING = '{"verdict": "approve", "feedback": "fine", "mutations": [{"name": "m1", "file": "a.py", "old": "x", "new": "y"}]}'
+
+    def mutation_gate(self, second):
+        return lambda cmd, kw: second if "--mutations" in cmd else (0, "gate tests passed\n", "")
+
+    def test_a_mutation_check_whose_tests_fail_the_second_time_is_run_again_not_merged(self):
+        after, seen = self.run_gate_step(self.new_task("0056-mut-red"), self.mutation_gate((2, "== full test suite: 1 failed\n", "")), self.MUTATING)
+        self.assertEqual((after["status"], after["regates"], seen["prs"]), ("gate", 1, []))
+        self.assertIn("mutation check", after["history"][-1]["why"])
+
+    def test_a_mutation_check_that_gave_no_result_is_merged_with_the_note_in_the_pr(self):
+        for rc in (3, 124, 1):
+            with self.subTest(rc=rc):
+                after, seen = self.run_gate_step(self.new_task(f"0057-mut-none{rc}"), self.mutation_gate((rc, "container broke\n", "")), self.MUTATING)
+                self.assertEqual(after["status"], "done")
+                self.assertIn(f"[the mutation check gave no result (exit {rc}) - not verified]", seen["pr_text"])
+                self.assertIn("Review by lead: fine [the mutation check", seen["pr_text"])
+
+    def test_a_mutation_check_with_results_is_judged_by_them(self):
+        after, seen = self.run_gate_step(self.new_task("0058-mut-killed"), self.mutation_gate((0, "== mutation check (1 mutants)\n  KILLED    m1  1 failed\n", "")), self.MUTATING)
+        self.assertEqual(after["status"], "done")
+        self.assertNotIn("the mutation check gave no result", seen["pr_text"])
+        self.assertEqual(after["mutations"], ["KILLED    m1  1 failed"])
+        after, seen = self.run_gate_step(self.new_task("0059-mut-survived"), self.mutation_gate((1, "  SURVIVED  m1  1 passed\n", "")), self.MUTATING)
+        self.assertEqual((after["status"], seen["prs"]), ("pending", []))
+        self.assertEqual([h for h in after["history"] if h.get("outcome") == "rework"][-1]["kind"], "mutation")
+
+    def test_the_foremans_gate_limit_always_outlasts_the_gates_own(self):
+        for env, own in ((None, 1500), ("100", 100), ("5000", 5000), ("junk", 1500), ("", 1500)):
+            with self.subTest(GATE_TIMEOUT=env), patch.dict(os.environ):
+                os.environ.pop("GATE_TIMEOUT", None)
+                if env is not None:
+                    os.environ["GATE_TIMEOUT"] = env
+                self.assertGreaterEqual(merge.gate_budget(), own + 600 + 600, "the gate's own limit, its fast pass and the checks around them")
+                self.assertEqual(merge.gate_budget(900), merge.gate_budget() + 900)
+
+    def test_sh_shows_bytes_that_are_not_utf8_instead_of_raising(self):
+        rc, out, err = util.sh([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'caf\\xe9\\n'); sys.stderr.buffer.write(b'\\xff')"])
+        self.assertEqual((rc, out, err), (0, "caf�\n", "�"))
+
+    # ---------------------------------------------------------------- the union rebase of shared files
+    def forge_with_conflict(self, name, branch, fname, base, on_branch, on_main):
+        """A bare forge `name` whose main and `branch` both changed `fname` in a way git cannot merge; returns (work clone, git runner)."""
+        bare, work = os.path.join(self.tmp, f"{name}.git"), os.path.join(self.tmp, f"work_{name}")
+        git_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+        def run_git(d, *args):
+            r = subprocess.run(["git", *args], cwd=d, capture_output=True, text=True, env=git_env)
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args} failed: {r.stderr}")
+            return r.stdout.strip()
+
+        def write(content):
+            with open(os.path.join(work, fname), "wb") as f:
+                f.write(content)
+
+        run_git(self.tmp, "init", "-q", "--bare", "-b", "main", bare)
+        run_git(self.tmp, "clone", "-q", bare, work)
+        write(base)
+        run_git(work, "add", "-A")
+        run_git(work, "commit", "-qm", "base")
+        run_git(work, "push", "-q", "origin", "main")
+        run_git(work, "checkout", "-q", "-b", branch)
+        write(on_branch)
+        run_git(work, "commit", "-qam", "branch change")
+        run_git(work, "push", "-q", "origin", branch)
+        run_git(work, "checkout", "-q", "main")
+        write(on_main)
+        run_git(work, "commit", "-qam", "main change")
+        run_git(work, "push", "-q", "origin", "main")
+        sbx.FORGE_URL, sbx.FORGE_REPO = "file://" + self.tmp, name
+        return work, run_git
+
+    def test_auto_rebase_union_keeps_bytes_that_are_not_utf8_exactly(self):
+        ctx.C["SHARED_FILES"] = "records.csv"
+        work, run_git = self.forge_with_conflict("forge_latin1", "feat/0044-latin1", "records.csv", b"id;name\n1;caf\xe9\n",
+                                                 b"id;name\n1;caf\xe9\n2;na\xefve\n", b"id;name\n1;caf\xe9\n3;se\xf1or\n")
+        self.assertEqual(REAL_AUTO_REBASE("feat/0044-latin1"), "rebased")
+        run_git(work, "fetch", "-q", "origin")
+        got = subprocess.run(["git", "show", "origin/feat/0044-latin1:records.csv"], cwd=work, capture_output=True).stdout
+        self.assertEqual(sorted(got.splitlines(keepends=True)), sorted([b"id;name\n", b"1;caf\xe9\n", b"2;na\xefve\n", b"3;se\xf1or\n"]))
+
+    def test_auto_rebase_union_never_replaces_a_binary_shared_file_with_an_empty_one(self):
+        ctx.C["SHARED_FILES"] = "records.jsonl"
+        base = b'{"id": "base"}\n\x00\n'
+        work, run_git = self.forge_with_conflict("forge_bin", "feat/0045-bin", "records.jsonl", base, base + b'{"id": "branch"}\n', base + b'{"id": "main"}\n')
+        pushed = run_git(work, "ls-remote", "origin", "refs/heads/feat/0045-bin").split()[0]
+        self.assertEqual(REAL_AUTO_REBASE("feat/0045-bin"), "conflict")
+        rebase_dir = os.path.join(ctx.FD, "rebase")
+        for state in ("rebase-merge", "rebase-apply"):
+            self.assertFalse(os.path.exists(os.path.join(rebase_dir, ".git", state)))
+        self.assertEqual(run_git(rebase_dir, "status", "--porcelain"), "")
+        self.assertEqual(run_git(work, "ls-remote", "origin", "refs/heads/feat/0045-bin").split()[0], pushed, "the branch must not have been pushed")
 
 
 if __name__ == "__main__":

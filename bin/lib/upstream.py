@@ -171,7 +171,7 @@ class Upstream:
 
 # ---- git plumbing between Forgejo (origin) and upstream, in the foreman's own clone
 def _git(d, *a, env=None, timeout=180):
-    r = subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, timeout=timeout, env=dict(os.environ, **(env or {})))
+    r = subprocess.run(["git", *a], cwd=d, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=dict(os.environ, **(env or {})))
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
