@@ -106,6 +106,9 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
 - Another tab or the phone could keep showing the old health, egress, disk or settings for up to two minutes after something was changed:
   the cache was emptied before the write ran, so a read that happened while the write was still going was cached again. It is emptied
   after the write, and an answer that was being computed when the cache was emptied is no longer stored.
+- Dragging a backlog item: when the browser cancelled the drag (a system gesture, a call, a dialog) the row stayed lifted, the backlog
+  stopped updating, and the next click anywhere moved the item to wherever the pointer had last been. A cancelled drag now puts the
+  rows back and changes nothing, and only the finger that started the drag can end it.
 
 **Fixed: commands, docs and CI.**
 
@@ -125,6 +128,11 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
 - `docs/ISSUE-TEMPLATES.md` and the example issue templates said that `bin/issues-intake` ignores every label but `agent-forge`. It maps
   `bug`, `docs`, `security` and `feature` to a role and hands it to `bin/foreman --role`; the planner still chooses each task's role, so
   today the role is only recorded on the goal. The documentation templates carry `docs` (the mapped label) instead of `documentation`.
+- The demo published its port on every interface (`8171:8171` in `demo/docker-compose.yml` and in the `docker run` line of the README,
+  the install guide and the quickstart), and Docker does that around the host firewall: anyone on the same network could open the demo
+  dashboard (invented data, read-only). It is now `127.0.0.1:8171:8171` everywhere, as in the release notes and in CI, and a test fails for
+  any other mapping. `docs/DEMO.md` no longer calls `BIND_PORT` the host port (it is the port inside the container) and no longer suggests
+  the WSL2 address, which a loopback-only port does not answer on.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`, `parseHash`). New tests for the access log and the audit entries,

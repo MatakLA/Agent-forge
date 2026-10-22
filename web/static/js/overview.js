@@ -197,16 +197,21 @@ function backlogHtml() {
 }
 // pointer-based dragging: works with a mouse and on a phone
 let DRAG = null;
+function endDrag() {      // puts the rows back where they were; returns the drag that was on, if any
+  const d = DRAG; DRAG = null;
+  if (d) d.rows.forEach(r => { r.style.transform = ''; r.classList.remove('dragging'); });
+  return d;
+}
 document.addEventListener('pointerdown', e => {
   const h = e.target.closest('.drag'); if (!h) return;
   const row = h.closest('.blrow'), list = $('bl-list'); if (!row || !list) return;
-  e.preventDefault();
+  e.preventDefault(); endDrag();
   const rows = [...list.querySelectorAll('.blrow')], r = row.getBoundingClientRect();
-  DRAG = {row, from: Number(row.dataset.i), to: Number(row.dataset.i), y0: e.clientY, h: r.height + 6, rows};
+  DRAG = {row, id: e.pointerId, from: Number(row.dataset.i), to: Number(row.dataset.i), y0: e.clientY, h: r.height + 6, rows};
   row.classList.add('dragging'); h.setPointerCapture(e.pointerId);
 });
 document.addEventListener('pointermove', e => {
-  if (!DRAG) return;
+  if (!DRAG || e.pointerId !== DRAG.id) return;
   const dy = e.clientY - DRAG.y0, n = DRAG.rows.length;
   const to = Math.max(0, Math.min(n - 1, DRAG.from + Math.round(dy / DRAG.h)));
   DRAG.to = to;
@@ -215,16 +220,16 @@ document.addEventListener('pointermove', e => {
     const shift = (DRAG.from < to && i > DRAG.from && i <= to) ? -DRAG.h : (DRAG.from > to && i < DRAG.from && i >= to) ? DRAG.h : 0;
     r.style.transform = shift ? 'translateY(' + shift + 'px)' : ''; });
 });
-document.addEventListener('pointerup', async () => {
-  if (!DRAG) return;
-  const {from, to, rows} = DRAG; DRAG = null;
-  rows.forEach(r => { r.style.transform = ''; r.classList.remove('dragging'); });
+document.addEventListener('pointerup', async e => {
+  if (!DRAG || e.pointerId !== DRAG.id) return;
+  const {from, to} = endDrag();
   if (from === to) return;
   const bl = F.backlog.slice(), [x] = bl.splice(from, 1); bl.splice(to, 0, x); F.backlog = bl;     // show it at once
   delete lastHTML['backlog']; schedule(true);
   done(await post('/api/backlog', {action: 'move', n: String(from + 1), to: String(to + 1)}), 'Backlog reordered');
   refreshSoon();
 });
+document.addEventListener('pointercancel', e => { if (DRAG && e.pointerId === DRAG.id) endDrag(); });
 
 // ---- controls: autopilot and foreman pause/resume switches
 function killswitchReason(ks) {

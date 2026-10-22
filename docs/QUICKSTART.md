@@ -15,7 +15,7 @@ You do not need to read anything else first. Just a terminal on the install mach
 - **A throwaway repository** on GitHub or GitLab for the sample code, and a token for that one repository. No account? See
   [Without GitHub or GitLab](#without-github-or-gitlab) at the end.
 
-Only want to look first? `docker run --rm -p 8171:8171 ghcr.io/matakla/agent-forge-demo:latest` shows the dashboard on invented data.
+Only want to look first? `docker run --rm -p 127.0.0.1:8171:8171 ghcr.io/matakla/agent-forge-demo:latest` shows the dashboard on invented data.
 
 ## 1. Install (about 20 minutes)
 

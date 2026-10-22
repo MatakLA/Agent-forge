@@ -35,7 +35,7 @@ Ports, all bound to `127.0.0.1` of the machine (nothing is exposed to the networ
 ## A. Try it in a minute: Docker demo
 
 ```bash
-docker run --rm -p 8171:8171 ghcr.io/matakla/agent-forge-demo:latest
+docker run --rm -p 127.0.0.1:8171:8171 ghcr.io/matakla/agent-forge-demo:latest
 ```
 
 Open <http://localhost:8171>. The image is published for amd64 and arm64 when a version is released. Stop it with `Ctrl+C`.

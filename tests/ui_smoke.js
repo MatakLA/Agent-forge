@@ -114,6 +114,35 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     F.owner_questions = window._origOverviewState.oq; F.killswitch = window._origOverviewState.ks;
     renderOverview(true);
   `);
+  // backlog drag-and-drop: a drag the browser cancels, or another finger lifting, must not reorder the backlog later
+  {
+    w.Element.prototype.setPointerCapture = function () {};
+    const realFetch = w.fetch, posts = [];
+    w.fetch = (u, o) => { if (o && o.method === 'POST') posts.push(String(u)); return realFetch(u, o); };
+    w.eval('window._bl = F.backlog');
+    const seed = () => w.eval("F.backlog = ['alpha', 'beta', 'gamma']; renderOverview(true)");
+    const pe = (type, y, id) => { const e = new w.MouseEvent(type, {bubbles: true, cancelable: true, clientY: y}); Object.defineProperty(e, 'pointerId', {value: id}); return e; };
+    const rows = () => [...d.querySelectorAll('#bl-list .blrow')], handle = () => d.querySelector('#bl-list .blrow .drag');
+    const moves = () => posts.filter(u => u.includes('/api/backlog')).length;
+    seed();
+    check('backlog drag: the backlog is drawn with a handle per row', rows().length === 3 && d.querySelectorAll('#bl-list .drag').length === 3);
+    handle().dispatchEvent(pe('pointerdown', 100, 1)); handle().dispatchEvent(pe('pointermove', 112, 1));
+    check('backlog drag: a handle starts a drag and the row follows the pointer', rows()[0].classList.contains('dragging') && rows()[0].style.transform === 'translateY(12px)');
+    handle().dispatchEvent(pe('pointercancel', 112, 1));
+    check('backlog drag: a drag the browser cancels puts the rows back', !d.querySelector('#bl-list .dragging') && rows().every(r => !r.style.transform));
+    d.body.dispatchEvent(pe('pointermove', 130, 1)); d.body.dispatchEvent(pe('pointerup', 130, 1));
+    await sleep(150);
+    check('backlog drag: a click after a cancelled drag does not reorder the backlog', moves() === 0 && !d.querySelector('#bl-list .dragging'));
+    seed();
+    handle().dispatchEvent(pe('pointerdown', 100, 1)); handle().dispatchEvent(pe('pointermove', 112, 1));
+    d.body.dispatchEvent(pe('pointerup', 112, 2));
+    check('backlog drag: another finger lifting does not end the drag', rows()[0].classList.contains('dragging') && moves() === 0);
+    handle().dispatchEvent(pe('pointerup', 112, 1));
+    await sleep(150);
+    check('backlog drag: letting go moves the item once', moves() === 1 && !d.querySelector('#bl-list .dragging'));
+    w.fetch = realFetch;
+    w.eval("F.backlog = window._bl; renderOverview(true)");
+  }
   // Verify control switches when kill switch is engaged dynamically
   w.eval(`
     window._origFControls = {ap: F.autopilot, p: F.paused, ks: F.killswitch};
