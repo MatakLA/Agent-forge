@@ -1037,6 +1037,28 @@ class TestForemanMerge(unittest.TestCase):
         self.assertEqual((after["status"], seen["prs"]), ("pending", []))
         self.assertEqual([h for h in after["history"] if h.get("outcome") == "rework"][-1]["kind"], "mutation")
 
+    def test_a_review_whose_mutation_list_has_a_wrong_shape_is_not_a_crash(self):
+        for i, shape in enumerate(("null", "5", '"none"', "true", '{"name": "m1", "file": "a.py", "old": "x", "new": "y"}', "[5, null, []]")):
+            with self.subTest(mutations=shape):
+                verdict = '{"verdict": "approve", "feedback": "fine", "mutations": ' + shape + "}"
+                after, seen = self.run_gate_step(self.new_task(f"006{i}-shape"), self.mutation_gate((0, "", "")), verdict)
+                self.assertEqual((after["status"], seen["prs"]), ("done", [f"feat/006{i}-shape"]))
+                self.assertEqual([c for c in seen["gate"] if "--mutations" in c], [], "nothing usable to check")
+
+    def test_only_mutations_made_of_text_are_run(self):
+        good = {"name": "m1", "file": "a.py", "old": "x", "new": "y"}
+        sent = []
+
+        def second(cmd, kw):
+            if "--mutations" not in cmd:
+                return (0, "gate tests passed\n", "")
+            sent.extend(json.load(open(cmd[cmd.index("--mutations") + 1])))
+            return (0, "  KILLED    m1  1 failed\n", "")
+
+        odd = [dict(good, name=5), dict(good, file=None), dict(good, old=["x"]), dict(good, new={}), {"name": "m9"}, good]
+        after, seen = self.run_gate_step(self.new_task("0066-odd-mutations"), second, json.dumps(dict(verdict="approve", feedback="fine", mutations=odd)))
+        self.assertEqual((after["status"], sent), ("done", [good]))
+
     def test_the_foremans_gate_limit_always_outlasts_the_gates_own(self):
         for env, own in ((None, 1500), ("100", 100), ("5000", 5000), ("junk", 1500), ("", 1500)):
             with self.subTest(GATE_TIMEOUT=env), patch.dict(os.environ):
