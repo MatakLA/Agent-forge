@@ -275,7 +275,7 @@ proxy saw Codex contact only `api.openai.com` (without them also `chatgpt.com` a
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, Gemini CLI with usage statistics and auto-update off; each then contacts only its
 API host.
 
-Event streams (verified against the real CLIs - claude 2.1.293, codex 0.161.0, gemini 0.63.0, aider 0.86.2 - running against a
+Event streams (verified against the real CLIs - claude 2.1.300, codex 0.162.1, gemini 0.64.0, aider 0.86.2 - running against a
 fake API server, `tests/test_runtimes.sh`) are read by `bin/lib/runtimes.py`: tokens, tool calls, the conversation id (used to resume a
 rework in the same conversation), the result and its cost. The dashboard shows each runtime's live transcript.
 

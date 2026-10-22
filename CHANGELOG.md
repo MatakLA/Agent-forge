@@ -3,6 +3,35 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
 alpha software: until 1.0, commands, settings and file formats can change between releases.
 
+## 0.12.3 - 2026-10-22
+
+**Removed: the issue-label to role mapping.** `bin/issues-intake` mapped the issue labels `bug`, `docs`, `security` and `feature` to a role
+and passed it to `bin/foreman goal --role`, which stored it as a `role` field on the queued goal. Nothing ever read that field - the
+planner chooses the role of every task itself - so the labels changed nothing. The mapping (`LABEL_TO_ROLE`), the `--role` option and
+the `role` field are gone. The issue forms and `docs/ISSUE-TEMPLATES.md` now say what is true: `agent-forge` is the only label
+`bin/issues-intake` reads, the category labels are for the people who triage. Goals queued earlier that carry a `role` field keep
+working (the field is ignored).
+
+**Accessibility.** The dashboard passes the "label in name" rule of axe-core 4.14 (WCAG 2.5.3): a control whose accessible name differs
+from the text it shows is hard to use with voice control. Board cards, task and run rows, document rows, search results and the nodes
+of the task graph take their name from their own content (the status stays part of it: a visually hidden prefix on a card, the SVG
+title of a node); the language button and the "Sign it in" and "Open the setting" buttons keep a label that contains their visible
+text. At 320 px width the inbox and the worker-pool line no longer grow wider than the screen (long ids wrap). The second line of a
+graph node is shortened before it is escaped, so an `&amp;` can no longer be cut in half.
+
+**Tests and CI.**
+
+- The accessibility audit (`tests/test_a11y.sh`) runs on Node 22 with Alpine's Chromium instead of the abandoned
+  `zenika/alpine-chrome:with-node` image (Node 20, Chromium 124): puppeteer-core 25 is an ES module and needs Node 22.12 or newer.
+  axe-core is 4.14.0. The new lockfile has 26 packages instead of 85 and no longer contains `basic-ftp` and `extract-zip`, two
+  test-only dependencies with open advisories.
+- A new `ui` workflow runs the DOM test and the accessibility audit on every pull request that changes `web/` or the test tools; until
+  now they ran only in `install` (installer changes and once a week). `install` also runs for changes to `worker/agent-clis/` and
+  `worker/Dockerfile.api`, so a new Claude Code, Codex or Gemini CLI is tried against the fake model API before it merges.
+
+**Dependencies.** Claude Code 2.1.300, Gemini CLI 0.64.0 and Codex 0.162.1 in the API worker image (`tests/test_runtimes.sh` passes
+with all three), jsdom 30.1.3 for the DOM test, and ten GitHub Actions updates in one group.
+
 ## 0.12.2 - 2026-10-22
 
 **Supply chain.** Every release now carries Sigstore signatures (`FILE.sigstore.json`, keyless) for the source archive, the SBOM and
