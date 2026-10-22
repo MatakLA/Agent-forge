@@ -10,12 +10,13 @@ Where Agent-Forge is going, roughly in order. Ideas and votes welcome in the iss
 - [ ] **A benchmark.** A fixed set of goals (or a small SWE-bench-style subset) run regularly: first-pass rate, cost per merged
       task, against a single-agent baseline.
 - [ ] **Try it without a VM.** A Docker-only demo mode (`docker compose up`) with sample data and one worker, clearly marked as
-      less isolated, for a five-minute look.
+      less isolated, for a five-minute look. Shipped in 0.12: the read-only dashboard on invented data (no worker yet).
 - [x] `bin/foreman` and `web/server.py` split into modules and static files (0.11: `bin/lib/foreman/`, `web/dashboard/`,
       `web/static/`).
 
 ## Next - capabilities
-- [ ] **GitHub / GitLab issues as goals:** issues with a label become goals; the pull requests link back and close them.
+- [ ] **GitHub / GitLab issues as goals:** issues with a label become goals (0.12: `bin/issues-intake` polls them); still open: the
+      pull requests link back and close them.
 - [x] **Local and OpenAI-compatible models** for workers (Ollama, vLLM, LM Studio, OpenRouter): runtimes `compat` (Codex CLI)
       and `aider` (0.11).
 - [x] More agent runtimes behind the runtime interface: Aider (0.11). Not yet: Cursor CLI (its backend hosts are not

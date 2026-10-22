@@ -6,7 +6,7 @@ Invariants:
 - Without DEMO_MODE, mutating POST endpoints are not blocked by the demo guard.
 - In DEMO_MODE, backend worker creation and login sessions short-circuit without subprocess calls.
 - In DEMO_MODE, read-only GET endpoints remain functional and accessible.
-- demo/docker-compose.yml defines only the 'demo' service on port 8171 with DEMO_MODE=1.
+- demo/docker-compose.yml defines only the 'demo' service on port 8171, published on 127.0.0.1 only, with DEMO_MODE=1.
 - demo/Dockerfile sets DEMO_MODE=1 and invokes tools/demo_state.py and web/server.py.
 - Neither compose nor Dockerfile references secrets or .config/sandbox paths.
 """
@@ -399,6 +399,8 @@ def validate_demo_compose_text(text):
         parts = p.split(":")
         if len(parts) < 2 or parts[-2] != "8171" or parts[-1] != "8171":
             raise AssertionError(f"Port mapping '{p}' publishes a port other than 8171")
+        if parts != ["127.0.0.1", "8171", "8171"]:
+            raise AssertionError(f"Port mapping '{p}' is not bound to 127.0.0.1 (Docker would publish it on every interface)")
 
     if not re.search(r"\bDEMO_MODE=1\b", text):
         raise AssertionError("DEMO_MODE=1 missing from compose config")
@@ -488,6 +490,20 @@ class TestDemoStaticConfig(unittest.TestCase):
         assert len(ports) > 0
         assert all(len(p.split(":")) >= 2 and p.split(":")[-2] == "8171" and p.split(":")[-1] == "8171" for p in ports)
 
+    def test_compose_publishes_the_port_on_loopback_only(self):
+        """Invariant: the published port is bound to 127.0.0.1, not to every interface of the host."""
+        ports = extract_compose_published_ports(self.compose_text)
+        self.assertEqual(ports, ["127.0.0.1:8171:8171"])
+        assert ports == ["127.0.0.1:8171:8171"]
+
+    def test_compose_validation_rejects_a_port_open_to_the_network(self):
+        """Invariant: compose validation fails for a mapping Docker would publish on other interfaces."""
+        for open_spec in ("8171:8171", "0.0.0.0:8171:8171", ":8171:8171", "192.168.1.5:8171:8171"):
+            mutated = self.compose_text.replace("127.0.0.1:8171:8171", open_spec)
+            self.assertNotEqual(mutated, self.compose_text, open_spec)
+            with self.assertRaises(AssertionError, msg=open_spec):
+                validate_demo_compose_text(mutated)
+
     def test_demo_mode_env_in_compose_and_dockerfile(self):
         """Invariant: DEMO_MODE=1 appears in both demo/docker-compose.yml and demo/Dockerfile."""
         self.assertIn("DEMO_MODE=1", self.compose_text)
@@ -571,7 +587,8 @@ class TestDemoStaticConfig(unittest.TestCase):
 
     def test_compose_validation_rejects_missing_ports(self):
         """Invariant: compose validation fails if ports section is removed."""
-        mutated = self.compose_text.replace('ports:\n      - "8171:8171"', "# no ports")
+        mutated = re.sub(r'ports:\n\s+- "[^"]*"', "# no ports", self.compose_text)
+        self.assertNotEqual(mutated, self.compose_text)
         caught = False
         err_msg = ""
         try:

@@ -59,7 +59,7 @@ The implementation packages the demo dashboard into a Docker Compose manifest at
    - Executes offline on synthetic data with no real workers, no egress proxy, and no secrets.
 
 ### Networking and Storage
-- **Network**: Port `8171:8171` published to localhost. No external network bridges or egress proxies are created.
+- **Network**: Port `8171` is published on `127.0.0.1` only (`127.0.0.1:8171:8171`), so other machines on the network cannot reach the demo. No external network bridges or egress proxies are created.
 - **Storage**: State is generated directly inside `/app` by `tools/demo_state.py` on container launch; no host directories or secrets are mounted.
 
 ---
@@ -73,7 +73,7 @@ The master environment variable `DEMO_MODE=1` signals all Agent-Forge components
 | Variable | Default (Demo) | Purpose |
 |---|---|---|
 | `DEMO_MODE` | `1` | Master toggle switching components into demo replay mode. |
-| `BIND_PORT` | `8171` | Host port mapped to the web dashboard. |
+| `BIND_PORT` | `8171` | Port the dashboard listens on inside the container (compose publishes it as `127.0.0.1:8171`). |
 | `DASHBOARD_HOSTS` | `localhost,127.0.0.1` | Permitted Host headers for dashboard requests. |
 | `DASHBOARD_TOKEN` | *(empty)* | Disables mandatory token authentication for local evaluation. |
 
@@ -295,7 +295,7 @@ bash tests/test_demo_mode.sh
 |---|---|---|
 | `bind: address already in use` (port 8171) | Another local service is using port 8171. | Stop the conflicting service using port 8171 (`lsof -i :8171`) before running `scripts/demo.sh up`. |
 | `Cannot connect to the Docker daemon` | Docker daemon is stopped or not responding. | Start Docker Desktop, or run `sudo systemctl start docker` on Linux. |
-| WSL2 cannot reach `http://localhost:8171` | Windows port forwarding is blocked or inactive. | Ensure `localhostForwarding=true` in `~/.wslconfig`, or browse to your WSL2 IP address (`ip addr show eth0`). |
+| WSL2 cannot reach `http://localhost:8171` | Windows port forwarding is blocked or inactive. | Ensure `localhostForwarding=true` in `~/.wslconfig` and open `localhost`. The demo listens on `127.0.0.1` only, so the WSL2 IP address does not answer. |
 | Container startup times out | Docker image build or state population is still running. | Allow up to 60 seconds for startup, or inspect container logs with `docker compose -f demo/docker-compose.yml logs`. |
 | Dashboard displays "not loaded yet" | Container is still completing initial state generation. | Wait 5–10 seconds for `tools/demo_state.py` to finish generating synthetic state. |
 

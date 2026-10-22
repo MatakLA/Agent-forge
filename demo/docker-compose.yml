@@ -12,8 +12,9 @@ services:
       dockerfile: demo/Dockerfile
     image: agent-forge-demo:1
     restart: unless-stopped
+    # loopback only: a bare "8171:8171" listens on every interface, and Docker publishes around the host firewall
     ports:
-      - "8171:8171"
+      - "127.0.0.1:8171:8171"
     environment:
       - DEMO_MODE=1
     healthcheck:

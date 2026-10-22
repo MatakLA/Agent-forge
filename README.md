@@ -31,7 +31,7 @@ right. Then the next goal starts, from your backlog or your product vision.
 
 | | | |
 |---|---|---|
-| **Look around** (1 min) | `docker run --rm -p 8171:8171 ghcr.io/matakla/agent-forge-demo:latest` | The real dashboard on invented data. Needs only Docker. Open <http://localhost:8171>. |
+| **Look around** (1 min) | `docker run --rm -p 127.0.0.1:8171:8171 ghcr.io/matakla/agent-forge-demo:latest` | The real dashboard on invented data. Needs only Docker. Open <http://localhost:8171>. |
 | **Install it** (~20 min) | `curl -fsSL https://raw.githubusercontent.com/MatakLA/Agent-forge/main/install.sh \| bash` | On an Ubuntu 22.04+ machine or VM (4+ vCPU, 8+ GB RAM, 40 GB disk), as a normal user with sudo. |
 | **By hand** | [docs/INSTALL.md](docs/INSTALL.md) | Cloud-init, `git clone` + `./forge install`, update, uninstall, macOS and Windows. |
 
