@@ -54,11 +54,27 @@ on the raw bytes: a binary file is a conflict for the worker instead of being re
 is stated in the pull request ("not verified") and shown as a warning. The check a worker runs before it finishes crashed on a test file
 that is not UTF-8 (or on a suite that prints such bytes), and since its own crashes count as a pass it silently did not run; it now reads
 them with replacement characters and still scans them for skips.
+A worker could stop all dispatching for 24 hours with one request: the egress proxy logs some request bytes raw, and a byte that is not
+UTF-8 made the host's reading of that log raise in the preflight of `bin/dispatch` (and in `bin/status`, `bin/doctor` and the dashboard) until
+the line was a day old; such bytes are now replaced when the log is read. The same goes for the other places where the host reads text that a
+worker or its repository can influence: the run supervisor (the docker calls and the agent's stderr), `bin/status`, `bin/doctor`, the dashboard,
+the token total of a run, `git` output and the output of the mutation check's container no longer crash on a byte that is not UTF-8, so a run
+still ends with its exit code and its result. `bin/status` also no longer crashes on a fresh install (it called `bin/guard-log`, which is not
+part of this repository). The mutation check now reports a mutant it could not set up as `ERROR` instead of stopping, and a check that ended
+early is a warning that says how far it got ("stopped after 3 of 7 mutants"); it used to read as a pass for the mutants it never ran. A
+conversation id taken from a worker's last run that `bin/dispatch` refuses (characters outside the allowed set) used to send its task back to
+the queue and put every free worker on a 30-minute cooldown, again and again; the task now starts a new conversation. The agent's event stream
+(`stream.jsonl`) is read defensively everywhere: a line of any JSON shape is skipped instead of crashing the supervisor, which left the run
+orphaned, and `NaN`, `Infinity` or a number beyond the float range (`1e999`) count as 0 tokens; one such figure used to put `Infinity` in the
+ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,
 and for the gate's verdicts: `tests/test_review_branch_failclosed.py` runs the real gate against a fake Docker, the foreman's side is in
 `tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there, in `tests/test_quality.py` and, for the worker's own check (run without Docker), in `tests/test_self_check.py`.
+`tests/test_hostile_bytes.py` feeds bytes that are not UTF-8, and event lines of every JSON shape (with `NaN`, `Infinity` and `1e999`), to the
+real run supervisor (against a fake Docker), `bin/status`, the stream scanner of every runtime, the token total and the mutation check's script,
+and checks that every text-mode `subprocess` call in `bin/` and `web/` says what happens to such a byte.
 
 ## 0.12.1 - 2026-10-21
 

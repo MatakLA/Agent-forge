@@ -226,13 +226,15 @@ def dispatch_ready():
                 continue
             LAST_QUOTA_MSG.pop(w, None)
             lr = t.get("last_run") or {}
-            continuing = bool(ctx.C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and lr.get("conversation") and lr.get("reason") in ("ok", "timeout")
-                              and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
+            # the id comes from the worker's own output; dispatch refuses anything but SAFE_ARG, and a refusal rests every worker for 30 min
+            cid = str(lr.get("conversation") or "")
+            continuing = bool(ctx.C["CONTINUE_CONVERSATIONS"] and t.get("feedback") and sbx.SAFE_ARG.fullmatch(cid)
+                              and lr.get("reason") in ("ok", "timeout") and lr.get("worker") == w and lr.get("tokens", 0) < 0.4 * lim["RUN_TOKEN_CAP"])
             spec = os.path.join(ctx.FD, "tasks", t["id"] + ".md")
             open(spec, "w").write(worker_spec(t, continuing))
             v = variant(t)
             model = t.get("model_override") or (ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"])
-            env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": lr["conversation"] if continuing else "",
+            env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": cid if continuing else "",
                    "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(ctx.C["SELF_CHECK_ROUNDS"])),
                    "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"],
                    "DISPATCH_FILES": ",".join(str(f) for f in t.get("files", []) if "," not in str(f))}

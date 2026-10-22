@@ -47,7 +47,7 @@ def bad(msg, fix="", fix_id=""):
 
 def sh(*c, timeout=30):
     try:
-        r = subprocess.run(list(c), capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(list(c), capture_output=True, text=True, errors="replace", timeout=timeout)
         return r.returncode, r.stdout, r.stderr
     except (OSError, subprocess.TimeoutExpired) as e:
         return 127, "", str(e)

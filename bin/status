@@ -35,10 +35,10 @@ for pr in sbx.audit_integrity():
     problems.append(pr)
 
 # --- permission mode of the orchestrator session (guard log): default = manual, dontAsk = unattended; anything else is unexpected
-gm = subprocess.run([os.path.join(sbx.ROOT, "bin", "guard-log"), "mode", "--json"], capture_output=True, text=True)
 try:
+    gm = subprocess.run([os.path.join(sbx.ROOT, "bin", "guard-log"), "mode", "--json"], capture_output=True, text=True, errors="replace", timeout=30)
     guard_mode = json.loads(gm.stdout)
-except Exception:
+except Exception:                # bin/guard-log is an optional add-on (not in the open-source tree): without it the mode is unknown
     guard_mode = dict(mode=None, recent=False)
 if guard_mode.get("mode") and not guard_mode.get("expected"):
     warnings.append(f"orchestrator session permission mode is '{guard_mode['mode']}' (expected default or dontAsk; last guard record {guard_mode.get('at')})")
@@ -86,19 +86,22 @@ for w in names:
         run = runs[-1]
         m, fin = sbx.meta(run), os.path.exists(run + "/finished")
         rc = sbx.read(run + "/exitcode") or None
-        events = []
+        events = []                                  # the stream is the agent's own output: a line can be any JSON, only objects are events
         try:
-            for l in open(run + "/stream.jsonl"):
-                try: events.append(json.loads(l))
-                except Exception: pass
+            with open(run + "/stream.jsonl", errors="replace") as f:
+                for l in f:
+                    try: e = json.loads(l)
+                    except Exception: continue
+                    if isinstance(e, dict): events.append(e)
         except FileNotFoundError:
             pass
-        result = next((e["result"] for e in events if e.get("event") == "result"), None)
+        result = next((e["result"] for e in events if e.get("event") == "result" and isinstance(e.get("result"), dict)), None)
         if not fin and sbx.is_running(run): state = "RUNNING"
         elif not fin: state = "FAILED (run wrapper died without finishing)"
         elif m.get("reason") == "ok" or (not m.get("reason") and rc == "0" and result and result.get("status") == "SUCCESS"): state = "FINISHED (ok)"
         else: state = f"FAILED ({m.get('reason') or 'exit ' + str(rc)})"
-        steps = [e["step_update"] for e in events if e.get("event") == "step_update" and e["step_update"].get("state") == "DONE"]
+        steps = [e["step_update"] for e in events if e.get("event") == "step_update" and isinstance(e.get("step_update"), dict)
+                 and e["step_update"].get("state") == "DONE"]
         tools = [s.get("tool_name") for s in steps if s.get("step_type") == "tool"]
         a = sbx.read(run + "/started"); b = sbx.read(run + "/finished")
         try:
@@ -109,11 +112,11 @@ for w in names:
             dur = None
         last = []
         for s in steps:
-            if s.get("step_type") == "agent_response" and s.get("text_delta"):
+            if s.get("step_type") == "agent_response" and isinstance(s.get("text_delta"), str) and s["text_delta"]:
                 last = s["text_delta"].strip().splitlines()[-3:]
-        err = sbx.read(run + "/stderr.log").splitlines()[-2:]
+        err = sbx.read(run + "/stderr.log", errors="replace").splitlines()[-2:]
         info.update(state=state, run=os.path.basename(run), task=os.path.basename(sbx.read(run + "/task")), duration_s=dur, steps=len(steps),
-                    tool_calls=len(tools), last_tools=[t for t in tools[-3:] if t], tokens=sbx.stream_tokens(run + "/stream.jsonl"),
+                    tool_calls=len(tools), last_tools=[str(t)[:80] for t in tools[-3:] if t], tokens=sbx.stream_tokens(run + "/stream.jsonl"),
                     reason=m.get("reason"), last_lines=last + ["stderr: " + x for x in err])
         if state.startswith("FAILED"):
             warnings.append(f"{w}: last run {info['run']} {state}")

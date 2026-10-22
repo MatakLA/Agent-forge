@@ -108,7 +108,7 @@ def _selftest_body(bad, real_notify):
         open(os.path.join(tmp, "orchestrator.token"), "w").write("x")
         ctx.C["SHARED_FILES"] = "reg.jsonl"
         G = lambda *a, cwd=os.path.join(tmp, "w"): subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd,
-                                                                    capture_output=True, text=True)
+                                                                    capture_output=True, text=True, errors="replace")
         os.makedirs(os.path.join(tmp, "o")); G("init", "-q", "--bare", "-b", "main", os.path.join(tmp, "o", "r.git"), cwd=tmp)
         G("clone", "-q", os.path.join(tmp, "o", "r.git"), "w", cwd=tmp)
         w = os.path.join(tmp, "w")

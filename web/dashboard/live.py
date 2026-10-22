@@ -226,7 +226,7 @@ class Pane:
     def _tail(self):
         try:
             self._proc = subprocess.Popen(self.tail_argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                           bufsize=1, start_new_session=True)
+                                           errors="replace", bufsize=1, start_new_session=True)
         except Exception:
             return
         ALL_PROCS.add(self._proc)

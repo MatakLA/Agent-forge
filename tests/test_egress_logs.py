@@ -2,8 +2,10 @@
 """egress.load_logs / load_events read the proxy logs in ONE docker run and cut old lines inside the container; the dashboard's
 disk view sizes Docker from fast listings (maintenance.docker_summary) instead of the minutes-long `docker system df`."""
 import os
+import stat
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
@@ -35,6 +37,7 @@ def fake_sh(*a, timeout=90):
     return subprocess.CompletedProcess(a, 0, OUT, "")
 
 
+real_sh = egress.sh
 egress.sh = fake_sh
 logs = egress.load_logs(since=1760000000.0)
 run = [c for c in calls if c[1] == "run"]
@@ -48,6 +51,37 @@ egress.load_events(0.0)
 check("no cut when reading everything", "awk" not in [c for c in calls if c[1] == "run"][0][-1])
 egress.sh = lambda *a, timeout=90: subprocess.CompletedProcess(a, 1 if a[:3] == ("docker", "volume", "inspect") else 0, "", "")
 check("no volume -> no events, no sizes", egress.load_logs(1.0) == dict(events=[], sizes={}))
+
+# A worker chooses the bytes of the URL it asks the proxy for, and squid logs some of them raw: a line that is not UTF-8 must not
+# make the readers (dispatch preflight, status, doctor, the dashboard) raise. A stub `docker` on PATH stands in for the log volume.
+STUB = """#!/bin/sh
+[ "$1 $2" = "volume inspect" ] && exit 0
+printf '0 access.log\\n===ACCESS===\\n'
+printf '1760000300.300 10.0.0.7 TCP_DENIED/403 GET http://example.com/caf\\351 - HIER_NONE/- text/html\\n'
+printf '1760000400.400 10.0.0.7 TCP_DENIED/403 GET http://ex\\351ample.org/ - HIER_NONE/- text/html\\n'
+printf '1760000500.500 10.0.0.7 TCP_TUNNEL/200 CONNECT api.example.com:443 - HIER_DIRECT/1.2.3.4 -\\n'
+printf '===PRIVATE===\\n'
+"""
+with tempfile.TemporaryDirectory() as d:
+    stub = os.path.join(d, "docker")
+    with open(stub, "w") as f:
+        f.write(STUB)
+    os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
+    egress.sh = real_sh
+    old_path = os.environ["PATH"]
+    os.environ["PATH"] = d + os.pathsep + old_path
+    try:
+        try:
+            got = egress.load_logs(0.0)
+        except Exception as e:                  # the old behaviour: UnicodeDecodeError
+            got = e
+        res = egress.analyze(events=got["events"], ack=False) if isinstance(got, dict) else None
+    finally:
+        os.environ["PATH"] = old_path
+check("non-UTF-8 bytes in the proxy log do not raise", isinstance(got, dict))
+check("they are read with replacement characters, every line kept",
+      isinstance(got, dict) and [e["host"] for e in got["events"]] == ["example.com", "ex\ufffdample.org", "api.example.com"])
+check("the analysis counts them as denied", res is not None and res["denied"]["example.com"] == 1 and res["allowed"]["api.example.com"] == 1)
 
 check("docker sizes", maintenance._bytes("3.41GB") == 3410000000 and maintenance._bytes("824kB") == 824000
       and maintenance._bytes("391B*") == 391 and maintenance._bytes("junk") == 0)
