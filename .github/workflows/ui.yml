@@ -1,0 +1,36 @@
+# The dashboard page in a real browser, on every pull request that touches it: the DOM test (jsdom: every tab and sheet renders,
+# no script error) and the accessibility audit (axe-core in headless Chromium: light and dark, keyboard, focus, reflow). They need
+# Docker only. install.yml runs them too, but only for installer changes and once a week - so a change to the page, or an update of
+# the test tools in tests/node/, gets its proof here before it merges.
+name: ui
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - web/**
+      - tools/demo_state.py
+      - tools/fake-docker
+      - tests/node/**
+      - tests/test_ui.sh
+      - tests/test_a11y.sh
+      - tests/ui_smoke.js
+      - tests/a11y_audit.js
+      - .github/workflows/ui.yml
+permissions:
+  contents: read
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    name: dashboard page (DOM and accessibility)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The dashboard page in a real DOM (every tab and sheet, no script errors)
+        run: tests/test_ui.sh
+      - name: Dashboard accessibility - axe-core in headless Chromium (light and dark), keyboard, focus, reduced motion, reflow
+        run: tests/test_a11y.sh
