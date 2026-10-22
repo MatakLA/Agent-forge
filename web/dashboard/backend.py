@@ -156,15 +156,21 @@ CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 JOBS = {}
+JOBS_LOCK = threading.Lock()
+WORKER_JOBS = ("add-worker", "remove-worker")      # both pick or touch worker numbers and containers: never two at once
 
 
 def start_job(kind, fn):
-    for k in [k for k, j in JOBS.items() if j["state"] != "running" and time.time() - j["started"] > 86400]:
-        del JOBS[k]                                  # finished jobs are kept a day for the page, then dropped
-    jid = f"{kind}-{int(time.time() * 1000)}"
-    JOBS[jid] = {"id": jid, "kind": kind, "state": "running", "log": "", "started": time.time()}
-    threading.Thread(target=fn, args=(JOBS[jid],), daemon=True).start()
-    return JOBS[jid]
+    with JOBS_LOCK:
+        now = time.time()
+        for k in [k for k, j in JOBS.items() if j["state"] != "running" and now - j["started"] > 86400]:
+            del JOBS[k]                              # finished jobs are kept a day for the page, then dropped
+        if kind in WORKER_JOBS and any(j["kind"] in WORKER_JOBS and j["state"] == "running" and now - j["started"] < 7200 for j in JOBS.values()):
+            return {"error": "another worker is being added or removed - wait for it to finish"}
+        jid = f"{kind}-{int(now * 1000)}"
+        JOBS[jid] = {"id": jid, "kind": kind, "state": "running", "log": "", "started": now}
+        threading.Thread(target=fn, args=(JOBS[jid],), daemon=True).start()
+        return JOBS[jid]
 
 
 def add_worker_job(job, runtime="agy"):
@@ -178,7 +184,9 @@ def add_worker_job(job, runtime="agy"):
     try:
         if not isinstance(runtime, str) or runtime not in VALID_RUNTIMES:
             raise ValueError(f"bad runtime: {runtime!r}")
-        out = ssh_run("docker ps -a --format '{{.Names}}'", timeout=20)
+        rc, out, err = ssh_run_full("docker ps -a --format '{{.Names}}'", timeout=20)
+        if rc != 0 or not out.strip():         # the forge itself is a container: an empty list means docker did not answer
+            raise RuntimeError("could not list the containers (" + (err.strip()[-200:] or (f"exit {rc}" if rc else "empty answer")) + ") - the next worker number is not guessed")
         nums = [int(x.split("-")[1]) for x in out.split() if WORKER_RE.fullmatch(x)]
         n = max(nums or [0]) + 1
         job["worker"] = f"worker-{n}"

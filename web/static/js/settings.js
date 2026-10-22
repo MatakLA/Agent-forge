@@ -755,7 +755,13 @@ async function saveSettings() {
 }
 
 // ---- add a worker: an Antigravity account (signed in from the browser), an API key, or your model server
+let addingWorker = false;
 async function addWorkerGo() {
+  if (addingWorker || SX.busy) return;       // a second click while the first is still working must not add a second worker
+  addingWorker = true;
+  try { await addWorker(); } finally { addingWorker = false; }
+}
+async function addWorker() {
   const rt = (document.querySelector('input[name="addw-rt"]:checked') || {}).value || SX.addRt || 'agy', r = (S.runtimes || {})[rt] || {};
   if (!r.creatable) { wstatus('This runtime cannot be added from here yet.'); return; }
   if (r.endpoint) {

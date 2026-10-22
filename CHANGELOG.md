@@ -89,6 +89,12 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
   switches the sheet to the task as well).
 - A refusal from the kill switch that comes without a list of steps (an unknown project, demo mode) was shown as a bare "hide" button.
   It now says what was refused.
+- Two quick clicks on "Add the worker" started two jobs and so added two workers (the button was only switched off when the page redrew).
+  A second click is ignored while the first is still working. The server also refuses to add or remove a worker while another worker
+  job is running (a second tab, a double submit): both pick or touch worker numbers and containers.
+- When the dashboard could not read the container list (the ssh link to the devbox was down, or Docker answered nothing) it picked
+  `worker-1` for the new worker, and `bin/worker-add 1` on a worker that exists rewrites its runtime and recreates its container. It now
+  stops with "could not list the containers" and adds nothing.
 
 **Fixed: commands, docs and CI.**
 

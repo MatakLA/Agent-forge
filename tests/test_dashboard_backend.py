@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -165,6 +166,64 @@ class TestDashboardBackendSecurity(unittest.TestCase):
             self.assertNotIn("; touch /tmp/pwn", cmd)
             self.assertNotIn("touch", cmd)
         assert job["state"] == "failed"
+
+    def test_add_worker_job_does_not_guess_a_number_when_docker_does_not_answer(self):
+        """bin/worker-add on a number that exists rewrites that worker's runtime and recreates its container: without a container list nothing is added."""
+        for answer in ((1, "", "ssh: connect to host devbox port 22: Connection timed out"), (0, "", "")):
+            self.calls.clear()
+
+            def fake(cmd, timeout=30, inp=None, answer=answer):
+                self.calls.append((cmd, inp))
+                return answer
+            backend.ssh_run_full = fake
+            backend.ssh_run = lambda cmd, timeout=30, fake=fake: fake(cmd, timeout)[1]
+            job = {"id": "test-8", "state": "running", "log": ""}
+            backend.add_worker_job(job, runtime="claude")
+            self.assertEqual(job["state"], "failed", answer)
+            self.assertIn("could not list the containers", job["log"])
+            self.assertEqual([c for c, _ in self.calls if "worker-add" in c], [], answer)
+            self.assertNotIn("worker", job)
+
+    def test_add_worker_job_takes_the_next_free_number(self):
+        def fake(cmd, timeout=30, inp=None):
+            self.calls.append((cmd, inp))
+            return (0, "forgejo\nworker-1\nworker-2\nsandbox-egress-proxy\n", "") if "docker ps" in cmd else (0, "created", "")
+        backend.ssh_run_full = fake
+        backend.ssh_run = lambda cmd, timeout=30: fake(cmd, timeout)[1]
+        job = {"id": "test-9", "state": "running", "log": ""}
+        backend.add_worker_job(job, runtime="claude")
+        self.assertEqual(job["state"], "done", job["log"])
+        self.assertEqual(job["worker"], "worker-3")
+        adds = [c for c, _ in self.calls if "worker-add" in c]
+        self.assertEqual(len(adds), 1)
+        self.assertIn("bin/worker-add 3 --runtime claude", adds[0])
+
+    def test_start_job_changes_one_worker_at_a_time(self):
+        """Adding and removing a worker both pick or touch worker numbers and containers: a second one is refused while the first runs."""
+        gate, saved = threading.Event(), dict(backend.JOBS)
+        backend.JOBS.clear()
+
+        def slow(job):
+            gate.wait(10)
+            job["state"] = "done"
+        try:
+            first = backend.start_job("add-worker", slow)
+            self.assertEqual(first["state"], "running")
+            self.assertIn("error", backend.start_job("add-worker", slow))
+            self.assertIn("error", backend.start_job("remove-worker", slow))
+            self.assertNotIn("error", backend.start_job("create-project", slow))
+            self.assertEqual(sorted(j["kind"] for j in backend.JOBS.values()), ["add-worker", "create-project"])
+            gate.set()
+            for _ in range(100):
+                if all(j["state"] != "running" for j in backend.JOBS.values()):
+                    break
+                time.sleep(0.05)
+            self.assertNotIn("error", backend.start_job("remove-worker", slow))
+        finally:
+            gate.set()
+            time.sleep(0.2)
+            backend.JOBS.clear()
+            backend.JOBS.update(saved)
 
     def test_connect_upstream_job_rejects_malicious_pf(self):
         """connect_upstream_job must reject crafted project flags containing shell metacharacters."""
