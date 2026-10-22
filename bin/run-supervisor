@@ -191,7 +191,7 @@ try:
 except ValueError:
     CONF = {}
 def sh(*c, t=60):
-    return subprocess.run(list(c), capture_output=True, text=True, timeout=t)
+    return subprocess.run(list(c), capture_output=True, text=True, errors="replace", timeout=t)
 problems, hints = [], []                  # problems send the worker back; hints ride along when a fix round happens anyway
 base = sh("git", "merge-base", "origin/main", "HEAD").stdout.strip() or "origin/main"
 ns = []                                   # [(status, path)] of everything the branch changes, committed or not
@@ -207,7 +207,7 @@ changed = {p for _, p in ns}
 for f in sorted(changed):
     if re.search(r"(^|/)test_[^/]*\.py$", f):
         try:
-            src = open(f).read()
+            src = open(f, errors="replace").read()
         except OSError:
             continue
         for pat, name in ((r"pytest\.mark\.skip", "pytest.mark.skip"), (r"pytest\.skip\(", "pytest.skip("), (r"xfail", "xfail"),
@@ -273,7 +273,7 @@ started = time.time()
 targets = test_targets(".", ns) if PYTEST and fast_pytest_cmd(CMD) else []
 if targets:
     try:
-        t = subprocess.run(shlex.split(CMD) + ["--maxfail=5"] + targets, capture_output=True, text=True, timeout=300)
+        t = subprocess.run(shlex.split(CMD) + ["--maxfail=5"] + targets, capture_output=True, text=True, errors="replace", timeout=300)
         out, rc = t.stdout + t.stderr, t.returncode
     except subprocess.TimeoutExpired:
         out, rc = "", 0
