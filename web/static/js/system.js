@@ -62,7 +62,7 @@ function egressHtml() {
   const h0 = E.health || {}, al = (E.alarms || []).filter(a => a.code !== 'proxy'), ks = E.killswitch || (F && F.killswitch);
   const byEgress = ks && /egress/i.test(ks.reason || '');
   // blocked hosts: who tried them, how often, and whether they still raise an alarm
-  const who = {};
+  const who = Object.create(null); // a worker may ask for a host named constructor or __proto__
   Object.keys(E.new_domains || {}).forEach(k => { const [w, h] = k.split(' '); (who[h] = who[h] || new Set()).add(w); });
   const base = new Set(E.baseline || []), priv = new Set((E.private || []).map(p => String(p.target).split(':')[0]));
   const blocked = Object.entries(E.denied || {}).filter(([h]) => !isIp(h) && !priv.has(h)).sort((x, y) => (who[y[0]] ? 1 : 0) - (who[x[0]] ? 1 : 0) || y[1] - x[1]);

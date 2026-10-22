@@ -323,6 +323,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     txt('system').includes('stopped by an egress alarm') && !!d.querySelector('[data-egact="allow"][data-host="pypi.org"]') &&
     !!d.querySelector('[data-egact="ignore"][data-host="pypi.org"]') && !d.querySelector('[data-egact="ignore"][data-host="stats.example.net"]') &&
     !!d.querySelector('[data-egact="unallow"][data-host="files.example.org"]') && !d.querySelector('[data-egact="unallow"][data-host="api.anthropic.com"]'));
+  // a worker may ask the proxy for any name, e.g. one that is a member of Object.prototype: the tab must still draw and tell the hosts apart
+  const protoHosts = '{"health":{"ok":true,"mode":"enforce"},"allowed":{},"denied":{"constructor":2,"toString":1,"__proto__":4,"pypi.org":3},"noise":{},' +
+    '"new_domains":{"worker-2 __proto__":4},"private":[],"alarms":[],"local_allowlist":[],"baseline":[],"killswitch":null}';
+  let protoErr = '';
+  try { w.eval(`SYS.egress = JSON.parse(${JSON.stringify(protoHosts)}); SYS.egressAt = Date.now(); renderSystem(true);`); } catch (e) { protoErr = String(e); }
+  const protoRow = h => [...d.querySelectorAll('#system tr')].find(tr => (tr.querySelector('.mono') || {}).textContent === h);
+  const protoState = h => { const tr = protoRow(h); return tr ? tr.children[1].textContent + '|' + tr.children[3].textContent : 'missing'; };
+  const protoOk = !protoErr && txt('system').includes('Blocked (4)') && protoState('__proto__') === 'worker-2|alarm' && protoState('constructor') === '–|acknowledged' &&
+    protoState('toString') === '–|acknowledged' && protoState('pypi.org') === '–|acknowledged';
+  check('egress: hosts named like Object.prototype members are drawn, and only the one with an alarm raises it', protoOk);
+  if (!protoOk) console.log('     ' + (protoErr || ['__proto__', 'constructor', 'toString', 'pypi.org'].map(protoState).join(' ')));
   w.eval(`SUB.insights = 'money'; renderInsights(true);`);
   check('insights: money view labels figures with USD and shows as-of indicator',
     txt('insights').includes('USD') && txt('insights').includes('As of'));
@@ -527,6 +538,34 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     w.eval("SHEET.kind = null; SHEET.id = null; closeSheet(); F = window._F1; render(true);");
     check('links: a pull request address is a link only when it is http(s) (goal sheet: ' + goalBad + ' script links, https link ' + goalGood +
           '; task sheet: ' + taskBad + ' script links, https link ' + taskGood + ')', !goalBad && goalGood && !taskBad && taskGood);
+  }
+
+  // "copy report" on a blocked task: a copied report is confirmed by a toast; the manual-copy prompt is only for a clipboard that refuses
+  {
+    const prompts = [], toasts = () => d.querySelectorAll('#toasts .toast').length;
+    w.prompt = (...a) => { prompts.push(a); return null; };
+    const copy = async writeText => {
+      Object.defineProperty(w.navigator, 'clipboard', {value: {writeText}, configurable: true});
+      const before = toasts();
+      w.eval("copyTaskReport({id: '9300-x', goal: 'G20260101-000001', title: 'x', role: 'developer', status: 'blocked'})");
+      await sleep(100);
+      return toasts() - before;
+    };
+    const shown = await copy(() => Promise.resolve());
+    check('copy report: a copied report is confirmed by a toast, not by the manual-copy prompt', shown === 1 && !prompts.length);
+    prompts.length = 0;
+    const shownBad = await copy(() => Promise.reject(new Error('denied')));
+    check('copy report: a clipboard that refuses falls back to the manual-copy prompt with the report', shownBad === 0 && prompts.length === 1 && String(prompts[0][1]).includes('9300-x'));
+  }
+
+  // a deep link cut off in the middle of a %-escape (a chat app does that) still opens the dashboard on the tab it names
+  {
+    const dom2 = await JSDOM.fromURL(base + '#tab=tasks&project=%E0%A4%A&task=%&poll=1', {runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc,
+      beforeParse(win) { win.fetch = (u, o) => fetch(new URL(u, base), o); win.EventSource = undefined; win.HTMLCanvasElement.prototype.getContext = () => null; }});
+    await sleep(4000);
+    const w2 = dom2.window;
+    check('deep link: a malformed %-escape in the address bar does not stop the dashboard from starting', w2.eval('tab') === 'tasks' && w2.document.querySelector('#t-tasks').textContent.length > 40);
+    w2.close();
   }
 
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'no JS errors');
