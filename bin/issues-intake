@@ -289,7 +289,7 @@ def intake_issues(kind=None, repo=None, token=None, project=None, label="agent-f
             cmd.extend(["--role", role])
         cmd.extend(["goal", "-"])
 
-        r = subprocess.run(cmd, input=goal, text=True, capture_output=True)
+        r = subprocess.run(cmd, input=goal, text=True, errors="replace", capture_output=True)
         if r.returncode != 0:
             sys.stderr.write(f"Failed to queue goal for issue {issue_id}: {r.stderr.strip() or r.stdout.strip()}\n")
             sys.exit(1)

@@ -33,7 +33,7 @@ def container_running(w):
     if not sbx.WORKER_RE.fullmatch(w):
         return False
     try:
-        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", w], capture_output=True, text=True)
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", w], capture_output=True, text=True, errors="replace")
         return r.stdout.strip() == "true"
     except (FileNotFoundError, subprocess.SubprocessError):
         return False

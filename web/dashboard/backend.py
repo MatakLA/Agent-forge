@@ -103,7 +103,7 @@ def ssh_run(remote_cmd, timeout=SSH_TIMEOUT):
         LAST_ERR["msg"] = "remote_cmd must be a string"
         return ""
     try:
-        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, errors="replace", timeout=timeout)
         if r.returncode:
             LAST_ERR["msg"] = f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
         return r.stdout if r.returncode == 0 else ""
@@ -117,7 +117,7 @@ def local_run(cmd, timeout=SSH_TIMEOUT):
         LAST_ERR["msg"] = "cmd must be a string"
         return ""
     try:
-        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, errors="replace", timeout=timeout)
         if r.returncode:
             LAST_ERR["msg"] = f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
         return r.stdout if r.returncode == 0 else ""
@@ -472,7 +472,7 @@ def ssh_run_full(remote_cmd, timeout=30, inp=None):
     if not isinstance(remote_cmd, str):
         return 1, "", "remote_cmd must be a string"
     try:
-        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, timeout=timeout, input=inp)
+        r = subprocess.run(SSH_BASE + [remote_cmd], capture_output=True, text=True, errors="replace", timeout=timeout, input=inp)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return 1, "", str(e)
@@ -482,7 +482,7 @@ def local_run_full(cmd, timeout=30, inp=None):
     if not isinstance(cmd, str):
         return 1, "", "cmd must be a string"
     try:
-        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=timeout, input=inp)
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, errors="replace", timeout=timeout, input=inp)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return 1, "", str(e)

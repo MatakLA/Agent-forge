@@ -228,14 +228,17 @@ try:
         open(runner, "w").write('''import json, os, shutil, subprocess, sys
 spec = json.load(open("/spec.json"))
 for m in spec:
-    shutil.rmtree("/tmp/m", ignore_errors=True); shutil.copytree("/src", "/tmp/m")
-    p = os.path.join("/tmp/m", m["file"]); s = open(p).read()
-    if m["old"] not in s:
-        print(json.dumps(dict(name=m["name"], result="BAD-SPEC", note="pattern not found"))); continue
-    open(p, "w").write(s.replace(m["old"], m["new"], 1))
-    cmd = os.environ["TEST_CMD"] + (" -x" if "pytest" in os.environ["TEST_CMD"] else "")     # stop at the first failure
-    r = subprocess.run(["sh", "-c", cmd], cwd="/tmp/m", capture_output=True, text=True)
-    print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
+    try:        # one mutant that cannot be set up (file gone, latin-1 source, bad entry) is reported as ERROR, it must not hide the rest
+        shutil.rmtree("/tmp/m", ignore_errors=True); shutil.copytree("/src", "/tmp/m", ignore_dangling_symlinks=True)
+        p = os.path.join("/tmp/m", m["file"]); s = open(p, errors="surrogateescape").read()      # surrogateescape: any bytes survive the round trip
+        if m["old"] not in s:
+            print(json.dumps(dict(name=m["name"], result="BAD-SPEC", note="pattern not found"))); continue
+        open(p, "w", errors="surrogateescape").write(s.replace(m["old"], m["new"], 1))
+        cmd = os.environ["TEST_CMD"] + (" -x" if "pytest" in os.environ["TEST_CMD"] else "")     # stop at the first failure
+        r = subprocess.run(["sh", "-c", cmd], cwd="/tmp/m", capture_output=True, text=True, errors="replace")
+        print(json.dumps(dict(name=m["name"], result="KILLED" if r.returncode else "SURVIVED", tail=r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "")))
+    except Exception as e:
+        print(json.dumps(dict(name=m.get("name", "?") if isinstance(m, dict) else "?", result="ERROR", note=(type(e).__name__ + ": " + str(e))[:160])))
 ''')
         json.dump(spec, open(os.path.join(tmp, "spec.json"), "w"))
         try:
@@ -248,14 +251,17 @@ for m in spec:
         for l in m.stdout.splitlines():
             try:
                 d = json.loads(l)
+                line = f"  {d['result']:9} {d['name']}  {d.get('tail', d.get('note', ''))}"
             except Exception:
                 continue
             seen += 1
-            print(f"  {d['result']:9} {d['name']}  {d.get('tail', d.get('note', ''))}")
+            print(line)
             if d["result"] != "KILLED":
                 surv += 1
         if not seen:
             W("mutants", f"the mutation check gave no result (exit {m.returncode}): {(m.stderr.strip().splitlines() or ['no output'])[-1][:160]} - not verified")
+        elif seen < len(spec):
+            W("mutants", f"the mutation check stopped after {seen} of {len(spec)} mutants (exit {m.returncode}): {(m.stderr.strip().splitlines() or ['no output'])[-1][:160]} - the rest is not verified")
         if surv:
             W("mutants", f"{surv} mutant(s) survived or had a bad spec - check whether they are equivalent")
     if "--diff" in a:

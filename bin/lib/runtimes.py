@@ -28,7 +28,7 @@ Adding a runtime = one entry in RUNTIMES plus a branch in command() and scan() (
 Agent-Forge (dispatch, supervisor caps, budgets, egress, the dashboard) only uses this interface. docs/RUNTIMES.md has the
 checklist. Event formats were taken from the real CLIs (claude 2.1, codex 0.161, gemini 0.63, aider 0.86) run against a fake API
 server, and are parsed defensively: unknown events are ignored, a missing result means the run failed."""
-import json, os, re
+import json, math, os, re
 from urllib.parse import urlsplit
 
 AGY_IMAGE = "sandbox-worker:1.2.11"
@@ -348,6 +348,27 @@ def _prices(spec):
         return (0.0, 0.0, 0.0)
 
 
+def token_count(x):
+    """A token figure from an agent's event stream as a non-negative int. The stream is the agent's own output, so a figure can be
+    text, a list, null, NaN or infinity: those count as 0 instead of raising."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return 0
+    if isinstance(x, float) and not math.isfinite(x):
+        return 0
+    return max(int(x), 0)
+
+
+def _float(text):
+    x = float(text)
+    return x if math.isfinite(x) else 0
+
+
+def _loads(text):
+    """json.loads for the agent's own output: NaN, Infinity and numbers beyond the float range (1e999) become 0. As an infinite token
+    count they reached the ledger and, from there, stopped every dispatch for the rest of the UTC day."""
+    return json.loads(text, parse_float=_float, parse_constant=lambda _name: 0)
+
+
 class ResultStr(str):
     """Result string representation for Goose CLI output. Supports both string operations
     and dict-like .get() / item access for supervisor inspection and test assertions."""
@@ -501,7 +522,31 @@ def _parse_openai_compat_dict(e, st, text, prices=None):
 def scan(rt, lines, prices=None):
     """Read a run's event stream. Returns dict(tokens, tools, conversation_id, result) where result is None (no final event
     yet / never) or dict(status SUCCESS|ERROR, response, error, usage, cost_usd). `tokens` counts what the model processed
-    excluding cache reads (the same measure for every runtime; it drives the per-run token cap)."""
+    excluding cache reads (the same measure for every runtime; it drives the per-run token cap).
+    Never raises: the stream is the agent's own output, so a line can have any JSON shape (a hostile agent, or a CLI update that
+    changes a field's type), and an exception here ended the supervisor in the middle of a run. A line that breaks its parser is
+    skipped, the rest of the stream still counts."""
+    if lines is not None and not isinstance(lines, (list, tuple)):
+        lines = list(lines)
+    try:
+        return _scan(rt, lines, prices)
+    except Exception:
+        pass
+    kept = []
+    for line in lines or ():
+        try:
+            _scan(rt, [line], prices)
+        except Exception:
+            continue
+        kept.append(line)
+    try:
+        return _scan(rt, kept, prices)
+    except Exception:
+        return _scan(rt, [], prices)
+
+
+def _scan(rt, lines, prices=None):
+    """The parsers behind scan(); they raise on a line whose JSON has an unexpected shape."""
     rt = rt or "agy"
     if rt == "compat":
         rt = "codex"                           # the same CLI and event stream
@@ -538,7 +583,7 @@ def scan(rt, lines, prices=None):
                 terminal_reached = True
                 return
             try:
-                e = json.loads(d_str)
+                e = _loads(d_str)
             except Exception:
                 return
             if not isinstance(e, dict):
@@ -661,7 +706,7 @@ def scan(rt, lines, prices=None):
             if current_data:
                 joined = "\n".join(current_data)
                 try:
-                    json.loads(joined)
+                    _loads(joined)
                     dispatch_sse(current_event, joined)
                     current_event = None
                     current_data = []
@@ -715,7 +760,7 @@ def scan(rt, lines, prices=None):
                 parsed = None
                 if line_str.startswith("{"):
                     try:
-                        parsed = json.loads(line_str)
+                        parsed = _loads(line_str)
                     except ValueError:
                         pass
                 if isinstance(parsed, dict):
@@ -786,7 +831,7 @@ def scan(rt, lines, prices=None):
         if not line.startswith("{"):
             continue
         try:
-            e = json.loads(line)
+            e = _loads(line)
         except Exception:
             continue
         if not isinstance(e, dict):
@@ -795,7 +840,7 @@ def scan(rt, lines, prices=None):
             if e.get("event") == "step_update":
                 s = e.get("step_update") or {}
                 if s.get("state") == "DONE":
-                    st["tokens"] += (s.get("usage") or {}).get("total_tokens", 0) or 0
+                    st["tokens"] += token_count((s.get("usage") or {}).get("total_tokens"))
                     st["tools"] += s.get("step_type") == "tool"
             elif e.get("event") == "result":
                 r = e.get("result") or {}
@@ -1213,7 +1258,7 @@ def scan(rt, lines, prices=None):
             joined = "\n".join(raw_lines).strip()
             if joined.startswith("{") and joined.endswith("}"):
                 try:
-                    full_obj = json.loads(joined)
+                    full_obj = _loads(joined)
                     if isinstance(full_obj, dict):
                         _parse_openai_compat_dict(full_obj, st, text, prices=prices)
                 except Exception:
@@ -1236,6 +1281,11 @@ def scan(rt, lines, prices=None):
 def scan_file(rt, path, prices=None):
     try:
         with open(path, errors="replace") as f:
-            return scan(rt, f, prices)
+            try:
+                return _scan(rt, f, prices)            # streams the file; the slow path below only runs for a line the parser rejects
+            except Exception:
+                pass
+        with open(path, errors="replace") as f:
+            return scan(rt, list(f), prices)
     except FileNotFoundError:
         return scan(rt, [], prices)

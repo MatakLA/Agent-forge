@@ -298,7 +298,7 @@ def branch_stat(t):
     import subprocess
     try:
         return subprocess.run(["git", "diff", "--stat", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO, capture_output=True, text=True,
-                              timeout=30).stdout.strip()[-1500:]
+                              errors="replace", timeout=30).stdout.strip()[-1500:]
     except Exception:
         return ""
 

@@ -354,6 +354,26 @@ class TestForemanLoop(unittest.TestCase):
         self.assertEqual(after["status"], "running")
         self.assertEqual(after["worker"], "worker-1")
 
+    def test_rework_continues_the_conversation_only_when_dispatch_will_accept_its_id(self):
+        """The conversation id is whatever the worker's own output said. bin/dispatch refuses anything but SAFE_ARG, and a refusal
+        rests every free worker for 30 minutes while the same task asks again - so a bad id must mean a fresh conversation."""
+        store.save_goal(dict(id="G1", text="goal 1", status="active"))
+        for cid, expect in (("3f2c9d1e-7a41-4c0b-9d5e-0a1b2c3d4e5f", "3f2c9d1e-7a41-4c0b-9d5e-0a1b2c3d4e5f"),
+                            ("bad id; rm -rf /", ""), ("--resume", "--resume"), ("x" * 201, ""), ("caf\u00e9", ""), ("", ""), (None, ""), (42, "42")):
+            store.save_task(dict(id="0001-t1", key="k1", title="Task 1", goal="G1", status="pending", attempts=1, files=["a.py"], role="developer",
+                                 branch="feat/0001-t1", spec="s", depends_on=[], feedback="fix the test",
+                                 last_run=dict(worker="worker-1", conversation=cid, reason="ok", tokens=100)))
+            with patch.object(loop, "workers", return_value=["worker-1"]), patch.object(loop, "worker_busy", return_value=False), \
+                 patch.object(loop, "sh", return_value=(0, "dispatched to worker-1 -> run (ok)", "")) as mock_sh, \
+                 patch.object(sbx, "quota_verdict", return_value=(True, "")):
+                loop.dispatch_ready()
+            self.assertEqual(mock_sh.call_count, 1, cid)
+            env = mock_sh.call_args[1]["env"]
+            self.assertEqual(env["DISPATCH_CONVERSATION"], expect, cid)
+            self.assertTrue(sbx.SAFE_ARG.fullmatch(env["DISPATCH_CONVERSATION"]) or env["DISPATCH_CONVERSATION"] == "", cid)
+            loop.COOLDOWN.clear()
+            loop.LAST_DISPATCHED.clear()
+
     def test_dispatch_refused_for_unreadable_quota_rests_only_that_worker(self):
         """bin/dispatch could not read /usage (503): that worker rests 3 min, the other free worker still gets a task."""
         store.save_goal(dict(id="G1", text="goal 1", status="active"))

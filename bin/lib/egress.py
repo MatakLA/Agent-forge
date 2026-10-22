@@ -23,8 +23,8 @@ PRIVATE_NETS = [ipaddress.ip_network(n) for n in
 
 
 def sh(*a, timeout=90):
-    try:
-        return subprocess.run(list(a), capture_output=True, text=True, timeout=timeout)
+    try:        # the proxy logs raw request bytes a worker chose: invalid UTF-8 must not raise (it would stop every reader of the log)
+        return subprocess.run(list(a), capture_output=True, text=True, errors="replace", timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:          # no docker on this machine, or it hangs: a failed call, not a crash
         return subprocess.CompletedProcess(list(a), 127, "", str(e))
 

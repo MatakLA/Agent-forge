@@ -25,8 +25,8 @@ EGRESS_CHECKS = (not runner) or bool(os.environ.get("SBX_TEST_EGRESS"))
 next_egress_check = time.time() + 15
 
 
-def sh(*args, **kw):
-    return subprocess.run(list(args), capture_output=True, text=True, **kw)
+def sh(*args, **kw):          # what a worker prints (process list, git output, commit subjects) is not always UTF-8: never raise on it
+    return subprocess.run(list(args), capture_output=True, text=True, errors="replace", **kw)
 
 
 def kill_in_container():
@@ -115,7 +115,7 @@ def finish(reason, rc):
             # the foreman re-queues the task without an attempt and rests the worker; it never counts toward the kill switch
             tail = str((res or {}).get("error") or "") + " " + str((res or {}).get("response") or "")[-500:]
             try:
-                tail += open(run + "/stderr.log").read()[-2000:]
+                tail += open(run + "/stderr.log", errors="replace").read()[-2000:]
             except OSError:
                 pass
             if runtimes.is_api(RT) and AUTH_RE.search(tail):

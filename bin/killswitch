@@ -21,7 +21,7 @@ import sbx
 
 def containers():
     try:
-        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"], capture_output=True, text=True)
+        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}} {{.State}}"], capture_output=True, text=True, errors="replace")
     except FileNotFoundError:
         return []
     return [x.split() for x in r.stdout.splitlines() if re.fullmatch(r"(worker-\d+|egress-proxy) \w+", x)]

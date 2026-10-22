@@ -19,6 +19,7 @@ case "$*" in
     case "$FAKE_MUTATE" in
       killed) echo '{"name": "m1", "result": "KILLED", "tail": "1 failed"}'; exit 0 ;;
       survived) echo '{"name": "m1", "result": "SURVIVED", "tail": "1 passed"}'; exit 0 ;;
+      partial) echo '{"name": "m1", "result": "KILLED", "tail": "1 failed"}'; echo "container broke" >&2; exit 1 ;;
       *) echo "container broke" >&2; exit 1 ;;
     esac ;;
 esac
@@ -180,6 +181,17 @@ class TestReviewBranchFailClosed(unittest.TestCase):
         rc, out = self.gate("feat/green", "--mutations", spec, FAKE_MUTATE="survived", GATE_ALLOWED_FILES=ALLOWED)
         self.assertEqual(rc, 1, out)
         self.assertIn("SURVIVED", out)
+
+    def test_mutation_check_that_stops_early_says_how_far_it_got(self):
+        spec = os.path.join(self.tmp, "spec2.json")
+        open(spec, "w").write('[{"name": "m1", "file": "good.py", "old": "x * 2", "new": "x * 3"}, {"name": "m2", "file": "good.py", "old": "x * 2", "new": "x * 4"}]')
+        rc, out = self.gate("feat/green", "--mutations", spec, FAKE_MUTATE="partial", GATE_ALLOWED_FILES=ALLOWED)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("KILLED", out)
+        self.assertIn("the mutation check stopped after 1 of 2 mutants (exit 1): container broke - the rest is not verified", out)
+        rc, out = self.gate("feat/green", "--mutations", spec, FAKE_MUTATE="killed", GATE_ALLOWED_FILES=ALLOWED)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("stopped after 1 of 2 mutants (exit 0)", out)
 
 
 if __name__ == "__main__":

@@ -202,6 +202,7 @@ for t in tests/test_cost_model_reporting.py \
          tests/test_foreman_llm.py \
          tests/test_foreman_prompts.py \
          tests/test_foreman_readiness.py \
+         tests/test_hostile_bytes.py \
          tests/test_llm_providers_security.py \
          tests/test_provider_egress_hosts.py \
          tests/test_quickstart_budget.py \

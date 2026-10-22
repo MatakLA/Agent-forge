@@ -61,7 +61,7 @@ def _check_project(project):
 def sh(*args, **kw):
     """Run a subprocess with args as a list (never shell=True)."""
     cmd = list(args[0]) if len(args) == 1 and isinstance(args[0], (list, tuple)) else list(args)
-    return subprocess.run(cmd, capture_output=kw.pop("capture_output", True), text=kw.pop("text", True), **kw)
+    return subprocess.run(cmd, capture_output=kw.pop("capture_output", True), text=kw.pop("text", True), errors=kw.pop("errors", "replace"), **kw)
 DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=1500000, DAILY_TOKEN_BUDGET=3000000,
                 MAX_RUNS_PER_DAY=6, MAX_PARALLEL=2, QUOTA_MODEL_FILTER="Gemini", QUOTA_MIN_5H_PCT=25,
                 QUOTA_MIN_WEEK_PCT=15, CONSEC_FAIL_TRIP=3, POLL_SEC=2, WORKER_MODEL="gemini-3.8-flash-high",
@@ -296,13 +296,14 @@ def secret_path(name):
 def read_ledger():
     out = []
     try:
-        for line in open(ledger_path()):
-            line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    pass
+        with open(ledger_path(), errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        pass
     except FileNotFoundError:
         pass
     return out
@@ -340,7 +341,7 @@ def worker_runtime(worker):
     if not WORKER_RE.fullmatch(worker):
         raise ValueError(f"invalid worker {worker!r}")
     import runtimes
-    r = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "agent-forge.runtime"}}', worker], capture_output=True, text=True)
+    r = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "agent-forge.runtime"}}', worker], capture_output=True, text=True, errors="replace")
     v = r.stdout.strip()
     return v if r.returncode == 0 and v in runtimes.RUNTIMES else "agy"
 
@@ -429,9 +430,10 @@ def alive(pid):
         return False
 
 
-def read(p, default=""):
+def read(p, default="", errors=None):
     try:
-        return open(p).read().strip()
+        with open(p, errors=errors) as f:
+            return f.read().strip()
     except Exception:
         return default
 
@@ -465,18 +467,19 @@ def meta(d):
 
 
 def stream_tokens(path):
-    """Sum of per-step usage of DONE steps == result.usage.total_tokens (validated on real runs)."""
+    """Sum of per-step usage of DONE steps == result.usage.total_tokens (validated on real runs). The stream is the agent's own
+    output: a line of any other shape is skipped, never raised on (this runs in dispatch, status and the orphan recovery)."""
+    import runtimes
     tot = 0
     try:
-        for line in open(path):
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            if e.get("event") == "step_update":
-                s = e["step_update"]
-                if s.get("state") == "DONE":
-                    tot += (s.get("usage") or {}).get("total_tokens", 0)
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                    if e.get("event") == "step_update" and e["step_update"].get("state") == "DONE":
+                        tot += runtimes.token_count((e["step_update"].get("usage") or {}).get("total_tokens"))
+                except Exception:
+                    continue
     except FileNotFoundError:
         pass
     return tot
@@ -503,7 +506,7 @@ def read_quota(worker):
     rows = []
     for pause in QUOTA_RETRY_PAUSES + (None,):      # an unreadable answer (Google's quota service says "503 UNAVAILABLE" now and then) is retried
         r = subprocess.run(["docker", "exec", worker, "agy-run", "-p", "/usage", "--print-timeout", "60s"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, errors="replace", timeout=120)
         rows = parse_usage(r.stdout)
         if rows or pause is None:
             break
@@ -540,7 +543,7 @@ def get_worker_account(worker, runtime="agy", max_age=300):
                    "                print(claims.get('email') or claims.get('name') or claims.get('sub') or '')\n"
                    "    except Exception:\n"
                    "        pass\n"]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=5)
             if res.returncode == 0 and res.stdout.strip():
                 account = res.stdout.strip()
         except Exception:
