@@ -24,6 +24,7 @@ class SWR:
         self._d = {}
         self._mu = threading.Lock()
         self._clock = clock
+        self._gen = 0                         # bumped by drop(): an answer computed before it is not stored after it
         self.keep_warm = keep_warm
 
     def _entry(self, key, ttl, fn):
@@ -37,13 +38,16 @@ class SWR:
     def _refresh(self, e):
         """Compute and store. A failed answer never replaces a good one (it is retried soon). Returns the value."""
         with e.lock:
-            if e.val is not _MISSING and self._clock() - e.at < e.ttl:
-                return e.val                  # somebody else just refreshed it
+            cur = e.val
+            if cur is not _MISSING and self._clock() - e.at < e.ttl:
+                return cur                    # somebody else just refreshed it
+            gen = self._gen
             val = e.fn()
-            if _failed(val) and e.val is not _MISSING:
+            cur = e.val
+            if _failed(val) and cur is not _MISSING:
                 e.retry_at = self._clock() + 15
-                return e.val
-            if not _failed(val):
+                return cur
+            if not _failed(val) and gen == self._gen:
                 e.val, e.at = val, self._clock()
             return val
 
@@ -52,26 +56,30 @@ class SWR:
         background. Nothing cached yet (or fresh=True): the caller waits for fn()."""
         e = self._entry(key, ttl, fn)
         now = self._clock()
-        if e.val is _MISSING or fresh:
+        val, at = e.val, e.at                 # one read: drop() may empty the entry between two
+        if val is _MISSING or fresh:
             val = self._refresh_forced(e) if fresh else self._refresh(e)
             return val, (0 if not _failed(val) else -1)
-        val, age = e.val, now - e.at
+        age = now - at
         if age >= ttl and now >= e.retry_at and not e.lock.locked():
             threading.Thread(target=self._refresh, args=(e,), daemon=True).start()
         return val, age
 
     def _refresh_forced(self, e):
         with e.lock:
+            gen = self._gen
             val = e.fn()
-            if _failed(val) and e.val is not _MISSING:
-                return e.val
-            if not _failed(val):
+            cur = e.val
+            if _failed(val) and cur is not _MISSING:
+                return cur
+            if not _failed(val) and gen == self._gen:
                 e.val, e.at = val, self._clock()
             return val
 
     def drop(self):
         """After a write: forget every value (the keys stay known, so the warmer rebuilds the ones in use)."""
         with self._mu:
+            self._gen += 1
             for e in self._d.values():
                 e.val, e.at = _MISSING, 0.0
 

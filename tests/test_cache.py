@@ -69,6 +69,47 @@ c2.drop()
 v, age = c2.get("x", 10, lambda: {"fine": 2})
 check("drop() forgets values (the next read recomputes)", v == {"fine": 2})
 
+# drop() while a computation is running (the write finished meanwhile): its older answer must not be stored afterwards
+def drop_while_computing(how):
+    """(calls when the stale computation finished, calls after the next read): the next read must compute again."""
+    clock = [1000.0]
+    c = SWR(clock=lambda: clock[0])
+    n = [0]
+    started, release, block = threading.Event(), threading.Event(), [False]
+
+    def fn():
+        n[0] += 1
+        if block[0]:
+            started.set()
+            release.wait(5)
+        return {"v": n[0]}
+
+    t = None
+    if how == "background":
+        c.get("k", 10, fn)
+        clock[0] += 20
+        block[0] = True
+        c.get("k", 10, fn)                    # the old value at once; the refresh runs in a thread and waits
+    else:
+        block[0] = True
+        t = threading.Thread(target=lambda: c.get("k", 10, fn, fresh=(how == "fresh")))
+        t.start()
+    started.wait(5)
+    c.drop()
+    block[0] = False
+    release.set()
+    if t:
+        t.join(5)
+    time.sleep(0.2)
+    before = n[0]
+    c.get("k", 10, fn)
+    return before, n[0]
+
+
+for how in ("cold", "fresh", "background"):
+    before, after = drop_while_computing(how)
+    check(f"an answer that was being computed ({how}) when drop() came is not kept", after == before + 1)
+
 # single flight: parallel cold reads cost one computation
 c3 = SWR()
 n = []

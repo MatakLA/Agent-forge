@@ -22,6 +22,7 @@ case "$1" in
   image) [ "$2" = ls ] && printf '%s\n' sandbox-worker:1.2.11 sandbox-egress-proxy:7.2 codeberg.org/forgejo/forgejo:16.0.5-rootless nginx:latest ;;
   inspect) [ "$2" = sandbox-worker:1.2.11 ] && exit 1; exit 0 ;;
   network) exit 0 ;;
+  compose) [ ! -e "${STUB_FAIL_BUILD:-}" ] || exit 1 ;;
 esac
 exit 0
 EOF
@@ -39,6 +40,7 @@ EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stub/apt-get"
 chmod +x "$T/stub/"*
 export STUB_CALLS="$T/calls.log"; : > "$STUB_CALLS"
+export STUB_FAIL_BUILD="$T/docker-build-fails"
 export HOME="$T/home"; mkdir -p "$HOME/.local/bin"
 export PATH="$T/stub:$PATH"
 unset BIND_PORT SANDBOX_SECRETS FORGE_DIR
@@ -132,6 +134,27 @@ bash "$U" >"$T/update.out" 2>&1 || { cat "$T/update.out"; fail "update failed"; 
 calls_has "docker compose -f worker/docker-compose.yml build [WORKER_N=0]"
 if [ -d /run/systemd/system ]; then calls_has "sudo scripts/install-services"; fi
 git -C "$T/inst" worktree list | grep -vq "$T/inst " && fail "update left a worktree behind" || true
+
+# a failure after the fast-forward is not "nothing is half-way": the next update finishes the steps that did not run
+: > "$T/calls.log"
+printf '1.1.1\n' > "$T/dev/VERSION"; printf 'FROM scratch\nRUN true\nRUN true\n' > "$T/dev/worker/Dockerfile"
+git -C "$T/dev" commit -q -am "feat: an image change"; git -C "$T/dev" push -q origin main
+touch "$STUB_FAIL_BUILD"
+if bash "$U" >"$T/update.out" 2>&1; then fail "update must fail when the image build fails"; fi
+[ "$(git -C "$T/inst" rev-parse HEAD)" = "$(git -C "$T/origin.git" rev-parse main)" ] || fail "the fast-forward did not happen"
+grep -q "the checkout is already at 1.1.1" "$T/update.out" || fail "no half-way message: $(cat "$T/update.out")"
+if grep -q "nothing is half-way" "$T/update.out"; then fail "says nothing is half-way after the checkout moved: $(cat "$T/update.out")"; fi
+calls_lacks "sudo scripts/install-services"
+rm -f "$STUB_FAIL_BUILD"; : > "$T/calls.log"
+bash "$U" --check >"$T/update.out" 2>&1 || { cat "$T/update.out"; fail "--check after a half-way update failed"; }
+grep -q "finishing an earlier update" "$T/update.out" || fail "--check does not see the unfinished update: $(cat "$T/update.out")"
+grep -q "Would: rebuild the worker images" "$T/update.out" || fail "--check lacks the image build that did not run: $(cat "$T/update.out")"
+[ ! -s "$T/calls.log" ] || fail "--check ran something: $(cat "$T/calls.log")"
+bash "$U" >"$T/update.out" 2>&1 || { cat "$T/update.out"; fail "the second update failed"; }
+grep -q "finishing an earlier update" "$T/update.out" || fail "the second update did not pick up the unfinished one: $(cat "$T/update.out")"
+calls_has "docker compose -f worker/docker-compose.yml build [WORKER_N=0]"
+if [ -d /run/systemd/system ]; then calls_has "sudo scripts/install-services"; fi
+out="$(bash "$U")"; grep -q "already up to date" <<<"$out" || fail "the unfinished mark was not cleared: $out"
 
 # a new version that fails its own selftest is not installed
 : > "$T/calls.log"
