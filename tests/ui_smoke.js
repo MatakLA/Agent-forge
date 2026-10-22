@@ -453,6 +453,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     check('settings / workers: Remove posts the removal of that worker', calls.length === 1 && calls[0].body.action === 'remove' && calls[0].body.worker === victim);
     unstub();
 
+    // a second click on "Add the worker" while the first is still working must not add a second one
+    const addsPosted = () => calls.filter(c => /\/api\/workers/.test(c.url) && c.body && c.body.action === 'add').length;
+    stub(/\/api\/(settings|workers)/, c => /\/api\/settings/.test(c.url) ? {ok: true} : {state: 'failed', error: 'stubbed'});
+    clickEl(d.getElementById('add-worker')); await sleep(500);
+    const go1 = d.getElementById('addw-go'); clickEl(go1); clickEl(go1); await sleep(900);
+    check('settings / workers: a double click on "Add the worker" adds one worker', addsPosted() === 1);
+    calls.length = 0;
+    clickEl(d.getElementById('add-worker')); await sleep(500);
+    const radio = d.querySelector('input[name="addw-rt"][value="compat"]'); radio.checked = true; fire(radio, 'change'); await sleep(600);
+    d.getElementById('addw-urlin').value = 'http://192.168.1.20:11434/v1';
+    const go2 = d.getElementById('addw-go'); clickEl(go2); clickEl(go2); await sleep(900);
+    check('settings / workers: a double click while the model server address is still being saved adds one worker', addsPosted() === 1 && calls.filter(c => /\/api\/settings/.test(c.url)).length === 1);
+    unstub();
+
     stub(/\/api\/killswitch/, () => ({error: 'bad project'}));
     await w.killswitch('on');
     check('settings / workers: a refusal without a step list is shown under the kill switch', calls.length === 1 && /bad project/.test(txt('resume-result')));
