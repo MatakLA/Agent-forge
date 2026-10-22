@@ -3,7 +3,7 @@ Agent-Forge issue template: Bug Fix (GitLab Issue Template)
 
 Labels to apply by hand:
 - agent-forge: REQUIRED. bin/issues-intake polls issues matching label 'agent-forge' by default.
-- bug: OPTIONAL. Human-only hint: triage label ignored by bin/issues-intake.
+- bug: OPTIONAL. Triage label, not a filter; bin/issues-intake maps it to the role 'tester' and records that role on the goal.
 
 Title recommendation:
 Prefix the issue title with '[Bug]: ' (e.g., '[Bug]: bin/status fails with KeyError').

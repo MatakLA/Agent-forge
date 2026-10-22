@@ -116,10 +116,14 @@ def lock():
     return f
 
 
+ALERT_SPECIAL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]+")
+
+
 def alert(msg):
+    """One record is one line: a message built from test output must not be able to forge another alert or steer a terminal."""
     ensure_runs()
-    with open(os.path.join(RUNS, "ALERT"), "a") as f:
-        f.write(f"{now()} {'[' + PROJECT + '] ' if PROJECT else ''}{msg}\n")
+    with open(os.path.join(RUNS, "ALERT"), "a", encoding="utf-8", errors="replace") as f:
+        f.write(f"{now()} {'[' + PROJECT + '] ' if PROJECT else ''}{ALERT_SPECIAL.sub(' ', str(msg))}\n")
 
 
 # Kill switches: one per project (the default project keeps the original runs/KILLSWITCH) plus one for ALL projects

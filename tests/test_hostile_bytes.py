@@ -7,6 +7,7 @@ it - one odd request or one `printf '\\351'` then stopped dispatching, the statu
 feeds such bytes to the real code (no Docker, no model) and checks that it neither crashes nor loses the rest of the data.
 Run: python3 tests/test_hostile_bytes.py"""
 import ast, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T = tempfile.mkdtemp(prefix="af-test-bytes-")
@@ -291,6 +292,94 @@ class NoStrictDecoding(unittest.TestCase):
                             if ("errors" not in kws and any(kws.get(k, "False") != "False" for k in ("text", "universal_newlines", "encoding"))):
                                 bad.append(f"{os.path.relpath(p, ROOT)}:{n.lineno}")
         self.assertEqual(bad, [], "text=True without errors=: a byte that is not UTF-8 raises here; add errors=\"replace\"")
+
+
+class AuditLines(unittest.TestCase):
+    """runs/ALERT is the owner's audit trail and a message written to it can be built from text a worker shaped (a failing test's
+    output, a reviewer's reply, a command's stderr). It must stay one line per record, so that text cannot pass for another alert
+    or steer a terminal, and writing it must not raise for a character that cannot be encoded."""
+    SPECIAL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+    STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
+
+    def written(self, *messages):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(sbx, "RUNS", td):
+            for m in messages:
+                sbx.alert(m)
+            return get(os.path.join(td, "ALERT")).decode("utf-8")
+
+    def test_a_message_with_line_breaks_stays_one_record(self):
+        forged = "2001-01-01T00:00:00Z KILLSWITCH OFF"
+        text = self.written("task 1 blocked: boom\n" + forged, "second")
+        lines = text.split("\n")
+        self.assertEqual(len(lines), 3, text)
+        self.assertEqual(lines[2], "")
+        self.assertTrue(all(self.STAMP.match(l) for l in lines[:2]), text)
+        self.assertIn(forged, lines[0])
+        self.assertEqual([l for l in lines if l.startswith("2001-")], [])
+
+    def test_every_line_break_and_control_character_is_replaced(self):
+        for ch in ("\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029", "\x1b[2J", "\x00", "\x07", "\x7f",
+                   "\u202e", "\u2066"):
+            text = self.written(f"a{ch}b")
+            self.assertEqual(text.count("\n"), 1, repr(ch))
+            self.assertIsNone(self.SPECIAL.search(text[:-1]), repr(ch))
+            self.assertRegex(text, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ a.+b\n$", repr(ch))
+
+    def test_ordinary_text_is_written_as_it_is(self):
+        self.assertTrue(self.written("caf\u00e9 \u2013 ok \u2714 [x] {y}").endswith(" caf\u00e9 \u2013 ok \u2714 [x] {y}\n"))
+
+    def test_a_character_that_cannot_be_encoded_is_written_not_raised(self):
+        text = self.written("caf\udce9 \ud800 ok")
+        self.assertIn("caf", text)
+        self.assertTrue(text.endswith(" ok\n"), text)
+
+
+class AuditRotate(unittest.TestCase):
+    """bin/audit-rotate is the only way the audit logs may shrink: it must keep every record whole and every archive name safe,
+    whatever the lines hold."""
+    def rotate(self, **files):
+        """Runs `bin/audit-rotate --force` on a runs dir with these files (name -> bytes); returns the process, the files afterwards
+        and the archive (name -> bytes)."""
+        with tempfile.TemporaryDirectory() as td:
+            runs = os.path.join(td, "runs")
+            os.makedirs(runs)
+            for name, data in files.items():
+                put(os.path.join(runs, name), data)
+            env = dict(os.environ, SANDBOX_TEST="1", SANDBOX_RUNS_DIR=runs)
+            r = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "audit-rotate"), "--force"], env=env, capture_output=True, timeout=60)
+            arch = os.path.join(runs, "archive")
+            found = {n: get(os.path.join(arch, n)) for n in sorted(os.listdir(arch))} if os.path.isdir(arch) else {}
+            return r, {n: get(os.path.join(runs, n)) for n in files}, found
+
+    def test_a_multi_line_alert_moves_as_one_record_into_safely_named_files(self):
+        old = (b"2026-09-30T23:00:00Z foreman: task 1 blocked: an older month\n"
+               b"2026-10-20T10:00:00Z foreman: task 2 blocked: FAILED tests/t.py::x\n"
+               b"--- a/src/x.py\n"                       # a slash within the first seven characters: it used to be part of the file name
+               b"/bin/sh: 1: tool: not found\r\n"
+               b'  File "t.py", line 3\n'
+               b"caf\xe9 not utf-8\n"
+               b"\n"
+               b"2026-10-20T11:00:00Z a second old one\n")
+        new = (sbx.today() + "T09:00:00Z today's alert\ncontinuation of today's alert\n").encode()
+        r, files, archive = self.rotate(ALERT=old + new)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(sorted(archive), ["ALERT.2026-09", "ALERT.2026-10"])
+        first, rest = old.split(b"\n", 1)
+        self.assertEqual(archive["ALERT.2026-09"], first + b"\n")
+        self.assertEqual(archive["ALERT.2026-10"], rest)
+        self.assertTrue(files["ALERT"].startswith(new), files["ALERT"])
+        tail = files["ALERT"][len(new):]
+        self.assertEqual(tail.count(b"\n"), 1, tail)
+        self.assertIn(b"audit-rotate: archived 8 line(s)", tail)
+        self.assertIn(b"8 line(s) of earlier days", r.stdout)
+
+    def test_ledger_lines_without_a_usable_date_stay_where_they_are(self):
+        lines = [b'{"date":"2026-10-20","run_id":"a"}', b"not json", b"[1,2]", b'{"date":5}', b'{"date":"../../etc/x"}',
+                 b'{"date":"2026-10-21","run_id":"b"}', json.dumps({"date": sbx.today(), "run_id": "c"}).encode()]
+        r, files, archive = self.rotate(**{"ledger.jsonl": b"\n".join(lines) + b"\n"})
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(archive, {"ledger.jsonl.2026-10": lines[0] + b"\n" + lines[5] + b"\n"})
+        self.assertEqual(files["ledger.jsonl"], b"\n".join(lines[1:5] + [lines[6]]) + b"\n")
 
 
 def tearDownModule():
