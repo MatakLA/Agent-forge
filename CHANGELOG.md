@@ -66,7 +66,8 @@ conversation id taken from a worker's last run that `bin/dispatch` refuses (char
 the queue and put every free worker on a 30-minute cooldown, again and again; the task now starts a new conversation. The agent's event stream
 (`stream.jsonl`) is read defensively everywhere: a line of any JSON shape is skipped instead of crashing the supervisor, which left the run
 orphaned, and `NaN`, `Infinity` or a number beyond the float range (`1e999`) count as 0 tokens; one such figure used to put `Infinity` in the
-ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day.
+ledger and stop all dispatching ("daily token budget exhausted") until the next UTC day. A review whose `mutations` was `null`, a number or a list
+with entries that are not text raised in the foreman's review step, which is retried every tick and paid for the same review again; such entries are skipped.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
 against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,

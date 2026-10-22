@@ -405,7 +405,9 @@ def step_gate_review_merge(t):
         if verdict != "approve":
             return lambda: (add_lesson(lesson, t["id"]),
                             rework(t, (f"Review ({who}): " + fb) if fb else f"Review ({who}) asked for rework but gave no specifics - re-check the spec.", gate, kind="review"))
-        muts = [m for m in v.get("mutations", []) if isinstance(m, dict) and {"name", "file", "old", "new"} <= set(m)][:4]
+        # any shape of reply must pass here: a raise is retried every tick and pays for the same review call again
+        muts = [m for m in (v.get("mutations") if isinstance(v.get("mutations"), list) else [])
+                if isinstance(m, dict) and all(isinstance(m.get(k), str) for k in ("name", "file", "old", "new"))][:4]
         if muts:
             spec = os.path.join(ctx.FD, "mutations", t["id"] + ".json")
             jsave(spec, muts)
