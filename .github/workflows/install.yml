@@ -8,7 +8,7 @@ on:
   schedule:
     - cron: "17 4 * * 1"          # weekly: catches upstream breakage (images, CLIs, package mirrors)
   pull_request:
-    paths:                        # changes to the installer get the real fresh-install proof before they merge
+    paths:                        # changes to the installer, and to the agent CLIs it installs, get the real proof before they merge
       - install.sh
       - forge
       - scripts/install.sh
@@ -16,6 +16,8 @@ on:
       - scripts/uninstall.sh
       - scripts/vm-baseline-ubuntu.sh
       - scripts/install-services
+      - worker/agent-clis/**      # a new Claude Code, Codex or Gemini CLI runs against the fake model API (tests/test_runtimes.sh)
+      - worker/Dockerfile.api
       - .github/workflows/install.yml
 permissions:
   contents: read
