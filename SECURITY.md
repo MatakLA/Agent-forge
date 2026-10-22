@@ -14,7 +14,7 @@ strong but not a VM boundary. Never put your real secrets, personal data or prod
 |---|---|---|
 | VM (recommended) | escape to your host / LAN | separate kernel; firewall the VM's outbound traffic on the host |
 | Worker container | touching the machine | non-root, `cap_drop: ALL`, `no-new-privileges`, CPU/RAM/PID limits, no docker socket, only the internal network |
-| Egress proxy | exfiltration, downloading tools, LAN scans | the internal network has no route out; Squid allows `CONNECT :443` to exact hostnames only; private/loopback/link-local/CGNAT ranges denied; every attempt logged |
+| Egress proxy | exfiltration, downloading tools, LAN scans | the internal network has no route out; Squid allows `CONNECT :443` to exact hostnames only (an IP address as target is refused, whatever its reverse DNS says); private/loopback/link-local/CGNAT ranges denied; every attempt logged |
 | Alarms + kill switch | a misbehaving run continuing | a request to a host that is neither allowed nor known noise is a HIGH alarm → the kill switch trips and dispatch stops until a human acknowledges |
 | Forgejo permissions | changing main or other branches' history | workers push branches only; `main` is protected; only the orchestrator bot merges |
 | Gate | broken or faked code being merged | full test suite in a fresh, offline, read-only, non-root container; static checks for skip/xfail/assertion-free tests, secret-like strings, non-worker commits |
