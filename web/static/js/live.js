@@ -150,18 +150,6 @@ document.addEventListener('click', async e => {
     if (next) { box.scrollTop = next.offsetTop - box.offsetTop; next.classList.add('flash'); setTimeout(() => next.classList.remove('flash'), 900); }
   }
 });
-document.addEventListener('keydown', e => {
-  if ((e.key === 'Enter' || e.key === ' ') && !typing(e.target)) {
-    const op = e.target.closest('[data-open]');
-    if (op && (op.closest('#t-timeline') || op.closest('#t-live') || op.closest('.sheet'))) {
-      e.preventDefault();
-      const [kind, id] = op.dataset.open.split(/:(.*)/s);
-      if (kind === 'task') openTask(id);
-      else if (kind === 'goal') openGoal(id);
-      else if (kind === 'run') openRun(id);
-    }
-  }
-});
 document.addEventListener('input', e => { if (e.target.id === 'rp-q') { RD.q = e.target.value; renderRun(false); } });
 
 // ---- finished runs of the last 24 hours (to pick one for a replay)

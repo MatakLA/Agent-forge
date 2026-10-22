@@ -82,6 +82,13 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
 - The System → Egress tab stopped drawing, with its Allow, Ignore and acknowledge buttons, for 24 hours when a worker had asked the proxy
   for a host named like a member of every JavaScript object (`constructor`, `toString`, `__proto__`): the table of who tried which host
   was a plain object, so that name found the object's own method instead of an empty slot. It has no prototype now.
+- Enter or Space on a timeline bar or a graph node showed a red "Page error: e.target.click is not a function" banner (the item still
+  opened), and on "All checks" in System → Health did nothing at all: two handlers each clicked the element, so it opened and shut again.
+  Cards, rows and search results also loaded their sheet two to four times per key press or click. One handler per kind is left, and a
+  link or button inside a clickable row keeps its own Enter and its own click (the pull-request link in a goal's task table no longer
+  switches the sheet to the task as well).
+- A refusal from the kill switch that comes without a list of steps (an unknown project, demo mode) was shown as a bare "hide" button.
+  It now says what was refused.
 
 **Fixed: commands, docs and CI.**
 

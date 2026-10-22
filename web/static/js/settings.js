@@ -20,8 +20,8 @@ async function killswitch(action, opts) {
   try { res = await (await fetch('/api/killswitch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project, action, hard, all})})).json(); }
   catch (e) { res = {ok: false, steps: [{label: 'connection', ok: false, output: String(e)}]}; }
   ksBusy = false;
-  bx.innerHTML = (res.steps || []).map(s => '<div class="ev ' + (s.ok ? 'good' : 'bad') + '">' + (s.ok ? '✓ ' : '✗ ') + esc(s.label) + (s.output ? ': ' + esc(s.output) : '') + '</div>').join('') +
-    '<button class="linkbtn" data-hide-result>hide</button>' || esc(res.error || '');
+  const rows = (res.steps || []).map(s => '<div class="ev ' + (s.ok ? 'good' : 'bad') + '">' + (s.ok ? '✓ ' : '✗ ') + esc(s.label) + (s.output ? ': ' + esc(s.output) : '') + '</div>').join('');
+  bx.innerHTML = (rows || '<div class="ev bad">✗ ' + esc(res.error || 'no answer') + '</div>') + '<button class="linkbtn" data-hide-result>hide</button>';
   if (action === 'off') {
     if (typeof SYS !== 'undefined' && SYS && SYS.egress) SYS.egress.killswitch = null;
     if (F && F.killswitch) F.killswitch = null;
@@ -866,9 +866,6 @@ document.addEventListener('click', async e => {
   if (t.id === 'login-done' || t.id === 'login-close') { closeLogin(t.id === 'login-done'); return; }
   if (t.id === 'su-close' || t.id === 'su-later') { $('setup').classList.remove('on'); setupDismissed[project] = true; return; }
   if (t.id === 'su-go') { setupGo(); return; }
-});
-document.addEventListener('keydown', e => {
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('div[data-doc]')) { e.preventDefault(); openDoc(e.target.closest('[data-doc]').dataset.doc); }
 });
 document.addEventListener('change', e => {
   if (e.target.name === 'su-kind') suRefresh();

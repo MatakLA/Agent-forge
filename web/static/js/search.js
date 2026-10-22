@@ -45,25 +45,4 @@ async function runSearch() {
   const target = $('sr-res'); if (target) target.innerHTML = searchResults();
 }
 document.addEventListener('input', e => { if (e.target.id === 'sr-q') { SR.q = e.target.value; clearTimeout(SR.timer); SR.timer = setTimeout(runSearch, 350); } });
-document.addEventListener('click', e => {
-  const sr = e.target.closest('.sr[data-open]');
-  if (sr) {
-    const [kind, id] = sr.dataset.open.split(/:(.*)/s);
-    if (kind === 'task') openTask(id);
-    else if (kind === 'goal') openGoal(id);
-    else if (kind === 'run') openRun(id);
-  }
-});
-document.addEventListener('keydown', e => {
-  if ((e.key === 'Enter' || e.key === ' ') && !typing(e.target)) {
-    const sr = e.target.closest('.sr[data-open]');
-    if (sr) {
-      e.preventDefault();
-      const [kind, id] = sr.dataset.open.split(/:(.*)/s);
-      if (kind === 'task') openTask(id);
-      else if (kind === 'goal') openGoal(id);
-      else if (kind === 'run') openRun(id);
-    }
-  }
-});
 $('search-open').addEventListener('click', openSearch);
