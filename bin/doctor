@@ -564,11 +564,6 @@ def main():
     else:
         warn("Claude Code CLI not found - the claude-cli provider cannot plan or review",
              "install Claude Code and log in once with `claude`, or drop claude-cli from PLAN_PROVIDERS / REVIEW_PROVIDERS")
-    rc, out, _ = sh("goose", "--version")
-    if rc == 0:
-        ok(f"Goose {out.strip()}")
-    else:
-        warn("Goose CLI not found on PATH", "install Goose (https://github.com/block/goose)")
 
     section("Configuration")
     try:

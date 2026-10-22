@@ -1,7 +1,7 @@
 // Property-based tests (fast-check) of the dashboard's pure helpers in web/static/js/core.js: esc() is what keeps owner-supplied
 // and model-supplied text from becoming markup, hilite() marks the search hits without breaking that, ext() makes a link only of
 // an http(s) address, dur() / fmtTok() / usd() / ago() print the numbers on the cost and time views, tsloc() rewrites timestamps
-// inside a text. A failing run prints its seed
+// inside a text, parseHash() reads the deep link in the address bar. A failing run prints its seed
 // and the smallest counter-example.
 // tests/test_props.sh runs this against the real file; AF_CORE_JS points at another copy, FC_RUNS sets the cases per property.
 'use strict';
@@ -17,7 +17,7 @@ const from = src.indexOf('const esc = '), to = src.indexOf('const STATUS = ');
 assert.ok(from >= 0 && to > from, 'core.js: the helper block (from "const esc" up to "const STATUS") moved - update tests/props.js');
 const ctx = vm.createContext({});
 vm.runInContext(src.slice(from, to), ctx);
-const {esc, ext, hilite, tsloc, ago, dur, fmtTok, usd} = vm.runInContext('({esc, ext, hilite, tsloc, ago, dur, fmtTok, usd})', ctx);
+const {esc, ext, hilite, tsloc, ago, dur, fmtTok, usd, parseHash} = vm.runInContext('({esc, ext, hilite, tsloc, ago, dur, fmtTok, usd, parseHash})', ctx);
 
 const runs = Number(process.env.FC_RUNS) || 1000;
 let failed = 0;
@@ -108,6 +108,21 @@ assert.equal(ext('//evil.example/x', '#7'), '#7');
 assert.equal(ext(null, '#7'), '#7');
 assert.equal(ext('https://github.com/o/r/pull/7?a=1&b="2"', '#7'), '<a href="https://github.com/o/r/pull/7?a=1&amp;b=&quot;2&quot;" target="_blank" rel="noopener">#7</a>');
 console.log('ok   ext: examples');
+
+const hashKey = fc.stringMatching(/^[a-z]{1,8}$/);
+const encodable = text.filter(s => { try { encodeURIComponent(s); return true; } catch (e) { return false; } });
+prop('parseHash: whatever the address bar holds gives an object, never an error', fc.oneof(text, fc.constantFrom('#%', '#tab=%E0%A4%A', '#a=%zz&b=%', '#&&=&=', '%%%')),
+  s => typeof parseHash(s) === 'object');
+prop('parseHash: what encodeURIComponent wrote comes back', fc.uniqueArray(fc.tuple(hashKey, encodable), {selector: kv => kv[0], maxLength: 6}),
+  pairs => { const h = parseHash('#' + pairs.map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&')); return pairs.every(([k, v]) => h[k] === v); });
+prop('parseHash: a malformed escape stays as written and the other pairs are still read',
+  fc.tuple(hashKey, hashKey, fc.constantFrom('%', '%E0%A4%A', '%zz', '100%')).filter(([a, b]) => a !== b),
+  ([a, b, bad]) => { const h = parseHash('#' + a + '=' + bad + '&' + b + '=ok'); return h[a] === bad && h[b] === 'ok'; });
+assert.deepEqual({...parseHash('#tab=tasks&project=shop&task=0012-store')}, {tab: 'tasks', project: 'shop', task: '0012-store'});
+assert.deepEqual({...parseHash('#tab=%E0%A4%A&project=shop')}, {tab: '%E0%A4%A', project: 'shop'});     // the old line threw a URIError and the dashboard never started
+assert.equal(parseHash('#task=a%2Fb').task, 'a/b');
+assert.equal(parseHash('').tab, undefined);
+console.log('ok   parseHash: examples');
 
 if (failed) { console.log(failed + ' property test(s) FAILED'); process.exit(1); }
 console.log('property tests: ALL OK');

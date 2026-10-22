@@ -29,6 +29,9 @@ const ago = ts => { if (!ts) return ''; const s = Math.max(0, Math.round(Date.no
 const dur = s => { s = Number.isFinite(+s) ? Math.max(0, Math.round(+s)) : 0; return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days'; };
 const fmtTok = n => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
 const usd = v => v == null ? '–' : '$' + (v > 0 && v < 1 ? Number(v).toFixed(3) : Number(v).toFixed(2));
+// the deep link in the address bar; a malformed %-escape (a link cut off by a chat app) keeps its raw text instead of stopping the page from starting
+const parseHash = h => Object.fromEntries(String(h || '').replace(/^#/, '').split('&').filter(Boolean)
+  .map(kv => kv.split('=').map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } })));
 const STATUS = {splitting: 'Splitting', pending: 'Waiting', running: 'Running', gate: 'Checking', review: 'Checking', merging: 'Merging',
   'merge-ready': 'Merging', approval: 'Needs you', done: 'Done', blocked: 'Blocked', cancelled: 'Cancelled'};
 const GSTATUS = {new: 'Planning', approval: 'Plan needs you', active: 'Running', done: 'Done', blocked: 'Blocked', cancelled: 'Cancelled'};
@@ -194,7 +197,7 @@ const inPool = w => !F || !(F.pool || []).length || F.pool.includes(w);
 // deep links: #tab=tasks&project=shop&task=0012-store | goal=G… | run=… (bookmarks, links in notifications)
 const TABS = ['overview', 'tasks', 'live', 'timeline', 'insights', 'system', 'settings'];
 const ALIAS = {queue: 'tasks', metrics: 'insights', events: 'system'};
-const HASH = Object.fromEntries((location.hash || '').replace(/^#/, '').split('&').filter(Boolean).map(kv => kv.split('=').map(decodeURIComponent)));
+const HASH = parseHash(location.hash);
 if (HASH.tab) { const t = ALIAS[HASH.tab] || HASH.tab; if (TABS.includes(t)) tab = t; if (HASH.tab === 'events') SUB.system = 'activity'; }
 if (HASH.project && /^[a-z0-9][a-z0-9-]{0,39}$/.test(HASH.project)) project = HASH.project;
 if (HASH.view && SUB[ALIAS[HASH.tab] || HASH.tab] !== undefined && /^[a-z]{2,20}$/.test(HASH.view)) SUB[ALIAS[HASH.tab] || HASH.tab] = HASH.view;
@@ -244,7 +247,7 @@ function copyTaskReport(t) {
   }
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(reportText).then(() => {
-      toast(t('diag.copied', '📋 Report copied to clipboard! Paste it to your AI assistant.'));
+      toast(tr('diag.copied', '📋 Report copied to clipboard! Paste it to your AI assistant.'));
     }).catch(err => {
       prompt('Copy this report manually (Ctrl+C):', reportText);
     });

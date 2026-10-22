@@ -200,15 +200,14 @@ class TestGooseRuntime(unittest.TestCase):
         assert runtimes.is_api("compat") is True
         assert runtimes.uses_endpoint("compat") is True
 
-    def test_doctor_contains_goose_check(self):
-        """bin/doctor contains check for goose binary and does not raise on absence."""
-        doc_path = os.path.join(ROOT, "bin", "doctor")
-        with open(doc_path, "r", encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn('"goose"', src)
-        self.assertIn("Goose", src)
-        assert '"goose"' in src
-        assert "Goose" in src
+    def test_doctor_covers_goose_through_readiness_not_a_host_binary(self):
+        """bin/doctor judges Goose by its readiness and cost model; the CLI lives in the worker container, so a missing host binary is no warning."""
+        proc = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick", "--json"], capture_output=True, text=True, timeout=60)
+        self.assertNotIn("Traceback", proc.stderr)
+        checks = json.loads(proc.stdout)["checks"]
+        sections = {c["section"] for c in checks if "goose" in c["message"].lower()}
+        self.assertIn("Readiness", sections)
+        self.assertNotIn("Tools", sections)
 
     def test_runtimes_doc_contains_goose_section(self):
         """docs/RUNTIMES.md contains ## Goose section describing setup, endpoint and cost."""

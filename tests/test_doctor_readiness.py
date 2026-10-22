@@ -507,6 +507,19 @@ class TestDoctorReadiness(unittest.TestCase):
         assert all(f" {rt}: " in proc.stdout for rt in six_keys)
         assert all(any(f" {rt}: " in c["message"] for c in readiness_checks) for rt in six_keys)
 
+    def test_tools_section_checks_only_what_runs_on_the_host(self):
+        """Goose runs inside the worker container, never on the host: its missing host binary warned on every install."""
+        proc = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "doctor"), "--quick", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertNotIn("Traceback", proc.stderr)
+        tools = [c["message"] for c in json.loads(proc.stdout)["checks"] if c.get("section") == "Tools"]
+        self.assertTrue(tools)
+        self.assertEqual([m for m in tools if "goose" in m.lower()], [])
+
     def test_local_compat_three_states_end_to_end(self):
         """Acceptance criteria:
 

@@ -74,6 +74,14 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
   shows up on any tab, sub-view, sheet or card.
 - The pull request links on the goal and task sheets only appear for an `http(s)` address (escaping keeps a value inside its attribute
   but lets `javascript:` through); anything else shows as plain `#7`.
+- A link to the dashboard that is cut off in the middle of a `%`-escape (`#tab=tasks&task=%`, which chat apps do to long links) left a
+  blank page: the address was decoded without a guard and the first script stopped. The broken part is now read as plain text and the
+  rest of the link still works.
+- The "copy report" button of a blocked task ended in the manual-copy prompt even after the report had been copied: the confirmation
+  called the task as if it were the translation function. It now shows the toast.
+- The System → Egress tab stopped drawing, with its Allow, Ignore and acknowledge buttons, for 24 hours when a worker had asked the proxy
+  for a host named like a member of every JavaScript object (`constructor`, `toString`, `__proto__`): the table of who tried which host
+  was a plain object, so that name found the object's own method instead of an empty slot. It has no prototype now.
 
 **Fixed: commands, docs and CI.**
 
@@ -83,11 +91,13 @@ an IP address is refused unless it is listed itself, names behave as before. `fo
   image ships those CLIs. The next steps and the docs now say so and point to `compat` or `aider` for a model server of your own; they
   also show a LAN address for `COMPAT_BASE_URL`, since `127.0.0.1` inside a worker container is the container itself. A new test fails
   when any file names such a runtime after `--runtime`.
+- `bin/doctor` warned on every install that the Goose CLI was not found on the host, so a healthy setup exited with 1. The host never runs
+  Goose (it would run in the worker container), so that check is gone; the runtime's readiness is still checked under Readiness.
 - The uninstall step of the `install` workflow now really fails when a service or container is left behind (a `!` in front of a command
   never stopped a `bash -e` step). `sign-release` copes with a release that has no files, such as v0.12.0.
 
 **Tests.** `tests/props.js` (fast-check, test-only dependency, part of `make check` when `node` is present and run in CI): generated inputs
-against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`). New tests for the access log and the audit entries,
+against the page's helpers (`esc`, `hilite`, `ext`, `dur`, `ago`, `fmtTok`, `usd`, `tsloc`, `parseHash`). New tests for the access log and the audit entries,
 and for the gate's verdicts: `tests/test_review_branch_failclosed.py` runs the real gate against a fake Docker, the foreman's side is in
 `tests/test_foreman_merge.py`, and text that is not UTF-8 is covered there, in `tests/test_quality.py` and, for the worker's own check (run without Docker), in `tests/test_self_check.py`.
 `tests/test_hostile_bytes.py` feeds bytes that are not UTF-8, and event lines of every JSON shape (with `NaN`, `Infinity` and `1e999`), to the
