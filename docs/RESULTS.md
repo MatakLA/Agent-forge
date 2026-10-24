@@ -1,5 +1,7 @@
 # Does it pay off? Results, with the limits
 
+The short case for using it, with the costs, is on [WHY.md](WHY.md); this page has the charts behind it.
+
 Short answer: **yes for tokens and for throughput, no for speed or reliability per run, and not proven for the newest changes.**
 Everything below comes from the ledger of one real install (one operator, one project mix, one model account), not from a lab.
 The numbers are committed ([`field-report-data.json`](field-report-data.json), [`parallel-data.json`](parallel-data.json),

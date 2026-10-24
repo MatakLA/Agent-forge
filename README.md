@@ -27,6 +27,13 @@ right. Then the next goal starts, from your backlog or your product vision.
 > **Experimental - for testing and evaluation.** Agent-Forge is young (alpha). Run it on a dedicated VM with test data, point it
 > only at repositories where an AI merging code is acceptable to you, and read [SECURITY.md](SECURITY.md) first.
 
+## What it did on real work
+
+![Agent-Forge in four numbers](docs/img/results-headline.svg)
+
+Numbers from one install run by the author, with their limits stated: **[Why use it? The numbers, and when not to](docs/WHY.md)** ·
+[Results with charts](docs/RESULTS.md) · [Field report](docs/FIELD-REPORT.md)
+
 ## Try it
 
 | | | |
