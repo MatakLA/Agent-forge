@@ -1,0 +1,66 @@
+{
+ "runs": 1927,
+ "tokens": 931328405,
+ "peak_workers": 8,
+ "first_run": "2026-09-26",
+ "last_run": "2026-10-20",
+ "worker_hours_busy": 611.9,
+ "hours_with_work_running": 219.9,
+ "avg_workers_while_active": 2.78,
+ "one_after_another_hours_same_run_length": 611.9,
+ "one_after_another_hours_run_length_when_alone": 440.9,
+ "calendar_speedup_range": [
+  2.0,
+  2.8
+ ],
+ "by_workers_running": [
+  {
+   "group": "1",
+   "runs": 404,
+   "workers_avg": 1,
+   "ok_pct": 76,
+   "timeout_pct": 10,
+   "mean_run_min": 13.7,
+   "ok_runs_per_worker_hour": 3.33,
+   "ok_runs_per_hour_team": 3.33,
+   "tokens_per_ok_run": 631140,
+   "speedup_vs_one": 1.0
+  },
+  {
+   "group": "2",
+   "runs": 263,
+   "workers_avg": 2,
+   "ok_pct": 70,
+   "timeout_pct": 12,
+   "mean_run_min": 15.8,
+   "ok_runs_per_worker_hour": 2.64,
+   "ok_runs_per_hour_team": 5.27,
+   "tokens_per_ok_run": 848560,
+   "speedup_vs_one": 1.58
+  },
+  {
+   "group": "3-4",
+   "runs": 766,
+   "workers_avg": 3.6,
+   "ok_pct": 69,
+   "timeout_pct": 18,
+   "mean_run_min": 19.8,
+   "ok_runs_per_worker_hour": 2.09,
+   "ok_runs_per_hour_team": 7.59,
+   "tokens_per_ok_run": 782315,
+   "speedup_vs_one": 2.28
+  },
+  {
+   "group": "5-8",
+   "runs": 494,
+   "workers_avg": 6.2,
+   "ok_pct": 67,
+   "timeout_pct": 24,
+   "mean_run_min": 23.9,
+   "ok_runs_per_worker_hour": 1.69,
+   "ok_runs_per_hour_team": 10.46,
+   "tokens_per_ok_run": 503922,
+   "speedup_vs_one": 3.14
+  }
+ ]
+}
