@@ -207,6 +207,7 @@ for t in tests/test_cost_model_reporting.py \
          tests/test_provider_egress_hosts.py \
          tests/test_quickstart_budget.py \
          tests/test_quickstart_setup.sh \
+         tests/test_results_charts.py \
          tests/test_runtime_cost_model.py \
          tests/test_runtime_qwen.py \
          tests/test_self_check.py \
