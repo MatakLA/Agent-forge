@@ -1,7 +1,7 @@
 """Shared helpers for bin/dispatch, bin/run-supervisor, bin/killswitch and bin/status (V7).
 Provides path construction under runs and secrets, kill switch management, ledger tracking,
-safe regex validation (PROJECT_RE, ROLE_RE, WORKER_RE, MODEL_RE, SAFE_ARG, TEST_CMD_RE, IMAGE_RE),
-and safe test_cmd / gate_image retrieval with injection guards."""
+safe regex validation (PROJECT_RE, ROLE_RE, WORKER_RE, MODEL_RE, SAFE_ARG, TEST_CMD_RE, IMAGE_RE, VISUAL_CMD_RE),
+and safe test_cmd / gate_image / visual_cmd / visual_image / visual_timeout_sec retrieval with injection guards."""
 import base64, concurrent.futures, fcntl, json, os, re, subprocess, time
 from datetime import datetime, timezone
 
@@ -178,6 +178,7 @@ def killswitch_on(reason, by="orchestrator", hard=False, all_projects=False):
 DEFAULT_TEST_CMD = "python3 -m pytest -q -p no:cacheprovider"
 DEFAULT_GATE_IMAGE = "sandbox-worker:1.2.11"
 TEST_CMD_RE = re.compile(r"[A-Za-z0-9 ._/=:,+@%-]{1,200}")       # a plain command line: no shell syntax
+VISUAL_CMD_RE = TEST_CMD_RE
 IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._/:@-]{0,200}")
 
 
@@ -197,6 +198,36 @@ def gate_image(project=None):
     if v and not IMAGE_RE.fullmatch(v):
         raise ValueError(f"invalid GATE_IMAGE {v!r}")
     return v or DEFAULT_GATE_IMAGE
+
+
+def visual_cmd(project=None) -> str:
+    v = (project_conf(project).get("VISUAL_CMD") or "").strip()
+    if v and not VISUAL_CMD_RE.fullmatch(v):
+        raise ValueError(f"invalid VISUAL_CMD {v!r}")
+    return v
+
+
+def visual_image(project=None) -> str:
+    v = (project_conf(project).get("VISUAL_IMAGE") or "").strip()
+    if not v:
+        return gate_image(project)
+    if not IMAGE_RE.fullmatch(v):
+        raise ValueError(f"invalid VISUAL_IMAGE {v!r}")
+    return v
+
+
+def visual_timeout_sec(project=None) -> int:
+    raw = project_conf(project).get("VISUAL_TIMEOUT_SEC")
+    if raw is None or str(raw).strip() == "":
+        return 300
+    v = str(raw).strip()
+    try:
+        val = int(v)
+    except ValueError:
+        raise ValueError(f"invalid VISUAL_TIMEOUT_SEC {v!r}: must be an integer")
+    if not (10 <= val <= 1800):
+        raise ValueError(f"invalid VISUAL_TIMEOUT_SEC {v!r}: must be between 10 and 1800")
+    return val
 
 
 # ---- notifications (optional): NOTIFY_URL in etc/foreman.conf or projects/<name>/project.conf
