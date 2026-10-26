@@ -4,7 +4,7 @@ Public interface: auto_rebase, requeue_gate, step_gate_review_merge, do_merge, s
 Invariants: rebase conflict aborts cleanly without leaving rebase state; blocked tasks are never silently merged;
 stuck merging tasks route back to gate; PHASE tracking is purged on error or step resolution; a gate run that gives no
 verdict (it crashed, timed out or could not start) is never a pass - the gate is run again; gate output and review feedback never enter subprocess argv."""
-import json, os, re, subprocess, threading, time
+import json, os, re, shutil, subprocess, threading, time
 
 import sbx
 
@@ -12,7 +12,7 @@ from . import ctx, jobs, store
 from .util import approvals, extract_json, git_auth_env, parse_numstat, sh
 from .store import event, jload, jsave, notify, save_task
 from .jobs import INFLIGHT, PHASE, submit
-from .repo import refresh_repo
+from .repo import branch_tree, refresh_repo
 from .knowledge import add_lesson
 from .llm import llm
 from .prompts import review_prompt
@@ -385,9 +385,14 @@ def step_gate_review_merge(t):
             proj = t.get("project")
             task_visual_dir = os.path.join(sbx.RUNS, "projects", proj, "foreman", "visual", t["id"]) if proj else os.path.join(ctx.FD, "visual", t["id"])
             os.makedirs(task_visual_dir, exist_ok=True)
-            workdir = os.path.join(ctx.FD, "rebase")
+            workdir = branch_tree(t["branch"])
+            if not workdir:
+                return lambda: requeue_gate(t, "the visual gate could not check out the branch")
             from visual import run_visual_gate
-            v_ok, v_tail, pngs = run_visual_gate(workdir, v_cmd, v_img, timeout_sec=v_timeout, out_dir=task_visual_dir)
+            try:
+                v_ok, v_tail, pngs = run_visual_gate(workdir, v_cmd, v_img, timeout_sec=v_timeout, out_dir=task_visual_dir)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
             if not v_ok:
                 return lambda: rework(t, feedback=f"Visual gate failed:\n{v_tail}", gate_tail=v_tail)
             t["visual_artifacts"] = pngs

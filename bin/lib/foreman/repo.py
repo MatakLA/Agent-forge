@@ -1,5 +1,5 @@
 """The foreman's read-only clone of main, the code map (bin/lib/codemap.py) and the per-task context pack and variant."""
-import hashlib, os, re, threading
+import hashlib, os, re, shutil, tempfile, threading
 
 import sbx, codemap, quality
 
@@ -22,6 +22,22 @@ def refresh_repo():
             sh(["git", "clone", "-q", f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", ctx.REPO], timeout=120, env=env)
         sh(["git", "fetch", "-q", "origin"], cwd=ctx.REPO, timeout=120, env=env)
         sh(["git", "checkout", "-q", "--detach", "origin/main"], cwd=ctx.REPO)
+
+
+def branch_tree(branch):
+    """A fresh checkout of origin/<branch> as it is now, in a temporary directory of its own (the caller removes it); None when it cannot be made.
+    The shared rebase clone is no place to look at a branch: its working tree belongs to whichever task rebased last."""
+    if not sbx.SAFE_ARG.fullmatch(branch or ""):
+        return None
+    os.makedirs(ctx.FD, exist_ok=True)
+    dest = tempfile.mkdtemp(prefix="visual-", dir=ctx.FD)
+    os.chmod(dest, 0o755)                    # the gate container runs as another user and has to read it
+    rc = sh(["git", "clone", "-q", "--depth", "1", "--single-branch", "--branch", branch, f"{sbx.FORGE_URL}/{sbx.FORGE_REPO}.git", dest],
+            timeout=180, env=git_auth_env("monitor.token"))[0]
+    if rc != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        return None
+    return dest
 
 
 def repo_tree():

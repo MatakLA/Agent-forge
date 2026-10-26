@@ -149,6 +149,26 @@ class TestVisualGateRunner(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(pngs, ["auto.png"])
 
+    def test_the_output_directory_is_writable_for_the_container_user(self):
+        """The container runs as another user than the foreman: a 0755 or 0700 /out would store no screenshot at all."""
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["image", "inspect"]:
+                return MagicMock(returncode=0)
+            host_out = [arg for arg in cmd if arg.endswith(":/out:rw")][0].split(":")[0]
+            seen["mode"] = os.stat(host_out).st_mode & 0o777
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            os.chmod(out_dir, 0o755)
+            with patch("subprocess.run", side_effect=fake_run):
+                visual.run_visual_gate("/workspace", "take-screenshot", "visual-worker:1.0", out_dir=out_dir)
+            self.assertEqual(seen["mode"], 0o777)
+        with patch("subprocess.run", side_effect=fake_run):
+            visual.run_visual_gate("/workspace", "take-screenshot", "visual-worker:1.0")
+        self.assertEqual(seen["mode"], 0o777, "the temporary directory of a run without out_dir is 0700 by default")
+
     def test_invalid_workdir(self):
         ok, err, pngs = visual.run_visual_gate(
             workdir="", visual_cmd="npm test", visual_image="worker:1.0"

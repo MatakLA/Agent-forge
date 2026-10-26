@@ -8,7 +8,7 @@ Invariants:
 - Verifies visual_image presence with docker image inspect before running container.
 - Runs container isolated: no network, read-only root with a small tmpfs /tmp, no capabilities, memory/cpu/pid limits,
   workdir mounted read-only; a timed-out container is killed by name (no orphans).
-- Mounts output directory at /out and collects sorted *.png basenames on exit 0.
+- Mounts output directory at /out (made writable for the container's user) and collects sorted *.png basenames on exit 0.
 - Extracts last 60 lines of combined output on container failure.
 """
 import os
@@ -51,6 +51,10 @@ def _run_container(
 ) -> tuple[bool, str, list[str]]:
     """Execute container for visual check and collect output and artifacts."""
     abs_workdir = os.path.abspath(workdir)
+    try:
+        os.chmod(target_out, 0o777)          # the container user is not the foreman's: without this /out is read-only to it and no screenshot is stored
+    except OSError:
+        pass
     name = f"visual-gate-{os.getpid()}-{int(time.time() * 1000)}"
     cmd = [
         docker_bin,

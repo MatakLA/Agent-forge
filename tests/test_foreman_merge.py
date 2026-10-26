@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
 
 import sbx
 from unittest.mock import patch
-from foreman import ctx, merge, store, util
+from foreman import ctx, merge, repo, store, util
 
 REAL_AUTO_REBASE = merge.auto_rebase          # some tests below replace merge.auto_rebase and never put it back
 
@@ -1071,6 +1071,76 @@ class TestForemanMerge(unittest.TestCase):
     def test_sh_shows_bytes_that_are_not_utf8_instead_of_raising(self):
         rc, out, err = util.sh([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'caf\\xe9\\n'); sys.stderr.buffer.write(b'\\xff')"])
         self.assertEqual((rc, out, err), (0, "caf�\n", "�"))
+
+    # ---------------------------------------------------------------- the visual gate
+    def forge_with_marker_branches(self, name, branches):
+        """A bare forge `name` whose main and every branch in `branches` ({branch: text}) carry a `marker.txt` of their own; returns (bare path, git runner)."""
+        bare, work = os.path.join(self.tmp, f"{name}.git"), os.path.join(self.tmp, f"work_{name}")
+        git_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+        def run_git(d, *args):
+            r = subprocess.run(["git", *args], cwd=d, capture_output=True, text=True, env=git_env)
+            if r.returncode != 0:
+                raise RuntimeError(f"git {args} failed: {r.stderr}")
+            return r.stdout.strip()
+
+        run_git(self.tmp, "init", "-q", "--bare", "-b", "main", bare)
+        run_git(self.tmp, "clone", "-q", bare, work)
+        for branch, text in {"main": "main", **branches}.items():
+            if branch != "main":
+                run_git(work, "checkout", "-q", "-b", branch, "main")
+            with open(os.path.join(work, "marker.txt"), "w") as f:
+                f.write(text)
+            run_git(work, "add", "-A")
+            run_git(work, "commit", "-qm", f"{branch} marker")
+            run_git(work, "push", "-q", "origin", branch)
+        sbx.FORGE_URL, sbx.FORGE_REPO = "file://" + self.tmp, name
+        return bare, run_git
+
+    def visual_gate_step(self, task, visual_gate):
+        """run_gate_step with a visual gate configured and `visual.run_visual_gate` replaced by `visual_gate`."""
+        with patch.object(sbx, "visual_cmd", lambda p=None: "node check.js"), patch.object(sbx, "visual_image", lambda p=None: "gate:1"), \
+             patch.object(sbx, "visual_timeout_sec", lambda p=None: 60), patch("visual.run_visual_gate", visual_gate):
+            return self.run_gate_step(task, lambda cmd, kw: (0, "gate tests passed\n", ""))
+
+    def test_the_visual_gate_looks_at_the_branch_being_merged_never_at_another_tasks_rebase(self):
+        bare, run_git = self.forge_with_marker_branches("forge_visual", {"feat/0061-visual-tree": "this branch", "feat/0062-other": "another task"})
+        rebase = os.path.join(ctx.FD, "rebase")           # the shared rebase clone: another task rebased last and left its branch checked out
+        run_git(self.tmp, "clone", "-q", bare, rebase)
+        run_git(rebase, "checkout", "-q", "feat/0062-other")
+        seen = {}
+
+        def visual_gate(workdir, cmd, image, timeout_sec=300, out_dir=None):
+            with open(os.path.join(workdir, "marker.txt")) as f:
+                seen.update(workdir=workdir, marker=f.read(), mode=os.stat(workdir).st_mode & 0o777)
+            return True, "", ["home.png"]
+
+        after, _ = self.visual_gate_step(self.new_task("0061-visual-tree"), visual_gate)
+        self.assertEqual(seen["marker"], "this branch")
+        self.assertEqual(seen["mode"], 0o755, "the container's user has to be able to read it")
+        self.assertFalse(os.path.exists(seen["workdir"]), "the checkout is removed once the gate is done")
+        self.assertEqual((after["status"], after["visual_artifacts"]), ("done", ["home.png"]))
+
+    def test_a_branch_the_visual_gate_cannot_check_out_is_requeued_not_judged(self):
+        self.forge_with_marker_branches("forge_visual_gone", {})
+        ran = []
+        after, seen = self.visual_gate_step(self.new_task("0063-gone"), lambda *a, **kw: ran.append(a) or (True, "", []))
+        self.assertEqual((after["status"], after["regates"], ran), ("gate", 1, []))
+        self.assertIn("could not check out the branch", after["history"][-1]["why"])
+        self.assertEqual((seen["reviews"], seen["prs"]), (0, []))
+        self.assertEqual([d for d in os.listdir(ctx.FD) if d.startswith("visual-")], [], "no temporary checkout is left behind")
+
+    def test_a_failing_visual_gate_still_removes_its_checkout(self):
+        self.forge_with_marker_branches("forge_visual_fail", {"feat/0064-fail": "broken"})
+        after, seen = self.visual_gate_step(self.new_task("0064-fail"), lambda *a, **kw: (False, "Duplicate export of 'x'", []))
+        self.assertEqual((after["status"], seen["reviews"], seen["prs"]), ("pending", 0, []))
+        self.assertIn("Visual gate failed:\nDuplicate export of 'x'", after["feedback"])
+        self.assertEqual([d for d in os.listdir(ctx.FD) if d.startswith("visual-")], [])
+
+    def test_branch_tree_refuses_names_that_are_not_plain_branch_names(self):
+        self.forge_with_marker_branches("forge_names", {})
+        for bad in ("", None, "a b", "x;rm -rf", "$(id)", "a\nb"):
+            self.assertIsNone(repo.branch_tree(bad), repr(bad))
 
     # ---------------------------------------------------------------- the union rebase of shared files
     def forge_with_conflict(self, name, branch, fname, base, on_branch, on_main):
