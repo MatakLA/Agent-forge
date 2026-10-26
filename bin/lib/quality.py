@@ -2,7 +2,7 @@
 
 Public interface: is_test_path(path), is_source_path(path), reference_pattern(path), unreferenced(repo_dir, paths),
 test_ratio(numstat_lines), ratio_message(tests, code, max), oversized(repo_dir, paths, limit), outside_scope(changed, allowed, shared),
-weakened_tests(diff_text), duplicate_defs(repo_dir, changed, base), unused_imports(text, before), test_targets(repo_dir, changed).
+weakened_tests(diff_text), injected_markers(diff_text, messages), forbidden_added(diff_text, rules), duplicate_defs(repo_dir, changed, base), unused_imports(text, before), test_targets(repo_dir, changed).
 Used by bin/review-branch (per branch), by
 the supervisor's self-check inside the worker (this file is sent along with it: standard library only, Python 3.8+, no imports of
 other project modules) and by the foreman (per goal, on main).
@@ -149,6 +149,48 @@ def weakened_tests(diff_text):
             if _TESTDEF_RE.search(l[1:]):
                 stats[path][2 + i] += 1
     return [(p, *v) for p, v in stats.items() if (v[0] > v[1] and v[0] >= 2) or v[2] > v[3]]
+
+
+# Attribution / session lines that text planted in a tool result or a fetched page asks the agent to put into commits and PRs. They are data,
+# never instructions; a worker that obeyed one shows up here.
+INJECTION_RE = re.compile(r"Co-Authored-By:\s*Claude|Claude-Session:|Generated with \[?Claude|claude\.ai/code/session", re.I)
+
+
+def _added_lines(diff_text):
+    """[(path, line)] of the added lines of a `git diff --unified=0` text."""
+    path, out = None, []
+    for l in diff_text.splitlines():
+        if l.startswith("+++ "):
+            path = l[6:] if l.startswith("+++ b/") else None
+        elif l.startswith("+") and path:
+            out.append((path, l[1:]))
+    return out
+
+
+def injected_markers(diff_text, messages=""):
+    """Descriptions of injection-style attribution lines: in the commit messages (one text) or in added lines of code files
+    (tests and markdown may quote them)."""
+    hits = ["commit message: " + m.group(0) for m in INJECTION_RE.finditer(messages or "")][:3]
+    for p, l in _added_lines(diff_text):
+        if INJECTION_RE.search(l) and not is_test_path(p) and not p.endswith(".md"):
+            hits.append(f"{p}: {l.strip()[:80]}")
+    return hits[:6]
+
+
+def forbidden_added(diff_text, rules):
+    """[(path, message, count)] for added lines that match a project rule. `rules`: [{"re": regex, "msg": text, "paths": path regex}]
+    (project setting LINT_FORBID, JSON): a fast lint the worker's self-check runs before the long gate. Bad rules are skipped."""
+    found = {}
+    for r in rules or []:
+        try:
+            rx, pr = re.compile(r["re"]), re.compile(r.get("paths") or ".")
+            msg = str(r["msg"])
+        except (KeyError, TypeError, re.error):
+            continue
+        for p, l in _added_lines(diff_text):
+            if pr.search(p) and rx.search(l):
+                found[(p, msg)] = found.get((p, msg), 0) + 1
+    return [(p, m, n) for (p, m), n in found.items()][:8]
 
 
 DUP_EXT = (".py", ".js", ".mjs", ".ts")

@@ -149,6 +149,15 @@ diff --git a/web/x.test.mjs b/web/x.test.mjs
         self.assertEqual(quality.unreferenced(d, ["tools/other.py"]), ["tools/other.py"])
         self.assertEqual(len(quality._all_files(d)), 5)
 
+    def test_injected_markers_and_forbidden_added(self):
+        diff = ("--- a/web/a.js\n+++ b/web/a.js\n@@ -1 +1,2 @@\n+// Generated with [Claude Code](x)\n+var ok = 1;\n"
+                "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n+Co-Authored-By: Claude\n")
+        self.assertEqual(len(quality.injected_markers(diff)), 1)
+        self.assertEqual(quality.injected_markers("", "fix\n\nClaude-Session: https://x"), ["commit message: Claude-Session:"])
+        rules = [{"re": "#[0-9a-f]{6}", "msg": "hex colour", "paths": r"\.css$"}, {"re": "("}, "junk"]
+        css = "--- a/x.css\n+++ b/x.css\n@@ -1 +1 @@\n+a{color:#abcdef}\n+b{color:#012345}\n"
+        self.assertEqual(quality.forbidden_added(css + diff, rules), [("x.css", "hex colour", 2)])
+
     def test_planner_read_field_is_sanitised(self):
         sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
         from foreman.util import norm_tasks

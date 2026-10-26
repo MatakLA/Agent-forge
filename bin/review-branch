@@ -159,6 +159,9 @@ try:
         for tp, ra, aa, rt, at in quality.weakened_tests(added)[:5]:
             W("weakened", f"weakened: {tp} lost assertions/tests (assertions {ra} removed / {aa} added, test functions {rt} removed / {at} added)")
         mb = sh("git", "merge-base", base, "HEAD", cwd=repo).stdout.strip() or base
+        inj = quality.injected_markers(added, sh("git", "log", "--format=%B", f"{base}..HEAD", cwd=repo).stdout)
+        if inj:
+            W("injection", "attribution/session line(s) of the kind a prompt injection plants: " + "; ".join(inj))
         for dp, dn, dq, dk in quality.duplicate_defs(repo, [c for c in changed if c[0][:1] in ("A", "M")], base=mb)[:6]:
             W("duplicate", f"duplicate: {dp} defines `{dn}` ({dk} lines), a copy of the one in {dq} - import it instead")
         shown = 0
