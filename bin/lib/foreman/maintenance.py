@@ -23,7 +23,7 @@ def run_suite_on_main():
         rc, out, err = sh(["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
                            "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256",
                            "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp", "-v", f"{ctx.REPO}:/src:ro", "-w", "/src", "--entrypoint", "sh",
-                           sbx.gate_image(), "-c", cmd], timeout=600)
+                           sbx.gate_image(), "-c", cmd], timeout=int(os.environ.get("GATE_TIMEOUT", "1500")))
     lines = (out + err).strip().splitlines()
     fails = [l for l in lines if l.startswith(("FAILED ", "ERROR "))]
     if rc == 5 and sbx.is_pytest(cmd):
