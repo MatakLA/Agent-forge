@@ -99,7 +99,7 @@ function teamHtml() {
     return '<div class="step"><span class="dot think"></span>' + esc(what) + (obj ? ' — ' + obj : '') + (s.since ? ' <span class="muted">(' + ago(s.since) + ')</span>' : '') + '</div>';
   }).join('');
   const orch = '<div class="node orch"><div class="node-title"><span class="dot ' + (steps ? 'think' : '') + '"></span>Orchestrator</div>' +
-    '<div class="node-sub">' + (F.claude_until ? 'Claude via Antigravity (substitute)' : 'Claude Code') + ' · plans, reviews, merges</div>' +
+    '<div class="node-sub">' + esc(F.orchestrator || (F.claude_until ? 'Claude via Antigravity (substitute)' : 'Claude Code')) + ' · plans, reviews, merges</div>' +
     (steps || '<div class="node-sub">idle — waiting for the workers</div>') +
     (live.unavailable ? '<div class="step warn">waiting: ' + esc(live.unavailable) + '</div>' : '') + '</div>';
   const names = new Set([...(F.pool || []), ...Object.keys(R).filter(k => k.startsWith('worker:')).map(k => k.slice(7))].filter(inPool));

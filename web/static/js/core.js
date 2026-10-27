@@ -388,7 +388,7 @@ function pills() {
     esc(F.killswitch.reason || '') + '</span><button class="primary sm" data-act="resume">Continue</button>');
   else if (F.paused) p.push('<span class="pill warn">paused</span><button class="mini" data-fix="resume">Resume</button>');
   else p.push('<span class="pill ok"><span class="dot running"></span>running</span>');
-  if (F.claude_until) p.push('<span class="pill warn" title="Claude Code is out of usage; Claude via Antigravity substitutes">orchestrator: substitute until ' + tfmt(F.claude_until) + '</span>');
+  if (F.claude_until && (F.orchestrator_provider || 'claude-cli') === 'claude-cli') p.push('<span class="pill warn" title="Claude Code is out of usage; Claude via Antigravity substitutes">orchestrator: substitute until ' + tfmt(F.claude_until) + '</span>');
   if (!F.autopilot) p.push('<span class="pill" title="The team does not pick goals from the vision by itself">autopilot off</span>');
   if (F.forge && (F.forge.kind === 'github' || F.forge.kind === 'gitlab')) p.push('<span class="pill">' + (F.forge.kind === 'github' ? 'GitHub' : 'GitLab') + ': ' + esc(F.forge.repo) + '</span>');
   if (F.api && (F.api.workers || []).length) p.push('<span class="pill' + (F.api.spent_today >= F.api.budget ? ' bad' : '') + '">API today ' + usd(F.api.spent_today) + ' / ' + usd(F.api.budget) + '</span>');
