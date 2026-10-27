@@ -7,6 +7,23 @@
 # - All shell variables are quoted to prevent command or argument injection.
 set -euo pipefail
 
+if [ -z "${VISUAL_CMD:-}" ]; then
+  for cfg in "${VISUAL_CONF:-}" /etc/foreman.conf /etc/agent-forge/foreman.conf /etc/worker.conf; do
+    if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+      val="$(sed -n 's/^[[:space:]]*VISUAL_CMD[[:space:]]*=[[:space:]]*//p' "$cfg" | head -1 | tr -d '\r\n' || true)"
+      if [ -n "$val" ]; then
+        val="${val#\"}"
+        val="${val%\"}"
+        val="${val#\'}"
+        val="${val%\'}"
+        VISUAL_CMD="$val"
+        break
+      fi
+    fi
+  done
+fi
+[ -n "${VISUAL_CMD:-}" ] && export VISUAL_CMD
+
 if [ "$(id -u)" -eq 0 ]; then
   TARGET_USER="${WORKER_USER:-worker}"
   if id "$TARGET_USER" >/dev/null 2>&1; then

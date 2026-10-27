@@ -1,15 +1,77 @@
 #!/bin/bash
-# af-agent <runtime> <cli arguments...>  -- runs an API agent CLI (claude | codex | gemini | compat | aider) inside a worker
-# container. The key comes from the read-only mount /run/secrets/api-key and is put into THIS process's environment only: it never
-# appears in a command line (visible in /proc) or in the run's logs. Telemetry, update checks and every network call the run does
-# not need are switched off, so the egress proxy only ever sees the provider's API host.
+# af-agent <runtime|self-check> <cli arguments...>  -- runs an API agent CLI (claude | codex | gemini | compat | aider)
+# or worker self-check sequence inside a worker container. The key comes from the read-only mount /run/secrets/api-key
+# and is put into THIS process's environment only: it never appears in a command line (visible in /proc) or in the run's
+# logs. Telemetry, update checks and every network call the run does not need are switched off, so the egress proxy only
+# ever sees the provider's API host.
 # compat / aider talk to the owner's model server: AF_ENDPOINT (its OpenAI-compatible base URL, from COMPAT_BASE_URL, set by
 # bin/run-supervisor); the key is optional there (a local Ollama needs none).
 # AF_BASE_URL (set by bin/run-supervisor only in test mode) points the CLI at a fake API server.
 set -euo pipefail
-rt="${1:?usage: af-agent claude|codex|gemini|compat|aider args...}"; shift
+
+# ---- self-check execution block run before completing a task (under SELF_CHECK_ROUNDS)
+run_self_check() {
+  local rounds="${SELF_CHECK_ROUNDS:-1}"
+  if ! [[ "$rounds" =~ ^[0-9]+$ ]] || [ "$rounds" -le 0 ]; then
+    return 0
+  fi
+  local test_cmd="${AF_TEST_CMD:-${TEST_CMD:-}}"
+  if [ $# -gt 0 ] && [ -n "${1:-}" ]; then
+    test_cmd="$1"
+  fi
+  local rc=0
+
+  for ((round=1; round<=rounds; round++)); do
+    # Visual self-check if VISUAL_CMD is defined and non-empty
+    if [ -n "${VISUAL_CMD:-}" ]; then
+      local visual_out visual_rc
+      set +e
+      visual_out="$(eval "$VISUAL_CMD" 2>&1)"
+      visual_rc=$?
+      set -e
+      if [ "$visual_rc" -ne 0 ]; then
+        local output_tail
+        output_tail="$(printf '%s\n' "$visual_out" | tail -n 60)"
+        printf 'Visual self-check failed (exit code %s):\n%s\n' "$visual_rc" "$output_tail"
+        return "$visual_rc"
+      fi
+    fi
+
+    # Existing self-check rounds
+    if [ -n "$test_cmd" ]; then
+      set +e
+      eval "$test_cmd"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ]; then
+        return "$rc"
+      fi
+    fi
+  done
+  return 0
+}
+
+run_agent() {
+  if [ "${SELF_CHECK_ROUNDS:-0}" -gt 0 ] 2>/dev/null; then
+    set +e
+    "$@"
+    local agent_rc=$?
+    set -e
+    if [ "$agent_rc" -eq 0 ]; then
+      run_self_check
+      return $?
+    fi
+    return "$agent_rc"
+  else
+    exec "$@"
+  fi
+}
+
+rt="${1:?usage: af-agent claude|codex|gemini|compat|aider|self-check args...}"; shift
 key="$(cat /run/secrets/api-key 2>/dev/null || true)"
 case "$rt" in
+  self-check|self_check|--self-check)
+    ;;
   compat|aider)
     [ "$key" = none ] && key=""
     url="${AF_ENDPOINT:-}"
@@ -19,24 +81,27 @@ case "$rt" in
     [ -n "$key" ] || { echo "af-agent: no API key at /run/secrets/api-key (bin/secret-set <provider>.key, then bin/worker-up N)" >&2; exit 78; } ;;
 esac
 case "$rt" in
+  self-check|self_check|--self-check)
+    run_self_check "$@"
+    exit $? ;;
   claude)
     export ANTHROPIC_API_KEY="$key" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 \
            DISABLE_ERROR_REPORTING=1 DISABLE_BUG_COMMAND=1
     if [ -n "${AF_BASE_URL:-}" ]; then export ANTHROPIC_BASE_URL="$AF_BASE_URL"; fi
-    exec claude "$@" ;;
+    run_agent claude "$@" ;;
   codex)
     export OPENAI_API_KEY="$key" CODEX_API_KEY="$key"
     if [ -n "${AF_BASE_URL:-}" ] && [ "${1:-}" = "exec" ]; then
       shift
-      exec codex exec -c model_provider=af -c "model_providers.af={name=\"af\", base_url=\"${AF_BASE_URL}/v1\", env_key=\"OPENAI_API_KEY\", wire_api=\"responses\"}" "$@"
+      run_agent codex exec -c model_provider=af -c "model_providers.af={name=\"af\", base_url=\"${AF_BASE_URL}/v1\", env_key=\"OPENAI_API_KEY\", wire_api=\"responses\"}" "$@"
     fi
-    exec codex "$@" ;;
+    run_agent codex "$@" ;;
   compat)
     # Codex with a custom provider: the owner's server must speak the OpenAI Responses API (Ollama, vLLM, LM Studio, OpenRouter
     # do; Codex dropped the chat-completions API - use the aider runtime for servers that only have that)
     export AF_ENDPOINT_KEY="${key:-none}"
     [ "${1:-}" = "exec" ] && shift
-    exec codex exec -c model_provider=af-endpoint \
+    run_agent codex exec -c model_provider=af-endpoint \
       -c "model_providers.af-endpoint={name=\"model server\", base_url=\"${url}\", env_key=\"AF_ENDPOINT_KEY\", wire_api=\"responses\"}" "$@" ;;
   aider)
     # Aider: litellm's OpenAI provider against the server's /chat/completions. The model price table and tokenizers come from
@@ -58,7 +123,7 @@ case "$rt" in
       extra+=(--model-metadata-file "$hist/model-metadata.json")
     fi
     if [ -n "${AF_TEST_CMD:-}" ]; then extra+=(--auto-test --test-cmd "$AF_TEST_CMD"); fi
-    exec python3 /usr/local/lib/af-aider-events "$slug" aider "$@" "${extra[@]}" ;;
+    run_agent python3 /usr/local/lib/af-aider-events "$slug" aider "$@" "${extra[@]}" ;;
   gemini)
     export GEMINI_API_KEY="$key"
     if [ -n "${AF_BASE_URL:-}" ]; then export GOOGLE_GEMINI_BASE_URL="$AF_BASE_URL"; fi
@@ -67,6 +132,6 @@ case "$rt" in
     [ -f "$HOME/.gemini/settings.json" ] || printf '%s\n' \
       '{"security":{"auth":{"selectedType":"gemini-api-key"}},"privacy":{"usageStatisticsEnabled":false},"general":{"disableAutoUpdate":true,"disableUpdateNag":true}}' \
       > "$HOME/.gemini/settings.json"
-    exec gemini "$@" ;;
+    run_agent gemini "$@" ;;
   *) echo "af-agent: unknown runtime $rt" >&2; exit 2 ;;
 esac

@@ -279,6 +279,17 @@ PANES_LOCK = threading.Lock()
 RETIRED = {}
 
 
+ORCH_LABEL = {"claude-cli": "Claude Code", "agy-claude": "Claude via Antigravity", "agy-gemini": "Gemini via Antigravity",
+              "anthropic-api": "Anthropic API", "openai-api": "OpenAI API", "gemini-api": "Gemini API"}
+
+
+def orchestrator_provider():
+    """Provider that answered the foreman's last plan/review call (state.json orch_last), or "" when unknown."""
+    out = ssh_run(f"grep -o '\"orch_last\": *\"[^\"]*\"' {FORGE_DIR}/runs/foreman/state.json 2>/dev/null").strip()
+    m = re.search(r'"orch_last":\s*"([^"]*)"', out)
+    return m.group(1) if m else ""
+
+
 def discover_orchestrator():
     """The orchestrator's Claude Code session (if one runs next to Agent-Forge): the newest transcript of CLAUDE_PROJECT."""
     out = ssh_run(f"ls -t ~/.claude/projects/{CLAUDE_PROJECT}/*.jsonl 2>/dev/null | head -1").strip()
@@ -376,10 +387,21 @@ def discover_loop():
 
 def _discover_once():
     wanted = {}
-    orch = discover_orchestrator()
-    if orch:
-        sid, path, running, tail_argv = orch
-        wanted["orchestrator"] = ("Orchestrator (Claude Code)", "orchestrator", path, render_orchestrator_line, running, tail_argv)
+    prov = orchestrator_provider()
+    base = prov.split(":")[0]
+    if base and base != "claude-cli":
+        # the foreman plans/reviews through another provider: the Claude Code transcript would be a stale, different session
+        label = ORCH_LABEL.get(base, base) + (" (" + prov.split(":", 1)[1] + ")" if ":" in prov else "")
+        ROSTER.touch("orchestrator", title="Orchestrator (" + label + ")", kind="orchestrator", state="idle")
+        with PANES_LOCK:
+            old = PANES.pop("orchestrator", None)
+        if old:
+            old.stop()
+    else:
+        orch = discover_orchestrator()
+        if orch:
+            sid, path, running, tail_argv = orch
+            wanted["orchestrator"] = ("Orchestrator (Claude Code)", "orchestrator", path, render_orchestrator_line, running, tail_argv)
 
     latest, all_workers = discover_workers()
     for worker, (run_name, run_dir) in latest.items():

@@ -213,7 +213,9 @@ for t in tests/test_cost_model_reporting.py \
          tests/test_self_check.py \
          tests/test_settings_conf_audit.py \
          tests/test_settings_egress_validation.py \
-         tests/test_settings_providers.py; do
+         tests/test_settings_providers.py \
+         tests/test_visual_engine.py \
+         tests/test_visual_gate_docker.py; do
   case "$t" in
     *.sh) out="$(bash "$t" 2>&1)" ;;
     *) out="$($PY "$t" 2>&1)" ;;

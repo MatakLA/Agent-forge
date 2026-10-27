@@ -280,6 +280,35 @@ def parse_and_validate(text, schema_str):
     return data
 
 
+def _remember_orchestrator(provider, who):
+    """Which provider answered last, so the dashboard shows the real orchestrator instead of a fixed 'Claude Code'."""
+    try:
+        if gstate().get("orch_last") != who:
+            with state_tx() as s2:
+                s2["orch_last"] = who
+    except Exception:
+        pass
+
+
+PROVIDER_LABEL = {"claude-cli": "Claude Code", "agy-claude": "Claude via Antigravity", "agy-gemini": "Gemini via Antigravity",
+                  "anthropic-api": "Anthropic API", "openai-api": "OpenAI API", "gemini-api": "Gemini API"}
+
+
+def orchestrator_label():
+    """Label of the orchestrator in use: the provider that answered last if it is still configured, else the first configured one
+    that is not cooling down."""
+    st, now = gstate(), time.time()
+    configured = providers_for("plan") + providers_for("review")
+    last = str(st.get("orch_last") or "")
+    base = last.split(":")[0]
+    if base and base in configured and not (base == "claude-cli" and st.get("claude_until", 0) > now):
+        name = base
+    else:
+        name = next((p for p in configured if not (p == "claude-cli" and st.get("claude_until", 0) > now)), configured[0] if configured else "claude-cli")
+    label = PROVIDER_LABEL.get(name, name)
+    return name, (label + (" (" + last.split(":", 1)[1] + ")" if ":" in last and last.split(":")[0] == name else ""))
+
+
 def _llm_inner(kind, prompt, subject=""):
     KIND.k, KIND.subject = kind, subject
     system = load_system_prompt()
@@ -303,6 +332,7 @@ def _llm_inner(kind, prompt, subject=""):
         except Exception:
             continue
         if text and parse_and_validate(text, schema) is not None:
+            _remember_orchestrator(p, who)
             return text, who
     raise Unavailable(_sanitize_secrets(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})"))
 

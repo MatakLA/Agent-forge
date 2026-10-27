@@ -51,7 +51,7 @@ const PAGEKEYS = {
     'WORKER_MODEL WORKER_MODEL_RISKY WORKER_MODEL_LIGHT LIGHT_ROLES WORKER_MODEL_CLAUDE WORKER_MODEL_CODEX WORKER_MODEL_GEMINI WORKER_MODEL_COMPAT WORKER_MODEL_AIDER ' +
     'MODEL_ROUTING ROUTING_MIN_TASKS ROUTING_MIN_FIRST_PASS AB_MODEL AB_SHARE CONTEXT_PACK CONTEXT_PACK_CHARS',
   project: 'UPSTREAM_BRANCH UPSTREAM_MERGE APPROVE AUTOPILOT AUTO_MERGE CONTINUE_CONVERSATIONS PLAN_AHEAD MAINTENANCE OWNER_LANG TASK_LANG PRODUCT_LANG DOCS_LANG LOCAL_TZ PROJECT_DIR VISION_FILE SHARED_FILES ' +
-    'TEST_CMD GATE_IMAGE NOTIFY_URL NOTIFY_FORMAT NOTIFY_EVENTS',
+    'TEST_CMD GATE_IMAGE VISUAL_CMD VISUAL_IMAGE VISUAL_TIMEOUT_SEC NOTIFY_URL NOTIFY_FORMAT NOTIFY_EVENTS',
   money: 'API_RUN_BUDGET_USD API_DAILY_BUDGET_USD API_MONTHLY_BUDGET_USD PROJECT_DAILY_BUDGET_USD PROJECT_MONTHLY_BUDGET_USD WORKER_DAILY_BUDGET_USD RUN_MAX_TOOL_CALLS PRICE_CODEX PRICE_GEMINI PRICE_COMPAT',
   limits: 'MAX_PARALLEL RUN_TOKEN_CAP RUN_TIMEOUT_MIN RUN_TIMEOUT_MAX_MIN DAILY_TOKEN_BUDGET MAX_RUNS_PER_DAY QUOTA_MODEL_FILTER QUOTA_MIN_5H_PCT QUOTA_MIN_WEEK_PCT CONSEC_FAIL_TRIP POLL_SEC',
   advanced: 'LOOP_SEC ORPHAN_LIMIT ORPHAN_WARN TASK_TOKEN_BUDGET MAX_TASK_FILES SELF_CHECK_ROUNDS MAX_REWORK SPLIT_AFTER_CAPS MAX_ACTIVE_GOALS MAX_GOAL_ROUNDS DIFF_MAX LESSONS_MAX RUNS_KEEP_DAYS ' +
@@ -76,7 +76,7 @@ const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who re
   CONTEXT_PACK: 'Code summary in each task', CONTEXT_PACK_CHARS: 'Summary size, at most (characters)',
   QUALITY_CHECK: 'Quality checks', TEST_RATIO_MAX: 'Test code per code line, at most', MAX_FILE_LINES: 'Source file length, at most (lines)',
   ORIENT: 'Tell the worker where it stands', PACK_EXTRAS: 'Line spans and usages in the summary', PROMPT_ORDER: 'Order of the worker prompt', AB_MODEL: 'Model to compare', AB_SHARE: 'Share of tasks on it (%)',
-  TEST_CMD: 'Test command', GATE_IMAGE: 'Test image', NOTIFY_URL: 'Send notifications to', NOTIFY_FORMAT: 'Message format', NOTIFY_EVENTS: 'Tell me when',
+  TEST_CMD: 'Test command', GATE_IMAGE: 'Test image', VISUAL_CMD: 'Visual check command', VISUAL_IMAGE: 'Visual check image', VISUAL_TIMEOUT_SEC: 'Visual check time limit (s)', NOTIFY_URL: 'Send notifications to', NOTIFY_FORMAT: 'Message format', NOTIFY_EVENTS: 'Tell me when',
   RUNS_KEEP_DAYS: 'Compress run transcripts after (days)', API_WORKERS_POLICY: 'When API workers get work',
   WORKER_MODEL_CLAUDE: 'Claude Code worker model', WORKER_MODEL_CODEX: 'Codex worker model', WORKER_MODEL_GEMINI: 'Gemini CLI worker model',
   WORKER_MODEL_COMPAT: 'Model on your server (Codex)', WORKER_MODEL_AIDER: 'Model on your server (Aider)', COMPAT_BASE_URL: 'Address of your model server',
@@ -149,6 +149,9 @@ const HELP = {
   MAINTENANCE: 'While idle, run the tests on main (no AI involved) and report problems.',
   TEST_CMD: 'Runs the project\'s tests - in the gate, in the worker\'s self-check and on main. Empty = pytest.',
   GATE_IMAGE: 'The Docker image the tests run in. Empty = the worker image.',
+  VISUAL_CMD: 'Optional check of the rendered UI after the tests pass: runs offline in a second container, may save screenshots to /out. Empty = off.',
+  VISUAL_IMAGE: 'The Docker image the visual check runs in (needs a browser). Empty = the test image.',
+  VISUAL_TIMEOUT_SEC: 'The visual check is stopped after this many seconds (10-1800).',
   RUNS_KEEP_DAYS: 'Run transcripts older than this are compressed to save disk space.',
   NOTIFY_URL: 'Where notifications go: an ntfy topic address, a Slack or Discord webhook, or “outbox” (the foreman appends to a file that something else of yours forwards). Empty = no notifications.',
   NOTIFY_FORMAT: 'How the message is written for that service. Chosen for you when the address is a Slack or Discord webhook.',
@@ -582,7 +585,8 @@ function pageProject() {
       th('settings.appearance_desc', 'Changes are applied immediately and saved in your browser. Custom dictionaries live in web/static/locales/<name>.json.')) +
     card('Files', field('PROJECT_DIR', txt('PROJECT_DIR')) + field('VISION_FILE', txt('VISION_FILE', 'docs/vision.md')) + field('SHARED_FILES', txt('SHARED_FILES')),
       'Paths inside the repository.') +
-    card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q')) + field('GATE_IMAGE', txt('GATE_IMAGE')),
+    card('Tests', field('TEST_CMD', txt('TEST_CMD', 'python3 -m pytest -q')) + field('GATE_IMAGE', txt('GATE_IMAGE')) +
+      field('VISUAL_CMD', txt('VISUAL_CMD')) + field('VISUAL_IMAGE', txt('VISUAL_IMAGE')) + field('VISUAL_TIMEOUT_SEC', txt('VISUAL_TIMEOUT_SEC', '300')),
       'The same command runs in the merge gate, in the worker\'s self-check and in the maintenance of main.') +
     card('Notifications', field('NOTIFY_URL', txt('NOTIFY_URL', 'https://ntfy.sh/your-topic')) + field('NOTIFY_FORMAT', sel('NOTIFY_FORMAT', ['ntfy', 'slack', 'discord', 'json'])) +
       keyRow('notify.token', 'Access token', 'only for a ntfy server that asks for a login') + field('NOTIFY_EVENTS', multi('NOTIFY_EVENTS', EVENTS)),

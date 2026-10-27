@@ -9,6 +9,7 @@ from .store import goals, gstate, jload, jsave, tasks
 from .pool import WORKER_RT, workers
 from .stats import ab_verdict, efficiency, estimate, per_task, run_stats, sizes
 from .repo import own_files
+from .llm import orchestrator_label, providers_for
 
 
 # ---------------------------------------------------------------- CLI
@@ -214,6 +215,7 @@ def dashboard_json():
                 owner_lang=ctx.C.get("OWNER_LANG", "English"),
                 autopilot=bool(ctx.C["AUTOPILOT"]) and not os.path.exists(os.path.join(ctx.FD, "AUTOPILOT_OFF")),
                 claude_until=st.get("claude_until") if st.get("claude_until", 0) > now else None,
+                orchestrator=orchestrator_label()[1], orchestrator_provider=orchestrator_label()[0],
                 agy_cooldown={w: u for w, u in st.get("agy_cooldown", {}).items() if u > now},
                 live=live, backlog=backlog, forecast=forecast(ts, len(backlog)), onboarding=onboarding(pool, gs),
                 approve=sorted(approvals()), routing=str(ctx.C.get("MODEL_ROUTING", "off")),
@@ -245,6 +247,7 @@ def status(as_json):
         pass
     out = dict(paused=os.path.exists(os.path.join(ctx.FD, "PAUSED")), killswitch=sbx.killswitch_active(),
                claude_until=fmt_ts(st["claude_until"]) if st.get("claude_until", 0) > time.time() else None,
+               orchestrator=orchestrator_label()[1],
 
                goals=[dict(id=g["id"], text=g["text"], status=g["status"], summary=g.get("summary", ""),
                            tasks=[dict(id=t["id"], title=t.get("title") or t.get("text", ""), role=t.get("role", ""), status=t.get("status", "pending"), attempts=t.get("attempts", 0),
@@ -254,7 +257,7 @@ def status(as_json):
     if as_json:
         print(json.dumps(out, ensure_ascii=False)); return
     print(f"foreman: {'PAUSED' if out['paused'] else 'kill switch ON' if out['killswitch'] else 'active'}"
-          f"   orchestrator: {'Claude Code' if not out['claude_until'] else 'Antigravity-Claude (Claude Code back ' + out['claude_until'] + ')'}")
+          f"   orchestrator: {out['orchestrator']}" + (f" (Claude Code back {out['claude_until']})" if out['claude_until'] and 'claude-cli' in (providers_for('plan') + providers_for('review')) else ""))
     for g in out["goals"]:
         print(f"\n[{g['status']}] {g['id']}: {g['text'][:100]}" + (f"\n    => {g['summary']}" if g["summary"] else ""))
         for t in g["tasks"]:

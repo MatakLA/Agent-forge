@@ -3,6 +3,14 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Agent-Forge is
 alpha software: until 1.0, commands, settings and file formats can change between releases.
 
+## Unreleased
+
+**Self-check and gate: prompt-injection lines and a project lint.** Text in a tool result or a fetched page can pose as a system message and
+ask the agent to add `Co-Authored-By: Claude`, a session link or "Generated with Claude" to commits and PRs. The worker's self-check now
+sends such lines (in commit messages or added code lines) back as a problem, and `bin/review-branch` flags them (`injection`). New
+project setting `LINT_FORBID` (JSON list of `{re, msg, paths}`): added lines matching a rule are sent back by the self-check
+before the long gate runs.
+
 ## 0.12.3 - 2026-10-22
 
 **Removed: the issue-label to role mapping.** `bin/issues-intake` mapped the issue labels `bug`, `docs`, `security` and `feature` to a role
