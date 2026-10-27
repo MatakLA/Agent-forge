@@ -128,12 +128,25 @@ KIND = _Kind()           # the decision kind (plan/review/...) of the LLM call r
 LAST_LLM = {}
 
 
+def _remaining(rows, family):
+    """Lowest remaining % over both windows of a model family; 100 when the account shows no rows for it (nothing used yet)."""
+    vals = [p for p in (quota_pct(rows, family, "five hour"), quota_pct(rows, family, "week")) if p >= 0]
+    return min(vals) if vals else 100.0
+
+
+def _orch_score(rows, family):
+    """Prefer the account with the most quota left in the family the orchestrator uses AND the least left in the other family,
+    so the orchestrator's calls land on workers whose other quota is the least useful for tasks (task workers are gated on Gemini)."""
+    other = "gemini" if family == "claude" else "claude"
+    return _remaining(rows, family) - _remaining(rows, other)
+
+
 def _via_agy(kind, prompt, family):
     model = (ctx.C["AGY_REVIEW_MODEL"] if kind in ("review", "diagnose") else ctx.C["AGY_PLAN_MODEL"]) if family == "claude" else ctx.C["AGY_FALLBACK_MODEL"]
     st, now = gstate(), time.time()
     cd = st.get("agy_cooldown", {})
     cand = [w for w in workers() if runtime_of(w) == "agy" and cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
-    cand = order_by_quota(cand, lambda w: quota_pct(quota_rows(w), family), LAST_LLM)
+    cand = order_by_quota(cand, lambda w: _orch_score(quota_rows(w), family), LAST_LLM)
     for w in cand:
         idle = not worker_busy(w)
         if idle:
