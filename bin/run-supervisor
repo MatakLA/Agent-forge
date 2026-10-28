@@ -532,6 +532,9 @@ if not runner:
         prompt = prompt.replace(sbx.START_MARKER, start_state(br, r))
     else:
         prompt = prompt.replace(sbx.START_MARKER, "")
+    pr = sh("docker", "exec", W, "bash", "-c", "for t in " + " ".join(sbx.PROBE_TOOLS) + "; do command -v $t >/dev/null 2>&1 || echo $t; done")
+    if pr.returncode == 0:
+        prompt += sbx.missing_tools_note(pr.stdout.split())
     cmd = agent_cmd(prompt, m.get("conversation"))   # a rework may continue the worker's own conversation
 else:
     inner = ['setsid', '--wait', 'bash', '-c', 'echo $$ > /tmp/run.sid; exec bash -c "$1"', '_', runner]

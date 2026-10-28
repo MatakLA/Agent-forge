@@ -46,6 +46,20 @@ PROJECT = os.environ.get("FORGE_PROJECT", "")
 if PROJECT and not PROJECT_RE.fullmatch(PROJECT):
     raise SystemExit(f"invalid FORGE_PROJECT {PROJECT!r} (lowercase letters, digits, dashes)")
 START_MARKER = "<!-- start-state -->"          # a worker prompt carries it where the supervisor writes the clone's start state (ORIENT=on)
+PROBE_TOOLS = ("node", "npm")        # tools a worker burns steps hunting for (which / find / nvm) when a task's tests need them and the image lacks them
+
+
+def missing_tools_note(missing):
+    """The prompt block that tells the agent which of PROBE_TOOLS its container lacks, so it does not spend steps looking for them
+    (measured: 7 % of all tool calls, 79 of 100 runs). Empty when nothing is missing."""
+    missing = [t for t in missing if t in PROBE_TOOLS]
+    if not missing:
+        return ""
+    return ("\n## Tools in this container (checked by the supervisor, current)\n"
+            f"Not installed: {', '.join(missing)}. Do not look for them (`which`, `find /`, `nvm`, `dpkg`) and do not try to install them: there is "
+            "no network. A test that needs them cannot run here - do not try; write it carefully from the code you read and finish the rest.\n")
+
+
 WORKER_CLONE = f"/home/worker/work/{PROJECT}" if PROJECT else "/home/worker/playground"
 SECRETS = os.path.expanduser(os.environ.get("SANDBOX_SECRETS") or "~/.config/sandbox/secrets")
 

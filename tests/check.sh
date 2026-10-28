@@ -191,7 +191,7 @@ fi
 if [ -f tests/test_creatable_runtimes.py ]; then
   $PY tests/test_creatable_runtimes.py || exit 1
 fi
-for t in tests/test_cost_model_reporting.py \
+for t in tests/test_tools_note.py tests/test_cost_model_reporting.py \
          tests/test_dashboard_backend.py \
          tests/test_doctor_egress_hosts.py \
          tests/test_doctor_providers.py \
