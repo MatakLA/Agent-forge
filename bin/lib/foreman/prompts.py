@@ -264,7 +264,8 @@ def rules_block(t):
   `run_command` (`sed -n '10,40p' a.py; sed -n '5,30p' b.py; grep -n foo c.py`) and make all edits of one file in one call. Read a file longer
   than 300 lines in parts (`sed -n 'A,Bp'`, the pack's `[L12-40]` spans), never `cat` it whole; do not re-read what the context pack above
   already shows or what you read earlier; run tests quietly (`pytest -q -x --tb=short 2>&1 | tail -40`) and look at the full output only
-  for a failure; do not `ls -R` or `find` the repo - the pack has the map.
+  for a failure; do not `ls -R` or `find` the repo - the pack has the map. Give every test command `WaitMsBeforeAsync` 180000: it then returns
+  the result in that one call; with the usual 5000 it goes to the background and you pay a `manage_task` call for every poll.
 - Never fake it: no skip/xfail, no detecting tests or callers, no weakened or deleted assertions, no editing existing tests just to make them pass.
 - Every module you create starts with a docstring: what it is for, its public interface, important invariants (3-8 lines). When you
   change a module, keep its docstring true. The team's code map is generated from these docstrings - it is how others find your code.
