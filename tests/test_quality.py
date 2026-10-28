@@ -75,6 +75,9 @@ diff --git a/web/x.test.mjs b/web/x.test.mjs
         self.assertEqual(sorted(got), ["t/test_a.py", "web/x.test.mjs"])
         self.assertEqual(got["t/test_a.py"], (2, 1, 1, 1))
         self.assertEqual(got["web/x.test.mjs"], (1, 0, 1, 0))
+        msg = quality.weakened_message(quality.weakened_tests(d))
+        self.assertIn("t/test_a.py: -2/+1 assertions", msg)
+        self.assertEqual(quality.weakened_message([]), "")
 
     def _repo(self, files):
         d = tempfile.mkdtemp()

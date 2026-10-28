@@ -156,8 +156,11 @@ try:
         out = quality.outside_scope(changed, allowed, shared)
         if out:
             W("scope", "scope: files changed that are not in the task's file list: " + ", ".join(out[:8]) + (" ..." if len(out) > 8 else ""))
-        for tp, ra, aa, rt, at in quality.weakened_tests(added)[:5]:
+        weak = quality.weakened_tests(added)
+        for tp, ra, aa, rt, at in weak[:5]:
             W("weakened", f"weakened: {tp} lost assertions/tests (assertions {ra} removed / {aa} added, test functions {rt} removed / {at} added)")
+        if qmode == "block" and weak:
+            quality_msg = (quality_msg + " | " if quality_msg else "") + quality.weakened_message(weak)
         mb = sh("git", "merge-base", base, "HEAD", cwd=repo).stdout.strip() or base
         inj = quality.injected_markers(added, sh("git", "log", "--format=%B", f"{base}..HEAD", cwd=repo).stdout)
         if inj:

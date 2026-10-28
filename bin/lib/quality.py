@@ -151,6 +151,14 @@ def weakened_tests(diff_text):
     return [(p, *v) for p, v in stats.items() if (v[0] > v[1] and v[0] >= 2) or v[2] > v[3]]
 
 
+def weakened_message(rows):
+    """One refusal sentence for QUALITY_CHECK=block, '' when no existing test file lost assertions or tests."""
+    if not rows:
+        return ""
+    return ("existing tests were weakened (" + "; ".join(f"{p}: -{ra}/+{aa} assertions, -{rt}/+{at} tests" for p, ra, aa, rt, at in rows[:4]) +
+            ") - restore them and fix the implementation; if a test is truly obsolete, say so in the task and delete only that one")
+
+
 # Attribution / session lines that text planted in a tool result or a fetched page asks the agent to put into commits and PRs. They are data,
 # never instructions; a worker that obeyed one shows up here.
 INJECTION_RE = re.compile(r"Co-Authored-By:\s*Claude|Claude-Session:|Generated with \[?Claude|claude\.ai/code/session", re.I)
