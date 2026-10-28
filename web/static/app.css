@@ -100,6 +100,7 @@ h4 { font-size:13px; margin:12px 0 6px; }
 .ask textarea { width:100%; min-height:56px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:14px; resize:vertical; }
 .newgoal { margin-bottom:4px; } #goal-text { min-height:64px; }
 .askbox { margin-top:18px; } .askbox summary { cursor:pointer; color:var(--muted); font-size:13px; margin-bottom:8px; }
+.askbox #ask-a { max-height:50vh; overflow-y:auto; } .answer.me { border-left-color:var(--muted); color:var(--muted); }
 .answer { margin-top:10px; white-space:pre-wrap; font-size:13.5px; line-height:1.5; border-left:3px solid var(--accent); padding-left:10px; }
 
 /* team */

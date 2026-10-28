@@ -749,4 +749,41 @@ def test_orphan_recovery(check):
         shutil.rmtree(d, ignore_errors=True)
 
 
-GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights, test_orphan_recovery]
+def test_chat(check):
+    import shutil, tempfile
+    from . import chat as ch
+    g1 = "Add exactly the Foo and Bar runtimes, each with a doctor check; done when tests/check.sh passes."
+    a, acts = ch.parse_reply('Plan:\n- one\nACTIONS: [{"do": "goal", "text": "' + g1 + '"}, {"do": "rm", "text": "' + g1 + '"}, {"do": "backlog", "text": "short"}, "x"]')
+    check("chat: parse_reply keeps valid actions, drops unknown types, short texts and non-objects, cuts the line off",
+          a == "Plan:\n- one" and acts == [dict(do="goal", text=g1)])
+    check("chat: parse_reply without an ACTIONS line or with broken JSON queues nothing",
+          ch.parse_reply("Just talk.") == ("Just talk.", []) and ch.parse_reply("x\nACTIONS: [{bad") == ("x\nACTIONS: [{bad", []))
+    check("chat: at most 3 actions", len(ch.parse_reply("y\nACTIONS: " + json.dumps([dict(do="goal", text=g1)] * 5))[1]) == 3)
+    old_fd, old_cfg, tmp = ctx.FD, ctx.CFG_DIR, tempfile.mkdtemp(prefix="foreman-chat-")
+    real = (ch.llm, ch.context_bundle, ch.refresh_repo)
+    seen = []
+    replies = iter(["Hello, nothing to queue.", "Queued it.\nACTIONS: " + json.dumps([dict(do="goal", text=g1), dict(do="backlog", text=g1 + " Later.")])])
+    try:
+        ctx.FD = ctx.CFG_DIR = tmp; os.makedirs(os.path.join(tmp, "goals"))
+        ch.llm = lambda kind, prompt, subject="": (seen.append(prompt), (next(replies), "stub"))[1]
+        ch.context_bundle, ch.refresh_repo = (lambda: "## BUNDLE"), (lambda: None)
+        r1 = ch.chat("Hi planner")
+        r2 = ch.chat("Yes, do it")
+        h = ch.history()
+        check("chat: second turn sees the first (memory) and the bundle", "Hi planner" in seen[1] and "Hello, nothing to queue." in seen[1] and seen[1].startswith("## BUNDLE"))
+        check("chat: first turn queues nothing, second queues a goal and a backlog entry and says so",
+              r1[2] == [] and len(r2[2]) == 2 and r2[2][0].startswith("goal G") and r2[2][1] == "backlog #1" and "Queued: goal G" in r2[0])
+        gs = [f for f in os.listdir(os.path.join(tmp, "goals"))]
+        check("chat: the queued goal exists as status new; history holds 4 turns", len(gs) == 1 and jload(os.path.join(tmp, "goals", gs[0]))["status"] == "new" and len(h) == 4)
+        ch.MAX_STORED = 4
+        replies = iter(["a", "b"]); ch.chat("m3"); ch.chat("m4")
+        check("chat: stored history is capped", len(ch.history()) == 4 and ch.history()[-1]["text"] == "b")
+        ch.reset()
+        check("chat: reset clears the memory", ch.history() == [])
+    finally:
+        ch.llm, ch.context_bundle, ch.refresh_repo = real
+        ch.MAX_STORED = 80
+        ctx.FD, ctx.CFG_DIR = old_fd, old_cfg; shutil.rmtree(tmp, ignore_errors=True)
+
+
+GROUPS = [test_runtimes_egress_budgets, test_owner_and_insights, test_orphan_recovery, test_chat]

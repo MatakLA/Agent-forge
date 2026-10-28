@@ -58,7 +58,8 @@
   "btn.start_now": "Start now",
   "btn.add_backlog": "Add to backlog",
   "btn.roadmap": "Big project → roadmap",
-  "btn.ask": "Ask",
+  "btn.ask": "Send",
+  "btn.chat_reset": "New conversation",
   "btn.approve": "Approve",
   "btn.approve_plan": "Approve the plan",
   "btn.approve_merge": "Approve merge",
@@ -76,10 +77,10 @@
   "btn.finished_runs": "Finished runs…",
   "btn.lang_title": "Language",
 
-  "ask.summary": "Ask the team about the code",
+  "ask.summary": "Planner chat (remembers the conversation, can queue goals)",
 
   "placeholder.goal": "What should the team do? E.g.: Add a CSV export of expenses, with tests.",
-  "placeholder.ask": "E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses orchestrator quota)",
+  "placeholder.ask": "E.g. What should come next in module X? Queue the first three steps. (the planner knows the project; uses orchestrator quota)",
   "placeholder.search": "Search goals, tasks, events and transcripts (/)",
   "placeholder.filter_events": "filter the recent events (older ones: search ⌕)",
 

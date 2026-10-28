@@ -411,17 +411,33 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ---- ask the team (one orchestrator call, answered from the code)
+// ---- planner chat (the planner remembers the conversation and can queue goals; history is kept by the foreman)
+function chatRender(h) {
+  const out = $('ask-a');
+  out.innerHTML = (h || []).map(t => '<div class="answer' + (t.role === 'owner' ? ' me' : '') + '">' + esc(t.text || '') + '</div>').join('');
+  out.scrollTop = out.scrollHeight;
+}
+async function chatLoad() { try { chatRender(await getJSON('/api/chat')); } catch (e) { /* the chat is optional */ } }
 async function askTeam() {
   const q = $('ask-q').value.trim(), btn = $('ask-btn'), out = $('ask-a');
   if (!q) return;
-  btn.disabled = true; btn.textContent = 'The orchestrator is thinking… (1–2 min)';
+  btn.disabled = true; btn.textContent = '…';
+  out.insertAdjacentHTML('beforeend', '<div class="answer me">' + esc(q) + '</div>');
   let r;
-  try { r = await (await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: q, project})})).json(); }
+  try { r = await (await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: q, project})})).json(); }
   catch (e) { r = {answer: '(connection error: ' + e + ')'}; }
-  btn.disabled = false; btn.textContent = 'Ask';
-  out.innerHTML = '<div class="answer"><b>' + esc(q) + '</b>\n\n' + esc(r.answer || r.error || '(no answer)') + '</div>' + out.innerHTML;
+  btn.disabled = false; btn.textContent = t('btn.ask');
+  if (r.answer) $('ask-q').value = '';
+  out.insertAdjacentHTML('beforeend', '<div class="answer">' + esc(r.answer || r.error || '(no answer)') + '</div>');
+  out.scrollTop = out.scrollHeight;
+  schedule(true);
 }
 $('ask-btn').addEventListener('click', askTeam);
 $('ask-q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) askTeam(); });
+$('chat-reset').addEventListener('click', async () => {
+  await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reset: true, project})});
+  chatRender([]);
+});
+document.querySelector('.askbox').addEventListener('toggle', e => { if (e.target.open) chatLoad(); });
+projectResets.push(() => { $('ask-a').innerHTML = ''; if (document.querySelector('.askbox').open) chatLoad(); });
 projectResets.push(() => { FB_OPEN.clear(); BL_EDIT = null; OPEN_MENU.id = null; });

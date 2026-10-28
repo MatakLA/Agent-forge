@@ -15,6 +15,7 @@
        bin/foreman disk                             what takes the space (JSON)   bin/foreman cleanup compress|transcripts|docker [days]
        bin/foreman readiness                        readiness of all runtimes and providers (JSON)
        bin/foreman retry <task-id> | cancel <goal-id>          older spellings of `task <id> retry` / `goal <id> cancel`
+       echo "<message>" | bin/foreman chat          talk to the planner (it remembers the conversation and can queue goals);  chat history | reset
        bin/foreman project "<big request>"         the orchestrator turns it into a roadmap of many small goals in the backlog
        bin/foreman questions [--json]               things the roadmap could not decide without the owner
        echo "<answer>" | bin/foreman answer <n>     answer question n (goes to decisions.md, read by every later plan)
@@ -49,7 +50,7 @@ import json, os, re, sys, time
 import sbx
 
 from . import ctx, readiness
-from .store import event, jload, jsave, locked, new_goal_id, save_goal, save_task, state_tx, tasks
+from .store import event, jload, jsave, locked, save_task, state_tx, tasks
 from .jobs import INFLIGHT
 from .repo import context_pack, refresh_repo, variant
 from .llm import Unavailable
@@ -59,6 +60,7 @@ from .knowledge import doc_get, doc_list, doc_reset, doc_set
 from .maintenance import cleanup, disk_usage
 from .settings import init_project, models_cached, settings_apply, settings_get
 from .owner import GOAL_ID, TASK_ID, answer_question, ask, goal_action, task_action
+from .chat import chat, history as chat_history, queue_goal, reset as chat_reset
 from .selftest import selftest
 
 
@@ -125,11 +127,7 @@ def main():
     if a[:2] == ["questions", "--json"]:
         print(json.dumps(jload(os.path.join(ctx.FD, "owner_questions.json"), []), ensure_ascii=False)); return
     if a[:1] == ["goal"] and len(a) == 2 and a[1].strip():
-        with locked():
-            gid = new_goal_id()
-            g_dict = dict(id=gid, text=a[1].strip()[:4000], status="new", created=sbx.now())
-            save_goal(g_dict)
-        event(f"goal {gid} queued: {a[1].strip()[:200]}", goal=gid)
+        gid = queue_goal(a[1])
         print(f"queued {gid}; the foreman plans it within ~{int(ctx.C['LOOP_SEC'])} s (bin/foreman status)")
     elif a[:1] == ["project"] and len(a) == 2 and a[1].strip():
         with state_tx() as st:
@@ -185,6 +183,18 @@ def main():
         except Unavailable as e:
             print(f"(no orchestrator available right now: {e})"); sys.exit(3)
         print(text)
+    elif a == ["chat"]:
+        m = sys.stdin.read()
+        if not m.strip():
+            print("usage: echo 'message' | bin/foreman chat   (bin/foreman chat history | reset)", file=sys.stderr); sys.exit(2)
+        try:
+            print(chat(m)[0])
+        except Unavailable as e:
+            print(f"(no orchestrator available right now: {e})"); sys.exit(3)
+    elif a == ["chat", "history"]:
+        print(json.dumps(chat_history(), ensure_ascii=False))
+    elif a == ["chat", "reset"]:
+        chat_reset(); print("chat memory cleared")
     elif a[:1] == ["status"] and "--dashboard" in a:
         print(json.dumps(dashboard_json(), ensure_ascii=False))
     elif a[:1] == ["status"]:

@@ -382,6 +382,20 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 B.ASK_LOCK.release()
             self._json({"answer": out.strip() or (err.strip()[-500:] if rc else "(empty answer)")})
+        elif path == "/api/chat":
+            if body.get("reset"):
+                rc, out, err = foreman(pf, "chat reset", timeout=30)
+                self._json({"ok": rc == 0}); return
+            msg = str(body.get("message", "")).strip()[:4000]
+            if not msg:
+                self._json({"error": "empty message"}, 400); return
+            if not B.ASK_LOCK.acquire(blocking=False):
+                self._json({"error": "the planner is still answering - wait for it"}, 429); return
+            try:
+                rc, out, err = foreman(pf, "chat", inp=msg, timeout=900)
+            finally:
+                B.ASK_LOCK.release()
+            self._json({"answer": out.strip() or (err.strip()[-500:] if rc else "(empty answer)")})
         elif path in ("/api/killswitch", "/api/resume"):
             action = "off" if path == "/api/resume" else str(body.get("action"))
             scope = "--all " if body.get("all") else ""
@@ -720,6 +734,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(words) < 2:
                 self._json([]); return
             rc, out, err = foreman(pf, "search", inp=words, timeout=60)
+            self._json(as_json(out, err, rc))
+        elif path == "/api/chat":
+            rc, out, err = foreman(pf, "chat history", timeout=30)
             self._json(as_json(out, err, rc))
         elif path == "/api/money":
             rc, out, err = foreman(pf, "money", timeout=60)

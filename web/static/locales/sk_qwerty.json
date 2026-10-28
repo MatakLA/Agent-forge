@@ -58,7 +58,8 @@
   "btn.start_now": "Spustiť teraz",
   "btn.add_backlog": "Pridať do zásobníka",
   "btn.roadmap": "Veľký projekt → roadmapa",
-  "btn.ask": "Opýtať sa",
+  "btn.ask": "Poslať",
+  "btn.chat_reset": "Nový rozhovor",
   "btn.approve": "Schváliť",
   "btn.approve_plan": "Schváliť plán",
   "btn.approve_merge": "Schváliť zlúčenie",
@@ -76,10 +77,10 @@
   "btn.finished_runs": "Ukončené behy…",
   "btn.lang_title": "Jazyk",
 
-  "ask.summary": "Opýtať sa tímu na kód",
+  "ask.summary": "Chat s plánovačom (pamätá si rozhovor, vie zaradiť ciele)",
 
   "placeholder.goal": "Čo má tím urobiť? Napr.: Pridať CSV export nákladov s testami.",
-  "placeholder.ask": "Napr.: Ako funguje modul X a čo v ňom chýba? (orchestrátor odpovedá podľa kódu)",
+  "placeholder.ask": "Napr.: Čo má nasledovať v module X? Zaraď prvé tri kroky. (plánovač pozná projekt; používa kvótu orchestrátora)",
   "placeholder.search": "Hľadať ciele, úlohy, udalosti a transkripty (/)",
   "placeholder.filter_events": "filtrovať nedávne udalosti (staršie: hľadať ⌕)",
 
