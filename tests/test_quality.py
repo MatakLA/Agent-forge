@@ -169,6 +169,18 @@ diff --git a/web/x.test.mjs b/web/x.test.mjs
         self.assertEqual(len(f["read"]), 5)
         self.assertNotIn("../etc/passwd", f["read"])
 
+    def test_js_test_targets_and_count(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
+        import quality
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "js"))
+            for n, body in (("a.js", ""), ("a.test.mjs", "test('x', () => {});\nit('y', () => {});\n  test.skip('z', () => {});\n"), ("b.test.js", "test('q', () => {});\n"), ("c.js", "")):
+                open(os.path.join(d, "js", n), "w").write(body)
+            got = quality.js_test_targets(d, [("M", "js/a.js"), ("A", "js/b.test.js"), ("D", "js/gone.test.mjs"), ("M", "js/c.js"), ("M", "x.py")])
+            self.assertEqual(got, ["js/a.test.mjs", "js/b.test.js"])
+            self.assertEqual(quality.js_test_count(d, got), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

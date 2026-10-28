@@ -214,6 +214,14 @@ def gate_image(project=None):
     return v or DEFAULT_GATE_IMAGE
 
 
+def node_test_image(project=None) -> str:
+    """NODE_TEST_IMAGE in the project's config (e.g. node:22-alpine): the gate then also runs the branch's *.test.js/.mjs files with `node --test`. Empty = off."""
+    v = (project_conf(project).get("NODE_TEST_IMAGE") or os.environ.get("NODE_TEST_IMAGE", "")).strip()
+    if v and not IMAGE_RE.fullmatch(v):
+        raise ValueError(f"invalid NODE_TEST_IMAGE {v!r}")
+    return v
+
+
 def visual_cmd(project=None) -> str:
     v = (project_conf(project).get("VISUAL_CMD") or "").strip()
     if v and not VISUAL_CMD_RE.fullmatch(v):

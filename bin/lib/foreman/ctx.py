@@ -37,7 +37,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # how the project is tested (gate, self-check, maintenance) and in which image; any language with a CLI test runner
             TEST_CMD="", GATE_IMAGE="",
             # optional visual gate after the tests (screenshots + layout checks in a second offline container)
-            VISUAL_CMD="", VISUAL_IMAGE="", VISUAL_TIMEOUT_SEC=300,
+            NODE_TEST_IMAGE="", VISUAL_CMD="", VISUAL_IMAGE="", VISUAL_TIMEOUT_SEC=300,
             # owner notifications: an ntfy topic, a Slack / Discord webhook or any JSON endpoint ("" = off)
             NOTIFY_URL="", NOTIFY_FORMAT="ntfy", NOTIFY_EVENTS="goal_done,task_blocked,killswitch,questions,quota_out,auth,approval,stalled,project_done",
             # finished runs older than this are compressed by maintenance (their transcripts are the bulk of runs/)

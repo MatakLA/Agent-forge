@@ -34,7 +34,7 @@ after the merge, so they always build on merged code.
   merged tasks really cost here (by size and role) goes into every plan, and each open task gets an estimate. With
   `MODEL_ROUTING=auto`, each role gets the cheapest worker model that has proven itself in this project.
 - **Closes goals on evidence.** Each goal gets observable acceptance criteria, checked one by one before it is closed.
-- **Works with your stack.** `TEST_CMD` and `GATE_IMAGE` are set per project: pytest by default, or `npm test`, `go test ./...`, ...
+- **Works with your stack.** `TEST_CMD` and `GATE_IMAGE` are set per project: pytest by default, or `npm test`, `go test ./...`, ... `NODE_TEST_IMAGE` (e.g. `node:22-alpine`) makes the gate also run the branch's `*.test.js` / `*.test.mjs` files with `node --test` (no network); without it they are reported as not run
 - **Survives crashes and reboots,** and does not blame the worker for Forgejo, Docker or provider outages.
 - **Uses idle time.** While every subscription waits for its reset, the planner prepares the next goals, and main is tested without
   any LLM (a red main, flaky tests or missing docstrings become work items).

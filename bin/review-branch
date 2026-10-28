@@ -183,6 +183,9 @@ try:
             if qmode != "block":
                 W("ratio", "QUALITY: " + quality_msg)
     print(f"\ntest files: {tests or 'none'}, test functions: {ntests}")
+    jtests = quality.js_test_targets(repo, changed)
+    if jtests:
+        print(f"node test files: {jtests}, test calls: {quality.js_test_count(repo, jtests)}")
     if not tests:
         W("no-test-file", "no test file in the diff")
     dock = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
@@ -219,9 +222,27 @@ try:
     print(f"\n== {'whole suite NOT run (fast pass is red)' if fast_red else 'full test suite'} in a fresh container (`{TEST_CMD}`): "
           + ((t.stdout + t.stderr).strip().splitlines() or ["(no output)"])[-1])
     fail = t.returncode != 0 or bool(secrets) or (bool(quality_msg) and qmode == "block")
-    if fail and t.returncode == 0 and not secrets:
+    node_red = False
+    if jtests:
+        node_img = sbx.node_test_image()
+        if not node_img:
+            W("js-tests-not-run", "the branch touches node tests/sources but NODE_TEST_IMAGE is not set, so *.test.mjs files were NOT run by the gate: " + ", ".join(jtests[:6]))
+        else:
+            try:
+                jr = drun("-e", "HOME=/tmp", "-v", f"{repo}:/src:ro", "-w", "/src", "--entrypoint", "node", node_img, "--test", *jtests, timeout=min(600, gate_timeout))
+                jout = (jr.stdout + jr.stderr).strip().splitlines()
+                summ = [l for l in jout if re.match(r"# (tests|pass|fail) ", l)]
+                print(f"\n== node tests in `{node_img}`: " + (", ".join(l[2:] for l in summ) or (jout[-1] if jout else "(no output)")))
+                if jr.returncode in (125, 126, 127):
+                    W("js-tests-not-run", "node test image could not run (" + (jout[-1] if jout else "no output") + ")")
+                elif jr.returncode != 0:
+                    fail = node_red = True
+                    print("\n".join(jout[-40:]))
+            except subprocess.TimeoutExpired:
+                W("js-tests-not-run", "node tests timed out")
+    if fail and t.returncode == 0 and not secrets and not node_red:
         print("== QUALITY-ONLY: the tests pass; the branch is refused for the quality finding above")
-    if fail and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
+    if fail and not node_red and t.returncode == 5 and sbx.is_pytest(TEST_CMD) and not tests:
         fail = False                     # pytest found no tests at all: a branch without code tests (docs, design) is not red
         W("no-tests-yet", "the repository has no tests yet")
     if re.search(r"\b(skipped|xfailed|xpassed)\b", t.stdout.strip().splitlines()[-1] if t.stdout.strip() else ""):

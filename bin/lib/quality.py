@@ -22,6 +22,43 @@ def is_test_path(path):
     return bool(TEST_RE.search(path))
 
 
+JS_TEST_RE = re.compile(r"\.test\.[mc]?js$")
+JS_SRC_RE = re.compile(r"^(.*?)\.([mc]?js)$")
+
+
+def js_test_targets(repo_dir, changed, limit=30):
+    """Node test files (*.test.js / *.test.mjs) worth running for a change: the changed ones, and the one named after each changed
+    source file (a.js -> a.test.mjs next to it). Only paths that are safe as command-line arguments; at most `limit`."""
+    out = []
+
+    def add(p):
+        if p not in out and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._/-]*", p) and os.path.exists(os.path.join(repo_dir, p)):
+            out.append(p)
+    for st, p in changed:
+        if st[:1] == "D":
+            continue
+        if JS_TEST_RE.search(p):
+            add(p)
+            continue
+        m = JS_SRC_RE.match(p)
+        if m:
+            for ext in ("mjs", "js", "cjs"):
+                add(f"{m.group(1)}.test.{ext}")
+    return out[:limit]
+
+
+def js_test_count(repo_dir, targets):
+    """Number of test()/it() calls in the given node test files (the Python-only counter shows 0 for them)."""
+    n = 0
+    for t in targets:
+        try:
+            with open(os.path.join(repo_dir, t), errors="replace") as fh:
+                n += len(re.findall(r"^[ \t]*(?:test|it)(?:\.\w+)?\(", fh.read(READ_MAX), re.M))
+        except OSError:
+            pass
+    return n
+
+
 def is_source_path(path):
     return path.endswith(SOURCE_EXT) and not is_test_path(path)
 

@@ -62,6 +62,7 @@ EDITABLE = {
     "LIGHT_ROLES": (r"|[a-z][a-z-]{1,40}(,[a-z][a-z-]{1,40})*", "project"), "AB_MODEL": ("|" + MODEL_RE, "project"),
     "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),
     "TEST_CMD": ("|" + sbx.TEST_CMD_RE.pattern, "project"), "GATE_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
+    "NODE_TEST_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
     "VISUAL_CMD": ("|" + sbx.VISUAL_CMD_RE.pattern, "project"), "VISUAL_IMAGE": ("|" + sbx.IMAGE_RE.pattern, "project"),
     "VISUAL_TIMEOUT_SEC": ((10, 1800), "project"),
     "NOTIFY_URL": (r"|outbox|https?://[A-Za-z0-9._~:/?\[\]@!&()*+,;=%-]{4,400}", "project"),     # no '#': it starts a comment in .conf
