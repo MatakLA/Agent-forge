@@ -411,33 +411,77 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ---- planner chat (the planner remembers the conversation and can queue goals; history is kept by the foreman)
-function chatRender(h) {
-  const out = $('ask-a');
-  out.innerHTML = (h || []).map(t => '<div class="answer' + (t.role === 'owner' ? ' me' : '') + '">' + esc(t.text || '') + '</div>').join('');
-  out.scrollTop = out.scrollHeight;
+// ---- planner chat (the planner remembers the conversation, can look at the code and queue goals; history is kept by the foreman)
+let CHAT_POLL = null, CHAT_PENDING = null;
+function chatMd(src) {
+  const parts = String(src || '').split(/```[a-z]*\n?/);
+  return parts.map((seg, i) => {
+    if (i % 2) return '<pre>' + esc(seg.replace(/\n$/, '')) + '</pre>';
+    const lines = esc(seg).split('\n'); let html = '', list = false;
+    const inl = x => x.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    for (const l of lines) {
+      const li = l.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/), h = l.match(/^#{1,4}\s+(.*)/);
+      if (li) { if (!list) { html += '<ul>'; list = true; } html += '<li>' + inl(li[1]) + '</li>'; continue; }
+      if (list) { html += '</ul>'; list = false; }
+      html += h ? '<h4>' + inl(h[1]) + '</h4>' : (l.trim() ? '<p>' + inl(l) + '</p>' : '');
+    }
+    return html + (list ? '</ul>' : '');
+  }).join('');
 }
-async function chatLoad() { try { chatRender(await getJSON('/api/chat')); } catch (e) { /* the chat is optional */ } }
+function chatRender(d) {
+  const h = Array.isArray(d) ? d : (d && d.history) || [], st = (d && d.status) || {}, out = $('ask-a');
+  let html = h.map(m => m.role === 'owner'
+    ? '<div class="msg me">' + esc(m.text || '') + '</div>'
+    : '<div class="msg bot">' + ((m.steps || []).length ? '<div class="steps">' + m.steps.map(x => '<span>' + esc(x) + '</span>').join('') + '</div>' : '') +
+      chatMd(m.text || '') + '<div class="who">' + esc(m.who || '') + '</div></div>').join('');
+  if (st.busy) html += '<div class="msg bot busy"><span class="dots"><i></i><i></i><i></i></span> ' + esc(((st.steps || []).slice(-1)[0]) || t('ask.thinking')) + '</div>';
+  else if (st.error && h.length && h[h.length - 1].role === 'owner') html += '<div class="msg bot err">' + esc(st.error) + '</div>';
+  const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 80;
+  out.innerHTML = html || '<div class="muted small">' + esc(t('ask.empty')) + '</div>';
+  if (atEnd || st.busy) out.scrollTop = out.scrollHeight;
+  if (d && d.model !== undefined && $('chat-model')) $('chat-model').dataset.cur = d.model;
+}
+async function chatLoad() {
+  let d; try { d = await getJSON('/api/chat'); } catch (e) { return null; }
+  chatRender(d);
+  if (d.status && d.status.busy && !CHAT_POLL) CHAT_POLL = setInterval(chatLoad, 2000);
+  if (!(d.status && d.status.busy) && CHAT_POLL && !CHAT_PENDING) { clearInterval(CHAT_POLL); CHAT_POLL = null; }
+  return d;
+}
+async function chatModels() {
+  const sel = $('chat-model'); if (!sel || sel.options.length > 1) return;
+  try {
+    const st = await getJSON('/api/settings'), ms = (st.models || []).map(m => ({id: m.id, name: m.name || m.id}));
+    const cur = ((st.values || {}).CHAT_MODEL) || '';
+    sel.innerHTML = '<option value="">' + esc(t('ask.model_default')) + '</option>' + ms.map(m => '<option value="' + esc(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' + esc(m.name) + '</option>').join('');
+  } catch (e) { /* optional */ }
+}
 async function askTeam() {
-  const q = $('ask-q').value.trim(), btn = $('ask-btn'), out = $('ask-a');
-  if (!q) return;
-  btn.disabled = true; btn.textContent = '…';
-  out.insertAdjacentHTML('beforeend', '<div class="answer me">' + esc(q) + '</div>');
-  let r;
+  const q = $('ask-q').value.trim(), btn = $('ask-btn');
+  if (!q || CHAT_PENDING) return;
+  $('ask-q').value = ''; btn.disabled = true; CHAT_PENDING = q;
+  $('ask-a').insertAdjacentHTML('beforeend', '<div class="msg me">' + esc(q) + '</div>');
+  if (!CHAT_POLL) CHAT_POLL = setInterval(chatLoad, 2000);
+  let r = {};
   try { r = await (await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: q, project})})).json(); }
-  catch (e) { r = {answer: '(connection error: ' + e + ')'}; }
-  btn.disabled = false; btn.textContent = t('btn.ask');
-  if (r.answer) $('ask-q').value = '';
-  out.insertAdjacentHTML('beforeend', '<div class="answer">' + esc(r.answer || r.error || '(no answer)') + '</div>');
-  out.scrollTop = out.scrollHeight;
+  catch (e) { r = {error: '(connection error: ' + e + ')'}; }
+  CHAT_PENDING = null; btn.disabled = false;
+  if (r.error) $('ask-q').value = q;
+  clearInterval(CHAT_POLL); CHAT_POLL = null;
+  await chatLoad();
+  const bad = r.error || (r.answer && /^\(no orchestrator/.test(r.answer) ? r.answer : '');
+  if (bad) $('ask-a').insertAdjacentHTML('beforeend', '<div class="msg bot err">' + esc(bad) + '</div>');
   schedule(true);
 }
 $('ask-btn').addEventListener('click', askTeam);
-$('ask-q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) askTeam(); });
+$('ask-q').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); askTeam(); } });
 $('chat-reset').addEventListener('click', async () => {
   await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reset: true, project})});
   chatRender([]);
 });
-document.querySelector('.askbox').addEventListener('toggle', e => { if (e.target.open) chatLoad(); });
+$('chat-model').addEventListener('change', async e => {
+  await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({changes: {CHAT_MODEL: e.target.value}, project})});
+});
+document.querySelector('.askbox').addEventListener('toggle', e => { if (e.target.open) { chatLoad(); chatModels(); } });
 projectResets.push(() => { $('ask-a').innerHTML = ''; if (document.querySelector('.askbox').open) chatLoad(); });
 projectResets.push(() => { FB_OPEN.clear(); BL_EDIT = null; OPEN_MENU.id = null; });

@@ -15,7 +15,7 @@ PDIR = os.path.join(ROOT, "projects", PROJECT) if PROJECT else ""
 FD = os.path.join(sbx.RUNS, "projects", PROJECT, "foreman") if PROJECT else os.path.join(sbx.RUNS, "foreman")
 REPO = os.path.join(FD, "repo")
 CFG_DIR = PDIR or os.path.join(ROOT, "etc")         # where this project's team-rules.md, lessons.md, decisions.md live
-CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLAN_MODEL="claude-sonnet-4-6",
+CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLAN_MODEL="claude-sonnet-4-6", CHAT_MODEL="",
             AGY_FALLBACK_MODEL="gemini-3.8-flash-high", ANTHROPIC_MODEL="", OPENAI_MODEL="", GEMINI_MODEL="", OPENAI_API_BASE="https://api.openai.com/v1",
             # Which orchestrator answers each decision, tried in order. Free (subscription) providers: claude-cli (Claude Code),
             # agy-claude / agy-gemini (Antigravity in a worker container). Paid per-token APIs: anthropic-api, openai-api - only

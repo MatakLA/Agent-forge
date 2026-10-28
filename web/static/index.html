@@ -43,9 +43,12 @@
     <h3 data-i18n="head.team">Team</h3><div id="team" class="team"><div class="empty">loading…</div></div>
     <h3 data-i18n="head.goals">Goals</h3><div id="goals"></div>
     <h3 id="backlog-h" data-i18n="head.backlog">Backlog</h3><div id="backlog"></div>
-    <details class="askbox"><summary data-i18n="ask.summary">Planner chat (remembers the conversation, can queue goals)</summary>
-      <div class="ask"><textarea id="ask-q" data-i18n-ph="placeholder.ask" placeholder="E.g. How does module X work and what is missing? (the orchestrator answers from the code; uses orchestrator quota)"></textarea>
-        <div class="btnrow"><button class="primary" id="ask-btn" data-i18n="btn.ask">Send</button><button class="mini" id="chat-reset" data-i18n="btn.chat_reset">New conversation</button></div><div id="ask-a"></div></div>
+    <details class="askbox"><summary data-i18n="ask.summary">Planner chat (remembers the conversation, can look at the code and queue goals)</summary>
+      <div class="chat">
+        <div class="chathead"><select id="chat-model" title="Model"><option value="">default</option></select><button class="mini" id="chat-reset" data-i18n="btn.chat_reset">New conversation</button></div>
+        <div id="ask-a" aria-live="polite"></div>
+        <div class="chatin"><textarea id="ask-q" rows="2" data-i18n-ph="placeholder.ask" placeholder="Message the planner (Enter sends, Shift+Enter = new line)"></textarea><button class="primary" id="ask-btn" data-i18n="btn.ask">Send</button></div>
+      </div>
     </details>
   </section>
   <section id="t-tasks">

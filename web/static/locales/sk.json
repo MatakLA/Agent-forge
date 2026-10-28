@@ -77,10 +77,13 @@
   "btn.finished_runs": "Ukončené behy…",
   "btn.lang_title": "Jazyk",
 
-  "ask.summary": "Chat s plánovačom (pamätá si rozhovor, vie zaradiť ciele)",
+  "ask.summary": "Chat s plánovačom (pamätá si rozhovor, vie čítať kód a zaradiť ciele)",
+  "ask.thinking": "Premýšľa…",
+  "ask.empty": "Opýtaj sa na projekt, kód alebo plán. Plánovač vie čítať súbory na main a na požiadanie zaradí ciele.",
+  "ask.model_default": "rovnaký ako pri plánoch",
 
   "placeholder.goal": "Čo má tím urobiť? Napr.: Pridať CSV export nákladov s testami.",
-  "placeholder.ask": "Napr.: Čo má nasledovať v module X? Zaraď prvé tri kroky. (plánovač pozná projekt; používa kvótu orchestrátora)",
+  "placeholder.ask": "Správa pre plánovača (Enter pošle, Shift+Enter = nový riadok)",
   "placeholder.search": "Hľadať ciele, úlohy, udalosti a transkripty (/)",
   "placeholder.filter_events": "filtrovať nedávne udalosti (staršie: hľadať ⌕)",
 

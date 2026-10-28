@@ -60,7 +60,7 @@ from .knowledge import doc_get, doc_list, doc_reset, doc_set
 from .maintenance import cleanup, disk_usage
 from .settings import init_project, models_cached, settings_apply, settings_get
 from .owner import GOAL_ID, TASK_ID, answer_question, ask, goal_action, task_action
-from .chat import chat, history as chat_history, queue_goal, reset as chat_reset
+from .chat import chat, history as chat_history, status as chat_status, queue_goal, reset as chat_reset
 from .selftest import selftest
 
 
@@ -192,7 +192,7 @@ def main():
         except Unavailable as e:
             print(f"(no orchestrator available right now: {e})"); sys.exit(3)
     elif a == ["chat", "history"]:
-        print(json.dumps(chat_history(), ensure_ascii=False))
+        print(json.dumps(dict(history=chat_history(), status=chat_status(), model=ctx.C.get("CHAT_MODEL", "")), ensure_ascii=False))
     elif a == ["chat", "reset"]:
         chat_reset(); print("chat memory cleared")
     elif a[:1] == ["status"] and "--dashboard" in a:

@@ -100,7 +100,6 @@ h4 { font-size:13px; margin:12px 0 6px; }
 .ask textarea { width:100%; min-height:56px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:14px; resize:vertical; }
 .newgoal { margin-bottom:4px; } #goal-text { min-height:64px; }
 .askbox { margin-top:18px; } .askbox summary { cursor:pointer; color:var(--muted); font-size:13px; margin-bottom:8px; }
-.askbox #ask-a { max-height:50vh; overflow-y:auto; } .answer.me { border-left-color:var(--muted); color:var(--muted); }
 .answer { margin-top:10px; white-space:pre-wrap; font-size:13.5px; line-height:1.5; border-left:3px solid var(--accent); padding-left:10px; }
 
 /* team */
@@ -365,3 +364,18 @@ a[data-goto], a[data-goto-key], .muted a { text-decoration:underline; }
   .pill, .cnt, .badge, .chip, .role { border:1px solid CanvasText; }
   nav button.on, .seg button.on { border-color:Highlight; text-decoration:underline; }
 }
+
+.askbox #ask-a { max-height:55vh; min-height:80px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:4px 2px; }
+.chat .chathead { display:flex; justify-content:space-between; gap:8px; margin-bottom:8px; } .chat .chathead select { max-width:60%; font-size:12px; }
+.msg { max-width:88%; padding:8px 12px; border-radius:12px; font-size:13.5px; line-height:1.5; overflow-wrap:anywhere; }
+.msg.me { align-self:flex-end; background:var(--accent); color:var(--bg); white-space:pre-wrap; border-bottom-right-radius:4px; }
+.msg.bot { align-self:flex-start; background:var(--card2); border:1px solid var(--line); border-bottom-left-radius:4px; }
+.msg.bot p { margin:0 0 6px; } .msg.bot h4 { margin:6px 0 4px; } .msg.bot ul { margin:2px 0 6px; padding-left:20px; }
+.msg.bot code { background:var(--card); border-radius:4px; padding:0 4px; font-size:12.5px; }
+.msg.bot pre { background:var(--card); border-radius:8px; padding:8px; overflow-x:auto; font-size:12.5px; margin:6px 0; }
+.msg .who { color:var(--muted); font-size:11px; margin-top:2px; } .msg.err { border-color:var(--bad, #c0392b); }
+.msg .steps { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; } .msg .steps span { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:99px; padding:0 8px; }
+.msg.busy { color:var(--muted); } .dots i { display:inline-block; width:6px; height:6px; margin-right:3px; border-radius:50%; background:var(--muted); animation:chatdot 1.2s infinite; }
+.dots i:nth-child(2) { animation-delay:.2s; } .dots i:nth-child(3) { animation-delay:.4s; } @keyframes chatdot { 0%,80%,100% { opacity:.2 } 40% { opacity:1 } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation:none; } }
+.chatin { display:flex; gap:8px; align-items:flex-end; margin-top:8px; } .chatin textarea { flex:1; min-height:44px; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:14px; resize:vertical; }

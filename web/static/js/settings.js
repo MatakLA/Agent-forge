@@ -47,7 +47,7 @@ const PAGETITLE = {workers: 'Workers', runtimes: 'Runtimes', models: 'Models', p
 const PAGEKEYS = {
   workers: 'WORKERS API_WORKERS_POLICY',
   runtimes: 'COMPAT_BASE_URL',
-  models: 'PLAN_PROVIDERS REVIEW_PROVIDERS CLAUDE_MODEL AGY_PLAN_MODEL AGY_REVIEW_MODEL AGY_FALLBACK_MODEL ANTHROPIC_MODEL OPENAI_API_BASE OPENAI_MODEL GEMINI_API_BASE GEMINI_MODEL ' +
+  models: 'PLAN_PROVIDERS REVIEW_PROVIDERS CLAUDE_MODEL AGY_PLAN_MODEL AGY_REVIEW_MODEL AGY_FALLBACK_MODEL CHAT_MODEL ANTHROPIC_MODEL OPENAI_API_BASE OPENAI_MODEL GEMINI_API_BASE GEMINI_MODEL ' +
     'WORKER_MODEL WORKER_MODEL_RISKY WORKER_MODEL_LIGHT LIGHT_ROLES WORKER_MODEL_CLAUDE WORKER_MODEL_CODEX WORKER_MODEL_GEMINI WORKER_MODEL_COMPAT WORKER_MODEL_AIDER ' +
     'MODEL_ROUTING ROUTING_MIN_TASKS ROUTING_MIN_FIRST_PASS AB_MODEL AB_SHARE CONTEXT_PACK CONTEXT_PACK_CHARS',
   project: 'UPSTREAM_BRANCH UPSTREAM_MERGE APPROVE AUTOPILOT AUTO_MERGE CONTINUE_CONVERSATIONS PLAN_AHEAD MAINTENANCE OWNER_LANG TASK_LANG PRODUCT_LANG DOCS_LANG LOCAL_TZ PROJECT_DIR VISION_FILE SHARED_FILES ' +
@@ -64,7 +64,7 @@ const SECRETPAGE = {'anthropic.key': 'runtimes', 'openai.key': 'runtimes', 'gemi
 if (!SPAGES.includes(SUB.settings)) SUB.settings = {onboarding: 'runtimes'}[SUB.settings] || 'workers';
 
 const LABEL = {PLAN_PROVIDERS: 'Who plans (in order)', REVIEW_PROVIDERS: 'Who reviews (in order)', CLAUDE_MODEL: 'Claude Code model',
-  AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback model',
+  AGY_PLAN_MODEL: 'Antigravity model for planning', AGY_REVIEW_MODEL: 'Antigravity model for reviews', AGY_FALLBACK_MODEL: 'Antigravity fallback model', CHAT_MODEL: 'Model for the planner chat',
   WORKER_MODEL: 'Worker model', WORKER_MODEL_RISKY: 'Model for risky tasks', WORKER_MODEL_LIGHT: 'Model for light roles', LIGHT_ROLES: 'Light roles',
   ANTHROPIC_MODEL: 'Anthropic API model', OPENAI_MODEL: 'OpenAI API model', OPENAI_API_BASE: 'OpenAI API address', GEMINI_MODEL: 'Gemini API model', GEMINI_API_BASE: 'Gemini API address',
   OWNER_LANG: 'Language for you (goals, questions, notes)', TASK_LANG: 'Language of tasks and reviews', PRODUCT_LANG: 'Language of the product\'s own texts', DOCS_LANG: 'Language of code comments and commits', LOCAL_TZ: 'Time zone', PROJECT_DIR: 'Work only in this folder', VISION_FILE: 'Vision file', SHARED_FILES: 'Files tasks may share',
@@ -98,6 +98,7 @@ const HELP = {
   WORKER_RUNTIME: 'The runtime a new worker starts with.',
   CLAUDE_MODEL: 'Which Claude model Claude Code uses when it plans or reviews.',
   AGY_PLAN_MODEL: 'The Antigravity model that writes plans.',
+  CHAT_MODEL: 'The Antigravity Claude model the planner chat answers with. Empty = the same as for plans.',
   AGY_REVIEW_MODEL: 'The Antigravity model that reviews work.',
   AGY_FALLBACK_MODEL: 'Used instead when the main Antigravity model is out of quota.',
   WORKER_MODEL: 'The Antigravity model workers use for ordinary tasks.',
@@ -485,7 +486,7 @@ function pageModels() {
     ' <a href="#" data-goto-key="' + n + '">' + (sec[n] ? 'change it' : 'set it') + ' on the Runtimes page</a></div></div>';
   return card('Who plans and reviews', field('PLAN_PROVIDERS', provEditor('PLAN_PROVIDERS')) + field('REVIEW_PROVIDERS', provEditor('REVIEW_PROVIDERS')) +
       field('CLAUDE_MODEL', sel('CLAUDE_MODEL', ['sonnet', 'opus', 'haiku', 'fable'])) +
-      field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL')) + field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL')) + field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL')) +
+      field('AGY_PLAN_MODEL', modelSel('AGY_PLAN_MODEL')) + field('AGY_REVIEW_MODEL', modelSel('AGY_REVIEW_MODEL')) + field('AGY_FALLBACK_MODEL', modelSel('AGY_FALLBACK_MODEL')) + field('CHAT_MODEL', modelSel('CHAT_MODEL', true, 'same as plans')) +
       det('d-paid', 'Paid APIs', field('ANTHROPIC_MODEL', txt('ANTHROPIC_MODEL')) + keyNote('anthropic.key', 'Anthropic') +
         field('OPENAI_API_BASE', txt('OPENAI_API_BASE', 'https://api.openai.com/v1')) + field('OPENAI_MODEL', txt('OPENAI_MODEL', 'e.g. gpt-4o')) + keyNote('openai.key', 'OpenAI') +
         field('GEMINI_API_BASE', txt('GEMINI_API_BASE', 'https://generativelanguage.googleapis.com')) + field('GEMINI_MODEL', txt('GEMINI_MODEL', 'e.g. gemini-2.5-pro')) + keyNote('gemini.key', 'Gemini'),

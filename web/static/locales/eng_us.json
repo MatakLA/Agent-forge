@@ -77,10 +77,13 @@
   "btn.finished_runs": "Finished runs…",
   "btn.lang_title": "Language",
 
-  "ask.summary": "Planner chat (remembers the conversation, can queue goals)",
+  "ask.summary": "Planner chat (remembers the conversation, can look at the code and queue goals)",
+  "ask.thinking": "Thinking…",
+  "ask.empty": "Ask about the project, the code or the plan. The planner can read files on main and queue goals when you ask it to.",
+  "ask.model_default": "same as plans",
 
   "placeholder.goal": "What should the team do? E.g.: Add a CSV export of expenses, with tests.",
-  "placeholder.ask": "E.g. What should come next in module X? Queue the first three steps. (the planner knows the project; uses orchestrator quota)",
+  "placeholder.ask": "Message the planner (Enter sends, Shift+Enter = new line)",
   "placeholder.search": "Search goals, tasks, events and transcripts (/)",
   "placeholder.filter_events": "filter the recent events (older ones: search ⌕)",
 

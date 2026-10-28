@@ -765,7 +765,7 @@ def test_chat(check):
     replies = iter(["Hello, nothing to queue.", "Queued it.\nACTIONS: " + json.dumps([dict(do="goal", text=g1), dict(do="backlog", text=g1 + " Later.")])])
     try:
         ctx.FD = ctx.CFG_DIR = tmp; os.makedirs(os.path.join(tmp, "goals"))
-        ch.llm = lambda kind, prompt, subject="": (seen.append(prompt), (next(replies), "stub"))[1]
+        ch.llm = lambda kind, prompt, subject="", model="": (seen.append(prompt), (next(replies), "stub"))[1]
         ch.context_bundle, ch.refresh_repo = (lambda: "## BUNDLE"), (lambda: None)
         r1 = ch.chat("Hi planner")
         r2 = ch.chat("Yes, do it")
@@ -780,6 +780,26 @@ def test_chat(check):
         check("chat: stored history is capped", len(ch.history()) == 4 and ch.history()[-1]["text"] == "b")
         ch.reset()
         check("chat: reset clears the memory", ch.history() == [])
+        check("chat: parse_tools reads READ/GREP lines (max 3) and ignores replies with an ACTIONS line",
+              ch.parse_tools("READ: a.py\nGREP: foo.*bar\nREAD: `b.py`\nREAD: c.py") == [("READ", "a.py"), ("GREP", "foo.*bar"), ("READ", "b.py")]
+              and ch.parse_tools("READ: a.py\nACTIONS: []") == [] and ch.parse_tools("plain answer") == [])
+        check("chat: tools refuse secret-looking paths and parent directories",
+              all(ch.run_tool("READ", x).startswith("(refused") for x in ("../etc/passwd", "etc/.env", "dir/api_token.txt", "k/id_ed25519", "x/server.pem")))
+        real_tool = ch.run_tool
+        ch.run_tool = lambda tool, arg: f"<{tool}:{arg}>"
+        seen.clear()
+        replies = iter(["READ: bin/x.py\nGREP: needle", "Looked. It is in bin/x.py."])
+        r3 = ch.chat("where is the needle?")
+        h3 = ch.history()
+        check("chat: a READ/GREP round feeds the results back and the second reply is the answer",
+              len(seen) == 2 and "<READ:bin/x.py>" in seen[1] and "<GREP:needle>" in seen[1] and r3[0] == "Looked. It is in bin/x.py."
+              and h3[-1]["steps"] == ["read bin/x.py", "grep needle"] and h3[-2]["role"] == "owner")
+        seen.clear()
+        replies = iter(["READ: a"] * 10)
+        r4 = ch.chat("loop")
+        check("chat: at most CHAT_ROUNDS model calls even if the model keeps asking to look", len(seen) == ch.CHAT_ROUNDS)
+        check("chat: status is idle after the turn", ch.status().get("busy") is False)
+        ch.run_tool = real_tool
     finally:
         ch.llm, ch.context_bundle, ch.refresh_repo = real
         ch.MAX_STORED = 80

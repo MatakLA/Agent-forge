@@ -120,6 +120,7 @@ def _agy(w, prompt, model, schema=None):
 class _Kind(threading.local):
     k = "?"
     subject = ""             # the task or goal the call is about (for the cost of a task / goal)
+    model = ""               # per-call model for the Antigravity Claude family (planner chat); empty = the usual one
 
 
 KIND = _Kind()           # the decision kind (plan/review/...) of the LLM call running in THIS thread - steps run in parallel
@@ -143,6 +144,8 @@ def _orch_score(rows, family):
 
 def _via_agy(kind, prompt, family):
     model = (ctx.C["AGY_REVIEW_MODEL"] if kind in ("review", "diagnose") else ctx.C["AGY_PLAN_MODEL"]) if family == "claude" else ctx.C["AGY_FALLBACK_MODEL"]
+    if family == "claude" and KIND.model:
+        model = KIND.model
     st, now = gstate(), time.time()
     cd = st.get("agy_cooldown", {})
     cand = [w for w in workers() if runtime_of(w) == "agy" and cd.get(w, 0) <= now and has_quota(quota_rows(w), family)]
@@ -322,8 +325,8 @@ def orchestrator_label():
     return name, (label + (" (" + last.split(":", 1)[1] + ")" if ":" in last and last.split(":")[0] == name else ""))
 
 
-def _llm_inner(kind, prompt, subject=""):
-    KIND.k, KIND.subject = kind, subject
+def _llm_inner(kind, prompt, subject="", model=""):
+    KIND.k, KIND.subject, KIND.model = kind, subject, model
     system = load_system_prompt()
     schema = schema_for(kind)
     for p in providers_for(kind):
@@ -350,12 +353,12 @@ def _llm_inner(kind, prompt, subject=""):
     raise Unavailable(_sanitize_secrets(f"no orchestrator provider could answer ({', '.join(providers_for(kind))})"))
 
 
-def llm(kind, prompt, subject=""):
+def llm(kind, prompt, subject="", model=""):
     """Returns (text, who). Raises Unavailable when no configured provider can answer right now. Every call is a fresh,
     tool-less session; the stable system prompt goes in as a system prompt (cached by Claude Code). `subject`: the task or
-    goal id the call is about (logged, for the cost of a task or goal)."""
+    goal id the call is about (logged, for the cost of a task or goal). `model`: overrides the Antigravity Claude model for this call."""
     try:
-        return _llm_inner(kind, prompt, subject)
+        return _llm_inner(kind, prompt, subject, model)
     except Unavailable as e:
         raise Unavailable(_sanitize_secrets(str(e))) from None
     except Exception as e:
