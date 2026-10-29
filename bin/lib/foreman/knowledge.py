@@ -1,6 +1,7 @@
 """What the team knows besides the code: role playbooks (roles/, overridable per project), lessons learned, the owner's
 decisions, and the orchestrator's system prompt built from them."""
 import os, re
+import sbx
 
 from . import ctx
 from .util import slugify
@@ -43,9 +44,18 @@ def language_rules():
 Never translate code identifiers, file names, JSON keys, CLI flags or text the owner quoted exactly (an exact wording in a goal wins).""")
 
 
+RUN_NODE_RE = re.compile(r"\b(?:node|npm|docker)\b.{0,80}\b(?:locally|yourself)\b|\b(?:locally|yourself)\b.{0,80}\b(?:node|npm|docker)\b|run .{0,40}node --test", re.I)
+
+
+def _wrong_for_worker(text):
+    """With NODE_TEST_IMAGE the supervisor runs node tests; workers have no node, so a lesson telling them to run it would send them hunting."""
+    return bool(sbx.node_test_image()) and bool(RUN_NODE_RE.search(text))
+
+
 def lessons():
     try:
-        return [l[2:].strip() for l in open(os.path.join(ctx.CFG_DIR, "lessons.md")) if l.startswith("- ")][-int(ctx.C["LESSONS_MAX"]):]
+        ls = [l[2:].strip() for l in open(os.path.join(ctx.CFG_DIR, "lessons.md")) if l.startswith("- ") and not _wrong_for_worker(l)]
+        return ls[-int(ctx.C["LESSONS_MAX"]):]
     except FileNotFoundError:
         return []
 
@@ -53,7 +63,7 @@ def lessons():
 def add_lesson(text, source):
     """One general, reusable sentence from a review that sent work back. Deduplicated; only the newest LESSONS_MAX are used."""
     text = " ".join(str(text or "").split())[:300]
-    if len(text) < 15 or text.lower() in {l.lower() for l in lessons()}:
+    if len(text) < 15 or _wrong_for_worker(text) or text.lower() in {l.lower() for l in lessons()}:
         return
     p = os.path.join(ctx.CFG_DIR, "lessons.md")
     new = not os.path.exists(p)
