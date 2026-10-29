@@ -378,11 +378,67 @@ def self_check():
                "-e", "AF_SELF_CHECK_TIMEOUT=" + (os.environ.get("AF_SELF_CHECK_TIMEOUT") if sbx.TEST_MODE and os.environ.get("AF_SELF_CHECK_TIMEOUT") else "600"),
                "-w", sbx.WORKER_CLONE, W, "python3", "-", input=self_check_script(), timeout=700)
         res = json.loads(r.stdout.strip().splitlines()[-1])
+        try:
+            nc = node_check()
+        except Exception:
+            nc = None                  # a bug in this check must never block a run
+        if nc:
+            res["ok"], res["node"] = False, True
+            res["problems"] = (res.get("problems") or []) + nc["problems"]
+            res["summary"] = (res.get("summary") or "") + " | node tests red"
         if not changed_only and res.get("mode") != "fast" and (res.get("slow") or res.get("rc") is not None):
             remember_slow_suite(cmd, bool(res.get("slow")))
         return res
     except Exception as e:
         return {"ok": True, "error": f"self-check could not run: {e}"[:200]}
+
+
+def node_check():
+    """The worker has neither node nor docker, so its node tests (*.test.js/.mjs) are run here, on the host, in NODE_TEST_IMAGE: the committed
+    HEAD of its clone against the merge base. Only failures main does not have count (same rule as the gate). None = nothing to check."""
+    img = sbx.node_test_image()
+    if not img:
+        return None
+    import quality, tempfile
+    clone = sbx.WORKER_CLONE
+    def git(*a):
+        return sh("docker", "exec", "-w", clone, W, "git", *a, timeout=60).stdout
+    mb = git("merge-base", "origin/main", "HEAD").strip() or "origin/main"
+    changed = [(l.split("\t")[0], l.split("\t")[-1]) for l in git("diff", "--name-status", mb, "HEAD").splitlines() if "\t" in l]
+    if not any(re.search(r"\.[mc]?js$", pth) for _, pth in changed):
+        return None
+    with tempfile.TemporaryDirectory(prefix="nodechk-") as d:
+        def extract(ref, sub):
+            os.makedirs(f"{d}/{sub}")
+            a = subprocess.Popen(["docker", "exec", "-w", clone, W, "git", "archive", ref], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            b = subprocess.run(["tar", "-x", "-C", f"{d}/{sub}"], stdin=a.stdout, capture_output=True, timeout=120)
+            a.stdout.close(); a.wait()
+            return a.returncode == 0 and b.returncode == 0
+        def run_node(sub, tests):
+            r = sh("docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=256m", "--cap-drop", "ALL",
+                   "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "-e", "HOME=/tmp",
+                   "-v", f"{d}/{sub}:/src:ro", "-w", "/src", "--entrypoint", "node", img, "--test", *tests, timeout=300)
+            return r.returncode, r.stdout + r.stderr
+        if not extract("HEAD", "head"):
+            return None
+        tests = quality.js_test_targets(f"{d}/head", changed)
+        if not tests:
+            return None
+        rc, out = run_node("head", tests)
+        if rc in (0, 125, 126, 127):
+            return None
+        bf = quality.node_failures(out)
+        old = {}
+        base_tests = [x for x in tests if os.path.exists(f"{d}/base/{x}")] if extract(mb, "base") else []
+        if base_tests and bf:
+            brc, bout = run_node("base", base_tests)
+            if brc not in (125, 126, 127):
+                old = quality.node_failures(bout)
+        new = {k: v for k, v in bf.items() if k not in old}
+        if bf and not new:
+            return None
+        lines = [f"{nm}  [{fl.replace('/src/', '')}]  {er}" for (nm, fl), er in list(new.items())[:12]] or ["node --test failed: " + (out.strip().splitlines() or ["no output"])[-1][:200]]
+        return {"problems": ["node tests (node --test) fail that main does not fail:"] + lines, "tail": "\n".join(out.splitlines()[-30:])}
 
 
 def fix_prompt(chk):
@@ -396,6 +452,8 @@ def fix_prompt(chk):
             + (f"\nProblems:\n{probs}" if probs else "")
             + (f"\nTest output (`{cmd}`):\n```\n{chk.get('tail', '')[-3000:]}\n```\n" if red else "")
             + (f"\nWhile you are at it:\n{more}" if more else "")
+            + ("\nNode is not installed in your container - do not try to run it. Fix the code or the test from what is shown above, commit and "
+               "push; the self-check runs `node --test` again for you.\n" if chk.get("node") else "")
             + f"\nFix the cause - change a test only if the spec says the test itself is wrong, never skip or weaken one. Run "
             f"`{cmd}` until it passes, then commit and push to `{br}`. Final reply: what you changed and the final test "
             f"summary line.\n")

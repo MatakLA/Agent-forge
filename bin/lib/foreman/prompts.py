@@ -252,8 +252,12 @@ def rules_block(t):
         START = (f"- Start with `git fetch origin`. If `origin/{t['branch']}` exists, `git checkout -B {t['branch']} origin/{t['branch']}` and continue from it\n"
                  f"  (it holds earlier attempts and possibly an auto-saved WIP commit - do not start over); otherwise `git checkout -b {t['branch']} origin/main`.\n")
         PUSH = t["branch"]
+    NODE = ("- Node is NOT installed in your container and there is no docker: do not try to run `node`, `npm` or `docker` (every attempt wastes\n"
+            "  steps and time). The supervisor runs `node --test` on your committed work for you and sends back the failing tests with their\n"
+            "  errors - so write the change from the code, commit, and push. Ignore any task text that says to run `node --test` yourself.\n"
+            if sbx.node_test_image() else "")
     return (f"""## How you work (always)
-- Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
+{NODE}- Work only inside `{clone_hint()}`. Follow {agents}. No `pip install`, no network (the sandbox blocks it and repeated attempts stop
   the whole team), do not touch git config.
 {START}- Budget: about {ctx.C['TASK_TOKEN_BUDGET']:,} tokens; the run is killed at the hard cap. COMMIT AND PUSH AFTER EVERY GREEN STEP
   (`git add -A && git commit -m "..." && git push -u origin {PUSH}`). Do not re-read large files you already read.
