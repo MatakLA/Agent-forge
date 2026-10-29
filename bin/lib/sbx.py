@@ -82,6 +82,8 @@ DEFAULTS = dict(RUN_TIMEOUT_MIN=30, RUN_TIMEOUT_MAX_MIN=45, RUN_TOKEN_CAP=150000
                 # API-key runtimes (claude / codex / gemini) cost real money: a hard cap per run (Claude Code enforces it
                 # itself with --max-budget-usd; codex/gemini are stopped by the token cap and RUN_MAX_TOOL_CALLS) and per day
                 API_RUN_BUDGET_USD=2.0, API_DAILY_BUDGET_USD=10.0, RUN_MAX_TOOL_CALLS=250,
+                # kill a run whose agent wrote nothing to the stream for this many seconds (hung model call); 0 = off
+                STALL_SEC=480,
                 # USD per million tokens "input,cached input,output" - for the cost estimate of codex / gemini runs (their CLIs
                 # report tokens, not money). Set them to your model's current prices.
                 PRICE_CODEX="1.25,0.125,10", PRICE_GEMINI="1.25,0.31,10",

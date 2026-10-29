@@ -18,6 +18,7 @@ PRICES = lim.get(runtimes.RUNTIMES.get(RT, {}).get("prices") or "-")       # "in
 def stats():
     return runtimes.scan_file(RT, run + "/stream.jsonl", PRICES)
 timeout_s, cap = m["limits"]["timeout_min"] * 60, m["limits"]["token_cap"]
+stall_s = int(m["limits"].get("stall_sec") or 0)
 t0 = time.time()
 open(run + "/started", "w").write(sbx.now() + "\n")
 reason, rc, killed = None, None, False
@@ -484,6 +485,20 @@ def _over_cap():
     return st["tokens"] >= cap or st["tools"] >= int(lim["RUN_MAX_TOOL_CALLS"])
 
 
+def _stalled(limit):
+    """True when the agent wrote nothing to the stream for `limit` s (a hung model call: 7 of 40 runs on 2026-10-29 sat silent
+    for 4-15 min and then hit the run timeout)."""
+    try:
+        idle = time.time() - os.path.getmtime(run + "/stream.jsonl")
+    except OSError:
+        return False
+    if idle > limit:
+        with open(run + "/supervisor.log", "a") as f:
+            f.write(f"{sbx.now()} stalled: no stream output for {int(idle)} s (STALL_SEC={limit})\n")
+        return True
+    return False
+
+
 def watch(cmd, mode):
     """Run one agent invocation (stream appended to the run's stream.jsonl) under the run's limits. Returns (reason, rc): reason
     is None unless a limit stopped it. Timeout, token cap, tool-call cap and USD cap count for the whole run."""
@@ -505,6 +520,8 @@ def watch(cmd, mode):
             break
         if time.time() - t0 > timeout_s:
             reason = "timeout"
+        elif stall_s and _stalled(stall_s):
+            reason = "timeout"                     # logged as a stall; same handling (work saved, gated) as a timeout
         elif _over_cap():
             reason = "token-cap"
         elif sbx.killswitch_active():

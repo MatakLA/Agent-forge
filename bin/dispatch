@@ -142,7 +142,7 @@ def main():
                        model=effective_model, role=role, project=sbx.PROJECT, repo=sbx.FORGE_REPO,
                        branch=branch, conversation=conversation, variant=variant, files=files,
                        self_check=min(3, int(_opt("DISPATCH_SELF_CHECK") or 0)) if (_opt("DISPATCH_SELF_CHECK") or "0").isdigit() else 0,
-                       limits=dict(timeout_min=minutes, token_cap=info["token_cap"], daily_budget=lim["DAILY_TOKEN_BUDGET"],
+                       limits=dict(timeout_min=minutes, token_cap=info["token_cap"], stall_sec=int(lim.get("STALL_SEC") or 0), daily_budget=lim["DAILY_TOKEN_BUDGET"],
                                    tokens_used_today_before=info["tokens_used_today"]),
                        quota_before=info["quota_before"], dispatched=sbx.now()), open(run + "/meta.json", "w"), indent=1)
         sup = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-supervisor")
