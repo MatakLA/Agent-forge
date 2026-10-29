@@ -9,7 +9,8 @@ import quality
 
 class Quality(unittest.TestCase):
     def test_ratio_splits_tests_from_code(self):
-        self.assertEqual(quality.test_ratio(["10\t0\tapp/a.py", "30\t2\ttests/test_a.py", "5\t0\tweb/x.test.js", "-\t-\timg.png"]), (35, 10))
+        self.assertEqual(quality.test_ratio(["10\t0\tapp/a.py", "30\t2\ttests/test_a.py", "5\t0\tweb/x.test.js", "-\t-\timg.png"]), (33, 10))
+        self.assertEqual(quality.test_ratio(["6\t1\tapp/a.js", "637\t610\tapp/a.test.mjs"]), (27, 6))
 
     def test_unreferenced_finds_only_unused_sources(self):
         with tempfile.TemporaryDirectory() as d:

@@ -134,7 +134,7 @@ def unreferenced(repo_dir, paths):
 
 
 def test_ratio(numstat_lines):
-    """(test lines added, code lines added) from `git diff --numstat` output; documentation and data files count as neither."""
+    """(test lines added net of removed, code lines added) from `git diff --numstat` output; documentation and data files count as neither."""
     tests = code = 0
     for l in numstat_lines:
         parts = l.split("\t")
@@ -142,7 +142,7 @@ def test_ratio(numstat_lines):
             continue
         n, path = int(parts[0]), parts[2]
         if is_test_path(path) and path.endswith(SOURCE_EXT):
-            tests += n
+            tests += max(0, n - (int(parts[1]) if parts[1].isdigit() else 0))     # a rewritten test file only counts by how much it GREW
         elif is_source_path(path):
             code += n
     return tests, code
