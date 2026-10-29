@@ -181,6 +181,19 @@ diff --git a/web/x.test.mjs b/web/x.test.mjs
             self.assertEqual(got, ["js/a.test.mjs", "js/b.test.js"])
             self.assertEqual(quality.js_test_count(d, got), 4)
 
+    def test_node_failures_parse_tap_and_separate_files(self):
+        sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
+        import quality
+        tap = ("    not ok 1 - inner\n      ---\n      location: '/src/a.test.mjs:5:3'\n      error: |-\n        2 !== 1\n      code: 'X'\n      ...\n"
+               "not ok 1 - /src/a.test.mjs\n  ---\n  location: '/src/a.test.mjs:1:1'\n  error: '1 subtest failed'\n  ...\n"
+               "    not ok 1 - inner\n      ---\n      location: '/src/b.test.mjs:9:3'\n      error: 'boom'\n      ...\nok 3 - fine\n"
+               "ok 4 - skipped one # SKIP\n")
+        got = quality.node_failures(tap)
+        self.assertEqual(got[("inner", "/src/a.test.mjs")], "2 !== 1")
+        self.assertIn(("inner", "/src/b.test.mjs"), got)
+        self.assertNotIn(("fine", ""), got)
+        self.assertEqual(len(got), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

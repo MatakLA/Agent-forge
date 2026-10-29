@@ -236,8 +236,30 @@ try:
                 if jr.returncode in (125, 126, 127):
                     W("js-tests-not-run", "node test image could not run (" + (jout[-1] if jout else "no output") + ")")
                 elif jr.returncode != 0:
-                    fail = node_red = True
-                    print("\n".join(jout[-40:]))
+                    # only what the branch breaks counts: a test that was already red on main (merge base) is a warning, not the worker's fault
+                    bf = quality.node_failures(jr.stdout)
+                    old = {}
+                    mbase = sh("git", "merge-base", base, "HEAD", cwd=repo).stdout.strip() or base
+                    bdir = os.path.join(tmp, "base")
+                    os.makedirs(bdir, exist_ok=True)
+                    ar = subprocess.run(f"git archive {mbase} | tar -x -C {bdir}", shell=True, cwd=repo, capture_output=True, timeout=300)
+                    btests = [x for x in jtests if os.path.exists(os.path.join(bdir, x))]
+                    if ar.returncode == 0 and btests and bf:
+                        br = drun("-e", "HOME=/tmp", "-v", f"{bdir}:/src:ro", "-w", "/src", "--entrypoint", "node", node_img, "--test", *btests, timeout=min(600, gate_timeout))
+                        if br.returncode not in (125, 126, 127):
+                            old = quality.node_failures(br.stdout)
+                    new = {k: v for k, v in bf.items() if k not in old}
+                    if new or not bf:
+                        fail = node_red = True
+                        print(f"== NODE RED: {len(new)} failing node test(s) that main does not have ({len(bf) - len(new)} more were already red on main)")
+                        for (nm, fl), er in list(new.items())[:12]:
+                            print(f"  not ok: {nm}  [{fl.replace('/src/', '')}]  {er}")
+                        if not bf:
+                            print("\n".join(jout[-40:]))
+                        print("  run it yourself: docker run --rm --network none -v \"$PWD\":/src:ro -w /src " + node_img + " node --test " + " ".join(jtests[:6]))
+                    else:
+                        W("node-red-on-main", f"{len(bf)} node test(s) fail here but were already red on main (not counted against this branch): "
+                          + ", ".join(sorted({fl.replace('/src/', '') for _, fl in bf})[:6]))
             except subprocess.TimeoutExpired:
                 W("js-tests-not-run", "node tests timed out")
     if fail and t.returncode == 0 and not secrets and not node_red:

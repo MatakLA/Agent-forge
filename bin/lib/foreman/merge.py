@@ -355,6 +355,11 @@ def step_gate_review_merge(t):
                 limit_line = gate.split("TIMEOUT: ", 1)[1].split("\n", 1)[0].strip()
                 return lambda: rework(t, f"Gate failed: {limit_line}. Find the test that hangs (or the slow part of the suite), fix that and push again; "
                                          "do not skip or delete tests to get under the limit.", gate, kind="tests-timeout")
+            if "== NODE RED:" in gate:
+                nr = gate.split("== NODE RED:", 1)[1].split("\n\n", 1)[0].strip()
+                return lambda: rework(t, "Gate failed: node tests (node --test) fail that main does NOT fail, so your branch broke them: " + nr[:1100] +
+                                         " Fix the code or the test so it checks the real behaviour; do NOT delete, skip or weaken assertions. "
+                                         "Tests that were already red on main are not held against you.", gate, kind="tests-node")
             why = "branch was not pushed" if "could not fetch the branch" in gate else "the test suite fails in a clean container"
             failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
             owned = set(t.get("files", []))

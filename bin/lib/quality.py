@@ -47,6 +47,39 @@ def js_test_targets(repo_dir, changed, limit=30):
     return out[:limit]
 
 
+def node_failures(text):
+    """Failing tests in `node --test` TAP output: {(name, file): first lines of the error}. The file comes from the `location:` line of the
+    failure block, so the same test name in two files stays apart."""
+    lines = (text or "").splitlines()
+    out = {}
+    for i, l in enumerate(lines):
+        m = re.match(r"\s*not ok \d+ - (.*?)(?:\s+# (?:SKIP|TODO).*)?$", l)
+        if not m or re.search(r"\s# (SKIP|TODO)", l):
+            continue
+        file, err = "", ""
+        for j in range(i + 1, min(i + 45, len(lines))):
+            if re.match(r"\s*(?:not )?ok \d+ - ", lines[j]):
+                break
+            lm = re.search(r"location: '(.*?)(?::\d+:\d+)?'\s*$", lines[j])
+            if lm and not file:
+                file = lm.group(1)
+            if not err and lines[j].strip().startswith("error:"):
+                inline = lines[j].split(":", 1)[1].strip()
+                if inline in ("|-", "|", ">-", ">", ""):
+                    ind = len(lines[j]) - len(lines[j].lstrip())
+                    body = []
+                    for x in lines[j + 1:j + 5]:
+                        if x.strip() == "..." or (x.strip() and len(x) - len(x.lstrip()) <= ind):
+                            break
+                        if x.strip():
+                            body.append(x.strip())
+                    err = " ".join(body)[:240]
+                else:
+                    err = inline.strip("'")[:240]
+        out[(m.group(1).strip(), file)] = err
+    return out
+
+
 def js_test_count(repo_dir, targets):
     """Number of test()/it() calls in the given node test files (the Python-only counter shows 0 for them)."""
     n = 0
