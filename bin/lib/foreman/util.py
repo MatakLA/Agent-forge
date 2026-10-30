@@ -242,3 +242,28 @@ def _iso_ts(s):
         return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+def fit_diff(diff, limit):
+    """A diff that fits the reviewer's budget without losing whole files: small files stay complete, the biggest ones are cut
+    (head kept) and say so, and every file stays visible. Cutting the tail of the whole diff hid the last files from the reviewer."""
+    if len(diff) <= limit:
+        return diff
+    parts = re.split(r"(?m)^(?=diff --git )", diff)
+    head, files = (parts[0], parts[1:]) if parts and not parts[0].startswith("diff --git ") else ("", parts)
+    if len(files) < 2:
+        return diff[:limit] + f"\n... (diff truncated, {len(diff)} bytes total)"
+    budget = max(limit - len(head), 1000)
+    order = sorted(range(len(files)), key=lambda i: len(files[i]))
+    share, left = {}, budget
+    for k, i in enumerate(order):
+        fair = left // (len(order) - k)
+        share[i] = min(len(files[i]), fair)
+        left -= share[i]
+    out = [head]
+    for i, f in enumerate(files):
+        if share[i] >= len(f):
+            out.append(f)
+        else:
+            out.append(f[:max(share[i], 400)] + f"\n... (this file's diff cut: {len(f)} bytes, first {max(share[i], 400)} shown)\n")
+    return "".join(out)

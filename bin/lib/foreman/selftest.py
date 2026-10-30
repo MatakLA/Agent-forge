@@ -4,7 +4,7 @@ import datetime as dt, json, os, subprocess, time
 import sbx, runtimes, codemap
 
 from . import ctx
-from .util import extract_json, norm_tasks, parse_limit, parse_numstat, ready_tasks, sh, slugify
+from .util import extract_json, fit_diff, norm_tasks, parse_limit, parse_numstat, ready_tasks, sh, slugify
 from .store import goals, jload, new_goal_id, save_goal, tasks
 from .pool import has_quota, order_by_quota, quota_pct
 from .repo import CODEMAP, branch_diff, codemap_main, context_pack, own_files, usage_block, variant
@@ -355,6 +355,11 @@ def _selftest_body(bad, real_notify):
           [x[0] for x in nt] == ["0010-a", "0011-a", "0012-b"] and nt[0][1]["files"] == ["x.py"] and nt[0][2] == ["0012-b"]
           and nt[1][1]["risk"] == "risky" and nt[1][1]["acceptance"] == ["one"] and nt[2][2] == [] and isinstance(nt[2][1]["spec"], str)
           and any("unknown dependency zzz" in w for w in warns) and any("cycle" in w for w in warns))
+    big = "".join(f"diff --git a/f{i} b/f{i}\n" + ("+x\n" * (4000 if i == 0 else 20)) for i in range(5))
+    fd = fit_diff(big, 3000)
+    check("fit_diff: every file stays visible, the huge one is cut, small ones stay whole",
+          len(fd) < 3600 and all(f"diff --git a/f{i} b/f{i}" in fd for i in range(5)) and "this file's diff cut" in fd
+          and fit_diff("small", 100) == "small")
     check("norm_tasks: a reply that is not a plan gives no tasks", norm_tasks({"tasks": "x"}, 1) == [] and norm_tasks(None, 1) == [])
     nt_full = norm_tasks({"tasks": [{"key": "c", "acceptance": ["all tests in the repo pass", "existing full test suite still passes unmodified", "specific component behaves"]}]}, 20)
     check("norm_tasks: full test suite acceptance criteria sanitized to scoped tests",

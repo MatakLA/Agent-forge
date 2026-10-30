@@ -9,7 +9,7 @@ import json, os, re, shutil, subprocess, threading, time
 import sbx
 
 from . import ctx, jobs, store
-from .util import approvals, extract_json, git_auth_env, parse_numstat, sh
+from .util import approvals, extract_json, fit_diff, git_auth_env, parse_numstat, sh
 from .store import event, jload, jsave, notify, save_task
 from .jobs import INFLIGHT, PHASE, submit
 from .repo import branch_tree, refresh_repo
@@ -413,8 +413,7 @@ def step_gate_review_merge(t):
         save_task(t)
         os.makedirs(os.path.join(ctx.FD, "diffs"), exist_ok=True)
         open(os.path.join(ctx.FD, "diffs", t["id"] + ".diff"), "w").write(diff[:400000])
-        if len(diff) > ctx.C["DIFF_MAX"]:
-            diff = diff[:ctx.C["DIFF_MAX"]] + f"\n... (diff truncated, {len(diff)} bytes total)"
+        diff = fit_diff(diff, ctx.C["DIFF_MAX"])
         if not diff.strip() and not numstat.strip():
             # the branch equals main (the change is already there, e.g. after an auto-rebase): Forgejo refuses an empty PR
             # forever with 405 "try again later", so there is nothing to review or merge
