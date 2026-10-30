@@ -182,12 +182,14 @@ def sanitize_acceptance(items):
     return out[:12]
 
 
-def norm_tasks(d, start, limit=8):
+def norm_tasks(d, start, limit=8, warn=None):
     """The planner's task list made safe to use, whatever the model returned: only objects, every field coerced to the
     expected type, unique ids. Returns [(task_id, fields, [depends_on task ids])]. Malformed output used to raise in the
     main loop - the goal stayed "new" and was re-planned (and re-paid) every tick."""
     raw = d.get("tasks") if isinstance(d, dict) and isinstance(d.get("tasks"), list) else []
     items = [x for x in raw if isinstance(x, dict)][:limit]
+    if warn is not None and len([x for x in raw if isinstance(x, dict)]) > limit:
+        warn.append(f"the plan had {len([x for x in raw if isinstance(x, dict)])} tasks, only the first {limit} were kept")
     ids, tids, out = {}, [], []
     for i, x in enumerate(items):
         orig = str(x.get("key") or "").strip()
@@ -199,6 +201,10 @@ def norm_tasks(d, start, limit=8):
     for i, x in enumerate(items):
         tid = tids[i]
         deps = [ids[str(k)] for k in _strs(x.get("depends_on")) if str(k) in ids and ids[str(k)] != tid]
+        if warn is not None:
+            lost = [str(k) for k in _strs(x.get("depends_on")) if str(k) not in ids]
+            if lost:
+                warn.append(f"{tid}: unknown dependency {', '.join(lost)} dropped")
         fields = dict(title=str(x.get("title") or tid)[:150], role=str(x.get("role") or "developer")[:60],
                       risk="risky" if str(x.get("risk", "")).lower() == "risky" else "routine",
                       files=[f for f in (x.get("files") if isinstance(x.get("files"), list) else [])
@@ -206,7 +212,29 @@ def norm_tasks(d, start, limit=8):
                       read=[f for f in (x.get("read") if isinstance(x.get("read"), list) else []) if isinstance(f, str) and FILES_LINE.match(f) and ".." not in f.split("/") and not f.startswith("/")][:5],
                       spec=str(x.get("spec") or "")[:20000], acceptance=sanitize_acceptance(x.get("acceptance")))
         out.append((tid, fields, deps))
+    _break_cycles(out, warn)
     return out
+
+
+def _break_cycles(out, warn=None):
+    """A dependency cycle would keep its tasks pending forever: drop the edge that closes each cycle."""
+    deps = {tid: d for tid, _f, d in out}
+    state = {}
+
+    def visit(n):
+        state[n] = 1
+        for m in list(deps[n]):
+            if state.get(m) == 1:
+                deps[n].remove(m)
+                if warn is not None:
+                    warn.append(f"{n}: dependency on {m} would close a cycle - dropped")
+            elif state.get(m) is None and m in deps:
+                visit(m)
+        state[n] = 2
+
+    for n in deps:
+        if state.get(n) is None:
+            visit(n)
 
 
 def _iso_ts(s):

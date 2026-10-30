@@ -52,9 +52,20 @@ def step_plan(g, followup=None):
                 g2["status"] = "blocked"; sbx.alert(f"foreman: goal {g['id']} could not be planned")
             save_goal(g2); return
         if isinstance(d.get("criteria"), list):
-            g2["criteria"] = [dict(criterion=str(c.get("criterion", ""))[:300], met=bool(c.get("met")), evidence=str(c.get("evidence", ""))[:300])
+            g2["criteria"] = [dict(criterion=str(c.get("criterion", ""))[:300], met=c.get("met") is True or str(c.get("met")).strip().lower() in ("true", "yes"), evidence=str(c.get("evidence", ""))[:300])
                               for c in d["criteria"][:8] if isinstance(c, dict)]
             g2["criteria_at"] = sbx.now()
+        unmet = [c["criterion"] for c in g2.get("criteria", []) if not c["met"]] if d.get("done") is True else []
+        if unmet and g2.get("rounds", 0) < int(ctx.C.get("MAX_GOAL_ROUNDS", 3)):
+            g2["rounds"] = g2.get("rounds", 0) + 1
+            g2["notes"] = (str(g2.get("notes") or "") + f"\nThe last check said done, but these criteria were marked not met: {'; '.join(unmet)[:600]}")[-1500:]
+            save_goal(g2)
+            event(f"goal {g['id']}: {who} said done but {len(unmet)} criteria are not met - not closed, checked again", goal=g["id"])
+            return
+        if unmet:
+            g2.update(status="blocked", summary=f"closed by the checker with {len(unmet)} criteria not met: {'; '.join(unmet)[:600]}", finished=sbx.now())
+            save_goal(g2); sbx.alert(f"foreman: goal {g['id']} has unmet criteria after {g2.get('rounds', 0)} rounds")
+            event(f"goal {g['id']} BLOCKED - {len(unmet)} criteria still not met after {g2.get('rounds', 0)} rounds", goal=g["id"]); return
         if d.get("done") is True:
             g2.update(status="done", summary=str(d.get("summary") or "")[:2000], finished=sbx.now()); save_goal(g2)
             for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending", "approval")]:
@@ -62,7 +73,10 @@ def step_plan(g, followup=None):
             event(f"goal {g['id']} DONE ({who}): {str(d.get('summary') or '')[:500]}", goal=g["id"]); notify("goal_done", g2); return
         for ot in [t for t in tasks() if t["goal"] == g["id"] and t["status"] in ("blocked", "pending", "approval")]:
             ot["status"] = "cancelled"; ot["cancelled_why"] = f"superseded by round {g2.get('rounds', 0) + 1}"; save_task(ot)
-        planned = norm_tasks(d, next_task_number())
+        warns = []
+        planned = norm_tasks(d, next_task_number(), warn=warns)
+        for w in warns:
+            event(f"goal {g['id']}: plan repaired - {w}", goal=g["id"])
         presplit, gate = [], approvals()
         for tid, x, deps in planned:
             prefix = "test" if "test" in x["role"].lower() and "developer" not in x["role"].lower() else "feat"

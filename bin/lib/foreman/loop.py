@@ -574,6 +574,10 @@ def advance():
                     save_goal(g); event(f"goal {g['id']} blocked: all tasks blocked or cancelled", goal=g["id"]); continue
                 max_rnd = int(ctx.C.get("MAX_GOAL_ROUNDS", 3))
                 if g.get("rounds", 0) >= max_rnd or not can_think:
+                    unmet = [c.get("criterion", "") for c in g.get("criteria") or [] if not c.get("met")]
+                    if unmet:
+                        g.update(status="blocked", summary=f"all tasks finished but {len(unmet)} criteria are not met: {'; '.join(unmet)[:600]}", finished=sbx.now())
+                        save_goal(g); event(f"goal {g['id']} BLOCKED - {len(unmet)} criteria not met after {g.get('rounds', 0)} rounds", goal=g["id"]); continue
                     g.update(status="done", summary="all tasks completed", finished=sbx.now())
                     save_goal(g); event(f"goal {g['id']} closed after {g.get('rounds', 0)} rounds", goal=g["id"]); notify("goal_done", g); continue
                 res = "\n".join(f"- {t['id']} {t.get('title', t['id'])}: {t.get('status')}; {(t.get('history') or [{}])[-1].get('feedback', '')[:300]}" for t in mine)
