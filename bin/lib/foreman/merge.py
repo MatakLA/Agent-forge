@@ -651,6 +651,9 @@ def rework(t, feedback, gate_tail, count=True, kind=""):
         except Exception:
             pass
     t.update(status="pending", feedback=feedback, gate_tail=gate_tail, review_fails=0, regates=0, not_before=0)
+    esc = ctx.C.get("ESCALATE_MODEL")
+    if esc and count and (t.get("variant") or {}).get("model") != esc:
+        t["variant"] = dict(t.get("variant") or {}, model=esc, why="escalated")      # a failed first attempt: retry with the stronger model
     t.pop("merge_approved", None)              # new work needs a new approval
     t.pop("awaiting", None)
     save_task(t)

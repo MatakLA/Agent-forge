@@ -11,6 +11,7 @@ from .repo import CODEMAP, branch_diff, codemap_main, context_pack, own_files, u
 from .knowledge import role_catalogue, role_playbook
 from .prompts import worker_spec
 from .merge import auto_rebase
+from . import merge as merge_mod
 from .maintenance import MAINT_PREFIX, _maintenance_findings
 from .loop import orphaned
 from .report import task_diff, team_metrics
@@ -199,6 +200,24 @@ def _selftest_body(bad, real_notify):
         check("tasks(): a sibling *.mutations.json (a list) and a *.md spec do not crash the loader", [t["id"] for t in tasks()] == ["0002-b"])
     finally:
         ctx.FD = old_fd
+        shutil.rmtree(d, ignore_errors=True)
+    # escalation: a failed first attempt retries with ESCALATE_MODEL (when set), not otherwise
+    d = tempfile.mkdtemp(prefix="foreman-esc-")
+    os.makedirs(os.path.join(d, "tasks"))
+    old_fd, old_esc, old_ev = ctx.FD, ctx.C.get("ESCALATE_MODEL"), merge_mod.event
+    ctx.FD = d
+    merge_mod.event = lambda *a, **k: None
+    try:
+        for esc, want in (("", "m-cheap"), ("m-strong", "m-strong")):
+            ctx.C["ESCALATE_MODEL"] = esc
+            tid = "0009-e" + ("1" if esc else "0")
+            json.dump(dict(id=tid, status="running", attempts=0, history=[], branch="b", variant=dict(pack=True, model="m-cheap", why="default")),
+                      open(os.path.join(d, "tasks", tid + ".json"), "w"))
+            merge_mod.rework(dict(id=tid), "tests fail", "", kind="review")
+            t = json.load(open(os.path.join(d, "tasks", tid + ".json")))
+            check(f"rework: ESCALATE_MODEL={esc or 'off'} -> next attempt uses {want}", t["variant"]["model"] == want and t["status"] == "pending")
+    finally:
+        ctx.FD, ctx.C["ESCALATE_MODEL"], merge_mod.event = old_fd, old_esc, old_ev
         shutil.rmtree(d, ignore_errors=True)
     # variants: context pack A/B splits tasks roughly in half and is stable per task; model routing
     saved = {k: ctx.C[k] for k in ("CONTEXT_PACK", "WORKER_MODEL", "WORKER_MODEL_RISKY", "WORKER_MODEL_LIGHT", "AB_MODEL", "AB_SHARE", "LIGHT_ROLES",

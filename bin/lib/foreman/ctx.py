@@ -31,7 +31,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # than MAX_TASK_FILES before anyone works on them (tasks with 4-5 files hit the token cap twice as often as 1-2)
             CONTEXT_PACK="on", CONTEXT_PACK_CHARS=60000, SELF_CHECK_ROUNDS=1, MAX_TASK_FILES=3,
             # cheaper model for light roles; A/B: AB_SHARE % of routine tasks use AB_MODEL (compare in Metrics)
-            WORKER_MODEL_LIGHT="", LIGHT_ROLES="tester,technical-writer,translator", AB_MODEL="", AB_SHARE=0,
+            WORKER_MODEL_LIGHT="", ESCALATE_MODEL="", LIGHT_ROLES="tester,technical-writer,translator", AB_MODEL="", AB_SHARE=0,
             # while every worker waits for quota: plan backlog goals ahead (orchestrator only) and check main without any LLM
             PLAN_AHEAD=1, MAINTENANCE=1,
             # how the project is tested (gate, self-check, maintenance) and in which image; any language with a CLI test runner

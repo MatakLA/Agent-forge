@@ -119,3 +119,7 @@ that pass and fail on the same commit become a "flaky tests" backlog entry) and 
 
 Using a second subscription (e.g. Claude Code) as a fallback worker is deliberately not built in: it would draw from the same
 limit the orchestrator needs, and a busy team can empty it within hours.
+
+## Escalation after a failed attempt (`ESCALATE_MODEL`)
+
+Empty by default (off). When set to a model slug, a task that comes back for rework (attempt counted) is retried with that stronger model instead of the one chosen at the first dispatch (`variant.why = "escalated"`). Set it per project with `foreman settings apply`; cheap first attempts, strong retries.
