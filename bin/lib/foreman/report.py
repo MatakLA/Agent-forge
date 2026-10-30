@@ -542,7 +542,22 @@ def money(days=14):
                 workers_today={w: sbx.api_spent(led, "day", worker=w) for w in sbx.worker_budgets(lim.get("WORKER_DAILY_BUDGET_USD"))},
                 quota_burn={w: round(v, 2) for w, v in burn.items() if w},
                 top_tasks=sorted(({"task": k, "usd": v} for k, v in _task_costs(month).items()), key=lambda x: -x["usd"])[:10],
-                cost_models=cost_models)
+                cost_models=cost_models, per_merged_task=_per_merged_task(led, week0))
+
+
+def _per_merged_task(led, since):
+    """What one merged task really costs in counted tokens (uncached input + output) over the last 7 days: the tokens of its own
+    runs, and the same including the runs of tasks that were cancelled or are still open (the waste). Quota burn per worker
+    cannot be turned into tokens (it is whole percents), so tokens are the yardstick."""
+    status = {t["id"]: t.get("status") for t in tasks()}
+    rows = [e for e in led if e.get("date", "") >= since and e.get("project", "") == sbx.PROJECT and e.get("tokens")]
+    done_ids = {str(e.get("task", "")).removesuffix(".md") for e in rows} & {i for i, st in status.items() if st == "done"}
+    total = sum(e["tokens"] for e in rows)
+    on_done = sum(e["tokens"] for e in rows if str(e.get("task", "")).removesuffix(".md") in done_ids)
+    n = len(done_ids)
+    return dict(days=7, merged_tasks=n, tokens_total=total, tokens_on_merged=on_done,
+                per_merged_task=round(on_done / n) if n else None, per_merged_task_with_waste=round(total / n) if n else None,
+                waste_share=round(1 - on_done / total, 3) if total else None)
 
 
 def _ts(iso):
