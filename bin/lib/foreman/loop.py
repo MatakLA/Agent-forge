@@ -69,6 +69,9 @@ def why_no_task(ts, gm, stopped="", running_n=0, max_parallel=99, planning=0, ba
         done = {x["id"] for x in ts if x["status"] == "done"}
         deps = [d for d in t.get("depends_on", []) if d not in done]
         if deps:
+            stuck = [d for d in deps if next((x["status"] for x in ts if x["id"] == d), "") in ("blocked", "cancelled")]
+            if stuck:
+                return f"{t['id']} waits for {', '.join(stuck[:2])}, which is blocked - fix it and this one continues{more}"
             return f"{t['id']} waits for {', '.join(deps[:2])} to be merged first{more}"
         busy = [x["id"] for x in ts if x["status"] == "running" and set(x.get("files", [])) & set(t.get("files", []))]
         if busy:
@@ -557,13 +560,20 @@ def advance():
                 g.update(status="done", summary="no tasks generated", finished=sbx.now()); save_goal(g); continue
             all_ts = {t2["id"]: t2.get("status") for t2 in tasks()}
             for t in mine:
+                deps = t.get("depends_on", [])
                 if t.get("status") == "pending":
-                    bad_deps = [d for d in t.get("depends_on", []) if all_ts.get(d) in ("blocked", "cancelled")]
+                    # A cancelled dependency can never merge; a merely blocked one may be fixed, so its dependents just wait.
+                    bad_deps = [d for d in deps if all_ts.get(d) == "cancelled"]
                     if bad_deps:
                         msg = "dependency " + ", ".join(bad_deps) + " blocked/cancelled"
                         t.update(status="blocked", blocked_why=msg)
                         save_task(t)
                         event("task " + t["id"] + " blocked: " + msg, task=t["id"])
+                elif t.get("status") == "blocked" and str(t.get("blocked_why", "")).startswith("dependency ") \
+                        and not any(all_ts.get(d) in ("blocked", "cancelled") for d in deps):
+                    t.update(status="pending", blocked_why="")
+                    save_task(t)
+                    event("task " + t["id"] + " pending again: its dependencies are no longer blocked", task=t["id"])
             if all(t.get("status") in ("done", "blocked", "cancelled") for t in mine):
                 # Invariant: a goal must leave active state once all its tasks are done, blocked, or cancelled
                 if all(t.get("status") == "cancelled" for t in mine):

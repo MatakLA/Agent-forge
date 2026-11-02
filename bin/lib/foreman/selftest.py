@@ -629,6 +629,7 @@ def test_owner_and_insights(check):
           why_no_task([], {}, "the project is stopped (kill switch): egress") .startswith("the project is stopped")
           and "MAX_PARALLEL" in why_no_task([], {}, "", 4, 4)
           and "0001-a waits for 0000-z" in why_no_task([dict(id="0001-a", goal="G", status="pending", depends_on=["0000-z"])], {})
+          and "which is blocked" in why_no_task([dict(id="0001-a", goal="G", status="pending", depends_on=["0000-z"]), dict(id="0000-z", goal="G", status="blocked")], {})
           and "0010-s waits: 0009-r is changing the same files" in why_no_task(run + [dict(id="0010-s", goal="G", status="pending", files=["x.py"])], {})
           and "its goal is paused" in why_no_task([dict(id="0011-p", goal="G", status="pending")], {"G": dict(paused=True)})
           and "assigned to worker-2" in why_no_task([dict(id="0012-q", goal="G", status="pending", pin_worker="worker-2")], {}, worker="worker-1")
