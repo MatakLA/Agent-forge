@@ -330,6 +330,7 @@ def step_gate_review_merge(t):
             event(f"task {t['id']}: auto-rebased onto main", task=t["id"])
         PHASE[t["id"]] = "tests in a clean container"
         refresh_repo()
+        main_before = sh(["git", "rev-parse", "origin/main"], cwd=ctx.REPO)[1].strip()
         rc, out, err = sh([os.path.join(ctx.BIN, "review-branch"), t["branch"]], timeout=gate_budget(),
                           env={"GATE_ALLOWED_FILES": ",".join(f for f in t.get("files", []) if "," not in str(f))})
         gate = (out + err)[-8000:]
@@ -364,6 +365,15 @@ def step_gate_review_merge(t):
             failed_tests = [m.group(1).strip() for m in re.finditer(r"^(?:FAILED\s+|FAIL:\s+)([^\s:]+)(?:::|\s)", gate, re.M)]
             owned = set(t.get("files", []))
             unowned = [f for f in sorted(set(failed_tests)) if f not in owned]
+            if unowned and "could not fetch the branch" not in gate:
+                # a long gate runs against the main it started with; if main moved meanwhile and the failing tests are files this
+                # branch does not touch, the failure is probably main's drift (e.g. a sibling task changed a shared allowlist), not the
+                # worker's: test again on the new main without burning one of its attempts
+                refresh_repo()
+                main_now = sh(["git", "rev-parse", "origin/main"], cwd=ctx.REPO)[1].strip()
+                changed = set(sh(["git", "diff", "--name-only", f"origin/main...origin/{t['branch']}"], cwd=ctx.REPO)[1].split())
+                if main_now and main_now != main_before and not any(f in changed for f in unowned):
+                    return lambda: requeue_gate(t, "main moved during the gate and the failing tests are files this branch does not touch - testing again on the new main")
             msg = f"Gate failed: {why}."
             if unowned:
                 unowned_test_files = [f for f in unowned if re.search(r"(^|/)test_.*\.py$|\.test\.[mc]?[jt]s$", f)]

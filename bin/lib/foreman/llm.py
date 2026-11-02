@@ -102,19 +102,29 @@ def llm_available():
 
 def _agy(w, prompt, model, schema=None):
     """Tool-less Antigravity call (no --dangerously-skip-permissions): the reviewer/planner reads only what is in the prompt,
-    so worker-written content in a diff cannot make it run commands. Runs from an empty working directory."""
-    t0w = time.time()
-    rc, out, err = sh(["docker", "exec", "-i", "-w", "/tmp", w, "agy-run", "--model", model, "--output-format", "stream-json",
-                       "--print-timeout", "15m"] + (["--json-schema", schema] if schema else []), timeout=1100, inp=prompt)
-    res = {}
-    for line in out.splitlines():
-        e = extract_json(line) if line.startswith("{") else None
-        if e and e.get("event") == "result":
-            res = e.get("result") or {}
-    text = res.get("response") or ""
-    log_llm(KIND.k, f"agy:{model}@{w}", rc, time.time() - t0w, None, res.get("usage"), text[:300] or err[:300])
-    ok = res.get("status") == "SUCCESS" and bool(text.strip())
+    so worker-written content in a diff cannot make it run commands. Runs from an empty working directory.
+    If the model still reaches for a tool (auto-denied in headless mode, so no output), ask once more with an explicit
+    no-tools instruction instead of treating the worker as broken."""
+    for attempt in (0, 1):
+        t0w = time.time()
+        rc, out, err = sh(["docker", "exec", "-i", "-w", "/tmp", w, "agy-run", "--model", model, "--output-format", "stream-json",
+                           "--print-timeout", "15m"] + (["--json-schema", schema] if schema else []), timeout=1100,
+                          inp=prompt if attempt == 0 else prompt + NO_TOOLS_NOTE)
+        res = {}
+        for line in out.splitlines():
+            e = extract_json(line) if line.startswith("{") else None
+            if e and e.get("event") == "result":
+                res = e.get("result") or {}
+        text = res.get("response") or ""
+        log_llm(KIND.k, f"agy:{model}@{w}", rc, time.time() - t0w, None, res.get("usage"), text[:300] or err[:300])
+        ok = res.get("status") == "SUCCESS" and bool(text.strip())
+        if ok or attempt or "cannot prompt for" not in (text + out[-2000:] + err[-2000:]):
+            break
     return ok, text, parse_limit(text + "\n" + out[-2000:] + "\n" + err[-2000:]) if not ok else None, (text or err)[:160]
+
+
+NO_TOOLS_NOTE = ("\n\nIMPORTANT: you have NO tools in this session. Do not run commands or read files. Everything you need is in this "
+                 "message. Reply now with the answer only, in the requested format.\n")
 
 
 class _Kind(threading.local):
