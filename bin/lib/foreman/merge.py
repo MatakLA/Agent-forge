@@ -132,10 +132,15 @@ def requeue_gate(t, why):
         return
     if t.get("status") == "blocked":
         return
-    t["regates"] = t.get("regates", 0) + 1
+    drift = why.startswith("main moved during the gate")
+    if drift:
+        # Not the task's fault: main moved under it. Own, larger budget so it never eats the 4 real regates.
+        t["drift_regates"] = t.get("drift_regates", 0) + 1
+    else:
+        t["regates"] = t.get("regates", 0) + 1
     t["history"].append(dict(at=sbx.now(), outcome="regate", why=why))
     # Invariant: the 4-round cap blocks after exactly 4 rounds (not 3 or 5), per task budget.
-    if t["regates"] >= 4:
+    if t["regates"] >= 4 or t.get("drift_regates", 0) >= 12:
         save_task(t)
         return block(t, f"could not be merged after {t['regates']} tries (last: {why})")
     t["status"] = "gate"
@@ -687,10 +692,35 @@ def block(t, why):
                 t["blocked_why"] = f"{diag['summary']}\n\nTechnical details: {why[:300]}"
     except Exception as e:
         event(f"task {t['id']}: diagnosis failed: {e}", task=t["id"])
+    healed = auto_heal(t, why)
     save_task(t)
+    if healed:
+        event(f"task {t['id']} failed ({why[:200]}) - sent back to its worker automatically (self-heal {t['auto_heals']}/{healed})", task=t["id"])
+        return
     sbx.alert(f"foreman: task {t['id']} blocked: {why[:200]}")
     event(f"task {t['id']} BLOCKED - needs the owner: {why[:300]}", task=t["id"])
     notify("task_blocked", t)
+
+
+def auto_heal(t, why):
+    """Instead of waiting for the owner, send a blocked task back to its worker with the diagnosis (what the owner would do by
+    hand). At most AUTO_HEAL times per task; returns the cap when it re-queued the task, else 0. Secrets are never auto-retried."""
+    cap = int(ctx.C.get("AUTO_HEAL", 2))
+    if cap <= 0 or t.get("auto_heals", 0) >= cap or "secret" in why.lower() or t.get("cancel_requested") or t.get("orphan_streak"):
+        return 0
+    d = t.get("diagnosis") or {}
+    t["auto_heals"] = t.get("auto_heals", 0) + 1
+    text = ("The merge gate blocked this task. Fix the cause, do not weaken or delete any test or assertion. Rebase on origin/main first "
+            "(main moves fast; shared files such as test_asset_graph.py allowlists must be recomputed on the fresh main). Run the failing "
+            "tests yourself before you finish.\n\nRoot cause: " + str(d.get("root_cause") or "")[:800]
+            + "\nSuggested fix: " + str(d.get("suggested_fix") or "")[:1200]
+            + "\n\nGate output (tail):\n" + str(t.get("gate_tail") or why)[-2500:])
+    t.setdefault("history", []).append(dict(at=sbx.now(), outcome="self-heal", feedback=text[:1500]))
+    t.update(status="pending", feedback=text, gate_tail="", attempts=0, review_fails=0, regates=0, drift_regates=0, not_before=0,
+             blocked_why="")
+    for k in ("merge_approved", "awaiting", "after"):
+        t.pop(k, None)
+    return cap
 
 
 def finish(t, what, who, fb, pr):
