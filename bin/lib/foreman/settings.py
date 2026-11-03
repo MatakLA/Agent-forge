@@ -57,7 +57,7 @@ EDITABLE = {
     "AUTOPILOT": (r"[01]", "project"), "AUTO_MERGE": (r"[01]", "project"), "CONTINUE_CONVERSATIONS": (r"[01]", "project"),
     "MAX_REWORK": ((0, 10), "project"), "MAX_ACTIVE_GOALS": ((1, 50), "project"), "SPLIT_AFTER_CAPS": ((1, 10), "project"),
     "TASK_TOKEN_BUDGET": ((50000, 5000000), "project"),
-    "CONTEXT_PACK": (r"on|off|ab", "project"), "CONTEXT_PACK_CHARS": ((5000, 200000), "project"), "SELF_CHECK_ROUNDS": ((0, 3), "project"),
+    "CONTEXT_PACK": (r"on|off|ab", "project"), "WORKER_STYLE": (r"default|lean|ab", "project"), "CONTEXT_PACK_CHARS": ((5000, 200000), "project"), "SELF_CHECK_ROUNDS": ((0, 3), "project"),
     "MAX_TASK_FILES": ((1, 20), "project"), "WORKER_MODEL_LIGHT": ("|" + MODEL_RE, "project"), "ESCALATE_MODEL": ("|" + MODEL_RE, "project"),
     "LIGHT_ROLES": (r"|[a-z][a-z-]{1,40}(,[a-z][a-z-]{1,40})*", "project"), "AB_MODEL": ("|" + MODEL_RE, "project"),
     "AB_SHARE": ((0, 100), "project"), "PLAN_AHEAD": (r"[01]", "project"), "MAINTENANCE": (r"[01]", "project"),

@@ -239,7 +239,7 @@ def dispatch_ready():
             model = t.get("model_override") or (ctx.C["WORKER_MODEL_" + rt.upper()] if runtimes.is_api(rt) else v["model"])
             env = {"DISPATCH_BRANCH": t["branch"], "DISPATCH_CONVERSATION": cid if continuing else "",
                    "DISPATCH_MODEL": model, "DISPATCH_SELF_CHECK": str(int(ctx.C["SELF_CHECK_ROUNDS"])),
-                   "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"],
+                   "DISPATCH_VARIANT": ("pack" if v["pack"] else "nopack") + "-" + v["why"] + ("-lean" if v.get("lean") else ""),
                    "DISPATCH_FILES": ",".join(str(f) for f in t.get("files", []) if "," not in str(f))}
 
             DISPATCHING.add(t["id"])

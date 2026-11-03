@@ -308,6 +308,15 @@ def branch_stat(t):
         return ""
 
 
+LEAN_MODE = """## Working mode: write first (this task is measured by how few steps you need)
+- Your own files are in full further down; interfaces of what they import too. Do not re-discover them: no `sed -n` slices, no repo-wide
+  `grep`, no `git log/show/diff/status/fetch`, no `python3 -c` probes. A file that is not in this prompt: open it ONCE, whole, with view_file.
+- Make your first edit within your first 5 steps. One `write_to_file` / `multi_replace_file_content` per file - the whole change at once -
+  not a dozen small edits, and no re-reading a file you just wrote.
+- Aim for at most 25 steps in total. Run the named test once at the end (and once more only if it failed); then commit, push, stop.
+"""
+
+
 def worker_spec(t, continuing=False):
     """The prompt a worker gets. `continuing`: the worker resumes its own earlier agy conversation (it already has the full
     task and playbook), so it only needs what changed - much shorter, and no re-reading of the repository."""
@@ -336,6 +345,8 @@ def worker_spec(t, continuing=False):
                 pack.append(context_pack(t))
         except Exception as e:                  # the pack is an optimisation; a task never fails because of it
             event(f"task {t['id']}: context pack failed: {e}", task=t["id"])
+    if variant(t).get("lean"):
+        task.insert(0, LEAN_MODE)
     if cache:
         # identical text first (rules, project map, playbook), what differs per task last: a provider-side prompt cache only helps a shared prefix
         s = [rules_block(t)] + stable + [role] + head + task + pack + [rework_block(t)]

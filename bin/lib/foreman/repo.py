@@ -266,7 +266,9 @@ def variant(t):
             model, why = ctx.C["WORKER_MODEL_LIGHT"], "light"
         else:
             model, why = ctx.C["WORKER_MODEL"], "default"
-        v = dict(pack=pack, model=model, why=why)
+        ws = str(ctx.C.get("WORKER_STYLE", "default")).lower()
+        lean = ws == "lean" or (ws == "ab" and _bucket(t["id"] + ":style", 2) == 0)
+        v = dict(pack=pack, model=model, why=why, lean=lean)
         t["variant"] = v
     return v
 

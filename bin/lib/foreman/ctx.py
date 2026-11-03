@@ -29,7 +29,7 @@ CONF = dict(CLAUDE_MODEL="sonnet", AGY_REVIEW_MODEL="claude-sonnet-4-6", AGY_PLA
             # efficiency (docs/EFFICIENCY.md): a context pack in every task (on|off|ab = half the tasks, to measure it), test the
             # worker's clone before the run ends and let it fix failures in the same conversation, split tasks that own more files
             # than MAX_TASK_FILES before anyone works on them (tasks with 4-5 files hit the token cap twice as often as 1-2)
-            CONTEXT_PACK="on", CONTEXT_PACK_CHARS=60000, SELF_CHECK_ROUNDS=1, MAX_TASK_FILES=3,
+            CONTEXT_PACK="on", WORKER_STYLE="default", CONTEXT_PACK_CHARS=60000, SELF_CHECK_ROUNDS=1, MAX_TASK_FILES=3,
             # cheaper model for light roles; A/B: AB_SHARE % of routine tasks use AB_MODEL (compare in Metrics)
             WORKER_MODEL_LIGHT="", ESCALATE_MODEL="", LIGHT_ROLES="tester,technical-writer,translator", AB_MODEL="", AB_SHARE=0,
             # while every worker waits for quota: plan backlog goals ahead (orchestrator only) and check main without any LLM
