@@ -59,7 +59,7 @@ def branch_ahead(t):
     return f"origin/{b}" if rc == 0 and out.strip().isdigit() and int(out.strip()) > 0 else None
 
 
-def gate_checks(mine, cap=40000):
+def gate_checks(mine, cap=80000):
     """Test files (other than the task's own tests) that name one of its files: static / contract checks the merge gate runs
     against them. The worker gets them whole, so it does not discover their rules by grepping and failing."""
     found = []
@@ -69,6 +69,8 @@ def gate_checks(mine, cap=40000):
             p = line.split(":", 1)[-1].strip()
             if p and p not in mine and p not in found and codemap.is_test(p):
                 found.append(p)
+    stems = [os.path.splitext(os.path.basename(f))[0] for f in mine]
+    found.sort(key=lambda p: not any(x in os.path.basename(p) for x in stems))
     blocks, used = [], 0
     for p in found:
         src = read_repo(p, 200000)
