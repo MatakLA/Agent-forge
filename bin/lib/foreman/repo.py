@@ -237,6 +237,15 @@ def context_pack(t, parts=False):
         d = branch_diff(t, min(20000, budget // 2))
         if d:
             add("## What your branch already changed versus main (the files above already contain it - do not `git diff`)\n" f"```diff\n{d}\n```\n")
+    refs = [r for r in dict.fromkeys(list(t.get("read", [])) + codemap.mentioned_in(t.get("spec", "") + " " + " ".join(t.get("acceptance", [])), cm))
+            if r in cm and r not in mine and not codemap.is_test(r)]
+    ref_used = 0
+    for r in refs:
+        src = read_repo(r, 40001)
+        if not src or len(src) > 40000 or ref_used + len(src) > 100000:
+            continue
+        shown.add(r); ref_used += len(src); used += len(src)
+        out.append(f"### Reference (read-only, complete): `{r}` ({src.count(chr(10)) + 1} lines)\n```{os.path.splitext(r)[1].lstrip('.')}\n{src}\n```\n")
     gc = gate_checks(mine)
     if gc:
         out.append(gc); used += len(gc)

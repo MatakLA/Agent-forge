@@ -13,7 +13,7 @@ from .knowledge import decisions, languages, lessons, role_playbook
 
 # ---------------------------------------------------------------- prompts
 TASK_SCHEMA = """{"tasks": [{"key": "short-unique-key", "title": "...", "role": "<a slug from the role catalogue>", "depends_on": ["key of a task in THIS list"],
-  "files": ["exact repo paths the task may create/modify"], "read": ["up to 5 other existing repo paths the worker must know the interface of"], "risk": "routine|risky",
+  "files": ["exact repo paths the task may create/modify"], "read": ["up to 5 other existing repo paths: modules the worker must know the interface of, and ONE existing file that already solves a similar problem the way this task should (the pattern to copy)"], "risk": "routine|risky",
   "spec": "markdown: precisely what to build/write - interfaces, data shapes, edge cases, which existing file to follow",
   "acceptance": ["verifiable criterion", "..."]}],
  "goal_acceptance": ["observable outcome that proves the WHOLE goal works, e.g. an end-to-end behaviour", "..."],
