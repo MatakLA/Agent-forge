@@ -52,10 +52,20 @@ def _wrong_for_worker(text):
     return bool(sbx.node_test_image()) and bool(RUN_NODE_RE.search(text))
 
 
+def _dedupe(ls):
+    """Reviews write the same lesson in many wordings; keep the newest of each cluster (word overlap over 60 %) so the prompt is not 40 lines of one rule."""
+    kept = []
+    for l in reversed(ls):
+        w = set(re.findall(r"[a-z]{4,}", l.lower()))
+        if not any(len(w & k) / max(1, min(len(w), len(k))) > 0.6 for _, k in kept):
+            kept.append((l, w))
+    return [l for l, _ in reversed(kept)]
+
+
 def lessons():
     try:
         ls = [l[2:].strip() for l in open(os.path.join(ctx.CFG_DIR, "lessons.md")) if l.startswith("- ") and not _wrong_for_worker(l)]
-        return ls[-int(ctx.C["LESSONS_MAX"]):]
+        return _dedupe(ls)[-int(ctx.C["LESSONS_MAX"]):]
     except FileNotFoundError:
         return []
 

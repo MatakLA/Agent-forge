@@ -53,6 +53,7 @@ from . import ctx, readiness
 from .store import event, jload, jsave, locked, save_task, state_tx, tasks
 from .jobs import INFLIGHT
 from .repo import context_pack, refresh_repo, variant
+from .prompts import worker_spec
 from .llm import Unavailable
 from .loop import collect, run_loop, tick
 from .report import dashboard_json, goal_detail, list_projects, money, search, status, task_detail, task_diff
@@ -172,6 +173,12 @@ def main():
         print(cp)
         print(f"\n({len(cp):,} characters, ~{len(cp) // 4:,} tokens; variant: {variant(dict(t)).get('why')}, "
               f"pack {'on' if variant(dict(t))['pack'] else 'off'} for this task)", file=sys.stderr)
+    elif a[:1] == ["prompt"] and len(a) == 2:
+        t = next((x for x in tasks() if x["id"] == a[1]), None)
+        if not t:
+            sys.exit(f"no task {a[1]}")
+        p = os.path.join(t.get("run") or "", "prompt.md")
+        print(open(p, errors="replace").read() if t.get("run") and os.path.exists(p) else "(no run yet - the prompt the next worker would get:)\n\n" + worker_spec(t))
     elif a[:1] == ["diff"] and len(a) == 2:
         print(task_diff(a[1]))
     elif a == ["ask"]:

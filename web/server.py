@@ -717,6 +717,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"foreman": e["data"], "fetched_at": e["at"], "error": e["error"]})
         elif path == "/api/projects":
             self._json({"projects": B.PROJECTS["list"] or [{"name": "default"}]})
+        elif path == "/api/prompt":
+            tid = q.get("task", "")
+            if not TASK_ID.fullmatch(tid):
+                self._json({"error": "bad task id"}, 400); return
+            rc, out, err = foreman(pf, f"prompt {tid}", timeout=40)
+            self._raw((out if rc == 0 else f"(error: {err.strip()[-300:]})").encode(), "text/plain; charset=utf-8")
         elif path == "/api/diff":
             tid = q.get("task", "")
             if not TASK_ID.fullmatch(tid):

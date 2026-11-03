@@ -42,7 +42,9 @@ def main():
         for l in open(a[a.index("--label-file") + 1]):
             if "\t" in l: k, v = l.rstrip("\n").split("\t", 1); labels[k] = v
     rows = []
+    since = a[a.index("--since") + 1] if "--since" in a else ""
     for d in sorted(glob.glob(os.path.join(root, "*-worker-*"))):
+        if os.path.basename(d) < since: continue
         r = scan(d)
         if r and r["steps"]:
             if "--by-variant" in a:

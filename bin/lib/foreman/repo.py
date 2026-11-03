@@ -45,9 +45,41 @@ def repo_tree():
     return "\n".join(l for l in out.splitlines() if "__pycache__" not in l)
 
 
-def read_repo(path, limit=20000):
-    rc, out, _ = sh(["git", "show", f"origin/main:{path}"], cwd=ctx.REPO)
+def read_repo(path, limit=20000, ref="origin/main"):
+    rc, out, _ = sh(["git", "show", f"{ref}:{path}"], cwd=ctx.REPO)
     return out[:limit] if rc == 0 else ""
+
+
+def branch_ahead(t):
+    """The task branch as `origin/<branch>` when it already carries commits that main does not (earlier work to continue), else None."""
+    b = t.get("branch")
+    if not b:
+        return None
+    rc, out, _ = sh(["git", "rev-list", "--count", f"origin/main..origin/{b}"], cwd=ctx.REPO)
+    return f"origin/{b}" if rc == 0 and out.strip().isdigit() and int(out.strip()) > 0 else None
+
+
+def gate_checks(mine, cap=40000):
+    """Test files (other than the task's own tests) that name one of its files: static / contract checks the merge gate runs
+    against them. The worker gets them whole, so it does not discover their rules by grepping and failing."""
+    found = []
+    for f in mine:
+        rc, out, _ = sh(["git", "grep", "-l", "-F", os.path.basename(f), "origin/main", "--", "*test_*.py", "*.test.mjs", "*.test.js"], cwd=ctx.REPO, timeout=30)
+        for line in out.splitlines():
+            p = line.split(":", 1)[-1].strip()
+            if p and p not in mine and p not in found and codemap.is_test(p):
+                found.append(p)
+    blocks, used = [], 0
+    for p in found:
+        src = read_repo(p, 200000)
+        if not src or used + len(src) > cap:
+            continue
+        used += len(src)
+        blocks.append(f"### `{p}` ({src.count(chr(10)) + 1} lines)\n```\n{src}\n```\n")
+    if not blocks:
+        return ""
+    return ("## Checks the merge gate runs against your files (read-only; your change must satisfy them - do not grep or `git log` to find their rules)\n"
+            + "\n".join(blocks))
 
 
 # ---------------------------------------------------------------- code map + context pack (deterministic, no tokens)
@@ -185,33 +217,27 @@ def context_pack(t, parts=False):
             return False
         out.append(block); used += len(block); return True
 
-    fresh = not t.get("attempts") and not t.get("last_run")
     mine = t.get("files", [])
-    if fresh:
-        for f in mine:
-            src = read_repo(f, 200000)
-            if not src:
-                add(f"### `{f}` - does not exist yet (you create it)\n"); continue
-            shown.add(f)
-            if len(src) <= min(25000, budget // 2):
-                lang = os.path.splitext(f)[1].lstrip(".") or ""
-                if not add(f"### `{f}` (current content on main, {src.count(chr(10)) + 1} lines)\n```{lang}\n{src}\n```\n"):
-                    add(f"### `{f}` - too large for the pack; interface:\n{codemap.render(cm, [f], with_lines=ln)}\n")
-            elif codemap.is_test(f):
-                head = "\n".join(src.splitlines()[:60])
-                add(f"### `{f}` - {src.count(chr(10)) + 1} lines, too large to include whole. Its first 60 lines (imports, fixtures):\n"
-                    f"```python\n{head}\n```\nHelpers and existing tests:\n{codemap.render(cm, [f], with_lines=ln)}\nAdd new tests at the end; do not "
-                    f"rewrite existing ones.\n")
-            else:
-                add(f"### `{f}` - {src.count(chr(10)) + 1} lines, too large to include whole; its interface:\n{codemap.render(cm, [f], with_lines=ln)}\n"
-                    f"Open only the parts you change.\n")
-    else:
-        d = branch_diff(t, min(20000, budget // 2)) if extras_on() else ""
-        if d:
-            add("## Your branch's earlier work (diff against main - your own files as they are on the branch, so do not `cat` or `git diff` them)\n"
-                f"```diff\n{d}\n```\n")
+    ref = branch_ahead(t) or "origin/main"
+    own_cap = int(ctx.C.get("OWN_FILE_CHARS", 150000))
+    for f in mine:
+        src = read_repo(f, own_cap + 1, ref)
+        if not src:
+            add(f"### `{f}` - does not exist yet (you create it)\n"); continue
+        shown.add(f)
+        lang = os.path.splitext(f)[1].lstrip(".") or ""
+        where = "current content on your branch" if ref != "origin/main" else "current content on main"
+        if len(src) <= own_cap:
+            out.append(f"### `{f}` ({where}, {src.count(chr(10)) + 1} lines - the WHOLE file; do not open it again)\n```{lang}\n{src}\n```\n"); used += len(src)
         else:
-            add("(Your branch already has earlier work, so your own files are not included; the changed files are listed in the rework section.)\n")
+            add(f"### `{f}` - {src.count(chr(10)) + 1} lines, over {own_cap} characters. Its interface:\n{codemap.render(cm, [f], with_lines=ln)}\nOpen only the parts you change.\n")
+    if ref != "origin/main" and extras_on():
+        d = branch_diff(t, min(20000, budget // 2))
+        if d:
+            add("## What your branch already changed versus main (the files above already contain it - do not `git diff`)\n" f"```diff\n{d}\n```\n")
+    gc = gate_checks(mine)
+    if gc:
+        out.append(gc); used += len(gc)
     if extras_on():
         u = usage_block(t, cm, budget // 4)
         if u:

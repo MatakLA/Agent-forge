@@ -308,6 +308,21 @@ def branch_stat(t):
         return ""
 
 
+def working_set(t):
+    own = t.get("files", []); rd = [r for r in t.get("read", []) if r not in own]
+    return ("## Your working set (read this first)\n"
+            f"- You edit ONLY: {', '.join('`'+f+'`' for f in own) or '(as the spec says)'}. Their complete current content is in the context pack below "
+            "- you already have it; do not open, `cat` or `sed -n` them to look around, edit them directly.\n"
+            + (f"- Read-only references (interfaces are in the pack): {', '.join('`'+r+'`' for r in rd)}. Open one only if the pack lacks something you need.\n" if rd else "")
+            + "- The pack also contains the gate's own checks that name your files (static/contract tests). They decide pass or fail: satisfy them "
+              "while you write, do not hunt for their rules with grep or git history.\n"
+            "- You may: edit the files above, add new tests for them, run the targeted test commands from the acceptance criteria that work here "
+            "(python/pytest), commit, push.\n"
+            "- You may not and need not: run node/npm/docker (the supervisor runs the JS tests for you), use the network, change other files, "
+            "explore the repository, run `git diff/log/show/status/fetch` (your branch state is below), run the full test suite.\n"
+            "- Order: edit the files first (all changes of one file in one call), then run the named tests once, then commit and push.\n")
+
+
 LEAN_MODE = """## Working mode: write first (this task is measured by how few steps you need)
 - Your own files are in full further down; interfaces of what they import too. Do not re-discover them: no `sed -n` slices, no repo-wide
   `grep`, no `git log/show/diff/status/fetch`, no `python3 -c` probes. A file that is not in this prompt: open it ONCE, whole, with view_file.
@@ -334,6 +349,7 @@ def worker_spec(t, continuing=False):
             "\nChange only these files, plus new tests for them. Another file only when the spec clearly requires it; then say so and why in your "
             "final reply. Your self-check lists every other changed file, every definition copied from another file (import the existing one: "
             "`grep -rn \"def name\"` first), tests with fewer assertions than before and far more test lines than code lines.\n"]
+    task.insert(task.index(next(x for x in task if x.startswith("## Files"))) + 1, working_set(t))
     pack, stable = [], []
     cache = str(ctx.C.get("PROMPT_ORDER", "default")) == "cache"
     if variant(t)["pack"]:

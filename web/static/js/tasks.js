@@ -254,6 +254,7 @@ function renderTaskSheet() {
     (d ? runsTable(d.runs || []) : small('loading the runs…')) +
     ((t.acceptance || []).length ? '<h3>Acceptance criteria</h3><ul class="plain">' + t.acceptance.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '') +
     (t.spec ? '<details' + (['done', 'cancelled'].includes(t.status) ? '' : ' open') + '><summary>Spec</summary><pre>' + esc(t.spec) + '</pre></details>' : '') +
+    '<details data-prompt="' + esc(t.id) + '"><summary>The full prompt the worker gets</summary><pre id="task-prompt">(open to load)</pre></details>' +
     ((t.files || []).length ? '<h3>Files (' + t.files.length + ')</h3><div class="mono small">' + t.files.map(esc).join('<br>') + '</div>' : '') +
     ((t.mutations || []).length ? '<h3>Mutation tests</h3><pre>' + esc(t.mutations.join('\n')) + '</pre>' : '') +
     (t.gate_tail ? '<details><summary>Last gate output</summary><pre>' + esc(t.gate_tail) + '</pre></details>' : '') +
@@ -261,6 +262,13 @@ function renderTaskSheet() {
     (t.diff || t.pr || t.status === 'approval' ? '<h3>Changes</h3>' + (TD.diff == null ? '<button class="mini" data-tdiff' + (TD.diffLoading ? ' disabled' : '') + '>' + (TD.diffLoading ? 'loading diff…' : 'Show the diff') + '</button>' : diffHtml(TD.diff)) : '');
   setSheet('task', id, html);
 }
+document.addEventListener('toggle', async e => {
+  const d = e.target;
+  if (!d.dataset || !d.dataset.prompt || !d.open) return;
+  const pre = d.querySelector('pre');
+  try { pre.textContent = await (await fetch('/api/prompt?task=' + encodeURIComponent(d.dataset.prompt) + '&project=' + encodeURIComponent(project))).text(); }
+  catch (err) { pre.textContent = '(could not load: ' + err + ')'; }
+}, true);
 async function loadTaskDiff() {
   TD.diffLoading = true; renderTaskSheet();
   try { TD.diff = await (await fetch('/api/diff?task=' + encodeURIComponent(TD.id) + '&project=' + encodeURIComponent(project))).text(); }

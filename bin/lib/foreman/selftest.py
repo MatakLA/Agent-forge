@@ -264,8 +264,8 @@ def _selftest_body(bad, real_notify):
               "def upcoming(days=7):" in cp and "def add(name: str) -> dict  # Add a contact." in cp and "`other.py`" in cp
               and 'return {"name": name}' not in cp and "NO MODULE DOCSTRING" in cp)
         cp2 = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[], attempts=1))
-        check("context pack: a rework does not resend main's version of the worker's own files, and says why",
-              "def upcoming(days=7):\n" not in cp2 and "Your branch already has earlier work" in cp2)
+        check("context pack: a rework without a branch still gets the worker's own files whole (from main)",
+              "def upcoming(days=7):" in cp2 and "the WHOLE file" in cp2)
         sh(["git", "checkout", "-qb", "test/0003-b"], cwd=ctx.REPO)
         open(os.path.join(ctx.REPO, "birthdays.py"), "a").write("\ndef extra():\n    return 42\n")
         sh(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "branch work"], cwd=ctx.REPO)
@@ -275,7 +275,7 @@ def _selftest_body(bad, real_notify):
         bd = branch_diff(t3, 20000)
         cp3 = context_pack(t3)
         check("context pack: a rework gets its branch's earlier work as a diff against main (and no diff when the branch is unknown)",
-              "+def extra():" in bd and "Your branch's earlier work" in cp3 and "+def extra():" in cp3
+              "+def extra():" in bd and "What your branch already changed" in cp3 and "+def extra():" in cp3 and "current content on your branch" in cp3
               and branch_diff(dict(branch="test/none"), 20000) == "" and branch_diff(dict(), 20000) == "")
         ctx.C.update(PACK_EXTRAS="off")
         cp3off = context_pack(t3)
