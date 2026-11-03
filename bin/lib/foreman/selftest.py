@@ -260,9 +260,9 @@ def _selftest_body(bad, real_notify):
         sh(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=ctx.REPO)
         ctx.C.update(PROJECT_DIR="", CONTEXT_PACK_CHARS=60000)
         cp = context_pack(dict(id="0003-b", files=["birthdays.py", "test_birthdays.py"], spec="Use store.add() for new contacts.", acceptance=[]))
-        check("context pack: own files in full, imported module's interface, one-line map of the rest, no bodies of others",
-              "def upcoming(days=7):" in cp and "def add(name: str) -> dict  # Add a contact." in cp and "`other.py`" in cp
-              and 'return {"name": name}' not in cp and "NO MODULE DOCSTRING" in cp)
+        check("context pack: own files in full, spec-named modules whole as references, one-line map of the rest",
+              "def upcoming(days=7):" in cp and "Reference (read-only, complete): `store.py`" in cp and "`other.py`" in cp
+              and "NO MODULE DOCSTRING" in cp and "other.py` (" not in cp.split("Reference")[0])
         cp2 = context_pack(dict(id="0003-b", files=["birthdays.py"], spec="", acceptance=[], attempts=1))
         check("context pack: a rework without a branch still gets the worker's own files whole (from main)",
               "def upcoming(days=7):" in cp2 and "the WHOLE file" in cp2)
